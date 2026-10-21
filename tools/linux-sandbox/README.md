@@ -3,8 +3,8 @@
 Implementation under the approved 2026-10-21 service/launcher plan. **Installed
 only in isolated Linux CI, not on user/production machines.**
 
-Latest measured result: [run 39571694668](https://github.com/morphz-ai/morphz/actions/runs/39571694668)
-at `fe0f17a5` passed both jobs, with raw logs checked: four actual Runtime native
+Latest measured result: [run 39574236288](https://github.com/morphz-ai/morphz/actions/runs/39574236288)
+at `fa1f2d0b` passed both jobs, with raw logs checked: four actual Runtime native
 contracts, the unchanged late-file PTY regression, private-PTY/session separation,
 the complete Runtime library (1664 passed, zero failed, 14 default-ignored),
 and all five separately required PostgreSQL library contracts. Compiler/kernel
@@ -22,6 +22,17 @@ cancellation and input provenance); all thirteen actually ran and passed in
 job `119126357268` of run `39571445223`. They are not part of the fourteen library
 cases. Each required PostgreSQL invocation rejects zero-test or ignored-only
 success, and a source-inventory guard rejects a new unowned PostgreSQL case.
+
+The independent full Runtime run `39571445223` exposed a stale attempt-loop
+fixture: two unread inputs can intentionally form one bounded dialogue batch.
+The serial-turn test now holds the first actual model request before submitting
+the second input, retaining the two replies, separate roots and max-concurrency-1
+assertions. Two parallel-load fixture races likewise hold the actual tool/handler
+stage instead of assuming a 600 ms tool or including database initialization in
+the handler's non-blocking deadline. The complete local `attempt_loop` inventory
+then passed 81/81 with zero ignored under default parallel execution. This is
+test synchronization, not a change to Runtime batching or execution semantics;
+full CI at the new commit remains a separate result.
 
 Historical false-green result: `39568698033` passed the library and PostgreSQL
 cases but its new namespace-handle native case still failed;

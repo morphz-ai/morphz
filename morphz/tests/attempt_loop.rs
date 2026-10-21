@@ -54,6 +54,12 @@ struct ConcurrencyProbeClient {
     active: AtomicUsize,
     max_active: AtomicUsize,
     calls: AtomicUsize,
+    first_completion_gate: Option<CompletionGate>,
+}
+
+struct CompletionGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 struct BudgetProbeClient {
@@ -1281,9 +1287,18 @@ impl Client for ConcurrencyProbeClient {
         }
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
-        // Keep the probe open long enough for the second independently routed
-        // Session to enter even under a fully loaded test runner.
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        if let Some(gate) = self
+            .first_completion_gate
+            .as_ref()
+            .filter(|_| self.calls.load(Ordering::SeqCst) == 0)
+        {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        } else {
+            // Keep the probe open long enough for the second independently
+            // routed Session to enter under a loaded test runner.
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
         self.active.fetch_sub(1, Ordering::SeqCst);
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(text_reply_response(format!("reply-{call}")))
@@ -2554,16 +2569,17 @@ async fn runtime_start_retires_legacy_outbox_for_direct_supervisor_wake() {
         config,
         engine,
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        Arc::clone(&orchestrator).start(),
-    )
-    .await
-    .expect("a direct supervisor wake must not block startup on handler completion")
-    .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), observed.notified())
+    let starting = tokio::spawn(Arc::clone(&orchestrator).start());
+    // Observe the actual blocked handler before measuring the non-blocking
+    // handoff. Database setup under parallel test load is not that contract.
+    tokio::time::timeout(std::time::Duration::from_secs(5), observed.notified())
         .await
         .expect("the process-local supervisor wake should still be replayed");
+    tokio::time::timeout(std::time::Duration::from_secs(2), starting)
+        .await
+        .expect("a direct supervisor wake must not block startup on handler completion")
+        .unwrap()
+        .unwrap();
 
     assert!(store
         .list_signal_outbox(morphz::memory::SignalOutboxStatus::Pending, 8)
@@ -7457,6 +7473,10 @@ async fn same_session_dialogue_turns_are_serialized() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: Some(CompletionGate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        }),
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -7474,7 +7494,31 @@ async fn same_session_dialogue_turns_are_serialized() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "serialized-session", "first").await;
+    // Unread consecutive messages deliberately share one bounded signal batch.
+    // This test owns a different contract: a new turn arriving during physical
+    // inference must queue behind it. Hold that actual inference boundary open
+    // instead of depending on event-handler scheduling or a fixed sleep.
+    let gate = client.first_completion_gate.as_ref().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+        .await
+        .expect("the first turn must enter the model before the second message");
     publish_user(&bus, "serialized-session", "second").await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let signals = store
+                .list_context_thread_signals("serialized-session", None)
+                .await
+                .unwrap();
+            if signals.len() == 2 {
+                assert_ne!(signals[0].thread_id, signals[1].thread_id);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the second turn must be durably queued while the first is held");
+    gate.release.notify_one();
 
     let replies = wait_for_topic_count(&store, "chat/reply", "serialized-session", 2).await;
 
@@ -7905,11 +7949,12 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let completion_gate = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
-        delay_ms: 600,
-        completion_gate: None,
+        delay_ms: 0,
+        completion_gate: Some(Arc::clone(&completion_gate)),
     }));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
     let orchestrator = new_test_orchestrator(
@@ -7923,14 +7968,22 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "causal-wake-session", "root A").await;
-    for _ in 0..80 {
-        if !routed_arguments.lock().unwrap().is_empty() {
-            break;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while routed_arguments.lock().unwrap().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .expect("root A's real tool must enter before the concurrent inquiry");
     assert_eq!(routed_arguments.lock().unwrap().len(), 1);
     publish_user(&bus, "causal-wake-session", "root B").await;
+    let inquiry_reply = wait_for_topic(&store, "chat/reply", "causal-wake-session").await;
+    assert_eq!(inquiry_reply.len(), 1);
+    assert_eq!(
+        inquiry_reply[0].payload.get("text"),
+        Some(&json!("root-b-reply"))
+    );
+    completion_gate.notify_one();
 
     let replies = wait_for_topic_count(&store, "chat/reply", "causal-wake-session", 2).await;
     assert!(replies
@@ -7986,6 +8039,7 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: None,
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -8620,6 +8674,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: None,
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -8786,6 +8841,7 @@ async fn tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: None,
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
