@@ -21,6 +21,7 @@ on:
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
       - application/tests/subject-objectives-restore.spec.ts
+      - application/tests/e2e/reader-pagination.spec.ts
       - application/scripts/reader-ocr-model-fixture.mjs
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
@@ -60,7 +61,8 @@ jobs:
             tests/profile-actual-transport.spec.ts \
             tests/workspace-panels-notifications.spec.ts \
             tests/shell-layout.spec.ts \
-            tests/subject-objectives-restore.spec.ts
+            tests/subject-objectives-restore.spec.ts \
+            tests/e2e/reader-pagination.spec.ts
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
