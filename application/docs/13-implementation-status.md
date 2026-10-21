@@ -1,5 +1,34 @@
 # 桌面能力实施记录
 
+## 2026-10-21 目标弹窗触摸关闭：click 与 pointerup 两种原生机制
+
+Linux 隔离 CI `39534641134` 的四份浏览器回归为31项通过、1项失败。
+真实事件附件确认：外部轻触坐标在弹窗外，收到完整 pointerdown／touchstart／
+pointerup／touchend；touchstart 被取消，之后没有 click、cancel 或 close。
+Chrome156已采用由click触发的light dismiss，而本机Chromium153默认仍采用
+pointerup。该差异与 [Chromium 公告](https://groups.google.com/a/chromium.org/g/blink-dev/c/RxOpZkL4yqM/m/kxPldvWwAgAJ)
+一致；在本机显式开启 `LightDismissFromClick` 后，同一生产构建与原断言复现
+失败。这是本轮 `3ee4194d` 防穿透处理引入的兼容性回归，不归因于测试坐标。
+
+保留外部touchstart对兼容鼠标事件的抑制，防止同一次触摸点击后台工作面。
+只对同一个未移动、未取消、单指的外部轻触，在touchend且弹窗仍打开时调用
+原生requestClose；经过既有cancel／close及焦点恢复链路，不直接卸载或合成
+click。旧pointerup机制已关闭时不再关闭第二次。编辑、记录、删除和处理中
+仍不安装这条轻触处理；状态切换和卸载清理全部监听器，不改变样式或业务接口。
+
+当前生产构建与严格类型通过；整份目标浏览器库存在本机默认pointerup机制、
+显式启用click机制下分别22/22通过，均零重试、零跳过。新增真实浏览器输入
+覆盖内部轻触、从内向外拖动、touchcancel后再次轻触，以及编辑草稿、记录、
+删除确认、处理中不误关。原防穿透、焦点、密度和零写入断言保持。
+证据为本轮 `touch-click-before-output`、`touch-click-after-output` 和
+`touch-pointer-after-output`；模拟触控不冒充实体触屏验收。
+
+Impeccable harden限定这条交互边界；源码detector无发现，不替代实看。
+已查看完整明暗阅读、390px轻触前后、编辑和200%删除确认页面：标题与动作
+仍同行，原段落、字号、间距、关闭与危险确认层级保持，窄窗关闭后焦点返回
+原查看入口。实际Linux新提交CI和原安装窗口验收尚待完成，本节不声明全应用
+全绿或此次改动已在用户窗口生效。
+
 ## 2026-10-21 原应用 DeepSeek 工具错误恢复与正文流式验收
 
 在用户原 Morphz 窗口、原 Profile 和已有 TEST 会话中正式提交一条合成只读

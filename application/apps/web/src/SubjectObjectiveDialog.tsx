@@ -78,30 +78,61 @@ export function SubjectObjectiveDialog({
   useEffect(() => {
     const element = dialog.current;
     if (!element || view !== "reading" || busy) return;
-    const preventBackdropCompatibilityClick = (event: TouchEvent) => {
-      if (event.target !== element || event.touches.length !== 1) return;
-      const touch = event.touches[0]!;
+    let backdropTouch: number | undefined;
+    const outside = (touch: Touch) => {
       const bounds = element.getBoundingClientRect();
-      if (
+      return (
         touch.clientX < bounds.left ||
         touch.clientX > bounds.right ||
         touch.clientY < bounds.top ||
         touch.clientY > bounds.bottom
-      ) {
+      );
+    };
+    const start = (event: TouchEvent) => {
+      backdropTouch = undefined;
+      if (event.target !== element || event.touches.length !== 1) return;
+      const touch = event.touches[0]!;
+      if (outside(touch)) {
         // Native light-dismiss can close the dialog before this touch's
         // compatibility mouse events. Cancel only those synthesized events,
         // so the same tap cannot activate the work surface underneath.
         event.preventDefault();
+        backdropTouch = touch.identifier;
       }
     };
-    element.addEventListener("touchstart", preventBackdropCompatibilityClick, {
-      passive: false,
-    });
-    return () =>
-      element.removeEventListener(
-        "touchstart",
-        preventBackdropCompatibilityClick,
+    const cancel = () => {
+      backdropTouch = undefined;
+    };
+    const end = (event: TouchEvent) => {
+      const identifier = backdropTouch;
+      cancel();
+      const touch = Array.from(event.changedTouches).find(
+        (point) => point.identifier === identifier,
       );
+      if (
+        touch &&
+        event.touches.length === 0 &&
+        outside(touch) &&
+        element.open &&
+        !pending.current
+      ) {
+        // Newer engines light-dismiss on click, which start() suppressed.
+        // Finish only this unmoved, single-finger backdrop tap through the
+        // native cancel/close path. Earlier pointerup-based engines may have
+        // closed already; never close twice or replay a compatibility click.
+        element.requestClose();
+      }
+    };
+    element.addEventListener("touchstart", start, { passive: false });
+    element.addEventListener("touchmove", cancel, { passive: true });
+    element.addEventListener("touchcancel", cancel, { passive: true });
+    element.addEventListener("touchend", end, { passive: true });
+    return () => {
+      element.removeEventListener("touchstart", start);
+      element.removeEventListener("touchmove", cancel);
+      element.removeEventListener("touchcancel", cancel);
+      element.removeEventListener("touchend", end);
+    };
   }, [view, busy]);
   useEffect(() => {
     if (view === "edit") editor.current?.focus();
