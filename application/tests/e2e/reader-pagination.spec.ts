@@ -170,6 +170,7 @@ async function openReader(page: Page, title: string) {
 }
 function observeReads(page: Page, artifactId: string) {
   const reads: Array<{ params: Record<string, string>; rows: number }> = [];
+  const sidebarContinuations: string[] = [];
   const states: Array<Record<string, unknown>> = [];
   const sent: string[] = [];
   const pending: Promise<void>[] = [];
@@ -187,8 +188,15 @@ function observeReads(page: Page, artifactId: string) {
       !navigating &&
       url.searchParams.get("artifactId") === artifactId &&
       ["/api/reader/marks", "/api/reader/state"].includes(url.pathname)
-    )
+    ) {
       eligible.add(request);
+      if (
+        url.pathname === "/api/reader/marks" &&
+        !url.searchParams.has("sectionId") &&
+        url.searchParams.has("after")
+      )
+        sidebarContinuations.push(url.searchParams.get("after")!);
+    }
   });
   page.on("requestfailed", (request) => eligible.delete(request));
   // Observe completed bodies only in their document's capture window. Merely
@@ -221,6 +229,7 @@ function observeReads(page: Page, artifactId: string) {
   });
   return {
     reads,
+    sidebarContinuations,
     states,
     sent,
     async reload() {
@@ -644,6 +653,16 @@ test("分页侧栏：自然续页、零长书签、删除失败同命令重试�
   await page.getByRole("button", { name: "书签与批注", exact: true }).click();
   const panel = marksPanel(page);
   await expect(panel.locator(".reader-mark")).toHaveCount(50);
+  const firstPageImage = info.outputPath("reader-sidebar-first-page.png");
+  await page.screenshot({ path: firstPageImage });
+  await info.attach("reader-sidebar-first-page", {
+    path: firstPageImage,
+    contentType: "image/png",
+  });
+  expect(
+    probe.sidebarContinuations,
+    "the overflowing first page must render before deciding to fetch more",
+  ).toEqual([]);
   const firstRow = await panel.locator(".reader-mark").first().elementHandle();
   const textNode = await text(page)
     .locator("p")
@@ -652,6 +671,12 @@ test("分页侧栏：自然续页、零长书签、删除失败同命令重试�
   await panel.hover();
   await page.mouse.wheel(0, 5000);
   await expect(panel.locator(".reader-mark")).toHaveCount(61);
+  const nextPageImage = info.outputPath("reader-sidebar-next-page.png");
+  await page.screenshot({ path: nextPageImage });
+  await info.attach("reader-sidebar-next-page", {
+    path: nextPageImage,
+    contentType: "image/png",
+  });
   expect(await firstRow!.evaluate((node) => node.isConnected)).toBe(true);
   expect(await textNode.evaluate((node) => node?.isConnected)).toBe(true);
   expect(await panel.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);

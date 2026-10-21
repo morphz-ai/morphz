@@ -74,8 +74,10 @@ function Frame({initial}){
  return <div className="app" data-appearance="light" data-accent="cyan"><aside className="subject-sidebar">{value.show&&<Component client={client} onOpen={id=>events.push(['open',id])} onInspect={scope=>events.push(['inspect',scope])}/>}</aside></div>;
 }
 // React task completion does not also flush browser style/focus invalidation.
-// Observe disabled controls after a frame, without forcing focus or changing it.
-async function settle(){for(let i=0;i<3;i++){await Promise.resolve();await new Promise(done=>{const c=new MessageChannel();c.port1.onmessage=()=>{c.port1.close();c.port2.close();done();};c.port2.postMessage(null);});}await new Promise(requestAnimationFrame);}
+// A frame callback runs before style/layout and can still see a just-disabled
+// button focused. Observe after that render boundary, without forcing focus,
+// normalizing the report, or changing the original focus assertion.
+async function settle(){for(let i=0;i<3;i++){await Promise.resolve();await new Promise(done=>{const c=new MessageChannel();c.port1.onmessage=()=>{c.port1.close();c.port2.close();done();};c.port2.postMessage(null);});}await new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done)));}
 function report(){const section=document.querySelector('.subject-section'),refresh=section?.querySelector('[aria-label="刷新定时任务"]'),active=document.activeElement;return {
  dom:section?.outerHTML??null,present:!!section,loading:section?.textContent.includes('读取中…')??false,empty:section?.textContent.includes('暂无可确认的定时任务')??false,
  alert:section?.querySelector('[role="alert"]')?.textContent.trim()??null,more:section?.textContent.includes('事项绑定的定时任务未全部读取')??false,quality:section?.textContent.includes('部分定时任务来源尚未核验')??false,

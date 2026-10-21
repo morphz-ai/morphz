@@ -103,6 +103,12 @@ const optionalTests = [
   ],
   [
     "infer-model-controls-runtime.test.ts",
+    "actual Host inherited input follows a live Session switch only after the in-flight request, while an explicit task remains fixed",
+    "runtime",
+    "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
+  ],
+  [
+    "infer-model-controls-runtime.test.ts",
     "actual Harness infer inherits task model controls through every physical request, without changing defaults or tools",
     "runtime",
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",

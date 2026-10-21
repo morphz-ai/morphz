@@ -313,6 +313,7 @@ pub struct Subscription {
     handler: EventHandler,
     durable: bool,
     serialize_durable: bool,
+    ordered_observer: bool,
 }
 
 impl Subscription {
@@ -448,14 +449,25 @@ impl InMemoryEventBus {
     }
 
     pub fn subscribe(&self, topic_pattern: String, handler: EventHandler) -> String {
-        self.add_subscription(topic_pattern, handler, false, false)
+        self.add_subscription(topic_pattern, handler, false, false, false)
+    }
+
+    /// Bounded inline observation after persistence, without business-handler
+    /// scheduling. Only nonblocking process-local observers should use this:
+    /// spawning an independent task for each stream chunk can reorder bytes.
+    pub(crate) fn subscribe_ordered_observer(
+        &self,
+        topic_pattern: String,
+        handler: EventHandler,
+    ) -> String {
+        self.add_subscription(topic_pattern, handler, false, false, true)
     }
 
     /// Register a persistence boundary that must complete successfully before an event is
     /// dispatched to business subscribers. Durable handlers are serialized across concurrent
     /// publishers and are deliberately not subject to the best-effort audit timeout.
     pub fn subscribe_durable(&self, topic_pattern: String, handler: EventHandler) -> String {
-        self.add_subscription(topic_pattern, handler, true, true)
+        self.add_subscription(topic_pattern, handler, true, true, false)
     }
 
     /// Register a durable boundary whose handler owns ordering and bounded
@@ -467,7 +479,7 @@ impl InMemoryEventBus {
         topic_pattern: String,
         handler: EventHandler,
     ) -> String {
-        self.add_subscription(topic_pattern, handler, true, false)
+        self.add_subscription(topic_pattern, handler, true, false, false)
     }
 
     fn add_subscription(
@@ -476,6 +488,7 @@ impl InMemoryEventBus {
         handler: EventHandler,
         durable: bool,
         serialize_durable: bool,
+        ordered_observer: bool,
     ) -> String {
         let id_val = self.sub_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let sub_id = format!("sub_{}", id_val);
@@ -486,6 +499,7 @@ impl InMemoryEventBus {
             handler,
             durable,
             serialize_durable,
+            ordered_observer,
         });
 
         self.subscriptions.insert(sub_id.clone(), sub);
@@ -556,7 +570,7 @@ impl InMemoryEventBus {
                     } else {
                         durable_writer_subs.push(Arc::clone(sub));
                     }
-                } else if sub.topic_pattern == "*" {
+                } else if sub.ordered_observer || sub.topic_pattern == "*" {
                     sync_subs.push(Arc::clone(sub));
                 } else {
                     async_subs.push(Arc::clone(sub));

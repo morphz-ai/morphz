@@ -2,3 +2,9 @@
 # Bound simultaneous rustc/linker memory on development machines as well as CI.
 # Per-invocation CARGO_BUILD_JOBS remains Cargo's explicit operator override.
 jobs = 2
+
+[env]
+# libtest otherwise launches one complete Runtime fixture per logical CPU in
+# addition to rustc and application tests. Bound test-fixture CPU/IO pressure;
+# tests still drive their own explicit concurrency. Operator env/CLI wins.
+RUST_TEST_THREADS = { value = "2", force = false }

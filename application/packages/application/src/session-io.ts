@@ -591,8 +591,9 @@ export function workInputRequest(
             harness: undefined,
           }
         : {
-            // Runtime freezes the operator default on admission. An explicit
-            // caller choice is optional; supplements inherit their old Thread.
+            // Only an explicit caller choice is a task override. Omission
+            // follows live Session defaults at each physical request boundary;
+            // supplements retain their original Thread's policy.
             ...(responseAnnotations
               ? { response_annotations: responseAnnotations }
               : {}),

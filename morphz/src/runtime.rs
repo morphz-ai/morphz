@@ -7554,32 +7554,38 @@ impl MorphzRuntime {
     /// This is a live notification surface, not a durable request/reply
     /// protocol. In particular, exact-topic subscriptions are asynchronous
     /// business handlers and may still be queued when the publishing call
-    /// returns. Callers waiting for the terminal reply of one DialogueTurn
+    /// returns. The exact `runtime/model_stream` observation is the exception:
+    /// its nonblocking bounded queue observes publication order inline, rather
+    /// than reordering chunks through independently spawned business handlers.
+    /// Callers waiting for the terminal reply of one DialogueTurn
     /// must use [`Self::wait_for_turn_reply`], which closes the durable
     /// commit/subscription race and fences the result by root turn.
     pub fn subscribe(&self, topic: impl Into<String>, capacity: usize) -> RuntimeEventStream {
         let (sender, receiver) = tokio::sync::mpsc::channel(capacity.max(1));
-        let subscription_id = self.inner.bus.subscribe(
-            topic.into(),
-            Arc::new(move |event| {
-                let sender = sender.clone();
-                Box::pin(async move {
-                    if event.topic == "runtime/model_stream" {
-                        // Provider deltas are transient UI drafts. A slow or
-                        // abandoned observer must never apply backpressure to
-                        // the model request (wildcard EventBus subscribers are
-                        // otherwise synchronous). Dropping a draft chunk is
-                        // safe because the terminal chat/reply or chat/progress
-                        // fact below still takes the reliable await path and
-                        // replaces the draft with durable complete text.
-                        let _ = sender.try_send(event);
-                    } else {
-                        let _ = sender.send(event).await;
-                    }
-                    Ok(())
-                })
-            }),
-        );
+        let topic = topic.into();
+        let handler: crate::event::EventHandler = Arc::new(move |event| {
+            let sender = sender.clone();
+            Box::pin(async move {
+                if event.topic == "runtime/model_stream" {
+                    // Provider deltas are transient UI drafts. A slow or
+                    // abandoned observer must never apply backpressure to
+                    // the model request (wildcard EventBus subscribers are
+                    // otherwise synchronous). Dropping a draft chunk is
+                    // safe because the terminal chat/reply or chat/progress
+                    // fact below still takes the reliable await path and
+                    // replaces the draft with durable complete text.
+                    let _ = sender.try_send(event);
+                } else {
+                    let _ = sender.send(event).await;
+                }
+                Ok(())
+            })
+        });
+        let subscription_id = if topic == "runtime/model_stream" {
+            self.inner.bus.subscribe_ordered_observer(topic, handler)
+        } else {
+            self.inner.bus.subscribe(topic, handler)
+        };
         RuntimeEventStream {
             receiver,
             bus: Arc::downgrade(&self.inner.bus),
@@ -12258,28 +12264,10 @@ impl SessionHandle {
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 return Err(error.into());
             }
-            if !payload.contains_key("model_alias") {
-                payload.insert(
-                    "model_alias".into(),
-                    json!(session
-                        .model_alias
-                        .as_deref()
-                        .unwrap_or(&self.runtime.inner.config.llm.model)),
-                );
-            }
-            if !payload.contains_key("reasoning_effort") {
-                if let Some(effort) = session.reasoning_effort.as_deref().or(self
-                    .runtime
-                    .inner
-                    .config
-                    .llm
-                    .reasoning_effort
-                    .as_ref()
-                    .map(|effort| effort.as_str()))
-                {
-                    payload.insert("reasoning_effort".into(), json!(effort));
-                }
-            }
+            // A typed input has the same policy semantics as ordinary ingress:
+            // only caller-supplied fields are task overrides. Recording today's
+            // default here used to turn inheritance into a fixed Thread policy.
+            // Actual model/effort facts belong to each physical model attempt.
             input.binding.execution = json!({
                 "dispatch_mode":payload.get("dispatch_mode"), "model_alias":payload.get("model_alias"),
                 "reasoning_effort":payload.get("reasoning_effort"), "target_id":payload.get("target_id"),
@@ -27395,6 +27383,79 @@ mod tests {
             Some("firstsecond")
         );
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn exact_model_stream_observation_preserves_publication_order_without_business_tasks() {
+        let database = TempSqliteDb::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let text = r#"{"_annotations":{"business":true},"reply":"普通资料","annotations":7}"#;
+        let mut stream = runtime.subscribe("runtime/model_stream", text.chars().count());
+        for (index, character) in text.chars().enumerate() {
+            runtime
+                .inner
+                .bus
+                .publish_ephemeral(Event::new(
+                    format!("ordered-draft-{index}"),
+                    "Model-Provider".into(),
+                    "runtime_ephemeral".into(),
+                    "runtime/model_stream".into(),
+                    json!({"stream":{"kind":"text_delta","text":character.to_string()}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ))
+                .await
+                .unwrap();
+            // This is deliberately a current-thread test with no scheduler
+            // yield. A spawned per-chunk handler cannot satisfy the contract.
+            let observed = stream
+                .try_recv()
+                .expect("a model-stream observer is inline, not a queued business task");
+            assert_eq!(observed.id, format!("ordered-draft-{index}"));
+            assert_eq!(observed.payload["stream"]["text"], character.to_string());
+        }
+        runtime
+            .inner
+            .bus
+            .publish_ephemeral(Event::new(
+                "unrelated".into(),
+                "Runtime".into(),
+                "runtime_ephemeral".into(),
+                "runtime/other".into(),
+                Default::default(),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            stream.try_recv().is_err(),
+            "an exact observer never acquires unrelated topics"
+        );
+        let mut bounded = runtime.subscribe("runtime/model_stream", 1);
+        for index in 0..2 {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                runtime.inner.bus.publish_ephemeral(Event::new(
+                    format!("bounded-draft-{index}"),
+                    "Model-Provider".into(),
+                    "runtime_ephemeral".into(),
+                    "runtime/model_stream".into(),
+                    json!({"stream":{"kind":"text_delta","text":"draft"}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )),
+            )
+            .await
+            .expect("a full exact stream observer must not backpressure the provider")
+            .unwrap();
+        }
+        assert_eq!(bounded.try_recv().unwrap().id, "bounded-draft-0");
+        assert!(bounded.try_recv().is_err());
     }
 
     #[tokio::test]

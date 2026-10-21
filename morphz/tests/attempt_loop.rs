@@ -214,12 +214,14 @@ struct RoutingProbeTool {
     arguments: Arc<Mutex<Vec<serde_json::Value>>>,
     delay_ms: u64,
     completion_gate: Option<Arc<tokio::sync::Notify>>,
+    entered: Option<Arc<tokio::sync::Notify>>,
 }
 
 struct DelayedContextTxTool {
     started: Arc<AtomicUsize>,
     delay_ms: u64,
     completion_gate: Option<Arc<tokio::sync::Notify>>,
+    entered: Arc<tokio::sync::Notify>,
 }
 
 fn text_reply_response(content: impl Into<String>) -> Response {
@@ -349,6 +351,9 @@ impl Tool for RoutingProbeTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let value: serde_json::Value = serde_json::from_str(arguments)?;
         self.arguments.lock().unwrap().push(value.clone());
+        if let Some(entered) = &self.entered {
+            entered.notify_one();
+        }
         if let Some(gate) = self.completion_gate.as_ref() {
             gate.notified().await;
         } else {
@@ -384,6 +389,7 @@ impl Tool for DelayedContextTxTool {
         _arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         self.started.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
         if let Some(gate) = self.completion_gate.as_ref() {
             gate.notified().await;
         } else {
@@ -2788,6 +2794,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         arguments: Arc::clone(&routed_arguments),
         delay_ms: 0,
         completion_gate: None,
+        entered: None,
     }));
     let client = Arc::new(MockClient::new(vec![text_reply_response(
         "recovered plan completed",
@@ -3228,6 +3235,7 @@ async fn run_chat_output_limit_fixture(mode: &'static str) {
         arguments: Arc::clone(&calls),
         delay_ms: 0,
         completion_gate: None,
+        entered: None,
     }));
     let config = morphz::config::OrchestratorConfig {
         max_stalled_reasoning_continuations: 2,
@@ -6982,6 +6990,7 @@ async fn assert_delegated_task_survives_progress_inquiry(deferred_delivery: bool
         arguments: arguments.clone(),
         delay_ms: 0,
         completion_gate: Some(gate.clone()),
+        entered: None,
     }));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -7807,12 +7816,14 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
         text_reply_response("second-reply"),
     ]));
     let started = Arc::new(AtomicUsize::new(0));
+    let tool_entered = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(Registry::new());
     let completion_gate = Arc::new(tokio::sync::Notify::new());
     registry.register(Arc::new(DelayedContextTxTool {
         started: Arc::clone(&started),
         delay_ms: 0,
         completion_gate: Some(Arc::clone(&completion_gate)),
+        entered: Arc::clone(&tool_entered),
     }));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -7830,12 +7841,9 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "context-maintenance-dialogue", "first").await;
-    for _ in 0..80 {
-        if started.load(Ordering::SeqCst) > 0 {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), tool_entered.notified())
+        .await
+        .expect("the controlled context tool must actually enter before the second input");
     assert_eq!(started.load(Ordering::SeqCst), 1);
     publish_user(&bus, "context-maintenance-dialogue", "second").await;
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -7933,12 +7941,14 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         text_reply_response("tool-a-finished"),
     ]));
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let tool_entered = Arc::new(tokio::sync::Notify::new());
     let completion_gate = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
         delay_ms: 0,
         completion_gate: Some(Arc::clone(&completion_gate)),
+        entered: Some(Arc::clone(&tool_entered)),
     }));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -7956,12 +7966,9 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "same-session-tool", "message-a starts tool").await;
-    for _ in 0..80 {
-        if !routed_arguments.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), tool_entered.notified())
+        .await
+        .expect("the controlled long tool must actually enter before the concurrent input");
     assert_eq!(routed_arguments.lock().unwrap().len(), 1);
     publish_user(&bus, "same-session-tool", "message-b while tool runs").await;
 
@@ -8138,8 +8145,9 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
-        delay_ms: 600,
-        completion_gate: None,
+        delay_ms: 0,
+        completion_gate: Some(Arc::clone(&completion_gate)),
+        entered: None,
     }));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
     let orchestrator = new_test_orchestrator(
