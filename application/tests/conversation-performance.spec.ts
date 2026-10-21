@@ -37,6 +37,14 @@ async function profileMeasurement<T>(
 
 test("长消息历史下输入和流式续写不反复阻塞主线程", async ({ page }, info) => {
   await page.addInitScript(() => {
+    const timeFormats = new Map<number, number>();
+    const format = Date.prototype.toLocaleString;
+    Date.prototype.toLocaleString = function (...args) {
+      const timestamp = this.getTime();
+      timeFormats.set(timestamp, (timeFormats.get(timestamp) ?? 0) + 1);
+      return Reflect.apply(format, this, args);
+    };
+    (window as any).__messageTimeFormats = timeFormats;
     const streams = new Set<any>();
     (window as any).__performanceStreams = streams;
     (window as any).EventSource = class {
@@ -112,6 +120,18 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       const typing: number[] = [],
         streaming: number[] = [];
       const longTasks: number[] = [];
+      const timeFormats = (window as any).__messageTimeFormats as Map<
+        number,
+        number
+      >;
+      const historyTimes = [
+        ...document.querySelectorAll<HTMLTimeElement>(
+          ".conversation-message .message-peek time[datetime]",
+        ),
+      ].map((time) => new Date(time.dateTime).getTime());
+      const beforeFormats = new Map(
+        historyTimes.map((time) => [time, timeFormats.get(time) ?? 0]),
+      );
       const observer = new PerformanceObserver((list) => {
         longTasks.push(...list.getEntries().map((entry) => entry.duration));
       });
@@ -162,6 +182,12 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
         typing,
         streaming,
         longTasks,
+        historyTimeCount: historyTimes.length,
+        historyTimeReformats: historyTimes.reduce(
+          (sum, time) =>
+            sum + (timeFormats.get(time) ?? 0) - beforeFormats.get(time)!,
+          0,
+        ),
       };
     }, presentation.scope),
   );
@@ -169,6 +195,32 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
   await info.attach("message-performance", {
     body: JSON.stringify(metrics, null, 2),
     contentType: "application/json",
+  });
+  await page.screenshot({
+    path: info.outputPath("long-history-after-stream.png"),
+  });
+  expect(metrics.historyTimeCount).toBe(128);
+  expect(metrics.historyTimeReformats).toBe(0);
+  const historyTime = page.locator(
+    ".conversation-message .message-peek time[datetime]",
+  );
+  expect(
+    await historyTime.evaluateAll((times) =>
+      times.every(
+        (time) =>
+          time.textContent ===
+          new Date(time.getAttribute("datetime")!).toLocaleString("zh-CN", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+      ),
+    ),
+  ).toBe(true);
+  await historyTime.last().scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: info.outputPath("history-timestamp-after-stream.png"),
   });
   await expect(input).toHaveValue("TEST 保留草稿 " + "字".repeat(12));
   await expect(

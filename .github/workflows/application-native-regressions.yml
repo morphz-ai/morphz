@@ -10,6 +10,9 @@ on:
       - application/apps/desktop/main.cjs
       - application/apps/desktop/preferences.cjs
       - application/apps/web/src/ApplicationHost.tsx
+      - application/apps/web/src/Conversation.tsx
+      - application/packages/core/src/evaluation-result.ts
+      - application/tests/conversation-performance.spec.ts
       - application/tests/application-compose-race.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts

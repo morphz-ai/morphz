@@ -2,6 +2,7 @@ import {
   Fragment,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -1491,6 +1492,18 @@ function MessageActions({
   share: MessageShareContent;
   client: WorkspaceClient;
 }) {
+  // Locale formatting is relatively expensive across a long history. The
+  // timestamp is immutable while typing or streaming, unlike the message body.
+  const formattedTime = useMemo(
+    () =>
+      new Date(createdAt).toLocaleString("zh-CN", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [createdAt],
+  );
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(false);
   const [sharing, setSharing] = useState<MessageShareContent | null>(null);
@@ -1502,14 +1515,7 @@ function MessageActions({
   return (
     <>
       <span className="message-peek">
-        <time dateTime={createdAt}>
-          {new Date(createdAt).toLocaleString("zh-CN", {
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          })}
-        </time>
+        <time dateTime={createdAt}>{formattedTime}</time>
         <Tooltip label={copied ? "已复制" : "复制消息"}>
           <button
             className="message-copy"

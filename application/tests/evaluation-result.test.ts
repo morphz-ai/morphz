@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   evaluationPreview,
   evaluationSourceKey,
+  evaluationSourceSchema,
   evaluationDisplayText,
   evaluationMessageId,
   coalesceEvaluationMessages,
@@ -163,6 +164,41 @@ test("不信任字段名和相同正文，只使用完整求值来源", () => {
     evaluationSourceKey({ plan_execution_id: "p", effect_sequence: 1 }),
     evaluationSourceKey({ plan_execution_id: "p", effect_sequence: 2 }),
   );
+});
+
+test("缺省求值来源不构造校验错误，实际来源仍逐次校验且不缓存校验结论", (context) => {
+  const parse = evaluationSourceSchema.safeParse.bind(evaluationSourceSchema);
+  const calls: unknown[] = [];
+  context.mock.method(evaluationSourceSchema, "safeParse", (value: unknown) => {
+    calls.push(value);
+    return parse(value);
+  });
+  assert.equal(evaluationSourceKey(undefined), null);
+  assert.equal(evaluationSourceKey(null), null);
+  assert.equal(
+    calls.length,
+    0,
+    "absent metadata needs no Zod error allocation",
+  );
+  for (const value of [
+    false,
+    "",
+    [],
+    {},
+    { plan_execution_id: "p", effect_sequence: -1 },
+  ])
+    assert.equal(evaluationSourceKey(value), null);
+  assert.equal(calls.length, 5, "present values keep their schema validation");
+  const source = { plan_execution_id: "p", effect_sequence: 1 };
+  assert.equal(evaluationSourceKey(source), '["p",1]');
+  source.effect_sequence = -1;
+  assert.equal(
+    evaluationSourceKey(source),
+    null,
+    "identity is not a validation cache",
+  );
+  source.effect_sequence = 2;
+  assert.equal(evaluationSourceKey(source), '["p",2]');
 });
 
 test("内部 infer 文本以求值消息流式显示，隐藏推理不进入输出，终值校验独立", () => {

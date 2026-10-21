@@ -147,6 +147,10 @@ export function evaluationPreview(raw: string): {
 }
 
 export function evaluationSourceKey(value: unknown): string | null {
+  // Ordinary messages have no evaluation provenance. Absence is not a failed
+  // validation; avoid allocating a Zod error/stack for every row and render.
+  // Present values still go through the schema every time, without caching.
+  if (value === undefined || value === null) return null;
   const parsed = evaluationSourceSchema.safeParse(value);
   return parsed.success
     ? JSON.stringify([
