@@ -3,6 +3,7 @@ import type {
   ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
+import { isRuntimeMessageDiagnostic } from "../../../packages/core/src/runtime-message-failure.js";
 import { reconcileConversationPublications } from "../../../packages/core/src/conversation-publications.js";
 import { evaluationSourceKey } from "../../../packages/core/src/evaluation-result.js";
 import {
@@ -191,14 +192,19 @@ function textVersion(text: string) {
 }
 
 export function replyReceipts(
-  messages: Array<Pick<LiveMessage, "id" | "kind" | "text" | "publicationKey">>,
+  messages: Array<
+    Pick<LiveMessage, "id" | "kind" | "text" | "publicationKey" | "failure">
+  >,
   outputs: ArtifactOutput[],
   scriptOutputs: ScriptOutput[] = [],
 ): ReplyReceipt[] {
   return [
     ...messages
       .filter(
-        (m) => (m.kind === "reply" || m.kind === "error") && m.text.trim(),
+        (m) =>
+          !isRuntimeMessageDiagnostic(m) &&
+          (m.kind === "reply" || m.kind === "error") &&
+          m.text.trim(),
       )
       .map((m) => ({
         keys: [

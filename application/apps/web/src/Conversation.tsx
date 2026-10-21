@@ -318,7 +318,12 @@ export function Conversation({
   const groups = conversationGroups(inputs, readScope.messages);
   const publishedErrorInputs = new Set(
     readScope.messages
-      .filter((message) => message.kind === "error" && message.inputId)
+      .filter(
+        (message) =>
+          message.kind === "error" &&
+          message.failure?.phase !== "diagnostic" &&
+          message.inputId,
+      )
       .map((message) => message.inputId),
   );
   // The initiating input owns cancellation, even without a current output.

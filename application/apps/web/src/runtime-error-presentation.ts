@@ -1,4 +1,5 @@
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
+import { isRuntimeMessageDiagnostic } from "../../../packages/core/src/runtime-message-failure.js";
 
 // These are Runtime-owned terminal notices, not causes. Preserve raw history,
 // but do not make an expandable "detail" out of a second generic status line.
@@ -16,8 +17,9 @@ export function runtimeErrorDetails(
   return text.trim() && !terminalNotices.has(text.trim()) ? text.trim() : "";
 }
 
-/** Group only the diagnostic and terminal rejection of one physical attempt.
- * Separate attempts, threads, unknown identities and their raw text survive. */
+/** Only a terminal rejection is a failed conversation reply. Intermediate
+ * diagnostics remain in the execution evidence and can explain an exact
+ * terminal failure, but never become a second reply or imply task failure. */
 export function presentRuntimeErrors(messages: LiveMessage[]) {
   const key = (m: LiveMessage) =>
     m.failure?.attemptId && m.threadId
@@ -47,8 +49,7 @@ export function presentRuntimeErrors(messages: LiveMessage[]) {
   }
   return messages.flatMap((message) => {
     const id = key(message);
-    if (id && message.failure?.phase === "diagnostic" && terminals.has(id))
-      return [];
+    if (isRuntimeMessageDiagnostic(message)) return [];
     return [
       {
         ...message,

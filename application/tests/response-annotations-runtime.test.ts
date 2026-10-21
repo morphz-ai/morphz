@@ -4,6 +4,9 @@ import test from "node:test";
 import { objectToolName } from "../packages/core/src/application-names.js";
 import type { ExecutionActivity } from "../packages/core/src/conversation.js";
 import { executionSnapshotSchema } from "../packages/core/src/execution.js";
+import { presentRuntimeErrors } from "../apps/web/src/runtime-error-presentation.js";
+import { responseAnswered } from "../apps/web/src/conversation-presentation.js";
+import { LiveConversationProjection } from "../packages/core/src/live-conversation.js";
 import {
   profileActualTransportFixture,
   profileFixtureAnnotationsMessage,
@@ -31,11 +34,17 @@ test("fixture reads the latest actual native tool continuation before frozen Con
       content: JSON.stringify({ tool_name: "another_tool", result: "{}" }),
     },
   ];
-  assert.deepEqual(profileFixtureObservationResult({ messages }, "host_morphz"), {
-    items: ["current"],
-  });
   assert.deepEqual(
-    profileFixtureObservationResult({ messages: messages.slice(0, 1) }, "host_morphz"),
+    profileFixtureObservationResult({ messages }, "host_morphz"),
+    {
+      items: ["current"],
+    },
+  );
+  assert.deepEqual(
+    profileFixtureObservationResult(
+      { messages: messages.slice(0, 1) },
+      "host_morphz",
+    ),
     { items: ["old"] },
   );
 });
@@ -82,6 +91,161 @@ test("metadata follows frozen Runtime binding; tool definitions never select ann
     undefined,
   );
 });
+
+test(
+  "actual Runtime + Host: rejected empty wait is corrected once, delivered and never presented as a failed reply",
+  {
+    skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
+    timeout: 120_000,
+  },
+  async () => {
+    let calls = 0;
+    const answer = "TEST 等待条件已核对，结果已经交付。";
+    const f = await profileActualTransportFixture({
+      deterministicTool: () =>
+        ++calls === 1
+          ? { name: "no_reply", arguments: { mode: "wait", wait_secs: 180 } }
+          : { text: answer },
+    });
+    const projectId = "recovered_wait_" + randomUUID().replaceAll("-", "");
+    const conversationId = "conversation_" + randomUUID().replaceAll("-", "");
+    const marker = "TEST_RECOVERED_WAIT_" + randomUUID();
+    try {
+      await f.client.call(
+        "projects.create",
+        {
+          commandId: randomUUID(),
+          projectId,
+          title: "TEST 已纠正等待拒绝",
+        },
+        f.options,
+      );
+      await f.client.call(
+        "platform.message",
+        {
+          commandId: randomUUID(),
+          operation: {
+            type: "record-input",
+            projectId,
+            conversationId,
+            artifactId: null,
+            artifactRevision: null,
+            selection: "",
+            body: marker,
+            targetActantId: "morphz-agent",
+            newConversation: { title: marker },
+          },
+        },
+        f.options,
+      );
+      let history: any;
+      for (let i = 0; i < 300; i++) {
+        history = await f.client.call(
+          "conversations.history",
+          { projectId, conversationId },
+          f.options,
+        );
+        if (history.runtime.messages.some((m: any) => m.text === answer)) break;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      const reply = history.runtime.messages.find(
+        (m: any) => m.text === answer,
+      );
+      assert.ok(
+        reply,
+        "the actual corrected Runtime result is delivered through the Host",
+      );
+      const errors = f.sql<{
+        id: string;
+        timestamp: string;
+        type: string;
+        topic: string;
+        payload: string;
+      }>(
+        "SELECT id,timestamp,type,topic,payload FROM events WHERE topic='runtime/response_protocol_error'",
+      );
+      assert.equal(errors.length, 1);
+      const rejection = {
+        ...errors[0]!,
+        payload: JSON.parse(errors[0]!.payload),
+      };
+      assert.equal(rejection.payload.response_state, "invalid_wait");
+      assert.match(
+        rejection.payload.reason,
+        /no_reply\(mode=wait\) was rejected/,
+      );
+      assert.equal(
+        f.requests.length,
+        2,
+        "one correction, not a replay of the accepted input",
+      );
+      assert.ok(
+        JSON.stringify(f.requests[1]!.messages).includes(
+          rejection.payload.reason,
+        ),
+      );
+      assert.equal(
+        JSON.stringify(f.requests[0]!.tools),
+        JSON.stringify(f.requests[1]!.tools),
+      );
+      assert.equal(
+        f.sql<{ n: number }>("SELECT count(*) n FROM execution_jobs")[0]!.n,
+        0,
+      );
+      assert.equal(
+        f.sql<{ status: string }>(
+          "SELECT status FROM threads ORDER BY rowid LIMIT 1",
+        )[0]!.status,
+        "completed",
+      );
+
+      // The actual rejection still exists in live execution evidence, but is
+      // not an answer or a failed request while the model corrects it.
+      const projection = new LiveConversationProjection(() => ({
+        projectId,
+        conversationId,
+        artifactId: null,
+        inputId: reply.inputId,
+        rootId: reply.rootId,
+      }));
+      projection.consume(rejection);
+      const diagnostics = projection.snapshot();
+      assert.equal(diagnostics.length, 1);
+      assert.equal(diagnostics[0]!.failure!.phase, "diagnostic");
+      assert.equal(responseAnswered(diagnostics, reply.inputId), false);
+      assert.deepEqual(presentRuntimeErrors(diagnostics), []);
+      assert.deepEqual(
+        presentRuntimeErrors([...diagnostics, reply]).map((m) => m.id),
+        [reply.id],
+      );
+      const reloaded: any = await f.client.call(
+        "conversations.history",
+        { projectId, conversationId },
+        f.options,
+      );
+      assert.equal(
+        presentRuntimeErrors(reloaded.runtime.messages).filter(
+          (m) => m.kind === "error",
+        ).length,
+        0,
+      );
+      assert.equal(
+        f.requests.length,
+        2,
+        "reading or reloading never invokes a model",
+      );
+      assert.equal(
+        f.sql<{ n: number }>(
+          "SELECT count(*) n FROM events WHERE topic='runtime/response_protocol_error'",
+        )[0]!.n,
+        1,
+        "presentation does not erase the persisted diagnostic",
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test(
   "actual Runtime + Host history: terminal failure restores its exact cause without response captures or another infer",

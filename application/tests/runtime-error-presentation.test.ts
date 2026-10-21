@@ -6,6 +6,8 @@ import {
   runtimeErrorDetails,
 } from "../apps/web/src/runtime-error-presentation.js";
 import { runtimeFailureDiagnostics } from "../packages/core/src/runtime-message-failure.js";
+import { responseAnswered } from "../apps/web/src/conversation-presentation.js";
+import { searchConversationPage } from "../packages/core/src/conversation-search.js";
 import {
   LiveConversationProjection,
   type LiveMessage,
@@ -47,8 +49,8 @@ test("one physical rejection has one visible error without losing either origina
   assert.equal(presented[0]!.text, terminal.text);
   assert.equal(
     replyReceipts(presented[0]!.representedMessages!, []).length,
-    2,
-    "one displayed causal error acknowledges both original publications",
+    1,
+    "an intermediate diagnostic is not an unread reply publication",
   );
   assert.equal(
     terminal.text,
@@ -170,7 +172,7 @@ test("history diagnostics require exact persisted public rejection scope and nev
     16,
   );
 });
-test("independent threads, attempts, unattributed and nonprotocol failures remain separate", () => {
+test("independent terminal and nonprotocol failures stay separate; diagnostics never masquerade as failures", () => {
   const messages = [
     message("a", "diagnostic"),
     message("b", "terminal", "other"),
@@ -180,7 +182,53 @@ test("independent threads, attempts, unattributed and nonprotocol failures remai
   ];
   assert.deepEqual(
     presentRuntimeErrors(messages).map((m) => m.id),
-    messages.map((m) => m.id),
+    messages.filter((m) => m.failure?.phase !== "diagnostic").map((m) => m.id),
+  );
+});
+
+test("a recoverable wait rejection neither fails nor answers a request, before or after a corrected reply", () => {
+  const diagnostic = {
+    ...message("wait-rejected", "diagnostic", "first-attempt"),
+    text: "no_reply(mode=wait) was rejected: no pending Runtime event",
+    failure: {
+      ...message("unused", "diagnostic").failure!,
+      state: "invalid_wait",
+      attemptId: "first-attempt",
+    },
+  };
+  const corrected: LiveMessage = {
+    ...message("actual-final-reply", "terminal", "later-attempt"),
+    kind: "reply",
+    failure: undefined,
+    text: "TEST 已完成并交付。",
+  };
+  for (const messages of [
+    [diagnostic],
+    [diagnostic, corrected],
+    [corrected, diagnostic],
+  ]) {
+    assert.deepEqual(
+      presentRuntimeErrors(messages).map((m) => m.id),
+      messages.includes(corrected) ? [corrected.id] : [],
+    );
+    assert.equal(
+      responseAnswered(messages, "input"),
+      messages.includes(corrected),
+    );
+    assert.equal(
+      replyReceipts(messages, []).length,
+      messages.includes(corrected) ? 1 : 0,
+    );
+    assert.deepEqual(
+      searchConversationPage([], messages, "no_reply"),
+      [],
+      "execution diagnostics are not searchable user replies",
+    );
+  }
+  assert.equal(
+    diagnostic.text.includes("rejected"),
+    true,
+    "raw execution evidence is retained",
   );
 });
 test("only actual Runtime rejection events acquire typed error presentation metadata", () => {

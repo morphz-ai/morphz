@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { RecordedInput } from "./model.js";
 import type { LiveMessage } from "./live-conversation.js";
+import { isRuntimeMessageDiagnostic } from "./runtime-message-failure.js";
 
 export const conversationSearchCursorSchema = z
   .object({
@@ -56,7 +57,7 @@ export function searchConversationPage(
   >[],
   messages: readonly (Pick<
     LiveMessage,
-    "id" | "projectId" | "createdAt" | "kind" | "text"
+    "id" | "projectId" | "createdAt" | "kind" | "text" | "failure"
   > & { conversationId?: string })[],
   query: string,
 ): ConversationSearchHit[] {
@@ -77,7 +78,11 @@ export function searchConversationPage(
         .join("\n"),
     })),
     ...messages
-      .filter((m) => m.kind === "reply" || m.kind === "error")
+      .filter(
+        (m) =>
+          !isRuntimeMessageDiagnostic(m) &&
+          (m.kind === "reply" || m.kind === "error"),
+      )
       .map((m) => ({
         messageId: m.id,
         projectId: m.projectId,
