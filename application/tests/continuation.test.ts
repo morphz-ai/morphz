@@ -35,6 +35,8 @@ async function fixture() {
   let loseReceipt = false,
     closeAtAdmission = false,
     supportsDirectedInput = true;
+  let capabilityResponseGate:
+    { observed: () => void; released: Promise<void> } | undefined;
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c);
@@ -48,15 +50,23 @@ async function fixture() {
       res.end(JSON.stringify(value));
     };
     if (path === "/api/status") return send(200, { model: "fixture" });
-    if (path === "/api/session-io/capabilities")
+    if (path === "/api/session-io/capabilities") {
+      const directedInput = supportsDirectedInput;
+      const gate = capabilityResponseGate;
+      capabilityResponseGate = undefined;
+      if (gate) {
+        gate.observed();
+        await gate.released;
+      }
       return send(200, {
         enabled: true,
         client_metadata: true,
-        directed_input: supportsDirectedInput,
+        directed_input: directedInput,
         formats: [
           { definition: { id: "morphz.application.input", version: "4" } },
         ],
       });
+    }
     if (path === "/api/sessions" && req.method === "POST") {
       sessions.set(body.id, {
         id: body.id,
@@ -296,6 +306,14 @@ async function fixture() {
     },
     disableDirectedInput() {
       supportsDirectedInput = false;
+    },
+    holdNextCapabilityResponse() {
+      assert.equal(capabilityResponseGate, undefined);
+      let observed!: () => void, release!: () => void;
+      const reached = new Promise<void>((resolve) => (observed = resolve));
+      const released = new Promise<void>((resolve) => (release = resolve));
+      capabilityResponseGate = { observed, released };
+      return { reached, release };
     },
     async reopen() {
       await bridge.stop();
@@ -632,7 +650,23 @@ test("旧 Runtime 不提供假入口，也不把已接受补充重新发送", as
     const target = f.target(),
       command = f.supplement(target);
     const receipt = await f.send(command);
-    f.disableDirectedInput();
+    // Drain the receipt's existing pass before controlling the next response.
+    await f.bridge.tick();
+    const gate = f.holdNextCapabilityResponse();
+    const previousCapabilityPass = f.bridge.tick();
+    try {
+      await gate.reached;
+      f.disableDirectedInput();
+      const joinedCapabilityPass = f.bridge.tick();
+      gate.release();
+      await joinedCapabilityPass;
+    } finally {
+      gate.release();
+      await previousCapabilityPass;
+    }
+    // Joining a pass cannot change the capability snapshot it already read.
+    assert.equal(f.bridge.supportsDirectedInput, true);
+    // Start a new request after that pass, rather than racing its old response.
     await f.bridge.tick();
     assert.equal(f.bridge.supportsDirectedInput, false);
     assert.equal(
