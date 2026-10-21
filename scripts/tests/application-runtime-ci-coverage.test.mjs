@@ -29,6 +29,45 @@ function jobSource(source, name) {
   return next === -1 ? tail : tail.slice(0, next);
 }
 
+function verifyNativeRuntimeArtifact(source) {
+  const job = jobSource(source, "native-sandbox-macos");
+  const steps = job.split("\n      - ");
+  const lastContract = steps.findIndex((step) =>
+    step.includes("name: Verify signed Edge installer contract"),
+  );
+  const stage = steps.findIndex((step) =>
+    step.includes("name: Stage the exact native-tested macOS development Runtime"),
+  );
+  const upload = steps.findIndex((step) =>
+    step.includes("name: Preserve the native-tested macOS development Runtime"),
+  );
+  assert.ok(lastContract >= 0 && stage > lastContract && upload > stage);
+  assert.match(steps[stage], /test -x target\/debug\/morphz/);
+  assert.ok(steps[stage].includes('expected_commit="$(git rev-parse --short=12 HEAD)"'));
+  assert.ok(steps[stage].includes('version="$(target/debug/morphz --version)"'));
+  assert.ok(steps[stage].includes('*"$expected_commit"*) ;;'));
+  assert.ok(steps[stage].includes('install -m 0755 target/debug/morphz "$destination/morphz"'));
+  assert.ok(steps[stage].includes('git rev-parse HEAD > "$destination/source-commit.txt"'));
+  assert.ok(steps[stage].includes('sh scripts/stage-release-legal.sh "$destination"'));
+  assert.match(steps[stage], /shasum -a 256 morphz > morphz\.sha256/);
+  assert.match(steps[upload], /name: morphz-macos-development-runtime-\$\{\{ runner.arch \}\}/);
+  assert.match(steps[upload], /if-no-files-found: error/);
+  assert.match(steps[upload], /retention-days: 7/);
+  for (const step of [steps[stage], steps[upload]])
+    assert.doesNotMatch(step, /\bif:|continue-on-error|\|\|\s*true|gh release|softprops\/action-gh-release/);
+}
+
+test("macOS acceptance uses a commit-fenced, checksummed artifact only after native contracts pass", () => {
+  const runtimeWorkflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  verifyNativeRuntimeArtifact(runtimeWorkflow);
+  for (const [before, after] of [
+    ['*"$expected_commit"*) ;;', "*) ;;"],
+    ["shasum -a 256 morphz > morphz.sha256", "true"],
+    ["name: Preserve the native-tested macOS development Runtime", "name: Preserve the native-tested macOS development Runtime\n        if: always()"],
+    ["if-no-files-found: error\n          retention-days: 7", "if-no-files-found: ignore\n          retention-days: 7"],
+  ]) assert.throws(() => verifyNativeRuntimeArtifact(runtimeWorkflow.replace(before, after)));
+});
+
 function runtimeStep(source) {
   const job = jobSource(source, "runtime-contract");
   const step = job

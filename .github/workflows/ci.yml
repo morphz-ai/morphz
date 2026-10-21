@@ -202,6 +202,35 @@ jobs:
         run: cargo test -p morphz tool::tests::exec_ -- --nocapture
       - name: Verify signed Edge installer contract
         run: sh scripts/edge/test_install.sh
+      - name: Stage the exact native-tested macOS development Runtime
+        # Keep the already-tested binary for original-app acceptance when the
+        # developer machine cannot afford a second full Rust build. This is a
+        # short-lived CI artifact, not a signed release or automatic deployment.
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x target/debug/morphz
+          expected_commit="$(git rev-parse --short=12 HEAD)"
+          version="$(target/debug/morphz --version)"
+          case "$version" in
+            *"$expected_commit"*) ;;
+            *) echo "The native-tested Runtime has a different source identity" >&2; exit 1 ;;
+          esac
+          destination="$RUNNER_TEMP/morphz-macos-development-runtime"
+          test ! -e "$destination"
+          mkdir "$destination"
+          install -m 0755 target/debug/morphz "$destination/morphz"
+          sh scripts/stage-release-legal.sh "$destination"
+          git rev-parse HEAD > "$destination/source-commit.txt"
+          file "$destination/morphz"
+          (cd "$destination" && shasum -a 256 morphz > morphz.sha256)
+      - name: Preserve the native-tested macOS development Runtime
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: morphz-macos-development-runtime-${{ runner.arch }}
+          path: ${{ runner.temp }}/morphz-macos-development-runtime/
+          if-no-files-found: error
+          retention-days: 7
 
   native-sandbox-linux:
     name: Native Sandbox (Linux)
