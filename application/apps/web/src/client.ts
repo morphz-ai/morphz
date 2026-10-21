@@ -755,12 +755,12 @@ export async function executePlatformOperation(
 }
 
 export function useWorkspace() {
-  const applicationViewWrites = useRef(new Map<string, ApplicationViewWrite>());
   const scriptEditorModels = useRef(
     new Map<string, { identity: string; value: ScriptEditorProduction }>(),
   );
   const scriptVersionTitles = useRef(new Map<string, string>());
   const approvalSubmissions = useRef(new Set<string>());
+  const applicationViewWrites = useRef(new Map<string, ApplicationViewWrite>());
   const taskRuntimeReads = useRef(new Map<string, number>());
   const taskRuntimeReadGeneration = useRef(0);
   const [, updateApprovalSubmissions] = useState(0);
@@ -921,11 +921,6 @@ export function useWorkspace() {
     executePlatformOperation,
     refreshAfterMutation,
   });
-  const applicationViewDelivery = createApplicationViewDelivery({
-    current,
-    pending: applicationViewWrites.current,
-    execute: operationDelivery.execute,
-  });
   const executionInteractions = createExecutionInteractions({
     current,
     approvalSubmissions,
@@ -955,6 +950,11 @@ export function useWorkspace() {
     setContentCatalogVersion(0);
     cognitiveManagement.invalidateAccess();
   }
+  const applicationViewDelivery = createApplicationViewDelivery({
+    current,
+    pending: applicationViewWrites.current,
+    execute: operationDelivery.execute,
+  });
   function refresh() {
     refreshDrain.current ??= createRefreshDrain(refreshOnce);
     const pending = refreshDrain.current.request();
