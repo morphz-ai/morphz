@@ -37,15 +37,18 @@ Neither this workflow nor the compiler changes global sysctl settings.
 
 `peer.py` is the caller-authentication building block. Each bounded seqpacket
 must carry matching connection and per-message kernel credentials plus a live
-kernel pidfd; inherited connections and passed descriptor capabilities are
-rejected. The actual process must retain matching IDs, namespace, exact role
+kernel pidfd; inherited public control connections and passed descriptor
+capabilities are rejected. Private admission instead binds the connection to
+the exact outer launcher and authenticates the inner per-message kernel sender.
+The actual process must retain matching IDs, namespace, exact role
 label, no tracer/capabilities and an administrator-installed executable object.
 Allowed executable objects and their ancestors must be root-owned and not user
 writable; names, request JSON and the UID alone confer no authority. Registration
 must retain the pidfd and revalidate again before admission. The separate kernel
 fixture uses Python only as a **test** executable; a production registry must
-contain the installed Runtime/launcher, not a general interpreter. This component
-does not yet implement registration, mount identity or lifecycle management.
+contain the installed Runtime/launcher, not a general interpreter. The controller
+now uses these checks for registration, object binding and private admission;
+the separate production Runtime integration gate remains open.
 
 `roots.py` pins actual directory objects under the caller's non-root identity,
 with no capabilities and without following root or ancestor symlinks. It retains
@@ -75,9 +78,21 @@ continuous-denial and exact-stack kernel gates remain mandatory.
 `registration.py` now authenticates typed registration and a single-use claim
 using separate installed Runtime/launcher executable registries, retained kernel
 pidfds, exact identities and the live parent relationship. A disconnected socket
-does not revoke running work. There is **no public admission operation** here:
-the mounted-root and final label gate still must be connected before this can be
-used to launch general work through the Runtime.
+does not revoke running work. There is **no public admission operation** here.
+`admission.py` and `server.py` implement the private gate: actual pinned/mounted
+directory identity and access mode, exact enforce stack, namespace ancestry,
+kernel identity, cgroup membership, NoNewPrivs and closed host capabilities.
+The fixed Bubblewrap invocation creates two user namespaces for devpts setup;
+both owners and the exact two-level ancestor are checked, not an arbitrary
+descendant or a model-supplied depth.
+
+Registration supplies a root-owned read-only startup pipe through SCM_RIGHTS.
+Only the service writes its one-byte success receipt, after actual admission;
+refusal/service loss is EOF, never a success marker. The work command receives
+neither end, and command stdout cannot impersonate it. Current isolated native
+peers verify success and refusal receipts alongside actual Bubblewrap admission.
+This has not yet been wired into Rust PreparedCommand/PreparedPty, so it does not
+complete the actual Runtime acceptance.
 
 `lifecycle.py` owns durable, immutable per-launch records, enforcing AppArmor
 generations and administrator-owned cgroup v2 lifetime subtrees. The launcher
