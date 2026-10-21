@@ -3765,14 +3765,20 @@ async fn run_session_model_switch_continuation(
                 .count(),
             1
         );
+        let recoveries = events
+            .iter()
+            .filter(|event| event.topic == "runtime/resource_available")
+            .collect::<Vec<_>>();
         assert_eq!(
-            events
-                .iter()
-                .filter(|event| event.topic == "runtime/resource_available"
-                    && event.payload.get("recovery_reason")
-                        == Some(&json!("old_request_failed_after_operator_policy_change")))
-                .count(),
-            1
+            recoveries.len(),
+            1,
+            "the committed policy change must release exactly the old request's late wait"
+        );
+        assert_eq!(
+            recoveries[0].payload.get("recovery_reason"),
+            Some(&json!(
+                "old_request_failed_after_task_or_session_policy_change"
+            ))
         );
         let threads = store
             .list_session_threads(session_id, session_id, true)
@@ -3781,6 +3787,14 @@ async fn run_session_model_switch_continuation(
         assert_eq!(threads.len(), 1);
         assert_eq!(threads[0].generation, 1);
         assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
+        assert_eq!(
+            recoveries[0].payload.get("thread_id"),
+            Some(&json!(threads[0].id))
+        );
+        assert_eq!(
+            recoveries[0].payload.get("thread_generation"),
+            Some(&json!(threads[0].generation))
+        );
     }
     if let Some(selection) = thread_selection {
         assert_eq!(
