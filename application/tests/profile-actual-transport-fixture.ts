@@ -140,6 +140,25 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
     )?.slice(1) as string[] | undefined,
   };
 }
+
+/** Exact Runtime request identity, never SQL insertion order or text guesses. */
+export function profileFixtureCurrentRootId(request: CapturedRequest): string {
+  const root = fixtureValue(
+    fixtureChild(
+      fixtureChild(
+        fixtureChild(profileFixtureContext(request), "kernel"),
+        "current-activation",
+      ),
+      "root-turn",
+    ),
+    "id",
+  );
+  assert.ok(
+    typeof root === "string" && root.length > 0,
+    "Actual request lacks kernel.current-activation.root-turn.id",
+  );
+  return root;
+}
 /** Inspect actual Runtime output, including native continuation messages that
  * are newer than the last frozen Context projection. */
 export function profileFixtureObservationResult(
