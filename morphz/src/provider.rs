@@ -465,7 +465,7 @@ fn provider_safety_refusal(protocol: ModelProtocol, detail: impl Into<String>) -
 fn provider_incomplete_response(protocol: ModelProtocol, reason: &str) -> ProviderError {
     let normalized_reason = reason.trim();
     let kind = match normalized_reason {
-        "max_output_tokens" | "max_tokens" => ModelFailureKind::OutputLimit,
+        "max_output_tokens" | "max_tokens" | "length" => ModelFailureKind::OutputLimit,
         "content_filter" => ModelFailureKind::SafetyRefusal,
         _ => ModelFailureKind::IncompleteResponse,
     };
@@ -3222,6 +3222,7 @@ struct StreamAccumulator {
     content: String,
     tools: BTreeMap<usize, StreamingToolCall>,
     chat_reasoning_content: String,
+    chat_output_limited: bool,
     responses_reasoning_items: BTreeMap<usize, Value>,
     responses_message_items: BTreeMap<usize, Value>,
     responses_message_final: HashSet<usize>,
@@ -3809,9 +3810,11 @@ impl StreamAccumulator {
             match reason {
                 "stop" | "tool_calls" | "function_call" => self.terminal = true,
                 "length" => {
-                    return Err(
-                        "OpenAI Chat stream was truncated by the output length limit".into(),
-                    )
+                    // The final chunk can carry more delta bytes, and a usage
+                    // chunk may follow it. Drain both before reporting the
+                    // resumable physical boundary; never complete its tools.
+                    self.terminal = true;
+                    self.chat_output_limited = true;
                 }
                 "content_filter" => {
                     return Err(provider_safety_refusal(
@@ -4255,6 +4258,19 @@ impl StreamAccumulator {
     fn finish(mut self, stream: &ModelStreamSender) -> Result<Response, ProviderError> {
         if !self.terminal {
             return Err("Provider stream disconnected before the protocol terminal event".into());
+        }
+        if self.chat_output_limited {
+            if !self.chat_reasoning_content.is_empty() {
+                let _ = stream.send(ModelStreamEvent::ProviderContinuation {
+                    continuation: ProviderContinuation::OpenaiChat {
+                        reasoning_content: self.chat_reasoning_content,
+                    },
+                });
+            }
+            return Err(provider_incomplete_response(
+                ModelProtocol::OpenaiChat,
+                "length",
+            ));
         }
         if let Some(reason) = self.responses_incomplete_reason.take() {
             if !self.responses_reasoning_items.is_empty() {
@@ -5437,7 +5453,10 @@ fn parse_openai_chat_response(value: Value) -> Result<Response, ProviderError> {
         .and_then(|choices| choices.first())
         .ok_or("OpenAI Chat response is missing choices[0]")?;
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
-        return Err("OpenAI Chat response was truncated by the output-length limit".into());
+        return Err(provider_incomplete_response(
+            ModelProtocol::OpenaiChat,
+            "length",
+        ));
     }
     if choice.get("finish_reason").and_then(Value::as_str) == Some("content_filter") {
         return Err(provider_safety_refusal(
@@ -10237,6 +10256,56 @@ mod tests {
                 item["id"] == "reasoning-1" && item["encrypted_content"] == "opaque-state"
             })
         )));
+    }
+
+    #[test]
+    fn chat_length_is_a_drained_output_boundary_not_a_provider_failure() {
+        for (reasoning, content, tool) in [
+            ("private reasoning", "", false),
+            ("", "public prefix", false),
+            ("private reasoning", "public prefix", true),
+            ("", "", true),
+            ("", "", false),
+        ] {
+            let (stream, mut events) = tokio::sync::mpsc::unbounded_channel();
+            let mut accumulator = StreamAccumulator::default();
+            let mut delta = json!({"reasoning_content": reasoning, "content": content});
+            if tool {
+                delta["tool_calls"] = json!([{"index":0,"id":"truncated","function":{"name":"write","arguments":"{\"path\":"}}]);
+            }
+            accumulator
+                .apply_openai_chat(
+                    json!({"choices":[{"delta":delta,"finish_reason":"length"}]}),
+                    &stream,
+                )
+                .unwrap();
+            accumulator.apply_openai_chat(json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":8192,"completion_tokens_details":{"reasoning_tokens":7889}}}), &stream).unwrap();
+            let error = accumulator.finish(&stream).unwrap_err();
+            let failure = error.downcast_ref::<ModelFailure>().unwrap();
+            assert_eq!(failure.kind, ModelFailureKind::OutputLimit);
+            assert_eq!(failure.provider_code.as_deref(), Some("length"));
+            assert!(!failure.kind.uses_provider_recovery());
+            let events = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+            assert!(!events.iter().any(|event| matches!(
+                event,
+                ModelStreamEvent::ToolCallCompleted { .. } | ModelStreamEvent::Completed
+            )));
+            assert!(events.iter().any(|event| matches!(event, ModelStreamEvent::Usage { usage } if usage.output_tokens == Some(8192) && usage.reasoning_tokens == Some(7889))));
+            let texts = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelStreamEvent::TextDelta { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>();
+            assert_eq!(texts, content);
+            assert_eq!(events.iter().any(|event| matches!(event, ModelStreamEvent::ProviderContinuation { continuation: ProviderContinuation::OpenaiChat { reasoning_content } } if reasoning_content == reasoning)), !reasoning.is_empty());
+            let nonstream = parse_openai_chat_response(json!({"choices":[{"finish_reason":"length","message":{"role":"assistant","content":content,"reasoning_content":reasoning}}]})).unwrap_err();
+            assert_eq!(
+                nonstream.downcast_ref::<ModelFailure>().unwrap().kind,
+                ModelFailureKind::OutputLimit
+            );
+        }
     }
 
     #[tokio::test]

@@ -165,6 +165,14 @@ async fn main() -> Result<(), DynError> {
     let model = args.next().ok_or("explicit model required")?;
     let report_path = args.next().ok_or("new private report path required")?;
     let case = args.next().ok_or("explicit case required")?;
+    let expect_output_limit = match args.next().as_deref() {
+        None => false,
+        Some("--expect-output-limit") => true,
+        _ => return Err("unknown gate option".into()),
+    };
+    if args.next().is_some() {
+        return Err("unexpected gate arguments".into());
+    }
     let expected_reads = match case.as_str() {
         "plain" | "protocol-text" | "pure-plan" | "discuss-script" => 0,
         "read-on" | "read-off" => 1,
@@ -387,12 +395,30 @@ async fn main() -> Result<(), DynError> {
         .and_then(|result| result.as_ref().ok())
         .map(|thread| thread.lifecycle.as_str())
         .unwrap_or("timeout_or_error");
+    let continuations = events
+        .iter()
+        .filter(|event| event.topic == "runtime/reasoning_continuation")
+        .collect::<Vec<_>>();
+    let continuation_boundaries_ok = if expect_output_limit {
+        !continuations.is_empty()
+            && continuations
+                .iter()
+                .all(|event| event.payload["provider_boundary_kind"] == "output_limit")
+    } else {
+        continuations.is_empty()
+    };
+    let provider_waits = events
+        .iter()
+        .filter(|event| event.topic == "runtime/provider_wait")
+        .count();
     let passed = terminal == "completed"
         && replies.len() == 1
         && correct_answer
         && annotations_ok
         && read_paths.len() == expected_reads
-        && requests.len() == expected_native_work + 1
+        && continuation_boundaries_ok
+        && provider_waits == 0
+        && requests.len() == expected_native_work + 1 + continuations.len()
         && sources
             .iter()
             .all(|bundle| bundle.native_response.is_some())
@@ -407,6 +433,7 @@ async fn main() -> Result<(), DynError> {
             .windows(2)
             .all(|pair| pair[0]["tools_sha256"] == pair[1]["tools_sha256"]);
     let report = json!({"case":case,"passed":passed,"terminal":terminal,"requests":requests,"reads":read_paths,"host_reads":host_paths,
+        "expect_output_limit":expect_output_limit,"output_limit_continuations":continuations.len(),"continuation_boundaries_valid":continuation_boundaries_ok,"provider_waits":provider_waits,
         "replies":replies.len(),"answer_valid":correct_answer,"annotations_valid":annotations_ok,
         "native_sources":sources.len(),"public_deltas":deltas,"public_completions":completed,"public_stream_attempts":public_attempts,"stream_matches_final":public == answer,
         "synthetic_answer":answer,"synthetic_public_stream":public,
