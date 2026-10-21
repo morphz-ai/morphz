@@ -146,6 +146,14 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(transitions, [f"change_profile -> &{result.work},"])
         self.assertNotIn(f"change_profile -> {result.work},", result.source)
 
+    def test_disconnected_setup_paths_are_not_granted_to_work(self):
+        result = compile_profiles(Policy.from_request(request()), "6" * 32)
+        self.assertIn(f"profile {result.bootstrap} flags=(attach_disconnected)", result.source)
+        work = result.source.split(f"profile {result.work}", 1)[1]
+        self.assertNotIn("attach_disconnected", work)
+        self.assertIn("flags=(mediate_deleted)", work)
+        self.assertNotIn("capability", work)
+
     def test_json_roundtrip_is_exact(self):
         original = request(cwd="/workspace/中文", denied_read_paths=['/workspace/"*\\?'])
         policy = Policy.from_request(decode_request(json.dumps(original).encode()))

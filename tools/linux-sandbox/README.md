@@ -57,6 +57,21 @@ before admission. The separate unprivileged kernel gate tests live changes,
 replacement, literal paths and descriptor cleanup. This component is not yet
 connected to Bubblewrap or a production registration service.
 
+`mounts.c` / `mounts.h` implement the native launcher's non-root directory pinning,
+mount-plan construction, destination identity/access verification, and inherited
+descriptor closure. The actual Bubblewrap 0.9 bind implementation resolves FD
+source names to paths: passing an FD-shaped source is **not** by itself a race
+fix. The post-mount admission comparison is mandatory and rejects a different
+device/inode or read/write mode before any work command can execute. The isolated
+native driver tests these same primitives with the distribution binary, including
+source replacement after pinning and an intentionally wrong admission identity.
+It is not an authenticated production launcher or a completed Runtime hookup.
+
+Only the trusted bootstrap layer uses `attach_disconnected` for Bubblewrap's
+user-namespace/proc setup. The retained work layer has no such flag or setup
+capabilities; both layers still have to permit any work access. The existing
+continuous-denial and exact-stack kernel gates remain mandatory.
+
 Mandatory next gates: authenticated service; pinned-object mount handoff;
 exact enforcing-stack/UID/
 capability/NoNewPrivs confirmation before command execution; inherited-FD closure;

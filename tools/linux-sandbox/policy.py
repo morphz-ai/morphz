@@ -181,9 +181,11 @@ def compile_profiles(policy: Policy, launch_id: str) -> CompiledPolicy:
     network = "  network inet,\n  network inet6,\n" if policy.network == "allow" else ""
     setup_network = network or "  network inet dgram,\n  network netlink raw,\n"
     source = f"""abi <abi/4.0>,
-profile {bootstrap} {{
+profile {bootstrap} flags=(attach_disconnected) {{
   # Trusted, root-owned entry is the only pre-admission command carrier.
   # This component is retained after stacking; work removes setup authority.
+  # bwrap's setup accesses proc objects disconnected during user-namespace
+  # creation. Only this trusted setup layer attaches them; work does not.
   / r,
   /** mrwlkix,
   capability sys_admin,
