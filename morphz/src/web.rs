@@ -18273,13 +18273,28 @@ account = "xai-account"
         let mut streamed_reasoning_summary = String::new();
         let mut stable_activation_id = None;
         let mut reply_seen = false;
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // Admission and Context construction happen before the first Provider
+        // frame. This checks stream-before-commit ordering, not a two-second
+        // ingress/SQLite SLO. Keep that original bound for the stream itself,
+        // with a separate bounded admission wait and phase-specific evidence.
+        let mut deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut model_started = false;
+        {
             while !reply_seen {
-                let event = live_events
-                    .recv()
+                let event = tokio::time::timeout_at(deadline, live_events.recv())
                     .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "stream/reply timed out (model_started={model_started}, kinds={stream_kinds:?}, stages={:?})",
+                            runtime.observability().turn(&trace_id).map(|turn| turn.stages)
+                        )
+                    })
                     .expect("runtime event stream closed");
                 if event.topic == "runtime/model_stream" {
+                    if !model_started {
+                        model_started = true;
+                        deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+                    }
                     let activation_id = event
                         .payload
                         .get("activation_id")
@@ -18327,9 +18342,7 @@ account = "xai-account"
                     reply_seen = true;
                 }
             }
-        })
-        .await
-        .expect("stream and reply timed out");
+        }
 
         assert_eq!(
             stream_kinds,
