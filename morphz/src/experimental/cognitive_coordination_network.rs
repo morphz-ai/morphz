@@ -1936,11 +1936,23 @@ mod tests {
                 service: Arc::clone(&service_b),
                 participant: mock_participant(&authority_b),
             });
+        let (stop_a, stopped_a) = tokio::sync::oneshot::channel();
+        let (stop_b, stopped_b) = tokio::sync::oneshot::channel();
         let server_a = tokio::spawn(async move {
-            axum::serve(listener_a, router_a).await.unwrap();
+            axum::serve(listener_a, router_a)
+                .with_graceful_shutdown(async {
+                    let _ = stopped_a.await;
+                })
+                .await
+                .unwrap();
         });
         let server_b = tokio::spawn(async move {
-            axum::serve(listener_b, router_b).await.unwrap();
+            axum::serve(listener_b, router_b)
+                .with_graceful_shutdown(async {
+                    let _ = stopped_b.await;
+                })
+                .await
+                .unwrap();
         });
 
         let status_a = service_a.refresh_peer_statuses().await;
@@ -1985,7 +1997,13 @@ mod tests {
             .await
             .is_err());
 
-        server_b.abort();
+        // Stopping only the accept loop leaves pooled HTTP connections alive.
+        // Finish the peer's graceful shutdown before asserting it is offline.
+        stop_b.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server_b)
+            .await
+            .expect("peer B must close its established connections")
+            .unwrap();
         Arc::clone(&service_a).start_heartbeat();
         let mut observed_offline = false;
         for _ in 0..30 {
@@ -2002,7 +2020,11 @@ mod tests {
             observed_offline,
             "heartbeat did not report the stopped peer"
         );
-        server_a.abort();
+        stop_a.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server_a)
+            .await
+            .expect("peer A must close its established connections")
+            .unwrap();
     }
 
     #[test]
