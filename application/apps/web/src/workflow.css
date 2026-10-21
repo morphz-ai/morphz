@@ -192,7 +192,7 @@
   min-height: 32px;
   padding: 5px 8px;
 }
-.app .object-toolbar:has(.editor-actions) > span {
+.app .object-toolbar:has(.editor-actions) > .object-version-summary {
   display: none;
 }
 .workspace .understanding-panel {

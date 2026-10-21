@@ -309,7 +309,7 @@ export function ArtifactEditor({
     <div className="object-toolbar">
       {isPdf && <div className="pdf-toolbar-slot" ref={setPdfToolbarTarget} />}
       {artifact.content.kind !== "task" && !isPdf && (
-        <span>
+        <span className="object-version-summary">
           {kindLabel[artifact.content.kind]}{" "}
           <span className="muted">
             · v{shown.revision}

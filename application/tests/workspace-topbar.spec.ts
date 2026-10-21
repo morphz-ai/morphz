@@ -162,6 +162,10 @@ test("three portal destinations and tools retain node/value identity through all
     },
   ]) {
     await run(page, patch);
+    await expect(page.locator(".breadcrumb > span")).toHaveCount(0);
+    await expect(
+      page.locator(".navigation-history > button:not(.icon-button)"),
+    ).toHaveCount(0);
     for (const selector of selectors)
       assert.equal(await same(page, selector, selector), true, selector);
     assert.equal(

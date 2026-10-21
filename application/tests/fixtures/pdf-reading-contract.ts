@@ -433,11 +433,26 @@ export function pdfReadingCssViolations(css: ReadonlyMap<string, string>) {
         if (
           (
             fixedPdfReadingRole.retainedHost.selectors as readonly string[]
-          ).some((selector) => norm(selector) === norm(rule.selector))
+          ).some(
+            (selector) =>
+              norm(
+                selector.replace(
+                  ".navigation-history button:last-child",
+                  ".navigation-history .icon-button:last-child",
+                ),
+              ) === norm(rule.selector),
+          )
         )
           matches.push(rule);
       });
-      const fixed = postcss.parse(fixedPdfReadingRole.retainedHost.raw),
+      // Narrow the actual existing navigation controls without changing the
+      // PDF packing geometry or rewriting the immutable historical recipe.
+      const fixed = postcss.parse(
+          fixedPdfReadingRole.retainedHost.raw.replace(
+            ".navigation-history button:last-child",
+            ".navigation-history .icon-button:last-child",
+          ),
+        ),
         original: Rule[] = [];
       fixed.walkRules((rule) => {
         original.push(rule);
