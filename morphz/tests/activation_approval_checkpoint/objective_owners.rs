@@ -247,6 +247,7 @@ async fn infer_admission_contract(store: std::sync::Arc<dyn RuntimeStore>) {
                 deadline: Utc::now() + Duration::hours(1),
             }),
             Some("synthetic dependency"),
+            None,
         )
         .await
         .unwrap()
@@ -342,6 +343,7 @@ async fn infer_admission_contract(store: std::sync::Arc<dyn RuntimeStore>) {
             ObjectiveStatus::Paused,
             None,
             Some("synthetic pause"),
+            None,
         )
         .await
         .unwrap();
@@ -717,6 +719,7 @@ async fn contract(store: &dyn RuntimeStore, late: bool) {
             ObjectiveStatus::Paused,
             None,
             Some("synthetic pause"),
+            None,
         )
         .await
         .unwrap();
@@ -1099,7 +1102,8 @@ async fn postgres_supervisor_retries_ownership_in_place_and_rechecks_pause() {
                         current.revision,
                         ObjectiveStatus::Paused,
                         None,
-                        Some("pause during contention")
+                        Some("pause during contention"),
+                        None,
                     )
                     .await
                     .unwrap(),

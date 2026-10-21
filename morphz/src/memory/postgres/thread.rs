@@ -64,6 +64,12 @@ pub(super) async fn migrate_response_annotations(pool: &PgPool) -> Result<(), St
     Ok(())
 }
 
+pub(super) async fn migrate_evaluation_policy_control(pool: &PgPool) -> Result<(), StoreError> {
+    sqlx::query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS evaluation_policy_revision BIGINT CHECK(evaluation_policy_revision IS NULL OR (evaluation_policy_revision >= 1 AND evaluation_policy_revision <= revision))")
+        .execute(pool).await?;
+    Ok(())
+}
+
 fn parse_kind(value: &str) -> Result<ThreadKind, StoreError> {
     match value {
         "dialogue_turn" => Ok(ThreadKind::DialogueTurn),
@@ -1036,6 +1042,55 @@ impl ThreadStore for PostgresStore {
             Some(current) => ThreadMutation::Conflict { current },
             None => ThreadMutation::NotFound,
         })
+    }
+
+    async fn update_thread_evaluation_policy(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        selection: &crate::model_selection::ModelSelection,
+    ) -> Result<ThreadMutation, StoreError> {
+        let mut selection = selection.clone();
+        selection.normalize()?;
+        let row = sqlx::query(
+            r#"UPDATE threads SET revision = revision + 1, evaluation_policy_revision = revision + 1,
+               model_alias = $1, reasoning_effort = $2, updated_at = $3
+               WHERE id = $4 AND revision = $5 AND status = 'open' RETURNING *"#,
+        )
+        .bind(selection.model)
+        .bind(selection.reasoning_effort)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = row {
+            return Ok(ThreadMutation::Updated(thread_from_row(&row)?));
+        }
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
+        })
+    }
+
+    async fn get_thread_evaluation_policy(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::memory::ThreadEvaluationPolicyState>, StoreError> {
+        let row = sqlx::query("SELECT * FROM threads WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| {
+            Ok(crate::memory::ThreadEvaluationPolicyState {
+                thread: thread_from_row(&row)?,
+                control_revision: row
+                    .get::<Option<i64>, _>("evaluation_policy_revision")
+                    .map(u64::try_from)
+                    .transpose()?,
+            })
+        })
+        .transpose()
     }
 
     async fn control_thread(

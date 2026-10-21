@@ -12869,6 +12869,7 @@ Body
                 ObjectiveStatus::Paused,
                 None,
                 Some("pause fixture"),
+                None,
             )
             .await
             .unwrap()
@@ -12882,6 +12883,7 @@ Body
                 ObjectiveStatus::Active,
                 None,
                 Some("new lifetime"),
+                None,
             )
             .await
             .unwrap()
@@ -13050,6 +13052,7 @@ Body
                 ObjectiveStatus::Paused,
                 None,
                 Some("operator pause"),
+                None,
             )
             .await
             .unwrap();

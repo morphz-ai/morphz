@@ -2011,6 +2011,15 @@ struct ActivationRoute {
 struct EffectiveModelRequestPolicy {
     model_alias: String,
     reasoning_effort: String,
+    thread_control_revision: Option<u64>,
+    session_snapshot: crate::model_selection::SessionEvaluationSnapshot,
+}
+
+/// The policy and Provider binding belong to the same failed physical request.
+/// Keep that evidence together instead of passing unrelated recovery scalars.
+struct FailedModelRequest<'a> {
+    configuration_snapshot: Option<(DateTime<Utc>, &'a ModelAttemptBinding)>,
+    policy: &'a EffectiveModelRequestPolicy,
 }
 
 #[derive(Debug, Default)]
@@ -4540,6 +4549,82 @@ impl Orchestrator {
             {
                 continue;
             }
+            let policy_phase = event
+                .payload
+                .get("recovery_phase")
+                .and_then(serde_json::Value::as_str);
+            if matches!(
+                policy_phase,
+                Some("thread_evaluation_policy_changed" | "session_evaluation_policy_changed")
+            ) {
+                let revision = event
+                    .payload
+                    .get("thread_evaluation_policy_revision")
+                    .and_then(serde_json::Value::as_u64);
+                if (policy_phase == Some("thread_evaluation_policy_changed")
+                    && (event
+                        .payload
+                        .get("thread_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(thread.id.as_str())
+                        || event
+                            .payload
+                            .get("thread_generation")
+                            .and_then(serde_json::Value::as_u64)
+                            != Some(thread.generation)))
+                    || event
+                        .payload
+                        .get("session_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(thread.session_id.as_str())
+                    || !event
+                        .payload
+                        .get("scheduler_dependency_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|ids| {
+                            ids.iter()
+                                .any(|id| id.as_str() == Some(dependency.id.as_str()))
+                        })
+                {
+                    continue;
+                }
+                let Some(wait_event_id) = dependency
+                    .metadata
+                    .get("wait_event_id")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let wait = self
+                    .store
+                    .query(QueryFilter {
+                        event_ids: vec![wait_event_id.to_string()],
+                        context_id: Some(thread.context_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .next();
+                let current = session_store
+                    .get_thread_evaluation_policy(&thread.id)
+                    .await?;
+                let session = session_store.get_session(&thread.session_id).await?;
+                if !current
+                    .as_ref()
+                    .zip(wait.as_ref())
+                    .is_some_and(|(current, wait)| {
+                        (policy_phase == Some("thread_evaluation_policy_changed")
+                            && revision.is_some()
+                            && current.control_revision == revision
+                            && current.supersedes_provider_wait(&dependency, wait))
+                            || session.as_ref().is_some_and(|session| {
+                                current.session_replaces_provider_wait(session, &dependency, wait)
+                            })
+                    })
+                {
+                    continue;
+                }
+            }
             let wake_event_id = crate::scheduler::stable_command_id(
                 "provider-recovered-event",
                 &format!("{}\0{}", dependency.id, event.id),
@@ -4664,6 +4749,10 @@ impl Orchestrator {
     }
 
     async fn recover_provider_waits(&self) -> Result<(), DynError> {
+        // The policy CAS is durable even if the process exits before publishing
+        // its wake Event. Reconcile exact stale waits before redispatching any
+        // Activation; no periodic model call or business-input replay is needed.
+        self.recover_obsolete_thread_policy_waits().await?;
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
@@ -4686,6 +4775,67 @@ impl Orchestrator {
         for context_id in contexts {
             self.record_provider_failure(&context_id, &resource, None, &failure)
                 .await;
+        }
+        Ok(())
+    }
+
+    async fn recover_obsolete_thread_policy_waits(&self) -> Result<(), DynError> {
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let dependencies = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?;
+        for dependency in dependencies {
+            let Some(current) = session_store
+                .get_thread_evaluation_policy(&dependency.owner_id)
+                .await?
+            else {
+                continue;
+            };
+            let Some(event_id) = dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let wait = self
+                .store
+                .query(QueryFilter {
+                    event_ids: vec![event_id.to_string()],
+                    context_id: Some(current.thread.context_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            let session = session_store
+                .get_session(&current.thread.session_id)
+                .await?;
+            if let Some(wait) = wait.filter(|wait| {
+                current.supersedes_provider_wait(&dependency, wait)
+                    || session.as_ref().is_some_and(|session| {
+                        current.session_replaces_provider_wait(session, &dependency, wait)
+                    })
+            }) {
+                self.release_obsolete_thread_policy_wait_for_thread(
+                    &current.thread.id,
+                    current.thread.generation,
+                    &dependency.dependency_id,
+                    &wait.id,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -10951,19 +11101,53 @@ impl Orchestrator {
             .get_session(session_id)
             .await?
             .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
-        let mut policy = self.effective_model_request_policy_from_session(&session, attempt_id);
+        let mut route = self.activation_route(attempt_id);
+        let mut thread_control_revision = None;
+        if let Some(route) = route.as_mut() {
+            let current = session_store
+                .get_thread_evaluation_policy(&route.thread_id)
+                .await?
+                .ok_or("Model request policy Thread disappeared")?;
+            let thread = current.thread;
+            if thread.session_id != session.id
+                || thread.context_id != session.context_id
+                || thread.agent_id != session.agent_id
+                || thread.generation != route.thread_generation
+                || thread.lifecycle != ThreadLifecycle::Open
+            {
+                return Err("Model request policy is outside its live Thread generation".into());
+            }
+            // Unmodified tasks retain accepted Schedule/Activation precedence.
+            // Only a durable operator choice supersedes that old snapshot;
+            // its explicit clear must not resurrect the old input binding.
+            if current.control_revision.is_some() {
+                thread_control_revision = current.control_revision;
+                route.explicit_model_alias = thread.model_alias;
+                route.explicit_reasoning_effort = thread.reasoning_effort;
+                // These fields are immutable admission snapshots, not a
+                // fourth inheritance layer after an explicit operator clear.
+                route.model_alias = self.client.model().unwrap_or_else(|| "direct".into());
+                route.reasoning_effort = self
+                    .client
+                    .reasoning_effort()
+                    .map(|effort| effort.as_str().to_string())
+                    .unwrap_or_else(|| "provider_default".into());
+            }
+        }
+        let mut policy = self.effective_model_request_policy_from_session(&session, route.as_ref());
+        policy.thread_control_revision = thread_control_revision;
         if let (Some(supervisor), Some(binding)) = (
             &self.objective_supervisor,
             self.objective_evaluations.get_for_activation(attempt_id),
         ) {
             if let Some(objective) = supervisor.get(&binding.objective_id).await? {
-                let route = self.activation_route(attempt_id);
                 if !route
                     .as_ref()
                     .is_some_and(|route| route.explicit_model_alias.is_some())
                 {
                     if let Some(model) = objective.model_alias {
                         policy.model_alias = model;
+                        policy.session_snapshot.inherits_model = false;
                     }
                 }
                 if !route
@@ -10972,6 +11156,7 @@ impl Orchestrator {
                 {
                     if let Some(effort) = objective.reasoning_effort {
                         policy.reasoning_effort = effort;
+                        policy.session_snapshot.inherits_reasoning_effort = false;
                     }
                 }
             }
@@ -10982,9 +11167,8 @@ impl Orchestrator {
     fn effective_model_request_policy_from_session(
         &self,
         session: &SessionRecord,
-        attempt_id: &str,
+        route: Option<&ActivationRoute>,
     ) -> EffectiveModelRequestPolicy {
-        let route = self.activation_route(attempt_id);
         let model_alias = route
             .as_ref()
             .and_then(|route| route.explicit_model_alias.clone())
@@ -11001,11 +11185,18 @@ impl Orchestrator {
                     .reasoning_effort()
                     .map(|effort| effort.as_str().to_string())
             })
-            .or_else(|| route.map(|route| route.reasoning_effort))
+            .or_else(|| route.map(|route| route.reasoning_effort.clone()))
             .unwrap_or_else(|| "provider_default".to_string());
         EffectiveModelRequestPolicy {
             model_alias,
             reasoning_effort,
+            thread_control_revision: None,
+            session_snapshot: crate::model_selection::SessionEvaluationSnapshot::new(
+                session.model_alias.as_deref(),
+                session.reasoning_effort.as_deref(),
+                route.is_none_or(|route| route.explicit_model_alias.is_none()),
+                route.is_none_or(|route| route.explicit_reasoning_effort.is_none()),
+            ),
         }
     }
 
@@ -15372,7 +15563,7 @@ impl Orchestrator {
                                 "critical_maintenance_minimum_projection",
                                 &failure,
                                 context.parent_session_id.as_deref(),
-                                error.model_configuration_snapshot(),
+                                FailedModelRequest { configuration_snapshot: error.model_configuration_snapshot(), policy: &request_policy },
                             ))
                             .await;
                         }
@@ -15579,7 +15770,7 @@ impl Orchestrator {
                             "reasoning_continuation",
                             &failure,
                             context.parent_session_id.as_deref(),
-                            None,
+                            FailedModelRequest { configuration_snapshot: None, policy: &request_policy },
                         ))
                         .await;
                     }
@@ -15637,7 +15828,7 @@ impl Orchestrator {
                             "safety_refusal",
                             &failure,
                             context.parent_session_id.as_deref(),
-                            error.model_configuration_snapshot(),
+                            FailedModelRequest { configuration_snapshot: error.model_configuration_snapshot(), policy: &request_policy },
                         ))
                         .await;
                     }
@@ -15772,7 +15963,7 @@ impl Orchestrator {
                         "llm_completion",
                         &failure,
                         context.parent_session_id.as_deref(),
-                        error.model_configuration_snapshot(),
+                        FailedModelRequest { configuration_snapshot: error.model_configuration_snapshot(), policy: &request_policy },
                     ))
                     .await;
                 }
@@ -18579,11 +18770,16 @@ impl Orchestrator {
         error_text: &str,
         incident: &RuntimeFailureObservation,
         user_message: &str,
+        request_policy: &EffectiveModelRequestPolicy,
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
             .ok_or("Provider wait is missing its Activation route")?;
         let mut wait_payload = vec![
+            (
+                "session_evaluation_policy".into(),
+                json!(&request_policy.session_snapshot),
+            ),
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
@@ -18597,6 +18793,10 @@ impl Orchestrator {
                 }),
             ),
             ("provider_resource".to_string(), json!(provider_resource)),
+            (
+                "thread_evaluation_policy_revision".into(),
+                json!(request_policy.thread_control_revision),
+            ),
             (
                 "provider_wait_generation".to_string(),
                 json!(route.trigger_sequence.max(1)),
@@ -18652,7 +18852,121 @@ impl Orchestrator {
                 failure,
             )
             .await;
+            self.release_obsolete_thread_policy_wait(&route, provider_resource)
+                .await?;
         }
+        Ok(())
+    }
+
+    /// The operator update may precede the failed old request's wait commit.
+    /// Re-read after commit so that either this path or the update publisher
+    /// releases the exact old dependency; neither changes a physical request.
+    async fn release_obsolete_thread_policy_wait(
+        &self,
+        route: &ActivationRoute,
+        resource: &str,
+    ) -> Result<(), DynError> {
+        self.release_obsolete_thread_policy_wait_for_thread(
+            &route.thread_id,
+            route.thread_generation,
+            resource,
+            &route.activation_id,
+        )
+        .await
+    }
+
+    async fn release_obsolete_thread_policy_wait_for_thread(
+        &self,
+        thread_id: &str,
+        thread_generation: u64,
+        resource: &str,
+        source_id: &str,
+    ) -> Result<(), DynError> {
+        let Some(store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let Some(current) = store.get_thread_evaluation_policy(thread_id).await? else {
+            return Ok(());
+        };
+        let session = store.get_session(&current.thread.session_id).await?;
+        if current.thread.generation != thread_generation
+            || current.thread.lifecycle != ThreadLifecycle::Open
+            || current.thread.control_state != crate::memory::ThreadControlState::Active
+        {
+            return Ok(());
+        }
+        let Some(dependency_store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let dependencies = dependency_store
+            .list_scheduler_dependencies_for_owners(
+                SchedulerDependencyOwnerKind::Thread,
+                std::slice::from_ref(&current.thread.id),
+            )
+            .await?
+            .into_iter()
+            .filter(|dependency| {
+                dependency.owner_generation == current.thread.generation
+                    && dependency.status == SchedulerDependencyStatus::Pending
+                    && dependency.required
+                    && dependency.dependency_kind == SchedulerDependencyKind::Resource
+                    && dependency.dependency_id == resource
+            })
+            .collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for dependency in dependencies {
+            let Some(event_id) = dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let wait = self
+                .store
+                .query(QueryFilter {
+                    event_ids: vec![event_id.to_string()],
+                    context_id: Some(current.thread.context_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            if wait.as_ref().is_some_and(|wait| {
+                current.supersedes_provider_wait(&dependency, wait)
+                    || session.as_ref().is_some_and(|session| {
+                        current.session_replaces_provider_wait(session, &dependency, wait)
+                    })
+            }) {
+                ids.push(dependency.id);
+            }
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let session_policy = session.as_ref().map(|session| {
+            crate::model_selection::SessionEvaluationSnapshot::new(
+                session.model_alias.as_deref(),
+                session.reasoning_effort.as_deref(),
+                true,
+                true,
+            )
+        });
+        self.bus.publish(Event::new(
+            crate::scheduler::stable_command_id("thread-policy-late-wait", &format!("{source_id}\0{ids:?}\0{:?}\0{session_policy:?}", current.control_revision)),
+            "Runtime-ThreadModelConfiguration".into(), "runtime_control".into(),
+            "runtime/resource_available".into(),
+            json!({
+                "context_id": current.thread.context_id, "session_id": current.thread.session_id,
+                "thread_id": current.thread.id, "thread_ids": [current.thread.id],
+                "thread_generation": current.thread.generation,
+                "thread_evaluation_policy_revision": current.control_revision,
+                "scheduler_dependency_ids": ids,
+                "objective_ids": [], "resource": resource,
+                "recovery_phase": "thread_evaluation_policy_changed",
+                "recovery_reason": "old_request_failed_after_task_or_session_policy_change",
+            }).as_object().unwrap().clone(),
+        )).await?;
         Ok(())
     }
 
@@ -18663,8 +18977,12 @@ impl Orchestrator {
         stage: &str,
         failure: &ModelFailure,
         parent_session_id: Option<&str>,
-        model_configuration_snapshot: Option<(DateTime<Utc>, &ModelAttemptBinding)>,
+        request: FailedModelRequest<'_>,
     ) -> Result<(), DynError> {
+        let FailedModelRequest {
+            configuration_snapshot: model_configuration_snapshot,
+            policy: request_policy,
+        } = request;
         let context_id = self.context_id_for_session(session_id)?;
         let error_text: String = failure.to_string().chars().take(2_000).collect();
         let provider_resource = model_configuration_snapshot
@@ -18848,12 +19166,21 @@ impl Orchestrator {
                     &error_text,
                     &incident,
                     &user_message,
+                    request_policy,
                 ),
             )
             .await?;
             return Ok(());
         }
         let mut attributes = vec![
+            (
+                "session_evaluation_policy".into(),
+                json!(&request_policy.session_snapshot),
+            ),
+            (
+                "thread_evaluation_policy_revision".to_string(),
+                json!(request_policy.thread_control_revision),
+            ),
             (
                 "runtime_failure_kind".to_string(),
                 json!(failure.kind.as_str()),
@@ -26629,6 +26956,7 @@ mod tests {
                         resource: "model-route:test".to_string(),
                     }),
                     Some("Provider unavailable"),
+                    None,
                 )
                 .await
                 .unwrap(),

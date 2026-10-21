@@ -97,6 +97,7 @@ async fn fixture() -> (
                 deadline: Utc::now() + Duration::hours(1),
             }),
             Some("pending wait"),
+            None,
         )
         .await
         .unwrap()
@@ -387,6 +388,7 @@ async fn interrupt_continuations_reject_missing_cancelled_competing_and_stale_ro
                         ObjectiveStatus::Paused,
                         None,
                         Some("operator pause"),
+                        None,
                     )
                     .await
                     .unwrap();

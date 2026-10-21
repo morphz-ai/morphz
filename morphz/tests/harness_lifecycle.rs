@@ -182,6 +182,7 @@ async fn conformance<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
             ObjectiveStatus::Paused,
             None,
             None,
+            None,
         )
         .await?;
 
@@ -388,6 +389,7 @@ async fn conformance<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
             ObjectiveStatus::Cancelled,
             None,
             None,
+            None,
         )
         .await?;
     let plan = store.get_plan_execution("retention-plan").await?.unwrap();
@@ -414,6 +416,7 @@ async fn conformance<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
             &objective.id,
             objective.revision,
             ObjectiveStatus::Cancelled,
+            None,
             None,
             None,
         )

@@ -23,7 +23,7 @@ use crate::memory::{
     MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
     NewRuntimeTimer, NewThread, NewWorkAssignment, ObjectiveCompletionIntent, ObjectiveMutation,
     ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, ProviderAccountAffinityRecord,
+    ObjectiveStore, ObjectiveWaitCondition, ObjectiveWaitProvenance, ProviderAccountAffinityRecord,
     ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
     ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
     ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
@@ -467,6 +467,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20261002_01_thread_response_annotations",
                     thread::migrate_response_annotations(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20261022_01_thread_evaluation_policy_control",
+                    thread::migrate_evaluation_policy_control(&store.pool),
                 )
                 .await?;
             store
@@ -6923,7 +6929,7 @@ async fn insert_objective_wait_dependency_in_tx(
     wait: &ObjectiveWaitCondition,
     fallback_dependency_generation: u64,
     now: &str,
-    source: &str,
+    provenance: ObjectiveWaitProvenance<'_>,
 ) -> Result<(), StoreError> {
     let (kind, dependency_id) = objective_wait_dependency_key(wait);
     let dependency_generation = objective_wait_dependency_generation_in_tx(
@@ -6956,7 +6962,7 @@ async fn insert_objective_wait_dependency_in_tx(
     .bind(kind.as_str())
     .bind(dependency_id)
     .bind(i64::try_from(dependency_generation)?)
-    .bind(serde_json::json!({"source": source, "wait": wait}))
+    .bind(serde_json::json!({"source": provenance.source, "wait": wait, "cause_event_id": provenance.cause_event_id}))
     .bind(now)
     .execute(&mut **tx)
     .await?;
@@ -7395,6 +7401,7 @@ impl ObjectiveStore for PostgresStore {
         status: ObjectiveStatus,
         wait_condition: Option<ObjectiveWaitCondition>,
         reason: Option<&str>,
+        cause_event_id: Option<&str>,
     ) -> Result<ObjectiveMutation, StoreError> {
         let Some(current) = self.get_objective(id).await? else {
             return Ok(ObjectiveMutation::NotFound);
@@ -7420,7 +7427,7 @@ impl ObjectiveStore for PostgresStore {
         let resume_new_generation =
             current.status != ObjectiveStatus::Active && status == ObjectiveStatus::Active;
         let next_generation = current.generation + u64::from(resume_new_generation);
-        let wait_changed = resume_new_generation
+        let mut wait_changed = resume_new_generation
             || current.status != status
             || current.wait_condition != wait_condition;
         let now = now_text();
@@ -7443,6 +7450,28 @@ impl ObjectiveStore for PostgresStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
+            // The Objective row lock held by the successful CAS serializes
+            // cause replacement with other state transitions.
+            if !wait_changed
+                && status == ObjectiveStatus::Active
+                && matches!(
+                    wait_condition,
+                    Some(ObjectiveWaitCondition::ResourceAvailable { .. })
+                )
+            {
+                if let Some(wait) = wait_condition.as_ref() {
+                    let (kind, dependency_id) = objective_wait_dependency_key(wait);
+                    let metadata: Option<serde_json::Value> = sqlx::query_scalar(
+                        "SELECT metadata_json FROM scheduler_dependencies WHERE owner_kind = 'objective' AND owner_id = $1 AND owner_generation = $2 AND dependency_kind = $3 AND dependency_id = $4 AND required = TRUE AND status = 'pending' ORDER BY dependency_generation DESC LIMIT 1",
+                    ).bind(id).bind(i64::try_from(current.generation)?)
+                        .bind(kind.as_str()).bind(dependency_id).fetch_optional(&mut *tx).await?;
+                    wait_changed = metadata
+                        .as_ref()
+                        .and_then(|value| value.get("cause_event_id"))
+                        .and_then(serde_json::Value::as_str)
+                        != cause_event_id;
+                }
+            }
             if status != ObjectiveStatus::Active {
                 sqlx::query(
                     r#"UPDATE schedules
@@ -7474,7 +7503,10 @@ impl ObjectiveStore for PostgresStore {
                         wait,
                         expected_revision + 1,
                         &now,
-                        "objective_state_transition",
+                        ObjectiveWaitProvenance {
+                            source: "objective_state_transition",
+                            cause_event_id,
+                        },
                     )
                     .await?;
                 }

@@ -31,6 +31,7 @@ pub async fn assert_interrupt_frontier<
                 resource: "frontier-ready".into(),
             }),
             Some("wait for resource"),
+            None,
         )
         .await
         .unwrap()
@@ -129,6 +130,7 @@ pub async fn assert_interrupt_frontier<
             ObjectiveStatus::Active,
             None,
             Some("exact wait settled"),
+            None,
         )
         .await
         .unwrap()
@@ -170,6 +172,7 @@ pub async fn assert_interrupt_frontier<
             ObjectiveStatus::Paused,
             None,
             Some("operator paused"),
+            None,
         )
         .await
         .unwrap();

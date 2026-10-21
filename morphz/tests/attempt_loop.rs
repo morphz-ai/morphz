@@ -131,6 +131,9 @@ struct SessionModelSwitchContinuationClient {
     messages_seen: Mutex<Vec<Vec<Message>>>,
     store: Arc<SqliteStore>,
     session_id: String,
+    thread_selection: Option<morphz::model_selection::ModelSelection>,
+    session_effort: Option<String>,
+    fail_after_switch: bool,
 }
 
 struct InvalidProtocolContinuationClient {
@@ -949,6 +952,13 @@ impl Client for SessionModelSwitchContinuationClient {
         Some("route-a".to_string())
     }
 
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Err(Box::new(ModelFailure::new(
+            ModelFailureKind::TransientNetwork,
+            "test old provider remains unavailable; policy change is not provider recovery",
+        )))
+    }
+
     async fn create_completion_bound_stream_with_options(
         &self,
         _binding: &ModelAttemptBinding,
@@ -1011,12 +1021,39 @@ impl Client for SessionModelSwitchContinuationClient {
                     &self.session_id,
                     SessionUpdate {
                         model_alias: Some(Some("route-b".to_string())),
-                        reasoning_effort: Some(Some("low".to_string())),
+                        reasoning_effort: Some(self.session_effort.clone()),
                         ..Default::default()
                     },
                 )
                 .await?
                 .ok_or("test Session disappeared during model switch")?;
+            if let Some(selection) = &self.thread_selection {
+                let threads = self
+                    .store
+                    .list_session_threads(&self.session_id, &self.session_id, false)
+                    .await?;
+                assert_eq!(threads.len(), 1, "one exact in-flight synthetic task");
+                let before = &threads[0];
+                let changed = self
+                    .store
+                    .update_thread_evaluation_policy(&before.id, before.revision, selection)
+                    .await?;
+                let morphz::memory::ThreadMutation::Updated(after) = changed else {
+                    return Err("synthetic task policy compare-and-set failed".into());
+                };
+                assert_eq!(after.generation, before.generation);
+                assert_eq!(after.root_turn_id, before.root_turn_id);
+                assert_eq!(after.lifecycle, ThreadLifecycle::Open);
+            }
+            if self.fail_after_switch {
+                return Err(Box::new(
+                    ModelFailure::new(
+                        ModelFailureKind::ServerUnavailable,
+                        "old model request failed after the operator policy committed",
+                    )
+                    .with_retry_after(Some(3600)),
+                ));
+            }
             let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
                 text: "portable progress from route a".to_string(),
             });
@@ -3655,6 +3692,9 @@ async fn mixed_incomplete_output_preserves_reasoning_and_public_text_in_one_cont
 async fn run_session_model_switch_continuation(
     session_id: &str,
     explicit_trigger_model: bool,
+    thread_selection: Option<morphz::model_selection::ModelSelection>,
+    session_effort: Option<&str>,
+    fail_after_switch: bool,
 ) -> (Vec<String>, Vec<Vec<Message>>) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("session-model-switch.db");
@@ -3668,6 +3708,9 @@ async fn run_session_model_switch_continuation(
         messages_seen: Mutex::new(Vec::new()),
         store: Arc::clone(&store),
         session_id: session_id.to_string(),
+        thread_selection: thread_selection.clone(),
+        session_effort: session_effort.map(ToOwned::to_owned),
+        fail_after_switch,
     });
     let config = morphz::config::OrchestratorConfig {
         reasoning_continuation_safety_limit: None,
@@ -3677,7 +3720,12 @@ async fn run_session_model_switch_continuation(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = new_test_orchestrator(
+    let constructor = if fail_after_switch {
+        new_test_orchestrator_with_runtime_store
+    } else {
+        new_test_orchestrator
+    };
+    let orchestrator = constructor(
         Arc::clone(&bus),
         Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
@@ -3700,9 +3748,56 @@ async fn run_session_model_switch_continuation(
     );
     let bindings = client.bindings.lock().unwrap().clone();
     let messages = client.messages_seen.lock().unwrap().clone();
-    let options = client.options_seen.lock().unwrap();
+    let options = client.options_seen.lock().unwrap().clone();
     assert_eq!(options.len(), 2);
-    if explicit_trigger_model {
+    if fail_after_switch {
+        let events = store
+            .query(QueryFilter {
+                session_id: Some(session_id.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.payload.get("disposition") == Some(&json!("provider_wait")))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.topic == "runtime/resource_available"
+                    && event.payload.get("recovery_reason")
+                        == Some(&json!("old_request_failed_after_operator_policy_change")))
+                .count(),
+            1
+        );
+        let threads = store
+            .list_session_threads(session_id, session_id, true)
+            .await
+            .unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].generation, 1);
+        assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
+    }
+    if let Some(selection) = thread_selection {
+        assert_eq!(
+            options[0].reasoning_effort,
+            Some(Some(morphz::llm::ReasoningEffort::High))
+        );
+        assert_eq!(
+            options[1].reasoning_effort,
+            match selection.reasoning_effort.as_deref() {
+                Some("provider_default") => Some(None),
+                Some("none") => Some(Some(morphz::llm::ReasoningEffort::Off)),
+                Some("high") => Some(Some(morphz::llm::ReasoningEffort::High)),
+                None => Some(session_effort.and_then(morphz::llm::ReasoningEffort::parse)),
+                other => panic!("unhandled synthetic choice: {other:?}"),
+            }
+        );
+    } else if explicit_trigger_model {
         assert!(options
             .iter()
             .all(|options| options.reasoning_effort
@@ -3719,8 +3814,14 @@ async fn run_session_model_switch_continuation(
 
 #[tokio::test]
 async fn session_model_switch_applies_at_the_next_physical_request_boundary() {
-    let (bindings, messages) =
-        run_session_model_switch_continuation("attempt-session-model-switch", false).await;
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-session-model-switch",
+        false,
+        None,
+        Some("low"),
+        false,
+    )
+    .await;
 
     assert_eq!(bindings, ["route-a", "route-b"]);
     assert_eq!(messages.len(), 2);
@@ -3734,8 +3835,14 @@ async fn session_model_switch_applies_at_the_next_physical_request_boundary() {
 
 #[tokio::test]
 async fn explicit_trigger_model_remains_fixed_across_physical_requests() {
-    let (bindings, messages) =
-        run_session_model_switch_continuation("attempt-explicit-model-binding", true).await;
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-explicit-model-binding",
+        true,
+        None,
+        Some("low"),
+        false,
+    )
+    .await;
 
     assert_eq!(bindings, ["route-a", "route-a"]);
     assert_eq!(messages.len(), 2);
@@ -3746,6 +3853,116 @@ async fn explicit_trigger_model_remains_fixed_across_physical_requests() {
                 if reasoning_items.iter().any(|item| item["id"] == "route-a-reasoning")
         )
     }));
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_clear_changes_only_the_next_request_and_does_not_revive_the_old_trigger(
+) {
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-thread-policy-clear",
+        true,
+        Some(morphz::model_selection::ModelSelection::default()),
+        Some("low"),
+        false,
+    )
+    .await;
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(
+        messages.len(),
+        2,
+        "the in-flight call was not cancelled or repeated"
+    );
+    assert!(messages[1].iter().any(|message| message.role == "user"
+        && message.content.contains("portable progress from route a")));
+    assert!(
+        messages[1]
+            .iter()
+            .all(|message| provider_continuation(message).is_none()),
+        "opaque provider state must not cross the model change"
+    );
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_keeps_explicit_none_and_provider_default_distinct_from_inheritance(
+) {
+    use morphz::model_selection::ModelSelection;
+    for (suffix, selection, expected_model) in [
+        (
+            "model-only",
+            ModelSelection {
+                model: Some("route-a".into()),
+                reasoning_effort: None,
+            },
+            "route-a",
+        ),
+        (
+            "provider-default",
+            ModelSelection {
+                model: None,
+                reasoning_effort: Some("provider_default".into()),
+            },
+            "route-b",
+        ),
+        (
+            "none",
+            ModelSelection {
+                model: None,
+                reasoning_effort: Some("none".into()),
+            },
+            "route-b",
+        ),
+        (
+            "explicit",
+            ModelSelection {
+                model: Some("route-a".into()),
+                reasoning_effort: Some("high".into()),
+            },
+            "route-a",
+        ),
+    ] {
+        let (bindings, messages) = run_session_model_switch_continuation(
+            &format!("attempt-thread-policy-{suffix}"),
+            true,
+            Some(selection),
+            Some("low"),
+            false,
+        )
+        .await;
+        assert_eq!(bindings, ["route-a", expected_model], "{suffix}");
+        assert_eq!(messages.len(), 2, "{suffix}: no repair request or replay");
+    }
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_clear_with_provider_defaults_does_not_resurrect_old_high() {
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-thread-policy-provider-default-inheritance",
+        true,
+        Some(morphz::model_selection::ModelSelection::default()),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(messages.len(), 2);
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_change_before_old_failure_releases_the_late_wait() {
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-thread-policy-late-provider-failure",
+        true,
+        Some(morphz::model_selection::ModelSelection::default()),
+        Some("low"),
+        true,
+    )
+    .await;
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(
+        messages.len(),
+        2,
+        "do not retry the old provider or replay user input"
+    );
 }
 
 #[tokio::test]
@@ -8499,6 +8716,15 @@ async fn successful_explicit_request_resumes_durable_wait_without_probe_success(
 
 #[tokio::test]
 async fn provider_wait_survives_runtime_restart() {
+    run_provider_wait_restart(false).await;
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_committed_without_wake_is_recovered_after_restart() {
+    run_provider_wait_restart(true).await;
+}
+
+async fn run_provider_wait_restart(change_policy_without_event: bool) {
     let context_id = "provider-restart-context";
     let session_id = "provider-restart-session";
     let tmp = TempDir::new().unwrap();
@@ -8531,6 +8757,34 @@ async fn provider_wait_survives_runtime_restart() {
     drop(first_orchestrator);
     drop(first_bus);
 
+    if change_policy_without_event {
+        let threads = store.list_context_threads(context_id, true).await.unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(matches!(
+            store
+                .update_thread_evaluation_policy(
+                    &threads[0].id,
+                    threads[0].revision,
+                    &morphz::model_selection::ModelSelection::default(),
+                )
+                .await
+                .unwrap(),
+            morphz::memory::ThreadMutation::Updated(_)
+        ));
+        assert!(
+            store
+                .query(QueryFilter {
+                    context_id: Some(context_id.into()),
+                    topic: Some("runtime/thread_evaluation_policy_changed".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .is_empty(),
+            "simulate exit after CAS, before notification"
+        );
+    }
+
     let second_bus = Arc::new(InMemoryEventBus::new());
     let recovering_client = Arc::new(HealthyAfterRestartClient {
         calls: AtomicUsize::new(0),
@@ -8561,7 +8815,8 @@ async fn provider_wait_survives_runtime_restart() {
     );
     assert_eq!(
         recovering_client.health_probe_calls.load(Ordering::SeqCst),
-        1
+        if change_policy_without_event { 0 } else { 1 },
+        "a replaced policy must resume without waiting for the old Provider"
     );
     assert_eq!(recovering_client.calls.load(Ordering::SeqCst), 1);
     let threads = store.list_context_threads(context_id, true).await.unwrap();

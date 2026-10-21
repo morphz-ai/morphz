@@ -43,18 +43,18 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
 }
 
 pub(super) async fn backfill_objective_wait_dependencies(pool: &PgPool) -> Result<(), StoreError> {
+    let mut tx = pool.begin().await?;
     let rows = sqlx::query(
         r#"SELECT id, revision, generation, wait_condition_json
            FROM objectives
-           WHERE status = 'active' AND wait_condition_json IS NOT NULL"#,
+           WHERE status = 'active' AND wait_condition_json IS NOT NULL FOR UPDATE"#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     if rows.is_empty() {
         return Ok(());
     }
     let now = now_text();
-    let mut tx = pool.begin().await?;
     for row in rows {
         let objective_id: String = row.get("id");
         let objective_revision = u64::try_from(row.get::<i64, _>("revision"))?;
@@ -63,6 +63,20 @@ pub(super) async fn backfill_objective_wait_dependencies(pool: &PgPool) -> Resul
             row.get::<serde_json::Value, _>("wait_condition_json"),
         )?;
         let (kind, dependency_id) = objective_wait_dependency_key(&wait);
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scheduler_dependencies WHERE owner_kind = 'objective' AND owner_id = $1 AND owner_generation = $2 AND dependency_kind = $3 AND dependency_id = $4)")
+            .bind(&objective_id).bind(i64::try_from(objective_generation)?)
+            .bind(kind.as_str()).bind(&dependency_id).fetch_one(&mut *tx).await?;
+        if exists {
+            let has_pending_or_satisfied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scheduler_dependencies WHERE owner_kind = 'objective' AND owner_id = $1 AND owner_generation = $2 AND dependency_kind = $3 AND dependency_id = $4 AND status != 'cancelled')")
+                .bind(&objective_id).bind(i64::try_from(objective_generation)?)
+                .bind(kind.as_str()).bind(&dependency_id).fetch_one(&mut *tx).await?;
+            if !has_pending_or_satisfied {
+                tracing::warn!(objective_id, objective_generation, dependency_id,
+                    event_code = "objective.wait_backfill.cancelled_dependency_only",
+                    "Objective wait display has only cancelled dependencies; preserving structural facts for operator diagnosis");
+            }
+            continue;
+        }
         let dependency_generation = if kind == SchedulerDependencyKind::ThreadGroup {
             u64::try_from(
                 sqlx::query_scalar::<_, i64>("SELECT generation FROM thread_groups WHERE id = $1")

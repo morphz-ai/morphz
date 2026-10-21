@@ -96,3 +96,126 @@ Runtime Session 不存在时才用于支持该能力的原子 POST；一旦 Sess
 真实 Host→Rust 验证改变 Session 默认不会中断或重放原请求，正常续接采用
 新默认，显式任务保持原配置。UI 必须按确认回执显示，迟到结果不能污染新
 范围，错误保留草稿并可重新读取。最后需真实 DeepSeek 和原应用验收。
+
+## 历史任务解除错误固化：实现前边界审查
+
+原 profile 的长期任务已核对原始 schedule_tx：spawn 与 objective.create 都
+没有 model／reasoning_effort，Thread 却复制了 Human 普通输入的 GPT/max。
+后来的循环 Schedule 明确设置 high，这个显式值必须保留。不能改写已接受的
+输入、模型请求事实或完成记录，也不能用 supersede 来“换模型”：现有
+supersede 会换代并取消调度，违反继续原任务的要求。
+
+计划复用 Runtime Thread 的既有 model_alias／reasoning_effort 两列作为任务
+覆盖权威，补齐 operator 控制面和修订号核对；null 表示恢复正常继承。
+不增表、索引、Host 设置库或 LLM 工具。增加一个可空的 Runtime 控制修订列
+evaluation_policy_revision：旧行保持 null，不回填或重新解释旧任务；只有
+本次明确 operator 更新与两字段、Thread revision 在同一事务中写入该标记。
+这是控制面选择与原任务默认／已准入调度参数的区分，不是新的模型设置来源。
+未修改的任务保留原显式调度参数优先级；operator 明确修改的当前任务以新
+策略约束后续请求。新调度子任务仍按原规则保留其自己的显式 high 等设置。
+命令只接受确切 Context／Thread、
+expected_revision 与完整的两个可空设置，原 Thread 必须仍 open；同一事务
+只更新两字段、revision 和 updated_at，身份、generation、调度、作业、输入
+及收据不变。响应未知后读回核验，不自动重试，不重新提交业务输入。
+
+原应用的最新只读核对进一步确认：该行是循环 Schedule 的模板 Thread，
+不是 Objective primary；Objective 正在等待包含它的真实 Thread Group，
+不能把这个等待清除为一次“模型恢复”。此模板没有待释放的 Provider 依赖。
+原 Schedule.model_alias=null、reasoning_effort=high，下一次触发时间及每小时
+间隔必须保持。更正只针对已证实误复制的模板默认；未来 occurrence 使用
+原有独立 Thread 路径，继承新模型并保留显式 high。专项必须走真实 Scheduler
+到物理请求，校验零更正请求、一次实际执行、原 Schedule ID／时间规则未改，
+不能只检查模板数据库列或在原任务上强行提前触发。
+
+每次物理模型请求读取当前 Thread 的控制标记、覆盖与 Session 默认，不能让
+旧触发 Event 的快照盖过 operator 已确认清除；无控制标记不改原行为。
+初次显式值仍按原准入写入 Thread，infer 的
+同任务显式继承及目标覆盖优先级必须由真实联测守住；已发出的请求不改变。
+仅唤醒此 Thread 的旧模型资源等待，不取消其他等待或并发工作。Runtime
+控制面严格 operator 授权，Host 不把它暴露为 Agent 工具或新增任意范围入口。
+
+SQLite／PostgreSQL 验证 CAS、清除／显式设置、终态拒绝和生命周期字段保持；
+真实 Provider 受控测试验证在途不打断、后续继承、旧触发值不复活、单次工具
+和原模型调用数，以及重开与权限拒绝。通过后才备份原数据并纠正已证明误复制
+的确切存活 Thread；不按“用了 GPT”或同 Session 批量清除其他显式任务。
+
+SQLite 启动迁移完成后，在本连接池尚未对外提供服务时，持有所有现存连接。
+每个连接先执行一次固定单列的 sqlite_schema 读取，使 SQLite 在 step 时安全
+刷新自身 schema，再清除 SQLx prepared statement 元数据，防止新增列后
+复用旧 `SELECT *` 列描述；只清 SQLx 缓存不足以刷新 SQLite 连接本身。连接
+不重建，正常运行仍使用语句缓存；不是跨进程通知、轮询或对其他 Runtime 的
+操作。回归在两个独立连接池、每池两个同时持有的连接上缓存旧列结构，再并发
+迁移、逐连接读取新列，并保留旧任务／调度及原值，不能靠选到未缓存的连接通过。
+
+### Session 默认变化与显式任务隔离：补充审查
+
+隔离反例已确认：旧的全局配置查询会把其他 Session 的设置 Event 当成本次
+请求的全局配置改变。并且仅凭“同 Session”不能证明一次显式固定模型／强度
+的失败请求会被默认设置改变修复。不能无差别唤醒、补一次模型请求来试探。
+
+权威新增材料仅是原物理请求的 Runtime 快照，写入既有失败／等待 Event 的
+`session_evaluation_policy` metadata：请求开始时两个可空 Session 默认各自的
+固定长度 SHA-256 指纹，以及模型、强度各自是否实际继承 Session 的两个 bool。
+指纹区分 null、空字符串与显式 none，不复制任意长度的设置文本；缺项、未知
+字段、非规范指纹和类型错误均拒绝作为恢复证据。它不由 LLM 返回；
+不进工具定义、正文协议、Host 设置表或新 SQL 表／列，不含密钥或正文。
+Owner、Context／Session／Thread／Activation／Evaluation 和代次仍由原路由
+与持久 cause_event_id 验证。快照随既有 Event 同事务持久化和原保留策略存续，
+复用 Event ID／因果索引；不双写当前设置，不回填旧记录。
+
+恢复时读取当前同一 Session，只比较快照中实际继承的字段；显式 Task、
+Objective 或已准入 Schedule 覆盖保持原有优先级。当前值已回到原值时不重试；
+缺失、不完整或类型不符的旧快照不猜测。Global Provider 配置 epoch 仍归
+Runtime-ModelConfiguration，不能把 Session 的通知借成全局 epoch。
+
+普通 Thread 使用原 pending 依赖的 wait_event_id 验证来源，释放时带精确
+依赖 ID／代次，再由消费者重读当前设置核验，避免迟到通知放行新失败。
+Objective 复用已经同事务提交的 cause_event_id，通过其 primary 请求的
+真实失败快照收敛；Session Event 只是唤醒收敛器的提示，不是释放任意目标的
+授权。提交前后竞态和启动恢复都读相同持久事实，不依赖通知成功或新增轮询。
+
+验证包含其他 Session／Context 拒绝、同会话继承恢复、模型与强度分别继承、
+显式覆盖不动、回改原值、缺失／损坏快照拒绝、迟到通知不释放新请求，以及
+失败在切换前后两种时序的真实 Runtime 续接。保持原 Thread／generation、
+目标／调度／权限、原消息与工具 schema，不重放输入，不增加格式修复请求。
+
+### Objective 模型等待的原子因果边界
+
+若被控制的是 Objective 当前代次的 primary Execution Thread，失败请求可能
+在控制提交后才结束。其请求事实显式携带 `thread_evaluation_policy_revision`
+（包括 null）；只有实际请求修订早于当前 Thread 控制标记，才可释放这个旧
+模型资源等待。必须同时核对 Context、Agent、Session、Principal、primary
+root、Thread generation、Activation 和原 Evaluation；不改 Objective 的
+显式设置，不递归修改或唤醒 infer／显式子任务。
+
+等待的权威仍是 `scheduler_dependencies`。既有 Kernel `ControlObjective`
+把 header `causation_id` 传入原 `update_objective_state` 存储事务；新产生的
+pending 依赖在原 metadata 写入 `cause_event_id`，与 Objective CAS 同提交。
+不新增表、索引、轮询或模型请求，不依赖提交后才追加的诊断 Event。直接调用
+没有真实因果时传 null，不伪造失败来源；旧依赖不回填推测值。
+
+同 ResourceAvailable wait 的新 cause 取消旧依赖，并以新 Objective revision 建立新依赖代次；
+同 cause 的重复更新保持原边，不制造第二个等待。新请求使用当前策略后失败，
+不能被迟到的旧配置通知释放。Supervisor 从确切 dependency cause 读取真实
+失败 Event；缺失、错误作用域、非 primary、已换代或请求 marker 相同时保持
+等待。SQLite/PostgreSQL 共享这一原子语义；remote-store 沿实际 trait 生成
+接线，不引入旧签名别名或兼容执行分支。验证须覆盖两提交顺序、同 wait
+新旧 cause、无通知重开恢复、CAS 冲突及非 primary／新代次反例。
+
+旧投影 backfill 只补当前 owner generation、kind／key 没有任何结构边的记录；
+已有 pending、satisfied 或 cancelled 边都保持原样，不能因为显示 revision
+增加而重造等待或复活已结束依赖。缺少新边的旧坏状态保留供既有一致性诊断，
+不在迁移中猜造新的因果事实。
+
+### 周期调度模板与真实任务组等待
+
+原应用只读核对发现，误复制模型的旧 Thread 是周期调度模板，并非 Objective
+当前代次的 primary Execution Thread。Objective 仍在等待真实、未完成的自有
+Thread Group；不能把这个结构等待当成 Provider 故障等待清除，也不能强制提前
+触发调度。修正仅作用于已确认误复制的模板模型／推理覆盖，保留原 Thread、
+Group、Schedule 身份与触发时间。Schedule 自己显式设置的 `high` 不受影响。
+
+周期调度的每次实际触发创建独立 occurrence Thread；它取 Schedule 的显式选择，
+再取模板选择，缺省字段才继承同一 Session。模板的 operator 控制标记不会复制到
+新 occurrence。回归必须经过实际 Runtime + Scheduler，证明清除模板选择本身
+不发起请求、不改变定时器，而原定时触发只请求一次新模型且仍使用显式 `high`。

@@ -47,27 +47,27 @@ use crate::memory::{
     NewThreadGroupPlan, NewThreadSignal, NewWorkAssignment, NodePairingCodeError,
     NodePairingCodeErrorKind, ObjectiveCompletionIntent, ObjectiveMutation,
     ObjectiveReadinessCounts, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryEntry,
-    PrincipalDirectoryPage, PrincipalRecord, ProviderAccountAffinityRecord,
-    ProviderAccountStateMutation, ProviderAccountStateRecord, ProviderAccountStateStore,
-    ProviderAccountStatus, ProviderModelCatalogRecord, ProviderModelCatalogStore,
-    ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState, SessionAttentionUpdate,
-    SessionContextSharing, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionSignalClaim,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, StorageMaintenanceReport,
-    StorageMaintenanceStore, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy, ThreadGroupRecord,
-    ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle, ThreadLifetime,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation, ThreadPromotionRecord,
-    ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore,
-    ThreadSupervision, ThreadSupervisorKind, TimerStore, TransientStorageRetention,
-    WorkAssignmentCreateResult, WorkAssignmentMutation, WorkAssignmentMutationResult,
-    WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
+    ObjectiveStore, ObjectiveWaitCondition, ObjectiveWaitProvenance, PairExecutionNode,
+    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord,
+    ProviderAccountAffinityRecord, ProviderAccountStateMutation, ProviderAccountStateRecord,
+    ProviderAccountStateStore, ProviderAccountStatus, ProviderModelCatalogRecord,
+    ProviderModelCatalogStore, ProviderRefreshLeaseRecord, ProviderRouteAccountStateRecord,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallDocumentSearchRequest, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, ScheduleStore, ScheduledObjectiveWaitBinding, SessionAttentionState,
+    SessionAttentionUpdate, SessionContextSharing, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionSignalClaim, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    StorageMaintenanceReport, StorageMaintenanceStore, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
+    ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadKind, ThreadLifecycle,
+    ThreadLifetime, ThreadMutation, ThreadOutcomeRecord, ThreadPromotionMutation,
+    ThreadPromotionRecord, ThreadPromotionRequest, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention, WorkAssignmentCreateResult, WorkAssignmentMutation,
+    WorkAssignmentMutationResult, WorkAssignmentRecord, WorkAssignmentStatus, WorkAssignmentStore,
     DEFAULT_THREAD_SIGNAL_BATCH_LIMIT,
 };
 use crate::memory::{ObjectiveActivationAdmission, ObjectiveApprovalWait};
@@ -83,7 +83,7 @@ use chrono::{DateTime, Utc};
 use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{Acquire, ConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -2170,6 +2170,7 @@ impl SqliteStore {
         checkpoint_schema.commit().await?;
         sqlx::query("CREATE TRIGGER IF NOT EXISTS objective_approval_wait_invalidated AFTER UPDATE OF status, active_evaluation_id, generation ON objectives BEGIN DELETE FROM objective_approval_waits WHERE objective_id = NEW.id AND (NEW.status <> 'active' OR NEW.active_evaluation_id IS NULL OR evaluation_id <> NEW.active_evaluation_id OR objective_generation <> NEW.generation); END")
             .execute(&pool).await?;
+        migrate_thread_evaluation_policy_control(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -2783,6 +2784,52 @@ async fn begin_immediate_sqlite_transaction(
     pool: &SqlitePool,
 ) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
     pool.begin_with("BEGIN IMMEDIATE").await
+}
+
+async fn migrate_thread_evaluation_policy_control(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The absence check and additive DDL share the same writer reservation.
+    // Otherwise two processes reopening an old database can both observe the
+    // missing column and the second ALTER fails with a duplicate-column error.
+    let mut migration = begin_immediate_sqlite_transaction(pool).await?;
+    let columns = sqlx::query("PRAGMA table_info(threads)")
+        .fetch_all(&mut *migration)
+        .await?;
+    if !columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "evaluation_policy_revision")
+    {
+        sqlx::query("ALTER TABLE threads ADD COLUMN evaluation_policy_revision INTEGER CHECK(evaluation_policy_revision IS NULL OR (evaluation_policy_revision >= 1 AND evaluation_policy_revision <= revision))")
+            .execute(&mut *migration).await?;
+    }
+    migration.commit().await?;
+    reset_startup_sqlite_statement_metadata(pool).await?;
+    Ok(())
+}
+
+async fn reset_startup_sqlite_statement_metadata(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    // Only initialization owns this pool; it has not been published to Runtime
+    // callers. SQLx caches SELECT * column descriptions, while SQLite can
+    // reprepare that VM after additive DDL without updating SQLx's description.
+    // Hold every existing connection so clearing cannot repeatedly visit only
+    // the same idle connection. Keep the connections and normal runtime cache.
+    let mut connections = Vec::with_capacity(pool.size() as usize);
+    for _ in 0..pool.size() {
+        connections.push(pool.acquire().await?);
+    }
+    for connection in &mut connections {
+        // A connection can also retain SQLite's old schema until a VM steps.
+        // Step a fixed-shape query first: sqlite3_step may reprepare safely
+        // without changing this single integer column. Then discard SQLx's
+        // old column descriptions before any wildcard domain query runs.
+        sqlx::query_scalar::<_, i64>("SELECT 1 FROM sqlite_schema LIMIT 1")
+            .persistent(false)
+            .fetch_optional(&mut **connection)
+            .await?;
+        connection.clear_cached_statements().await?;
+    }
+    Ok(())
 }
 
 const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
@@ -16536,6 +16583,58 @@ impl ThreadStore for SqliteStore {
         })
     }
 
+    async fn update_thread_evaluation_policy(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        selection: &crate::model_selection::ModelSelection,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mut selection = selection.clone();
+        selection.normalize()?;
+        let row = sqlx::query(
+            r#"UPDATE threads SET revision = revision + 1, evaluation_policy_revision = revision + 1,
+               model_alias = ?, reasoning_effort = ?, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'open' RETURNING *"#,
+        )
+        .bind(selection.model)
+        .bind(selection.reasoning_effort)
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = row {
+            return Ok(ThreadMutation::Updated(thread_from_row(&row)?));
+        }
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
+        })
+    }
+
+    async fn get_thread_evaluation_policy(
+        &self,
+        id: &str,
+    ) -> Result<
+        Option<crate::memory::ThreadEvaluationPolicyState>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(|row| {
+            Ok(crate::memory::ThreadEvaluationPolicyState {
+                thread: thread_from_row(&row)?,
+                control_revision: row
+                    .try_get::<Option<i64>, _>("evaluation_policy_revision")?
+                    .map(u64::try_from)
+                    .transpose()?,
+            })
+        })
+        .transpose()
+    }
+
     async fn control_thread(
         &self,
         id: &str,
@@ -17567,7 +17666,7 @@ async fn insert_objective_wait_dependency_in_transaction(
     wait: &ObjectiveWaitCondition,
     fallback_dependency_generation: u64,
     now: &str,
-    source: &str,
+    provenance: ObjectiveWaitProvenance<'_>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (kind, dependency_id) = objective_wait_dependency_key(wait);
     let dependency_generation = objective_wait_dependency_generation_in_transaction(
@@ -17599,7 +17698,10 @@ async fn insert_objective_wait_dependency_in_transaction(
     .bind(kind.as_str())
     .bind(dependency_id)
     .bind(i64::try_from(dependency_generation)?)
-    .bind(serde_json::json!({"source": source, "wait": wait}).to_string())
+    .bind(
+        serde_json::json!({"source": provenance.source, "wait": wait, "cause_event_id": provenance.cause_event_id})
+            .to_string(),
+    )
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -17630,24 +17732,41 @@ async fn cancel_objective_wait_dependencies_in_transaction(
 async fn backfill_objective_wait_dependencies(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut tx = begin_immediate_sqlite_transaction(pool).await?;
     let rows = sqlx::query(
         r#"SELECT id, revision, generation, wait_condition_json
            FROM objectives
            WHERE status = 'active' AND wait_condition_json IS NOT NULL"#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     if rows.is_empty() {
         return Ok(());
     }
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-    let mut tx = pool.begin().await?;
     for row in rows {
         let objective_id: String = row.get("id");
         let objective_revision = u64::try_from(row.get::<i64, _>("revision"))?;
         let objective_generation = u64::try_from(row.get::<i64, _>("generation"))?;
         let encoded: String = row.get("wait_condition_json");
         let wait = serde_json::from_str::<ObjectiveWaitCondition>(&encoded)?;
+        let (kind, dependency_id) = objective_wait_dependency_key(&wait);
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scheduler_dependencies WHERE owner_kind = 'objective' AND owner_id = ? AND owner_generation = ? AND dependency_kind = ? AND dependency_id = ?)")
+            .bind(&objective_id).bind(i64::try_from(objective_generation)?)
+            .bind(kind.as_str()).bind(&dependency_id).fetch_one(&mut *tx).await?;
+        if exists {
+            // Structured facts, including satisfied/cancelled edges, are
+            // authoritative. A newer display revision is not a new wait.
+            let has_pending_or_satisfied: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM scheduler_dependencies WHERE owner_kind = 'objective' AND owner_id = ? AND owner_generation = ? AND dependency_kind = ? AND dependency_id = ? AND status != 'cancelled')")
+                .bind(&objective_id).bind(i64::try_from(objective_generation)?)
+                .bind(kind.as_str()).bind(&dependency_id).fetch_one(&mut *tx).await?;
+            if !has_pending_or_satisfied {
+                tracing::warn!(objective_id, objective_generation, dependency_id,
+                    event_code = "objective.wait_backfill.cancelled_dependency_only",
+                    "Objective wait display has only cancelled dependencies; preserving structural facts for operator diagnosis");
+            }
+            continue;
+        }
         insert_objective_wait_dependency_in_transaction(
             &mut tx,
             &objective_id,
@@ -17655,7 +17774,10 @@ async fn backfill_objective_wait_dependencies(
             &wait,
             objective_revision,
             &now,
-            "legacy_wait_backfill",
+            ObjectiveWaitProvenance {
+                source: "legacy_wait_backfill",
+                cause_event_id: None,
+            },
         )
         .await?;
     }
@@ -21240,6 +21362,7 @@ impl ObjectiveStore for SqliteStore {
         status: ObjectiveStatus,
         wait_condition: Option<ObjectiveWaitCondition>,
         reason: Option<&str>,
+        cause_event_id: Option<&str>,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
         let Some(current) = self.get_objective(id).await? else {
             return Ok(ObjectiveMutation::NotFound);
@@ -21268,7 +21391,7 @@ impl ObjectiveStore for SqliteStore {
         let resume_new_generation =
             current.status != ObjectiveStatus::Active && status == ObjectiveStatus::Active;
         let next_generation = current.generation + u64::from(resume_new_generation);
-        let wait_changed = resume_new_generation
+        let mut wait_changed = resume_new_generation
             || current.status != status
             || current.wait_condition != wait_condition;
         let mut tx = self.pool.begin().await?;
@@ -21290,6 +21413,32 @@ impl ObjectiveStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
+            // The successful Objective CAS holds the writer slot. Compare
+            // the pending cause in this same transaction, not before it.
+            if !wait_changed
+                && status == ObjectiveStatus::Active
+                && matches!(
+                    wait_condition,
+                    Some(ObjectiveWaitCondition::ResourceAvailable { .. })
+                )
+            {
+                if let Some(wait) = wait_condition.as_ref() {
+                    let (kind, dependency_id) = objective_wait_dependency_key(wait);
+                    let metadata: Option<String> = sqlx::query_scalar(
+                        "SELECT metadata_json FROM scheduler_dependencies WHERE owner_kind = 'objective' AND owner_id = ? AND owner_generation = ? AND dependency_kind = ? AND dependency_id = ? AND required = 1 AND status = 'pending' ORDER BY dependency_generation DESC LIMIT 1",
+                    ).bind(id).bind(i64::try_from(current.generation)?)
+                        .bind(kind.as_str()).bind(dependency_id).fetch_optional(&mut *tx).await?;
+                    let previous = metadata
+                        .as_deref()
+                        .map(serde_json::from_str::<JsonValue>)
+                        .transpose()?;
+                    wait_changed = previous
+                        .as_ref()
+                        .and_then(|value| value.get("cause_event_id"))
+                        .and_then(JsonValue::as_str)
+                        != cause_event_id;
+                }
+            }
             if status != ObjectiveStatus::Active {
                 sqlx::query(
                     r#"UPDATE schedules
@@ -21326,7 +21475,10 @@ impl ObjectiveStore for SqliteStore {
                         wait,
                         u64::try_from(expected_revision)? + 1,
                         &now,
-                        "objective_state_transition",
+                        ObjectiveWaitProvenance {
+                            source: "objective_state_transition",
+                            cause_event_id,
+                        },
                     )
                     .await?;
                 }
@@ -28554,6 +28706,313 @@ mod tests {
             .bind_session_principal(session_id, principal_id)
             .await
             .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thread_evaluation_policy_migration_serializes_independent_connections() {
+        let database = TempSqliteDb::new().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(database.path())
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Duration::from_secs(5));
+        let first = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options.clone())
+            .await
+            .unwrap();
+        let second = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE threads (id TEXT PRIMARY KEY, revision INTEGER NOT NULL, model_alias TEXT, reasoning_effort TEXT)")
+            .execute(&first).await.unwrap();
+        sqlx::query("INSERT INTO threads VALUES ('untouched', 7, 'old-route', 'max')")
+            .execute(&first)
+            .await
+            .unwrap();
+        // Make stale metadata deterministic on both independent connections;
+        // the full-suite regression used to depend on which idle one was reused.
+        for pool in [&first, &second] {
+            let mut readers = Vec::new();
+            for _ in 0..2 {
+                let mut connection = pool.acquire().await.unwrap();
+                let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+                    .bind("untouched")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .unwrap();
+                assert_eq!(row.len(), 4);
+                readers.push(connection);
+            }
+        }
+        assert_eq!((first.size(), second.size()), (2, 2));
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let start = |pool: SqlitePool| {
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                migrate_thread_evaluation_policy_control(&pool).await
+            })
+        };
+        let a = start(first.clone());
+        let b = start(second.clone());
+        barrier.wait().await;
+        for task in [a, b] {
+            tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .expect("both migrations must finish")
+                .unwrap()
+                .unwrap();
+        }
+        let columns = sqlx::query("PRAGMA table_info(threads)")
+            .fetch_all(&first)
+            .await
+            .unwrap();
+        assert_eq!(
+            columns
+                .iter()
+                .filter(|row| row.get::<String, _>("name") == "evaluation_policy_revision")
+                .count(),
+            1
+        );
+        let row: (i64, String, String, Option<i64>) = sqlx::query_as(
+            "SELECT revision, model_alias, reasoning_effort, evaluation_policy_revision FROM threads WHERE id = 'untouched'")
+            .fetch_one(&second).await.unwrap();
+        assert_eq!(row, (7, "old-route".into(), "max".into(), None));
+        for pool in [&first, &second] {
+            let mut readers = Vec::new();
+            for _ in 0..2 {
+                let mut connection = pool.acquire().await.unwrap();
+                let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+                    .bind("untouched")
+                    .fetch_one(&mut *connection)
+                    .await
+                    .unwrap();
+                assert_eq!(row.len(), 5);
+                assert!(row
+                    .get::<Option<i64>, _>("evaluation_policy_revision")
+                    .is_none());
+                readers.push(connection);
+            }
+        }
+        assert_eq!((first.size(), second.size()), (2, 2));
+        first.close().await;
+        second.close().await;
+    }
+
+    #[tokio::test]
+    async fn thread_evaluation_policy_wait_requires_exact_older_request_proof() {
+        let database = TempSqliteDb::new().unwrap();
+        let store = SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let (_, _, threads) = seed_delivery_fixture(&store, "policy-wait-proof", 1).await;
+        let thread = &threads[0];
+        store
+            .update_thread_evaluation_policy(
+                &thread.id,
+                thread.revision,
+                &crate::model_selection::ModelSelection::default(),
+            )
+            .await
+            .unwrap();
+        let policy = store
+            .get_thread_evaluation_policy(&thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let wait = Event::new("policy-wait".into(), "Runtime-Orchestrator".into(),
+            "agent_call".into(), "runtime/provider_wait".into(), serde_json::json!({
+                "disposition": "provider_wait", "context_id": thread.context_id,
+                "session_id": thread.session_id, "thread_id": thread.id,
+                "thread_generation": thread.generation, "activation_id": "request-a",
+                "provider_resource": "model-provider:old", "thread_evaluation_policy_revision": null,
+            }).as_object().unwrap().clone());
+        let dependency = crate::scheduler::SchedulerDependencyRecord {
+            id: "policy-dependency".into(),
+            owner_kind: SchedulerDependencyOwnerKind::Thread,
+            owner_id: thread.id.clone(),
+            owner_generation: thread.generation,
+            dependency_kind: SchedulerDependencyKind::Resource,
+            dependency_id: "model-provider:old".into(),
+            dependency_generation: 1,
+            required: true,
+            status: SchedulerDependencyStatus::Pending,
+            metadata: serde_json::json!({"source":"provider_wait", "wait_event_id":wait.id,
+                "activation_id":"request-a"}),
+            satisfied_by_event_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            satisfied_at: None,
+        };
+        assert!(policy.supersedes_provider_wait(&dependency, &wait));
+        let mut missing = wait.clone();
+        missing.payload.remove("thread_evaluation_policy_revision");
+        assert!(!policy.supersedes_provider_wait(&dependency, &missing));
+        for revision in [
+            serde_json::json!("invalid"),
+            serde_json::json!(policy.control_revision.unwrap()),
+            serde_json::json!(policy.control_revision.unwrap() + 1),
+        ] {
+            let mut current = wait.clone();
+            current
+                .payload
+                .insert("thread_evaluation_policy_revision".into(), revision);
+            assert!(!policy.supersedes_provider_wait(&dependency, &current));
+        }
+        for (field, value) in [
+            ("thread_id", serde_json::json!("other-thread")),
+            (
+                "thread_generation",
+                serde_json::json!(thread.generation + 1),
+            ),
+            ("session_id", serde_json::json!("other-session")),
+            ("context_id", serde_json::json!("other-context")),
+            ("activation_id", serde_json::json!("other-request")),
+            ("provider_resource", serde_json::json!("other-provider")),
+        ] {
+            let mut foreign = wait.clone();
+            foreign.payload.insert(field.into(), value);
+            assert!(
+                !policy.supersedes_provider_wait(&dependency, &foreign),
+                "{field}"
+            );
+        }
+        let mut paused = policy.clone();
+        paused.thread.control_state = ThreadControlState::Paused;
+        assert!(!paused.supersedes_provider_wait(&dependency, &wait));
+        let mut settled = dependency.clone();
+        settled.status = SchedulerDependencyStatus::Satisfied;
+        assert!(!policy.supersedes_provider_wait(&settled, &wait));
+        store.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn thread_evaluation_policy_upgrade_and_reopen_preserve_old_and_controlled_rows() {
+        let database = TempSqliteDb::new().unwrap();
+        let path = database.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+        let (_, session_id, threads) = seed_delivery_fixture(&store, "policy-upgrade", 2).await;
+        // This synthetic old row has a task choice but no operator-control
+        // marker. Migration must not reinterpret or clear that choice.
+        sqlx::query(
+            "UPDATE threads SET model_alias = 'old-route', reasoning_effort = 'max' WHERE id = ?",
+        )
+        .bind(&threads[0].id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let before = store.get_thread(&threads[0].id).await.unwrap().unwrap();
+        let sibling = store.get_thread(&threads[1].id).await.unwrap().unwrap();
+        let session = store.get_session(&session_id).await.unwrap().unwrap();
+        let schedule = store
+            .ensure_schedule(NewSchedule {
+                id: "policy-upgrade-schedule".into(),
+                thread_id: before.id.clone(),
+                source_turn_id: before.root_turn_id.clone(),
+                intent: "TEST retain explicit scheduled high".into(),
+                model_alias: None,
+                reasoning_effort: Some("high".into()),
+                not_before: Some(Utc::now() + chrono::Duration::hours(1)),
+                interval_seconds: Some(3600),
+                dependency_thread_ids: vec![],
+            })
+            .await
+            .unwrap();
+        sqlx::query("ALTER TABLE threads DROP COLUMN evaluation_policy_revision")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.pool.close().await;
+        drop(store);
+
+        let upgraded = SqliteStore::new(path).await.unwrap();
+        let original = upgraded
+            .get_thread_evaluation_policy(&before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.thread, before);
+        assert_eq!(
+            original.control_revision, None,
+            "legacy rows must not be marked controlled"
+        );
+        assert_eq!(
+            upgraded.get_thread(&sibling.id).await.unwrap().unwrap(),
+            sibling
+        );
+        assert_eq!(
+            upgraded.get_session(&session_id).await.unwrap().unwrap(),
+            session
+        );
+        assert_eq!(
+            serde_json::to_value(upgraded.get_schedule(&schedule.id).await.unwrap().unwrap())
+                .unwrap(),
+            serde_json::to_value(&schedule).unwrap()
+        );
+        let cleared = match upgraded
+            .update_thread_evaluation_policy(
+                &before.id,
+                before.revision,
+                &crate::model_selection::ModelSelection::default(),
+            )
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("expected policy clear: {other:?}"),
+        };
+        let mut expected = before.clone();
+        expected.revision = cleared.revision;
+        expected.updated_at = cleared.updated_at;
+        expected.model_alias = None;
+        expected.reasoning_effort = None;
+        assert_eq!(cleared, expected);
+        upgraded.pool.close().await;
+        drop(upgraded);
+
+        let reopened = SqliteStore::new(path).await.unwrap();
+        let persisted = reopened
+            .get_thread_evaluation_policy(&before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.thread, cleared);
+        assert_eq!(persisted.control_revision, Some(cleared.revision));
+        assert!(matches!(
+            reopened
+                .update_thread_evaluation_policy(
+                    &before.id,
+                    before.revision,
+                    &crate::model_selection::ModelSelection {
+                        model: Some("stale-route".into()),
+                        reasoning_effort: Some("high".into()),
+                    },
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Conflict { .. }
+        ));
+        assert_eq!(
+            reopened.get_thread(&sibling.id).await.unwrap().unwrap(),
+            sibling
+        );
+        assert_eq!(
+            reopened
+                .get_thread_evaluation_policy(&sibling.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .control_revision,
+            None
+        );
+        assert_eq!(
+            serde_json::to_value(reopened.get_schedule(&schedule.id).await.unwrap().unwrap())
+                .unwrap(),
+            serde_json::to_value(schedule).unwrap()
+        );
+        reopened.pool.close().await;
     }
 
     #[test]
@@ -40571,6 +41030,7 @@ mod tests {
                     task_id: "task-1".to_string(),
                 }),
                 Some("等待后台任务完成"),
+                None,
             )
             .await
             .unwrap();
@@ -40642,6 +41102,7 @@ mod tests {
                 ObjectiveStatus::Paused,
                 None,
                 Some("等待使用者决定"),
+                None,
             )
             .await
             .unwrap();
@@ -40667,6 +41128,7 @@ mod tests {
                 ObjectiveStatus::Completed,
                 None,
                 Some("不允许从暂停直接完成"),
+                None,
             )
             .await
             .is_err());
@@ -40678,6 +41140,7 @@ mod tests {
                 ObjectiveStatus::Active,
                 None,
                 Some("使用者要求继续"),
+                None,
             )
             .await
             .unwrap();
@@ -40692,6 +41155,7 @@ mod tests {
                 ObjectiveStatus::Completed,
                 None,
                 Some("验收完成"),
+                None,
             )
             .await
             .unwrap();
@@ -40710,6 +41174,7 @@ mod tests {
                 ObjectiveStatus::Active,
                 None,
                 Some("终态不可恢复"),
+                None,
             )
             .await
             .is_err());
@@ -40793,6 +41258,7 @@ mod tests {
                 ObjectiveStatus::Completed,
                 None,
                 Some("usage 验收完成"),
+                None,
             )
             .await
             .unwrap();

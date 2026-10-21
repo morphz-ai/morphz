@@ -337,6 +337,7 @@ async fn objective_update_finished_job_does_not_override_a_newer_revision() {
             ObjectiveStatus::Paused,
             None,
             Some("user paused"),
+            None,
         )
         .await
         .unwrap()

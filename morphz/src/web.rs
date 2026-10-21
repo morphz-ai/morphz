@@ -592,6 +592,22 @@ struct SupersedeThreadRequest {
     reason: Option<String>,
 }
 
+fn required_nullable_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    serde::Deserialize::deserialize(deserializer)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetThreadEvaluationPolicyRequest {
+    expected_revision: u64,
+    #[serde(deserialize_with = "required_nullable_string")]
+    model_alias: Option<String>,
+    #[serde(deserialize_with = "required_nullable_string")]
+    reasoning_effort: Option<String>,
+}
+
 #[derive(serde::Deserialize)]
 struct MutateExecutionTargetRequest {
     expected_revision: u64,
@@ -1435,6 +1451,10 @@ impl Server {
             .route(
                 "/api/contexts/:context_id/threads/:thread_id/supersede",
                 post(handle_supersede_thread),
+            )
+            .route(
+                "/api/contexts/:context_id/threads/:thread_id/evaluation-policy",
+                get(handle_get_thread_evaluation_policy).post(handle_set_thread_evaluation_policy),
             )
             .route(
                 "/api/contexts/:context_id/events",
@@ -6530,6 +6550,53 @@ async fn handle_control_thread(
         Ok(ThreadMutation::NotFound) => {
             error_response(StatusCode::NOT_FOUND, "Thread does not exist")
         }
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_get_thread_evaluation_policy(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state
+        .sdk
+        .thread_evaluation_policy_as_operator(&context_id, &thread_id)
+        .await
+    {
+        Ok(Some(policy)) => Json(policy).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Thread does not exist"),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_set_thread_evaluation_policy(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<SetThreadEvaluationPolicyRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state.sdk.set_thread_evaluation_policy_as_operator(
+        &context_id, &thread_id, request.expected_revision,
+        crate::model_selection::ModelSelection {
+            model: request.model_alias,
+            reasoning_effort: request.reasoning_effort,
+        },
+    ).await {
+        Ok(ThreadMutation::Updated(thread)) => Json(json!({"updated": true, "thread": thread})).into_response(),
+        Ok(ThreadMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Thread revision or lifecycle conflict; read the current policy", "current": current})),
+        ).into_response(),
+        Ok(ThreadMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Thread does not exist"),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -19690,6 +19757,189 @@ account = "xai-account"
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["outcome"], "conflict");
         assert_eq!(payload["schedule"]["status"], "paused");
+    }
+
+    #[test]
+    fn thread_evaluation_policy_requires_complete_strict_nullable_settings() {
+        assert!(
+            serde_json::from_value::<SetThreadEvaluationPolicyRequest>(json!({
+                "expected_revision":1,"model_alias":null,"reasoning_effort":null
+            }))
+            .is_ok()
+        );
+        for value in [
+            json!({"expected_revision":1}),
+            json!({"expected_revision":1,"model_alias":null}),
+            json!({"expected_revision":1,"reasoning_effort":null}),
+            json!({"expected_revision":1,"model_alias":false,"reasoning_effort":null}),
+            json!({"expected_revision":1,"model_alias":null,"reasoning_effort":null,"intent":"not allowed"}),
+        ] {
+            assert!(serde_json::from_value::<SetThreadEvaluationPolicyRequest>(value).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn thread_evaluation_policy_endpoint_is_operator_only_scoped_and_revision_fenced() {
+        use crate::memory::sqlite::SqliteStore;
+        use crate::memory::{NewThread, ThreadStore};
+        let (_database, mut state, runtime) = test_state().await;
+        {
+            let state = Arc::get_mut(&mut state).unwrap();
+            state.auth_token = Some("test-policy-operator".into());
+            state.gateway_token = Some("test-policy-gateway".into());
+            state.identity.mode = ServerIdentityMode::TrustedGateway;
+        }
+        runtime
+            .ensure_session(NewSession {
+                id: "api-policy-session".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "TEST task policy".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let store = SqliteStore::new(runtime.sqlite_database_path().unwrap())
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                response_annotations: crate::response_annotations::Protocol::On,
+                model_alias: Some("fixture-model".into()),
+                reasoning_effort: Some("max".into()),
+                id: "api-policy-thread".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "api-policy-session".into(),
+                initiating_principal_id: None,
+                root_turn_id: "api-policy-root".into(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: crate::memory::ThreadSupervision::legacy(),
+            })
+            .await
+            .unwrap();
+        let request = || SetThreadEvaluationPolicyRequest {
+            expected_revision: thread.revision,
+            model_alias: None,
+            reasoning_effort: None,
+        };
+        for token in [None, Some("test-policy-gateway"), Some("invalid")] {
+            let mut headers = HeaderMap::new();
+            if let Some(token) = token {
+                headers.insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
+            }
+            let response = handle_set_thread_evaluation_policy(
+                State(state.clone()),
+                Path((thread.context_id.clone(), thread.id.clone())),
+                headers.clone(),
+                Query(AuthQuery::default()),
+                Json(request()),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            let response = handle_get_thread_evaluation_policy(
+                State(state.clone()),
+                Path((thread.context_id.clone(), thread.id.clone())),
+                headers,
+                Query(AuthQuery::default()),
+            )
+            .await
+            .into_response();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(store.get_thread(&thread.id).await.unwrap().unwrap(), thread);
+        }
+        let mut operator = HeaderMap::new();
+        operator.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-policy-operator"),
+        );
+        let wrong = handle_set_thread_evaluation_policy(
+            State(state.clone()),
+            Path(("foreign-context".into(), thread.id.clone())),
+            operator.clone(),
+            Query(AuthQuery::default()),
+            Json(request()),
+        )
+        .await
+        .into_response();
+        assert_eq!(wrong.status(), StatusCode::NOT_FOUND);
+        for (model, effort) in [
+            (Some("not-enabled"), None),
+            (None, Some("turbo")),
+            (Some(" "), None),
+        ] {
+            let invalid = handle_set_thread_evaluation_policy(
+                State(state.clone()),
+                Path((thread.context_id.clone(), thread.id.clone())),
+                operator.clone(),
+                Query(AuthQuery::default()),
+                Json(SetThreadEvaluationPolicyRequest {
+                    expected_revision: thread.revision,
+                    model_alias: model.map(str::to_string),
+                    reasoning_effort: effort.map(str::to_string),
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(store.get_thread(&thread.id).await.unwrap().unwrap(), thread);
+        }
+        let updated = handle_set_thread_evaluation_policy(
+            State(state.clone()),
+            Path((thread.context_id.clone(), thread.id.clone())),
+            operator.clone(),
+            Query(AuthQuery::default()),
+            Json(request()),
+        )
+        .await
+        .into_response();
+        assert_eq!(updated.status(), StatusCode::OK);
+        let current = store
+            .get_thread_evaluation_policy(&thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.control_revision, Some(thread.revision + 1));
+        assert_eq!(current.thread.model_alias, None);
+        assert_eq!(current.thread.reasoning_effort, None);
+        assert_eq!(current.thread.generation, thread.generation);
+        assert_eq!(current.thread.root_turn_id, thread.root_turn_id);
+        let stale = handle_set_thread_evaluation_policy(
+            State(state.clone()),
+            Path((thread.context_id.clone(), thread.id.clone())),
+            operator.clone(),
+            Query(AuthQuery::default()),
+            Json(request()),
+        )
+        .await
+        .into_response();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let read = handle_get_thread_evaluation_policy(
+            State(state),
+            Path((thread.context_id.clone(), thread.id.clone())),
+            operator,
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(read.status(), StatusCode::OK);
+        let value: Value = serde_json::from_slice(
+            &axum::body::to_bytes(read.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["control_revision"], json!(current.control_revision));
+        assert_eq!(value["thread"]["revision"], json!(current.thread.revision));
+        assert_eq!(value["thread"]["model_alias"], Value::Null);
     }
 
     #[tokio::test]

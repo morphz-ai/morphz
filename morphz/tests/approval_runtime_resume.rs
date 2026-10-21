@@ -547,6 +547,7 @@ async fn approval_runtime_child() {
                     status,
                     None,
                     Some("synthetic exit before Evaluation release"),
+                    None,
                 )
                 .await
                 .unwrap()

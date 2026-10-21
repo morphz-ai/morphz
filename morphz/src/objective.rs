@@ -9,8 +9,8 @@ use crate::memory::{
     ExecutionJobRecord, ExecutionJobStore, NewObjective, NewRuntimeTimer, NewThread,
     ObjectiveMutation, ObjectiveRecord, ObjectiveRecoveryCursor, ObjectiveStatus, ObjectiveStore,
     ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadGroupFilter, ThreadGroupStore,
-    ThreadKind, ThreadStore, ThreadSupervision, ThreadSupervisorKind,
+    SessionDirectoryStore, ThreadActivationMutation, ThreadActivationStatus, ThreadGroupFilter,
+    ThreadGroupStore, ThreadKind, ThreadStore, ThreadSupervision, ThreadSupervisorKind,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::scheduler::{
@@ -1454,6 +1454,7 @@ pub struct ObjectiveSupervisor {
     execution_jobs: Option<Arc<dyn ExecutionJobStore>>,
     delegations: Option<Arc<dyn DelegationStore>>,
     thread_store: Option<Arc<dyn ThreadStore>>,
+    session_store: Option<Arc<dyn SessionDirectoryStore>>,
     thread_groups: Option<Arc<dyn ThreadGroupStore>>,
     activation_store: Option<Arc<dyn ActivationStore>>,
     scheduler_dependencies: Option<Arc<dyn SchedulerDependencyStore>>,
@@ -1614,6 +1615,7 @@ impl ObjectiveSupervisor {
             execution_jobs: None,
             delegations: None,
             thread_store: None,
+            session_store: None,
             thread_groups: None,
             activation_store: None,
             scheduler_dependencies: None,
@@ -1654,6 +1656,11 @@ impl ObjectiveSupervisor {
     /// Objective whose immutable primary route can no longer accept work.
     pub fn with_thread_store(mut self, store: Arc<dyn ThreadStore>) -> Self {
         self.thread_store = Some(store);
+        self
+    }
+
+    pub fn with_session_store(mut self, store: Arc<dyn SessionDirectoryStore>) -> Self {
+        self.session_store = Some(store);
         self
     }
 
@@ -1728,6 +1735,7 @@ impl ObjectiveSupervisor {
                 status,
                 wait_condition,
                 reason,
+                Some(causation_id),
             )
             .await
     }
@@ -2700,6 +2708,12 @@ impl ObjectiveSupervisor {
             return Ok(());
         };
         if objective.status == ObjectiveStatus::Active {
+            if let Some(released) = self
+                .release_obsolete_primary_policy_wait(&objective)
+                .await?
+            {
+                return self.reconcile(released).await;
+            }
             if let Some(event) = self.find_persisted_wait_event(&objective).await? {
                 self.wake_non_routed_event(&event).await?;
                 return Ok(());
@@ -3834,6 +3848,11 @@ impl ObjectiveSupervisor {
             .query(QueryFilter {
                 context_id,
                 start_time: Some(objective.updated_at),
+                actors: if topic == TYPE_MODEL_CONFIGURATION_CHANGED {
+                    vec!["Runtime-ModelConfiguration".to_string()]
+                } else {
+                    Vec::new()
+                },
                 topic: Some(topic),
                 ..QueryFilter::default()
             })
@@ -3988,7 +4007,16 @@ impl ObjectiveSupervisor {
             && self
                 .model_configuration_changed_since_attempt(event)
                 .await?;
-        let (status, wait_condition, reason) = if configuration_already_changed {
+        let thread_policy_already_changed = (configuration_failure || provider_recoverable)
+            && (self
+                .primary_request_policy_changed(&objective, event)
+                .await?
+                || self
+                    .primary_session_policy_changed(&objective, event)
+                    .await?);
+        let (status, wait_condition, reason) = if configuration_already_changed
+            || thread_policy_already_changed
+        {
             (
                 ObjectiveStatus::Active,
                 None,
@@ -4032,6 +4060,9 @@ impl ObjectiveSupervisor {
             ObjectiveMutation::Updated(updated) => {
                 self.publish_state_event("runtime_failure", &updated, Some(&event.id))
                     .await?;
+                if let Some(released) = self.release_obsolete_primary_policy_wait(&updated).await? {
+                    return Ok(released);
+                }
                 // Close the remaining interleaving around the first epoch
                 // check: the configuration Event may commit after that read
                 // but before this wait/dependency transaction commits. A
@@ -4092,6 +4123,237 @@ impl ObjectiveSupervisor {
         }
     }
 
+    /// The operator controls one primary Thread, not the Objective or its
+    /// infer children. Recover only a physical request whose persisted route
+    /// and request-policy revision prove that it used an older policy.
+    async fn primary_request_policy_changed(
+        &self,
+        objective: &ObjectiveRecord,
+        event: &Event,
+    ) -> Result<bool, DynError> {
+        let Some(policy) = self.primary_request_policy(objective, event).await? else {
+            return Ok(false);
+        };
+        let Some(control_revision) = policy.control_revision else {
+            return Ok(false);
+        };
+        let request_revision = match event.payload.get("thread_evaluation_policy_revision") {
+            Some(JsonValue::Null) => None,
+            Some(value) => match value.as_u64() {
+                Some(revision) => Some(revision),
+                None => return Ok(false),
+            },
+            None => return Ok(false),
+        };
+        Ok(request_revision.is_none_or(|revision| revision < control_revision))
+    }
+
+    async fn primary_session_policy_changed(
+        &self,
+        objective: &ObjectiveRecord,
+        event: &Event,
+    ) -> Result<bool, DynError> {
+        let Some(sessions) = self.session_store.as_ref() else {
+            return Ok(false);
+        };
+        let Some(policy) = self.primary_request_policy(objective, event).await? else {
+            return Ok(false);
+        };
+        let Some(session) = sessions
+            .get_session(&objective.coordinator_session_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        Ok(session.agent_id == policy.thread.agent_id
+            && crate::memory::session_policy_replaces_failure(&session, event))
+    }
+
+    /// Prove the exact primary physical request before either task or Session
+    /// policy can replace its wait. Shared Session membership alone is not
+    /// sufficient: nested infer work has different immutable ownership.
+    async fn primary_request_policy(
+        &self,
+        objective: &ObjectiveRecord,
+        event: &Event,
+    ) -> Result<Option<crate::memory::ThreadEvaluationPolicyState>, DynError> {
+        let (Some(threads), Some(activations)) =
+            (self.thread_store.as_ref(), self.activation_store.as_ref())
+        else {
+            return Ok(None);
+        };
+        let field = |key| event.payload.get(key).and_then(JsonValue::as_str);
+        let root =
+            crate::memory::objective_primary_execution_root_id(&objective.id, objective.generation);
+        let thread_id = stable_thread_id(&root);
+        if objective.status != ObjectiveStatus::Active
+            || field("context_id") != Some(objective.context_id.as_str())
+            || field("session_id") != Some(objective.coordinator_session_id.as_str())
+            || field("objective_id") != Some(objective.id.as_str())
+            || field("thread_id") != Some(thread_id.as_str())
+            || field("root_turn_id") != Some(root.as_str())
+        {
+            return Ok(None);
+        }
+        let (Some(activation_id), Some(evaluation_id)) =
+            (field("activation_id"), field("objective_evaluation_id"))
+        else {
+            return Ok(None);
+        };
+        let Some(policy) = threads.get_thread_evaluation_policy(&thread_id).await? else {
+            return Ok(None);
+        };
+        let thread = &policy.thread;
+        if thread.agent_id != objective.agent_id
+            || thread.context_id != objective.context_id
+            || thread.session_id != objective.coordinator_session_id
+            || thread.initiating_principal_id != objective.initiating_principal_id
+            || thread.root_turn_id != root
+            || thread.kind != ThreadKind::Execution
+            || thread.executor_kind != "self"
+            || thread.supervision
+                != ThreadSupervision::objective_primary_execution(
+                    &objective.id,
+                    objective.generation,
+                )
+            || thread.lifecycle != crate::memory::ThreadLifecycle::Open
+            || thread.control_state != crate::memory::ThreadControlState::Active
+            || event
+                .payload
+                .get("thread_generation")
+                .and_then(JsonValue::as_u64)
+                != Some(thread.generation)
+        {
+            return Ok(None);
+        }
+        let Some(activation) = activations.get_thread_activation(activation_id).await? else {
+            return Ok(None);
+        };
+        if activation.root_turn_id != root
+            || activation.generation != thread.generation
+            || activation.agent_id != objective.agent_id
+            || activation.context_id != objective.context_id
+            || activation.session_id != objective.coordinator_session_id
+            || activation.initiating_principal_id != objective.initiating_principal_id
+        {
+            return Ok(None);
+        }
+        // Do not infer Evaluation ownership from a shared Session or an
+        // ephemeral registry binding, which also contains nested infer work.
+        let trigger = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(activation.trigger_event_id),
+                context_id: Some(objective.context_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await?;
+        let owns_request = trigger.first().is_some_and(|trigger| {
+            trigger
+                .payload
+                .get("objective_id")
+                .and_then(JsonValue::as_str)
+                == Some(objective.id.as_str())
+                && trigger
+                    .payload
+                    .get("objective_evaluation_id")
+                    .and_then(JsonValue::as_str)
+                    == Some(evaluation_id)
+        });
+        Ok(owns_request.then_some(policy))
+    }
+
+    /// A durable wait is recoverable only with its exact failure receipt.
+    /// Legacy waits without that proof remain untouched, even when a policy
+    /// Event or an unrelated child happens to mention the same Objective.
+    async fn release_obsolete_primary_policy_wait(
+        &self,
+        objective: &ObjectiveRecord,
+    ) -> Result<Option<ObjectiveRecord>, DynError> {
+        let Some(ObjectiveWaitCondition::ResourceAvailable { resource }) =
+            objective.wait_condition.as_ref()
+        else {
+            return Ok(None);
+        };
+        if objective.status != ObjectiveStatus::Active
+            || objective.active_evaluation_id.is_some()
+            || !(resource == MODEL_CONFIGURATION_RESOURCE
+                || resource.starts_with("model-provider:")
+                || resource.starts_with("model-route:"))
+        {
+            return Ok(None);
+        }
+        let Some(dependencies) = self.current_scheduler_dependencies(objective).await? else {
+            return Ok(None);
+        };
+        let (kind, id) = objective_wait_dependency_key(objective.wait_condition.as_ref().unwrap());
+        let Some(dependency) = dependencies.iter().find(|dependency| {
+            dependency.required
+                && dependency.status == SchedulerDependencyStatus::Pending
+                && dependency.dependency_kind == kind
+                && dependency.dependency_id == id
+        }) else {
+            return Ok(None);
+        };
+        // The cause is committed with the Objective and dependency, not by
+        // the later notification append. Never infer it for historical edges.
+        let Some(failure_id) = dependency
+            .metadata
+            .get("cause_event_id")
+            .and_then(JsonValue::as_str)
+        else {
+            return Ok(None);
+        };
+        let failures = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(failure_id.to_string()),
+                context_id: Some(objective.context_id.clone()),
+                ..QueryFilter::default()
+            })
+            .await?;
+        let Some(failure) = failures.first() else {
+            return Ok(None);
+        };
+        let failure_kind = failure
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default();
+        let failure_resource = failure
+            .payload
+            .get("wait_resource")
+            .and_then(JsonValue::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(MODEL_CONFIGURATION_RESOURCE);
+        if !(matches!(
+            failure_kind,
+            "invalid_model_or_request" | "provider_configuration"
+        ) || provider_failure_is_recoverable(failure_kind))
+            || failure_resource != resource
+            || !(self
+                .primary_request_policy_changed(objective, failure)
+                .await?
+                || self
+                    .primary_session_policy_changed(objective, failure)
+                    .await?)
+        {
+            return Ok(None);
+        }
+        // This CAS cancels only the dependency belonging to this exact wait
+        // revision. A concurrent new Evaluation/wait wins instead of being
+        // released by a delayed operator-policy notification.
+        match self.transition_objective(objective, ObjectiveStatus::Active, None,
+            Some("the primary Thread request used a replaced task or inherited Session policy; continue with its current policy"),
+            &failure.id, "ObjectiveSupervisor-ThreadPolicyRecovery").await? {
+            ObjectiveMutation::Updated(released) => {
+                self.publish_state_event("thread_policy_wait_released", &released, Some(&failure.id)).await?;
+                Ok(Some(released))
+            }
+            ObjectiveMutation::Conflict { .. } | ObjectiveMutation::NotFound => Ok(None),
+        }
+    }
+
     /// A model/configuration update may commit while an old immutable Model
     /// Attempt is still in flight. If that old request fails afterwards, the
     /// update Event necessarily predates the Objective wait transition and a
@@ -4115,6 +4377,7 @@ impl ObjectiveSupervisor {
             .query(QueryFilter {
                 start_time: Some(started_at),
                 topic: Some(TYPE_MODEL_CONFIGURATION_CHANGED.to_string()),
+                actors: vec!["Runtime-ModelConfiguration".to_string()],
                 latest_k: Some(1),
                 ..QueryFilter::default()
             })
@@ -4175,6 +4438,12 @@ impl ObjectiveSupervisor {
             }
             self.remove_external_wait_subscription(&objective.id);
             return Ok(());
+        }
+        if let Some(released) = self
+            .release_obsolete_primary_policy_wait(&objective)
+            .await?
+        {
+            return Box::pin(self.reconcile(released)).await;
         }
         if let Some(wait) = self
             .store
@@ -5724,6 +5993,10 @@ mod continuation_tests;
 mod wait_tests;
 
 #[cfg(test)]
+#[path = "objective/thread_policy_tests.rs"]
+mod thread_policy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::OrchestratorConfig;
@@ -5732,8 +6005,8 @@ mod tests {
         ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety, NewAgent,
         NewCognitiveContext, NewDelegation, NewExecutionJob, NewPrincipal, NewSession, NewThread,
         NewThreadActivation, NewThreadGroup, NewThreadGroupMember, NewThreadGroupPlan,
-        ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
-        ThreadGroupPolicy, ThreadKind, ThreadLifecycle, ThreadMutation, TimerStore,
+        ScheduleStore as _, SessionMountKind, ThreadActivationStatus, ThreadGroupPolicy,
+        ThreadKind, ThreadLifecycle, ThreadMutation, TimerStore,
     };
     use crate::scheduler::{
         stable_scheduler_dependency_id, NewSchedulerDependency, SchedulerDependencyKind,
@@ -5950,6 +6223,7 @@ mod tests {
                             deadline: Utc::now() + Duration::hours(1),
                         }),
                         Some("move updated_at without moving the recovery cursor"),
+                        None,
                     )
                     .await
                     .unwrap();
@@ -6103,6 +6377,7 @@ mod tests {
                     deadline: Utc::now() + Duration::hours(1),
                 }),
                 Some("等待下一次巡检"),
+                None,
             )
             .await
             .unwrap()
@@ -6334,6 +6609,7 @@ mod tests {
                     ObjectiveStatus::Active,
                     sibling_wait.clone(),
                     None,
+                    None,
                 )
                 .await
                 .unwrap(),
@@ -6349,6 +6625,7 @@ mod tests {
                     session_id: created.coordinator_session_id.clone(),
                 }),
                 Some("等待用户继续"),
+                None,
             )
             .await
             .unwrap()
@@ -6526,6 +6803,7 @@ mod tests {
                 ObjectiveStatus::Active,
                 Some(wait.clone()),
                 None,
+                None,
             )
             .await
             .unwrap()
@@ -6650,6 +6928,7 @@ mod tests {
                     deadline: Utc::now() + Duration::hours(1),
                 }),
                 Some("等待用户补充验收边界"),
+                None,
             )
             .await
             .unwrap()
@@ -6990,6 +7269,7 @@ mod tests {
                     resource: resource.to_string(),
                 }),
                 Some("waiting for provider"),
+                None,
             )
             .await
             .unwrap()
@@ -7084,6 +7364,7 @@ mod tests {
                     group_id: group_id.to_string(),
                 }),
                 Some("waiting for terminal group"),
+                None,
             )
             .await
             .unwrap()
@@ -7139,6 +7420,7 @@ mod tests {
                 &waiting.id,
                 waiting.revision,
                 ObjectiveStatus::Active,
+                None,
                 None,
                 None,
             )
@@ -7267,6 +7549,7 @@ mod tests {
                 ObjectiveStatus::Completed,
                 None,
                 Some("切片验证完成"),
+                None,
             )
             .await
             .unwrap();
@@ -7989,6 +8272,7 @@ mod tests {
                     correlation_id: "release-42".to_string(),
                 }),
                 Some("等待构建发布"),
+                None,
             )
             .await
             .unwrap();
@@ -8256,6 +8540,7 @@ mod tests {
                     delegation_id: delegation.id,
                 }),
                 Some("模拟委派终态与等待登记竞态"),
+                None,
             )
             .await
             .unwrap();
@@ -8316,6 +8601,7 @@ mod tests {
                     task_id: "job-from-synchronous-artifact".to_string(),
                 }),
                 Some("旧版 Runtime 接受了未经验证的 task_id"),
+                None,
             )
             .await
             .unwrap();
@@ -8402,6 +8688,7 @@ mod tests {
                 ObjectiveStatus::Active,
                 Some(ObjectiveWaitCondition::ToolTask { task_id: job.id }),
                 Some("模拟任务终态与等待登记竞态"),
+                None,
             )
             .await
             .unwrap();
