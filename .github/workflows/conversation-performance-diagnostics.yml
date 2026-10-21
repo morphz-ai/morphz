@@ -1,0 +1,59 @@
+name: Conversation performance diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    name: Linux render profile (additional projects ${{ matrix.projects }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        projects: ["0", "21"]
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Prepare only isolated presentation dependencies
+        run: |
+          printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          npm ci
+          node node_modules/electron/install.js
+          npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+          npx playwright install --with-deps chrome
+      - name: Build the exact production UI with hidden source maps
+        run: |
+          npm run build
+          npm exec --offline -- vite build --sourcemap=hidden
+      - name: Profile the unchanged history, streaming and permission contracts
+        env:
+          MORPHZ_TEST_CONVERSATION_CPU_PROFILE: "1"
+          MORPHZ_TEST_CONVERSATION_INVALIDATION_TRACE: "1"
+          MORPHZ_TEST_CONVERSATION_EXTRA_PROJECTS: ${{ matrix.projects }}
+          PLAYWRIGHT_JSON_OUTPUT_FILE: test-results/conversation-profile.playwright.json
+        run: |
+          google-chrome --version
+          npx playwright test tests/conversation-performance.spec.ts --workers=1 --retries=0 --reporter=list,json
+      - name: Preserve measurements even when the original budget fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conversation-profile-additional-projects-${{ matrix.projects }}
+          path: |
+            application/test-results/
+            application/dist/web/assets/*.map
+          if-no-files-found: error
+          retention-days: 7
