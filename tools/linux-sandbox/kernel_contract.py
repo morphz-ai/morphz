@@ -22,25 +22,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from policy import ABI, Policy, compile_profiles  # noqa: E402
 
 
-def worker(bootstrap, work):
+def worker(bootstrap, work, in_process_counterfactual=False):
     if os.getuid() == 0 or os.geteuid() == 0:
         raise PermissionError("kernel worker must never run as root")
     apparmor = ctypes.CDLL("libapparmor.so.1", use_errno=True)
-    for name, label in (("aa_change_profile", bootstrap), ("aa_stack_profile", work)):
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
+    libc.prctl.restype = ctypes.c_int
+    transitions = [("aa_stack_profile", work)]
+    if in_process_counterfactual:
+        transitions.insert(0, ("aa_change_profile", bootstrap))
+    elif Path("/proc/self/attr/current").read_text().strip() != f"{bootstrap} (enforce)":
+        raise PermissionError("worker must be exec-entered into the exact bootstrap profile")
+    if libc.prctl(38, 1, 0, 0, 0):  # PR_SET_NO_NEW_PRIVS before final stack, as in bwrap
+        raise OSError(ctypes.get_errno(), "NoNewPrivs")
+    for name, label in transitions:
         function = getattr(apparmor, name)
         function.argtypes = (ctypes.c_char_p,)
         function.restype = ctypes.c_int
         if function(label.encode()) != 0:
             failure_errno = ctypes.get_errno()
+            attr = Path("/proc/self/attr/current")
             print(json.dumps({"failed_transition": name, "target": label,
-                              "current_label": Path("/proc/self/attr/current").read_text().strip()}),
+                              "current_label": attr.read_text().strip(),
+                              "attr_uid": attr.stat().st_uid, "uid": os.geteuid(),
+                              "dumpable": libc.prctl(3, 0, 0, 0, 0)}),
                   file=sys.stderr, flush=True)
             raise OSError(failure_errno, name)
-    libc = ctypes.CDLL(None, use_errno=True)
-    libc.prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
-    libc.prctl.restype = ctypes.c_int
-    if libc.prctl(38, 1, 0, 0, 0):  # PR_SET_NO_NEW_PRIVS
-        raise OSError(ctypes.get_errno(), "NoNewPrivs")
     label = Path("/proc/self/attr/current").read_text().strip()
     if label not in (f"{bootstrap}//&{work} (enforce)", f"{work}//&{bootstrap} (enforce)"):
         raise PermissionError("not the exact enforcing two-profile stack")
@@ -182,12 +190,25 @@ def execute(args):
         parser("--add")
         loaded = True
         stderr = (output / "worker-stderr.log").open("w")
-        process = subprocess.Popen([
+        identity = [
             "/usr/bin/setpriv", "--reuid", str(args.uid), "--regid", str(args.gid), "--clear-groups",
             "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all", "--",
+        ]
+        fixed_worker = [
             "/usr/bin/python3", "-I", "-B", str(trusted / "kernel_contract.py"), "--worker",
             "--bootstrap", compiled.bootstrap, "--work", compiled.work,
-        ], text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, bufsize=1,
+        ]
+        baseline = subprocess.run(identity + fixed_worker + ["--in-process-counterfactual"],
+                                  text=True, input="", capture_output=True, timeout=8, cwd=workspace,
+                                  env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+        record["in_process_counterfactual"] = {"code": baseline.returncode, "stdout": baseline.stdout,
+                                              "stderr": baseline.stderr}
+        save()
+        # Use the already-reviewed exec entry, not an in-process label change
+        # followed by manually restoring dumpability or weakening proc access.
+        process = subprocess.Popen(identity + ["/usr/bin/aa-exec", "-p", compiled.bootstrap, "--"] +
+                                   fixed_worker,
+            text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, bufsize=1,
             cwd=workspace, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
         ready = receive()
         check("real non-root enforcing stack is ready before host creates any protected leaf",
@@ -258,12 +279,13 @@ if __name__ == "__main__":
     cli.add_argument("--worker", action="store_true")
     cli.add_argument("--bootstrap")
     cli.add_argument("--work")
+    cli.add_argument("--in-process-counterfactual", action="store_true")
     cli.add_argument("--uid", type=int, default=0)
     cli.add_argument("--gid", type=int, default=0)
     cli.add_argument("--output", type=Path)
     arguments = cli.parse_args()
     if arguments.worker:
-        worker(arguments.bootstrap, arguments.work)
+        worker(arguments.bootstrap, arguments.work, arguments.in_process_counterfactual)
     elif arguments.output is not None:
         execute(arguments)
     else:
