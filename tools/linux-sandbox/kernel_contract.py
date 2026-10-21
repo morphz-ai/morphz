@@ -43,10 +43,20 @@ def worker(bootstrap, work, in_process_counterfactual=False):
         if function(label.encode()) != 0:
             failure_errno = ctypes.get_errno()
             attr = Path("/proc/self/attr/current")
+            open_checks = []
+            for candidate in ("/proc/self/attr/current", "/proc/thread-self/attr/current",
+                              f"/proc/{os.getpid()}/attr/current",
+                              f"/proc/{os.getpid()}/attr/apparmor/current"):
+                try:
+                    descriptor = os.open(candidate, os.O_WRONLY | os.O_CLOEXEC)
+                    os.close(descriptor)  # observation only: never write another transition
+                    open_checks.append({"path": candidate, "writable_open": True})
+                except OSError as error:
+                    open_checks.append({"path": candidate, "writable_open": False, "errno": error.errno})
             print(json.dumps({"failed_transition": name, "target": label,
                               "current_label": attr.read_text().strip(),
                               "attr_uid": attr.stat().st_uid, "uid": os.geteuid(),
-                              "dumpable": libc.prctl(3, 0, 0, 0, 0)}),
+                              "dumpable": libc.prctl(3, 0, 0, 0, 0), "open_checks": open_checks}),
                   file=sys.stderr, flush=True)
             raise OSError(failure_errno, name)
     label = Path("/proc/self/attr/current").read_text().strip()
