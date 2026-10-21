@@ -1,12 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync, statSync, watch, type FSWatcher } from "node:fs";
-import { basename, dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { realpathSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { Client, type ClientConfig } from "pg";
-import {
-  watchSqliteDirectory,
-  type SqlitePathWatch,
-} from "./sqlite-directory-watch.js";
 
 /** Host-only, opaque storage identity. Connection details never enter a hint. */
 export type SqlChangeSource = Readonly<{
@@ -20,7 +15,7 @@ export type SqlChangeSubscription = {
   close(): Promise<void>;
 };
 type SourceDetails =
-  | { driver: "sqlite"; database: DatabaseSync; filename: string | null }
+  | { driver: "sqlite"; database: DatabaseSync }
   | { driver: "postgres"; config: ClientConfig; schema: string };
 const details = new WeakMap<SqlChangeSource, SourceDetails>();
 const sqliteSources = new WeakMap<DatabaseSync, SqlChangeSource>();
@@ -37,7 +32,7 @@ export function sqliteChangeSource(database: DatabaseSync): SqlChangeSource {
     driver: "sqlite" as const,
     identity: hash(filename ?? `memory:${randomUUID()}`),
   });
-  details.set(source, { driver: "sqlite", database, filename });
+  details.set(source, { driver: "sqlite", database });
   sqliteSources.set(database, source);
   return source;
 }
@@ -90,14 +85,14 @@ export function publishSqliteCommit(source: SqlChangeSource): void {
 }
 
 /** Hints invalidate a snapshot; they are NOT a durable event, state, result or
- * authorization. SQLite file watching is best effort across processes: startup,
- * reconnect and focus must still verify current revisions. No periodic SQL is
- * used while healthy. PostgreSQL has a dedicated LISTEN connection, not a pool
- * checkout; only a lost connection starts a bounded-backoff reconnect timer. */
+ * authorization. SQLite observes explicit commits within this Host process only;
+ * it does not watch database files or discover external-process writes. Consumers
+ * still read authoritative state on subscription/reconnect. PostgreSQL has a
+ * dedicated LISTEN connection, not a pool checkout; only a lost connection starts
+ * a bounded-backoff reconnect timer. */
 export function observeSqlChanges(
   source: SqlChangeSource,
   onHint: (hint: SqlChangeHint) => void | Promise<void>,
-  environment: { watchPath?: SqlitePathWatch } = {},
 ): SqlChangeSubscription {
   const value = details.get(source);
   if (!value) throw new Error("变化通知来源未注册。");
@@ -124,199 +119,10 @@ export function observeSqlChanges(
     });
   };
   if (value.driver === "sqlite") {
-    let observer: DatabaseSync | null = null;
-    let watcher: FSWatcher | null = null;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let retry: ReturnType<typeof setTimeout> | null = null;
-    let baseline = 0;
-    let fileIdentity = "";
-    let recoveryPending = false;
-    const fileWatchers = new Map<
-      string,
-      { identity: string; watcher: FSWatcher }
-    >();
-    const readVersion = () =>
-      Number(
-        (
-          observer!.prepare("PRAGMA data_version").get() as {
-            data_version: number;
-          }
-        ).data_version,
-      );
-    const openObserver = () => {
-      if (!value.filename) return;
-      const stat = statSync(value.filename);
-      fileIdentity = `${stat.dev}:${stat.ino}`;
-      observer?.close();
-      observer = new DatabaseSync(value.filename, { readOnly: true });
-      baseline = readVersion();
-    };
-    const checkVersion = () => {
-      if (closed || !value.filename) return false;
-      try {
-        const stat = statSync(value.filename);
-        if (`${stat.dev}:${stat.ino}` !== fileIdentity || !observer) {
-          openObserver();
-          enqueue("resync");
-          return true;
-        }
-        const version = readVersion();
-        if (version !== baseline) {
-          baseline = version;
-          enqueue("commit");
-        }
-      } catch {
-        enqueue("resync");
-      }
-      return false;
-    };
-    const knownCommit = () => {
-      if (closed) return;
-      // Updating the observer baseline suppresses the later WAL echo. This SQL
-      // runs only after a known commit, never on an idle health timer.
-      if (observer)
-        try {
-          baseline = readVersion();
-        } catch {
-          enqueue("resync");
-        }
-      enqueue("commit");
-    };
+    const knownCommit = () => enqueue("commit");
     const listeners = sqliteBus.get(source.identity) ?? new Set<() => void>();
     listeners.add(knownCommit);
     sqliteBus.set(source.identity, listeners);
-    const closeWatchers = () => {
-      const directoryWatcher = watcher;
-      watcher = null;
-      const files = [...fileWatchers.values()];
-      fileWatchers.clear();
-      directoryWatcher?.close();
-      for (const file of files) file.watcher.close();
-    };
-    const lost = () => {
-      if (closed) return;
-      closeWatchers();
-      if (timer) clearTimeout(timer);
-      timer = null;
-      recoveryPending = true;
-      enqueue("resync");
-      if (!retry) {
-        retry = setTimeout(() => {
-          retry = null;
-          attach();
-        }, 500);
-        retry.unref();
-      }
-    };
-    const scheduleCheck = () => {
-      if (closed || timer) return;
-      timer = setTimeout(() => {
-        timer = null;
-        try {
-          reconcileFiles();
-          // Opening a replacement observer can create its WAL/SHM. Subscribe
-          // to the new sidecar once, without looping over version reads.
-          if (checkVersion()) reconcileFiles();
-        } catch {
-          lost();
-        }
-      }, 20);
-      timer.unref();
-    };
-    const reconcileFiles = () => {
-      if (closed || !value.filename) return;
-      for (const filename of [
-        value.filename,
-        `${value.filename}-wal`,
-        `${value.filename}-journal`,
-      ]) {
-        const current = fileWatchers.get(filename);
-        let identity: string;
-        try {
-          const stat = statSync(filename);
-          identity = `${stat.dev}:${stat.ino}`;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          if (current) {
-            fileWatchers.delete(filename);
-            current.watcher.close();
-          }
-          // Absent sidecars are normal. Only registration and actual events
-          // discover them; no healthy timer scans for future files.
-          continue;
-        }
-        if (current?.identity === identity) continue;
-        if (current) {
-          fileWatchers.delete(filename);
-          current.watcher.close();
-        }
-        let next: FSWatcher;
-        try {
-          next = (environment.watchPath ?? watch)(
-            filename,
-            { persistent: false },
-            () => {
-              if (fileWatchers.get(filename)?.watcher !== next) return;
-              scheduleCheck();
-            },
-          );
-        } catch (error) {
-          // A short-lived journal can disappear between stat and watch.
-          if (
-            filename !== value.filename &&
-            (error as NodeJS.ErrnoException).code === "ENOENT"
-          )
-            continue;
-          throw error;
-        }
-        fileWatchers.set(filename, { identity, watcher: next });
-        next.on("error", () => {
-          if (fileWatchers.get(filename)?.watcher !== next) return;
-          lost();
-        });
-      }
-    };
-    const attach = () => {
-      if (closed || !value.filename) return;
-      try {
-        if (!observer) openObserver();
-        const name = basename(value.filename);
-        const next: FSWatcher = (environment.watchPath ?? watchSqliteDirectory)(
-          dirname(value.filename),
-          { persistent: false },
-          (_event, entry) => {
-            if (watcher !== next) return;
-            if (
-              entry &&
-              ![name, `${name}-wal`, `${name}-journal`].includes(String(entry))
-            )
-              return;
-            scheduleCheck();
-          },
-        );
-        watcher = next;
-        next.on("error", () => {
-          if (watcher !== next) return;
-          lost();
-        });
-        // Direct file subscriptions keep WAL commits observable even when a
-        // successfully registered directory watcher delivers no callbacks.
-        reconcileFiles();
-        // The observer baseline is read before registration. A writer can
-        // commit in that gap, or while a failed watcher is reconnecting. Check
-        // once after successful registration, never on a healthy idle timer.
-        if (checkVersion()) reconcileFiles();
-        if (recoveryPending) {
-          recoveryPending = false;
-          // A lost subscription also invalidates the consumer's snapshot,
-          // even when this connection's data_version did not change.
-          enqueue("resync");
-        }
-      } catch {
-        lost();
-      }
-    };
-    attach();
     enqueue("resync");
     return {
       ready: Promise.resolve(),
@@ -325,10 +131,6 @@ export function observeSqlChanges(
         closed = true;
         listeners.delete(knownCommit);
         if (!listeners.size) sqliteBus.delete(source.identity);
-        if (timer) clearTimeout(timer);
-        if (retry) clearTimeout(retry);
-        closeWatchers();
-        observer?.close();
       },
     };
   }
