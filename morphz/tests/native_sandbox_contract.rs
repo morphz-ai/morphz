@@ -6,6 +6,67 @@ mod linux {
     use std::process::Command;
 
     #[test]
+    fn namespace_handles_do_not_authorize_writes_or_namespace_transitions() {
+        let fixture = std::env::var("MORPHZ_TEST_HOST_NETNS").ok();
+        if std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_some() {
+            assert!(
+                fixture.is_some(),
+                "CI requires a real host namespace bind mount"
+            );
+        }
+        let handle = fixture.as_deref().unwrap_or("/proc/self/ns/net");
+        let directory = tempfile::tempdir().unwrap();
+        let script = format!(
+            r#"python3 - <<'PY'
+import ctypes, errno, fcntl, os, stat
+path = {}
+original = os.readlink('/proc/self/ns/net')
+fd = os.open(path, os.O_RDONLY)
+assert fcntl.ioctl(fd, 0xb703) == 0x40000000
+assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o444
+if {}:
+    assert os.fstat(fd).st_ino != os.stat('/proc/self/ns/net').st_ino
+try:
+    writable = os.open(path, os.O_WRONLY)
+except OSError as failure:
+    assert failure.errno in (errno.EPERM, errno.EACCES, errno.EROFS)
+else:
+    os.close(writable)
+    raise AssertionError('namespace handle accepted writable access')
+libc = ctypes.CDLL(None, use_errno=True)
+assert libc.setns(fd, 0x40000000) == -1 and ctypes.get_errno() == errno.EPERM
+assert libc.unshare(0x10000000) == -1 and ctypes.get_errno() == errno.EPERM
+assert os.readlink('/proc/self/ns/net') == original
+os.close(fd)
+print('namespace-authority-preserved')
+PY"#,
+            serde_json::to_string(handle).unwrap(),
+            if fixture.is_some() { "True" } else { "False" },
+        );
+        let prepared = NativeSandbox::for_current_platform()
+            .prepare_shell(&ShellRequest {
+                command: script,
+                cwd: directory.path().to_path_buf(),
+                policy: SandboxPolicy::workspace(directory.path()),
+            })
+            .unwrap();
+        let child = Command::new(&prepared.program)
+            .args(&prepared.arguments)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        prepared.startup_receipt.as_ref().unwrap().wait().unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"namespace-authority-preserved\n");
+    }
+
+    #[test]
     fn bubblewrap_enforces_the_public_execution_contract() {
         let sandbox = NativeSandbox::for_current_platform();
         let report = sandbox.report();

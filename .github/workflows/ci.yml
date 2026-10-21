@@ -90,6 +90,7 @@ jobs:
       # an owned job-local database instead of skipping it or borrowing state.
       MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test
       MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
+      MORPHZ_TEST_HOST_NETNS: /opt/morphz-sandbox-ci-host-netns
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,6 +107,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Compile the whole workspace and install exact sandbox test images
         run: |
+          test ! -e "$MORPHZ_TEST_HOST_NETNS"
+          sudo install -m 0444 /dev/null "$MORPHZ_TEST_HOST_NETNS"
+          sudo mount --bind /proc/self/ns/net "$MORPHZ_TEST_HOST_NETNS"
           cargo test --locked --all --no-run --message-format=json > "$RUNNER_TEMP/workspace-test-artifacts.jsonl"
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/workspace-test-artifacts.jsonl" --workspace --install-service
           sudo systemctl daemon-reload
@@ -198,6 +202,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
+      MORPHZ_TEST_HOST_NETNS: /opt/morphz-sandbox-ci-host-netns
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -214,6 +219,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install actual Runtime tests and native policy service
         run: |
+          test ! -e "$MORPHZ_TEST_HOST_NETNS"
+          sudo install -m 0444 /dev/null "$MORPHZ_TEST_HOST_NETNS"
+          sudo mount --bind /proc/self/ns/net "$MORPHZ_TEST_HOST_NETNS"
           cargo test --locked -p morphz --lib --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/native-test-artifacts.jsonl"
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/native-test-artifacts.jsonl" --install-service
           sudo systemctl daemon-reload

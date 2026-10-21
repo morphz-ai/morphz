@@ -6,18 +6,34 @@ at `50844520` passed the actual administrator-installed Runtime command and PTY
 path, including the unchanged original late-created protected-file terminal
 regression. It also passed the separate compiler/kernel gates. This establishes
 that the Runtime fix works for those cases, not that full CI or deployment is
-complete. Full Runtime inventory, upgrade/uninstall and release integration
-remain separate acceptance gates.
+complete. The expanded run `39562218985`, with a PostgreSQL service container,
+failed closed at the full mount-table check: all three native contracts and 18
+library cases could not start work. Its library result was 1646 passed, 18
+failed, 14 ignored; four of the five separately invoked PostgreSQL contracts
+passed, while the real PTY contract hit the same admission refusal. These are
+not passing results, nor evidence of 18 unrelated bugs. The unexpected writable
+mount must be identified without weakening data-write admission. Follow-up
+`39563832420` identified `/run/docker/netns/...` (`nsfs`): Linux namespace handles
+have immutable regular 0444 inodes and no write operation even when mountinfo
+says `rw` ([kernel implementation](https://github.com/torvalds/linux/blob/v6.8/fs/nsfs.c)).
+Admission now requires a pinned actual object, exact 0444 mode and a successful
+kernel `NS_GET_NSTYPE` proof for that case, not a Docker path allowlist. Unknown
+filesystems, writable regular files and missing proofs still fail. A new actual
+Runtime contract opens a host network namespace handle and must reject writable
+access, `setns` and new user namespaces; full CI supplies a real isolated bind
+mount. Its Linux result is still pending. Full CI, upgrade/uninstall and release
+integration remain separate acceptance gates.
 
 The service accepts only the Runtime's typed, already-approved `SandboxPolicy`.
 It never accepts shell commands, arbitrary AppArmor source, or requested profile
 names. Registration must bind kernel peer identity, pidfd/start identity, actual
 label and administrator-trusted executable identity. UID alone is insufficient.
 The non-setuid launcher, pinned root descriptors, immutable policy generations,
-private admission and cgroup-backed lifetime tracking remain required before
-production integration. No automatic sudo or global security-setting changes.
+private admission and cgroup-backed lifetime tracking are connected to the
+Runtime exec and private-PTY paths. Their complete validation remains required
+before deployment. No automatic sudo or global security-setting changes.
 
-`policy.py` is the pure deterministic compiler shared by the forthcoming service
+`policy.py` is the pure deterministic compiler shared by the installed service
 and its tests. It preserves separate read/write denials, dynamic read/write roots,
 exact literals and explicit rejection of symbolic globs. Its generated bootstrap
 allows general execution because it stays in the final stack; **only the trusted
@@ -52,7 +68,7 @@ must retain the pidfd and revalidate again before admission. The separate kernel
 fixture uses Python only as a **test** executable; a production registry must
 contain the installed Runtime/launcher, not a general interpreter. The controller
 now uses these checks for registration, object binding and private admission;
-the separate production Runtime integration gate remains open.
+the expanded actual-Runtime gate remains open because of the mount refusal above.
 
 `roots.py` pins actual directory objects under the caller's non-root identity,
 with no capabilities and without following root or ancestor symlinks. It retains
@@ -61,8 +77,9 @@ source replacement, and preserves read-first/write-last grant ordering. A
 pathname check alone is never claimed to prevent a later rename: the launcher
 must mount from these retained descriptors and verify destination identity
 before admission. The separate unprivileged kernel gate tests live changes,
-replacement, literal paths and descriptor cleanup. This component is not yet
-connected to Bubblewrap or a production registration service.
+replacement, literal paths and descriptor cleanup. The Python component is a
+separate fixture implementation; the actual launcher uses the native
+object-pinning implementation below.
 
 `mounts.c` / `mounts.h` implement the native launcher's non-root directory pinning,
 mount-plan construction, destination identity/access verification, and inherited
@@ -72,7 +89,8 @@ fix. The post-mount admission comparison is mandatory and rejects a different
 device/inode or read/write mode before any work command can execute. The isolated
 native driver tests these same primitives with the distribution binary, including
 source replacement after pinning and an intentionally wrong admission identity.
-It is not an authenticated production launcher or a completed Runtime hookup.
+That synthetic driver is not the installed authenticated launcher. The separate
+installed-Runtime job exercises `launcher.c` and the actual Rust call paths.
 
 Only the trusted bootstrap layer uses `attach_disconnected` for Bubblewrap's
 user-namespace/proc setup. The retained work layer has no such flag or setup
@@ -100,8 +118,8 @@ terminal readiness remain pending until it succeeds. The isolated job installs
 actual root-owned native Runtime test executables and the real service. Run
 `39560180501` passed two public execution tests, the original terminal regression,
 and real private-PTY versus ordinary-command session separation. The later
-full-library expansion must pass independently; the component gates are not a
-substitute for it.
+full-library expansion currently fails as recorded above; the component gates
+are not a substitute for it.
 
 Old direct-Bubblewrap integration cases now invoke the installed public Runtime
 path. Protected-read assertions open/read the actual file and require rejection,
@@ -150,9 +168,10 @@ general-work admission, private PTY integration or the original Runtime test has
 passed. Fixture cleanup kills only synthetic processes in its unique recorded
 cgroups; neither the service core nor a Mac/production node does so.
 
-Mandatory next gates: authenticated service; pinned-object mount handoff;
-exact enforcing-stack/UID/
-capability/NoNewPrivs confirmation before command execution; inherited-FD closure;
-real exec and private PTY; background descendants and crash recovery; unchanged
-Runtime terminal test and full CI. Installation only in isolated Linux/CI until
-those gates are met and a production deployment is explicitly in scope.
+Mandatory retained gates: authenticated service; pinned-object mount handoff;
+exact enforcing-stack/UID/capability/NoNewPrivs confirmation before command
+execution; inherited-FD closure; real exec and private PTY; background descendants
+and crash recovery; the unchanged Runtime terminal test. Component successes do
+not supersede a failure in the installed full inventory. Installation remains
+isolated Linux/CI only until full CI and installation lifecycle pass and a
+production deployment is explicitly in scope.

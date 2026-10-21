@@ -6,6 +6,7 @@ and closed every capability except its private admission socket. Neither a
 model field nor a 'ready' string is accepted as proof of these kernel facts.
 """
 from dataclasses import dataclass
+import fcntl
 import os
 import re
 import stat
@@ -65,7 +66,40 @@ def object_key(descriptor):
     return info.st_dev, info.st_ino
 
 
-def verify_mount_boundaries(raw, policy):
+def verify_namespace_handle(directory, path):
+    """Prove a kernel namespace handle, not a writable data filesystem.
+
+    Linux nsfs inodes are immutable regular 0444 objects with no write file
+    operation, although mountinfo can report their bind mount as rw. Do not
+    trust a path prefix or the mountinfo type alone: ask the actual pinned
+    object for NS_GET_NSTYPE. Namespace transitions remain unavailable to the
+    capability-free work profile; this opens no data-write permission.
+    """
+    pin = directory_in_process(directory, path)
+    descriptor = -1
+    try:
+        metadata = os.fstat(pin)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o444:
+            raise PeerError("namespace mount is not an immutable read-only handle")
+        descriptor = os.open(f"/proc/self/fd/{pin}", os.O_RDONLY | os.O_CLOEXEC)
+        if object_key(descriptor) != object_key(pin):
+            raise PeerError("namespace handle changed during verification")
+        # linux/nsfs.h: _IO(0xb7, 0x3). Only registered Linux namespace kinds.
+        kind = fcntl.ioctl(descriptor, 0xb703)
+        if kind not in (0x80, 0x20000, 0x2000000, 0x4000000, 0x8000000,
+                        0x10000000, 0x20000000, 0x40000000):
+            raise PeerError("unrecognized kernel namespace handle")
+    except PeerError:
+        raise
+    except OSError as error:
+        raise PeerError("namespace mount lacks kernel handle proof") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(pin)
+
+
+def verify_mount_boundaries(raw, policy, *, namespace_verifier=None):
     """Check the whole mount table, not only destinations of positive grants."""
     mounts = {}
     for line in raw.splitlines():
@@ -85,6 +119,9 @@ def verify_mount_boundaries(raw, policy):
         mounts[path] = (flags, filesystem)
         if "rw" in flags and not any(contains(root, path) for root in
                                      (*policy.write_roots, "/dev", "/proc")):
+            if filesystem == "nsfs" and namespace_verifier is not None:
+                namespace_verifier(path)
+                continue
             raise PeerError(f"writable filesystem outside approved roots: {path!r} ({filesystem})")
     if "/" not in mounts or ("/" not in policy.write_roots and "ro" not in mounts["/"][0]):
         raise PeerError("read-only host baseline is missing")
@@ -210,7 +247,8 @@ class Admission:
             original_groups, _ = parse_security_state(read_bounded_at(source, "status"), owner.uid, owner.gid)
             if not set(groups).issubset(original_groups):
                 raise PeerError("work entry gained supplementary groups")
-            verify_mount_boundaries(read_bounded_at(directory, "mountinfo", 4 * 1024 * 1024), policy)
+            verify_mount_boundaries(read_bounded_at(directory, "mountinfo", 4 * 1024 * 1024), policy,
+                                    namespace_verifier=lambda path: verify_namespace_handle(directory, path))
             for pin in self.pins[launch]:
                 # The outer keeps the exact original object alive, even if a
                 # host subsequently renames/replaces the source pathname.
