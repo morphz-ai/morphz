@@ -13,6 +13,13 @@ export const runtimeMessageFailureSchema = z.object({
     .optional(),
 });
 
+/** A rejected intermediate boundary is execution evidence, not a failed reply. */
+export function isRuntimeMessageDiagnostic(message: {
+  failure?: { phase: "diagnostic" | "terminal" };
+}) {
+  return message.failure?.phase === "diagnostic";
+}
+
 type FailureEvent = {
   id: string;
   sequence?: number;

@@ -1,11 +1,13 @@
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
 import { runtimeErrorDetails } from "./runtime-error-presentation.js";
+import { isRuntimeMessageDiagnostic } from "../../../packages/core/src/runtime-message-failure.js";
 
 export function RuntimeMessageError({
   message,
 }: {
   message: LiveMessage & { errorDetails?: string };
 }) {
+  if (isRuntimeMessageDiagnostic(message)) return null;
   const details = runtimeErrorDetails(message);
   const short = !details.includes("\n") && [...details].length <= 160;
   return (

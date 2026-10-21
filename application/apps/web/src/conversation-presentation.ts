@@ -1,5 +1,6 @@
 import type { ConversationRuntime } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
+import { isRuntimeMessageDiagnostic } from "../../../packages/core/src/runtime-message-failure.js";
 export { messageSourceSummary } from "../../../packages/core/src/message-source.js";
 
 /** Only actual input-bound receipts may name a stage. Silence is not proof
@@ -137,6 +138,7 @@ export function responseAnswered(
     .at(-1);
   return owned.some(
     (m) =>
+      !isRuntimeMessageDiagnostic(m) &&
       (m.kind === "reply" || m.kind === "error") &&
       m.text.trim() &&
       (!recoveryAt ||
