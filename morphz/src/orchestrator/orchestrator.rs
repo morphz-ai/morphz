@@ -27076,6 +27076,7 @@ mod tests {
             None,
         )
         .unwrap();
+        orchestrator.register_session_context("admission-session", "admission-context");
         let policy = super::EffectiveModelRequestPolicy {
             model_alias: "requested".into(),
             reasoning_effort: "provider_default".into(),
@@ -27117,9 +27118,20 @@ mod tests {
                 Err(error) => error,
                 Ok(_) => panic!("automatic work must respect the exact open circuit"),
             };
+            assert_eq!(
+                error.origin,
+                ModelCompletionErrorOrigin::Provider,
+                "{resource}: {error}"
+            );
+            assert_eq!(
+                error.failure().kind,
+                ModelFailureKind::ServerUnavailable,
+                "{resource}: {error}"
+            );
+            assert!(error.to_string().contains("Provider circuit open"));
+            assert_eq!(client.0.load(Ordering::SeqCst), binding_count);
             assert_eq!(error.provider_resource_snapshot.as_deref(), Some(resource));
             assert!(error.model_configuration_snapshot().is_none());
-            assert_eq!(client.0.load(Ordering::SeqCst), binding_count);
         }
     }
 
