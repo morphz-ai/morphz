@@ -90,6 +90,65 @@ async function open(page: Page) {
   return dialog;
 }
 
+test("连接缺少密钥时显示明确恢复文案和错误色，保留原模型选择", async ({
+  page,
+}, info) => {
+  await prepare(page);
+  const message =
+    "此 API 连接缺少密钥。请返回账号列表，打开「编辑连接」填写原 API Key 并保存，再读取模型。";
+  const actions: unknown[] = [];
+  await page.route("**/api/model-settings/update", (route) => {
+    actions.push(route.request().postDataJSON());
+    return route.fulfill({ status: 400, json: { message } });
+  });
+  const dialog = await open(page);
+  await dialog.getByRole("button", { name: "选择模型", exact: true }).click();
+  await dialog.getByLabel("second", { exact: true }).check();
+  await dialog.getByRole("button", { name: "读取并测试", exact: true }).click();
+  const alert = dialog.getByRole("alert");
+  await expect(alert).toHaveText(message);
+  await expect(dialog.getByLabel("first", { exact: true })).toBeChecked();
+  await expect(dialog.getByLabel("second", { exact: true })).toBeChecked();
+  expect(actions).toEqual([
+    { action: "account-refresh", accountId: "account" },
+  ]);
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(async () => {
+        const geometry = await alert.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const probe = document.createElement("span");
+          probe.style.color = "var(--danger)";
+          element.appendChild(probe);
+          const danger = getComputedStyle(probe).color;
+          probe.remove();
+          return {
+            color: getComputedStyle(element).color,
+            danger,
+            ink: getComputedStyle(element.parentElement!).color,
+            fits: bounds.left >= 0 && bounds.right <= innerWidth + 1,
+            overflow: element.scrollWidth > element.clientWidth + 1,
+          };
+        });
+        expect(geometry.color).toBe(geometry.danger);
+        expect(geometry.color).not.toBe(geometry.ink);
+        expect(geometry.fits).toBe(true);
+        expect(geometry.overflow).toBe(false);
+      }).toPass({ timeout: 3000 });
+      await page.screenshot({
+        path: info.outputPath(`missing-credential-${scheme}-${width}.png`),
+        animations: "disabled",
+      });
+    }
+  }
+  await dialog.getByRole("button", { name: "返回模型设置" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "编辑连接", exact: true }),
+  ).toBeEnabled();
+});
+
 test("响应注解开关持久显示、键盘操作、失败不假成功，保持未保存的模型选择", async ({
   page,
 }, testInfo) => {

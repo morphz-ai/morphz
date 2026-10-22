@@ -23,6 +23,7 @@ async function fixture() {
     completed: false,
     delay: false,
     failureStatus: 400,
+    missingCredential: false,
     annotations: "on",
   };
   const providers = {
@@ -82,6 +83,15 @@ async function fixture() {
     });
     res.setHeader("Content-Type", "application/json");
     if (state.delay) return;
+    if (state.missingCredential && req.url?.endsWith("/refresh-models")) {
+      res.writeHead(424);
+      res.end(
+        JSON.stringify({
+          error: { code: "credential_missing", message: secret },
+        }),
+      );
+      return;
+    }
     if (state.fail) {
       res.writeHead(state.failureStatus);
       res.end(JSON.stringify({ error: secret }));
@@ -323,6 +333,27 @@ test("API connection edits are bounded, redact secrets, preserve accounts and ex
       }),
       /重新载入/,
     );
+  } finally {
+    await f.close();
+  }
+});
+test("missing provider credentials name the recovery without exposing Runtime or upstream details", async () => {
+  const f = await fixture();
+  try {
+    f.state.missingCredential = true;
+    await assert.rejects(
+      f.apply({ action: "account-refresh", accountId: "existing" }),
+      (error: Error) => {
+        assert.match(error.message, /API 连接缺少密钥/);
+        assert.match(error.message, /编辑连接/);
+        assert.ok(!error.message.includes(f.secret));
+        return true;
+      },
+    );
+    assert.equal(f.calls.filter((call) => call.method === "POST").length, 1);
+    assert.equal(f.state.model, "first");
+    assert.equal(f.state.effort, "high");
+    assert.equal((await f.read()).accounts[0]?.models.length, 2);
   } finally {
     await f.close();
   }

@@ -172,6 +172,16 @@ export class RuntimeModelSettings {
         /^\/api\/runtime\/providers\/oauth\/[^/]+\/continue$/.test(path)
       )
         return undefined;
+      if (response.status === 424) {
+        // Only this Runtime-owned code selects the recovery copy. Never show
+        // raw error messages: upstream failures may contain credentials.
+        const failure = await response.json().catch(() => null);
+        if (failure?.error?.code === "credential_missing")
+          throw new DomainError(
+            "invalid",
+            "此 API 连接缺少密钥。请返回账号列表，打开「编辑连接」填写原 API Key 并保存，再读取模型。",
+          );
+      }
       // Runtime/provider errors can echo keys, URLs or callback codes.
       throw new DomainError(
         response.status === 409

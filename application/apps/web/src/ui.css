@@ -2171,6 +2171,9 @@ body:has(dialog[open]) .cognitive-application-frame {
   margin: 0;
   overflow-wrap: anywhere;
 }
+.model-settings > [role="alert"] {
+  color: var(--danger);
+}
 .model-default-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

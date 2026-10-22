@@ -4103,6 +4103,9 @@ function WorkspaceApp({
               </ExchangePanel>
             </div>
           </div>
+          {notice && !conversationVisible && (
+            <WorkspaceNotice message={notice} onDismiss={() => setNotice("")} />
+          )}
         </div>
         {(executions || subjectView) &&
           !understandingOpen &&
@@ -4221,9 +4224,6 @@ function WorkspaceApp({
             onResize={resizeInspector}
             onClose={closeInspector}
           />
-        )}
-        {notice && !conversationVisible && (
-          <WorkspaceNotice message={notice} onDismiss={() => setNotice("")} />
         )}
       </div>
       <input

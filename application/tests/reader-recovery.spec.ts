@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { settleTransitions } from "./interaction-helpers.js";
 
 async function openTestBook(page: Page, paragraphs = 80) {
   await page.goto("/");
@@ -76,6 +77,84 @@ async function openTestBook(page: Page, paragraphs = 80) {
     view: page.locator(".reading-app:visible .reader-viewport"),
   };
 }
+
+test("本机偏好保存失败提示不遮挡阅读工具，也不挤动原文画布", async ({
+  page,
+}, info) => {
+  const { view } = await openTestBook(page, 8);
+  const reader = page.locator(".reading-app:visible");
+  const settings = reader.getByRole("button", {
+    name: "阅读设置",
+    exact: true,
+  });
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Reflect.set(window, "noticeOriginalSetItem", original);
+    Reflect.set(
+      window,
+      "noticeReaderBody",
+      document.querySelector(".reader-text"),
+    );
+    Storage.prototype.setItem = function (key, value) {
+      if (key.endsWith(":preferences"))
+        throw new DOMException(
+          "TEST preference storage full",
+          "QuotaExceededError",
+        );
+      return original.call(this, key, value);
+    };
+  });
+  try {
+    await page.getByRole("button", { name: "隐藏侧边栏", exact: true }).click();
+    const notice = page.locator(".workspace-notice");
+    await expect(notice.getByRole("alert")).toHaveText(
+      "设置暂时无法持久保存。",
+    );
+    await expect(
+      page.locator(".exchange-panel > .conversation:visible"),
+    ).toHaveCount(0);
+    await settleTransitions(page);
+    const before = await view.boundingBox();
+    const hit = await settings.evaluate((button) => {
+      const bounds = button.getBoundingClientRect();
+      const target = document.elementFromPoint(
+        bounds.x + bounds.width / 2,
+        bounds.y + bounds.height / 2,
+      );
+      return {
+        clickable: !!target && button.contains(target),
+        target: target?.outerHTML.slice(0, 500),
+      };
+    });
+    await page.screenshot({
+      path: info.outputPath("reader-persistence-notice.png"),
+      animations: "disabled",
+    });
+    expect(hit, "提示不应拦截阅读设置按钮的实际中心命中").toMatchObject({
+      clickable: true,
+    });
+    await settings.click();
+    await expect(
+      reader.getByRole("complementary", { name: "阅读设置", exact: true }),
+    ).toBeVisible();
+    await settings.click();
+    await expect(view).toHaveJSProperty("scrollTop", 0);
+    await notice.getByRole("button", { name: "关闭提示", exact: true }).click();
+    await expect(notice).toHaveCount(0);
+    expect(await view.boundingBox()).toEqual(before);
+    expect(
+      await page.evaluate(
+        () =>
+          Reflect.get(window, "noticeReaderBody") ===
+          document.querySelector(".reader-text"),
+      ),
+    ).toBe(true);
+  } finally {
+    await page.evaluate(() => {
+      Storage.prototype.setItem = Reflect.get(window, "noticeOriginalSetItem");
+    });
+  }
+});
 
 test("阅读中切到启动台再回来，保留原文位置而不是回到章节开头", async ({
   page,
