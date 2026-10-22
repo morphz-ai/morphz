@@ -73,6 +73,14 @@ struct FailingClient;
 
 struct BindingFailureClient;
 
+struct PrebindingRouteFailureClient {
+    bindings: Mutex<Vec<(String, String)>>,
+    calls: AtomicUsize,
+    unscoped_probes: AtomicUsize,
+    catalog_revision: AtomicUsize,
+    reload_catalog_on_failure: bool,
+}
+
 struct UnconfiguredAgentClient {
     binding_calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
@@ -204,6 +212,7 @@ struct PersistentOutageClient;
 struct HealthyAfterRestartClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
+    default_resource: &'static str,
 }
 
 struct PartialReasoningProviderFailureClient {
@@ -440,6 +449,80 @@ impl Client for BindingFailureClient {
 }
 
 #[async_trait::async_trait]
+impl Client for PrebindingRouteFailureClient {
+    fn model(&self) -> Option<String> {
+        Some("runtime-default".into())
+    }
+
+    fn provider_resource_key(&self) -> String {
+        "model-route:runtime-default".into()
+    }
+
+    fn provider_resource_key_for_requested_model(&self, alias: Option<&str>) -> String {
+        format!(
+            "model-route:{}:v{}",
+            alias.unwrap_or("runtime-default"),
+            self.catalog_revision.load(Ordering::SeqCst)
+        )
+    }
+
+    async fn bind_requested_model_attempt(
+        &self,
+        request: &ModelRequestContext,
+        requested_model: Option<&str>,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        let alias = requested_model.expect("Session policy must select a logical route");
+        let first_attempt = {
+            let mut bindings = self.bindings.lock().unwrap();
+            bindings.push((alias.to_string(), request.session_id.clone()));
+            bindings.len() == 1
+        };
+        if first_attempt {
+            if self.reload_catalog_on_failure {
+                self.catalog_revision.store(1, Ordering::SeqCst);
+            }
+            return Err(ModelAttemptBindingError::account_unavailable(
+                "test Agent-authorized account is temporarily unavailable",
+            ));
+        }
+        Ok(ModelAttemptBinding {
+            requested_alias: alias.to_string(),
+            route_id: alias.to_string(),
+            route_revision: "test-v1".into(),
+            provider_instance_id: self.provider_resource_key_for_requested_model(Some(alias)),
+            auth_account_id: "agent-owned-account".into(),
+            physical_model: alias.to_string(),
+            protocol: "custom".into(),
+            provider_adapter: "direct-client".into(),
+            provider_adapter_version: "test".into(),
+            endpoint: "http://127.0.0.1/synthetic-prebinding-recovery".into(),
+            request_session_id: Some(request.session_id.clone()),
+            capabilities: Vec::new(),
+            model_input_limits: Default::default(),
+        })
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(text_reply_response(
+            "resumed the original authorized request",
+        ))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.unscoped_probes.fetch_add(1, Ordering::SeqCst);
+        // A healthy process-default route proves nothing about this Agent's
+        // selected route/account. The production regression used this result
+        // to incorrectly wake a different route's durable waiter.
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
 impl Client for UnconfiguredAgentClient {
     async fn bind_model_attempt(
         &self,
@@ -645,7 +728,7 @@ impl Client for PersistentOutageClient {
 #[async_trait::async_trait]
 impl Client for HealthyAfterRestartClient {
     fn provider_resource_key(&self) -> String {
-        "model-provider:test-restart-outage".to_string()
+        self.default_resource.to_string()
     }
 
     async fn create_completion(
@@ -8730,15 +8813,166 @@ async fn successful_explicit_request_resumes_durable_wait_without_probe_success(
 
 #[tokio::test]
 async fn provider_wait_survives_runtime_restart() {
-    run_provider_wait_restart(false).await;
+    run_provider_wait_restart(false, false).await;
 }
 
 #[tokio::test]
 async fn thread_evaluation_policy_committed_without_wake_is_recovered_after_restart() {
-    run_provider_wait_restart(true).await;
+    run_provider_wait_restart(true, false).await;
 }
 
-async fn run_provider_wait_restart(change_policy_without_event: bool) {
+#[tokio::test]
+async fn provider_wait_resources_restart_recovers_wait_outside_process_default() {
+    run_provider_wait_restart(false, true).await;
+}
+
+#[tokio::test]
+async fn provider_wait_resources_unbound_failure_uses_session_route_without_default_probe() {
+    run_prebinding_resource_recovery(false).await;
+}
+
+#[tokio::test]
+async fn provider_wait_resources_freezes_admission_identity_across_catalog_reload() {
+    run_prebinding_resource_recovery(true).await;
+}
+
+async fn run_prebinding_resource_recovery(reload_catalog_on_failure: bool) {
+    let context_id = "prebinding-route-context";
+    let session_id = "prebinding-route-session";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("prebinding-route.db");
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .ensure_agent(NewAgent {
+            id: "test-agent".into(),
+            title: "Test Agent".into(),
+            root_context_id: context_id.into(),
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_context(NewCognitiveContext {
+            id: context_id.into(),
+            agent_id: "test-agent".into(),
+            title: context_id.into(),
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_session(NewSession {
+            id: session_id.into(),
+            agent_id: "test-agent".into(),
+            context_id: context_id.into(),
+            parent_session_id: None,
+            title: session_id.into(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .update_session(
+            session_id,
+            SessionUpdate {
+                model_alias: Some(Some("session-selected".into())),
+                reasoning_effort: Some(Some("high".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let bus = Arc::new(InMemoryEventBus::new());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(PrebindingRouteFailureClient {
+        bindings: Mutex::new(Vec::new()),
+        calls: AtomicUsize::new(0),
+        unscoped_probes: AtomicUsize::new(0),
+        catalog_revision: AtomicUsize::new(0),
+        reload_catalog_on_failure,
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+    // This is one real ingress event with no Thread model override. Recovery
+    // must resume it, not fabricate another user input or use process default.
+    publish_user_in_context(&bus, context_id, session_id, "retain my selected route").await;
+    let waits = wait_for_disposition_count(&store, context_id, "provider_wait", 1).await;
+    assert_eq!(waits.len(), 1);
+    assert_eq!(
+        waits[0].payload.get("provider_resource"),
+        Some(&json!("model-route:session-selected:v0")),
+        "a failure before binding belongs to the frozen admission resource, not the default route or reloaded catalog"
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(client.unscoped_probes.load(Ordering::SeqCst), 0);
+    let replies = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        wait_for_topic(&store, "chat/reply", session_id),
+    )
+    .await
+    .expect("bounded retry must resume the original authorized request");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("resumed the original authorized request"))
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(client.unscoped_probes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *client.bindings.lock().unwrap(),
+        vec![
+            ("session-selected".to_string(), session_id.to_string()),
+            ("session-selected".to_string(), session_id.to_string()),
+        ],
+        "each retry must repeat ordinary Agent-authorized binding for the same Session"
+    );
+    let threads = store.list_context_threads(context_id, true).await.unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].generation, 1);
+    assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
+    assert_eq!(
+        waits[0]
+            .payload
+            .get("thread_id")
+            .and_then(|value| value.as_str()),
+        Some(threads[0].id.as_str())
+    );
+    let recoveries = store
+        .query(QueryFilter {
+            context_id: Some(context_id.into()),
+            topic: Some("runtime/resource_available".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(recoveries.iter().any(|event| {
+        event.payload.get("resource") == Some(&json!("model-route:session-selected:v0"))
+            && event.payload.get("recovery_reason") == Some(&json!("request_retry_elapsed"))
+            && event.payload.get("recovery_phase") == Some(&json!("request_retry"))
+    }));
+    assert!(
+        recoveries.iter().all(|event| {
+            event.payload.get("recovery_reason") != Some(&json!("health_probe_succeeded"))
+        }),
+        "an authorized retry must not declare an unprobed Provider healthy"
+    );
+}
+
+async fn run_provider_wait_restart(
+    change_policy_without_event: bool,
+    change_process_default: bool,
+) {
     let context_id = "provider-restart-context";
     let session_id = "provider-restart-session";
     let tmp = TempDir::new().unwrap();
@@ -8803,6 +9037,11 @@ async fn run_provider_wait_restart(change_policy_without_event: bool) {
     let recovering_client = Arc::new(HealthyAfterRestartClient {
         calls: AtomicUsize::new(0),
         health_probe_calls: AtomicUsize::new(0),
+        default_resource: if change_process_default {
+            "model-route:different-runtime-default"
+        } else {
+            "model-provider:test-restart-outage"
+        },
     });
     let second_engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
@@ -8829,8 +9068,8 @@ async fn run_provider_wait_restart(change_policy_without_event: bool) {
     );
     assert_eq!(
         recovering_client.health_probe_calls.load(Ordering::SeqCst),
-        if change_policy_without_event { 0 } else { 1 },
-        "a replaced policy must resume without waiting for the old Provider"
+        0,
+        "restart must rebind the original work through Agent authority, never probe a process-default account for an unknown binding"
     );
     assert_eq!(recovering_client.calls.load(Ordering::SeqCst), 1);
     let threads = store.list_context_threads(context_id, true).await.unwrap();

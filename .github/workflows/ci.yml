@@ -213,6 +213,11 @@ jobs:
           cargo test --locked -p morphz --test session_io -- --test-threads=1
       - name: Verify one-shot approval boundary
         run: cargo test -p morphz tool::tests::exec_ -- --nocapture
+      - name: Verify selected-route Provider recovery
+        run: |
+          cargo test --locked -p morphz --test attempt_loop provider_wait_resources_ -- --test-threads=1
+          cargo test --locked -p morphz --test attempt_loop provider_wait_survives_runtime_restart -- --exact
+          cargo test --locked -p morphz --test attempt_loop thread_evaluation_policy_committed_without_wake_is_recovered_after_restart -- --exact
       - name: Verify signed Edge installer contract
         run: sh scripts/edge/test_install.sh
       - name: Stage the exact native-tested macOS development Runtime
