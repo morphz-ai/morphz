@@ -4453,6 +4453,14 @@ mod tests {
                 )
             })
             .collect();
+        // Lease contention can precede the owner's authority lookup and
+        // actual adapter call. Observe that call before asserting its counters.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            adapter.entered.notified(),
+        )
+        .await
+        .expect("the refresh owner must enter the held adapter");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 if manager.refresh_diagnostics().lease_contentions == 3 {
