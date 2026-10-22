@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub enum ModelFailureKind {
     ContextLimit,
     RateLimited,
-    /// The account or subscription has exhausted its included usage. Unlike
+    /// The account's prepaid balance or subscription usage is exhausted. Unlike
     /// a short provider throttle, there is no useful near-term retry schedule
     /// for the current turn, so it must not occupy a durable Provider wait.
     QuotaExhausted,
@@ -233,6 +233,8 @@ impl ModelFailure {
                 "subscription:free-usage-exhausted",
                 "free-usage-exhausted",
                 "insufficient_quota",
+                "insufficient_balance",
+                "insufficient balance",
                 "quota exceeded",
                 "usage limit reached",
                 "reached your usage limit",
@@ -700,7 +702,22 @@ impl ModelUsage {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelFailureKind, ModelUsage};
+    use super::{ModelFailure, ModelFailureKind, ModelUsage};
+
+    #[test]
+    fn insufficient_balance_failure_is_not_authentication_or_request_syntax() {
+        for message in [
+            "Insufficient Balance (request_id: fixture-request)",
+            r#"{"error":{"code":"insufficient_balance"}}"#,
+            r#"{"error":{"code":"invalid_request_error","message":"Insufficient Balance"}}"#,
+        ] {
+            let failure = ModelFailure::classify_message(message);
+            assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+            assert_eq!(failure.message, message);
+            assert!(!failure.kind.uses_provider_recovery());
+            assert!(!failure.kind.requires_configuration());
+        }
+    }
 
     #[test]
     fn split_provider_usage_merges_into_an_exact_total() {

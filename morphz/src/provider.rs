@@ -586,7 +586,8 @@ fn http_model_failure(
         kind
     } else if semantic.kind == ModelFailureKind::ContextLimit {
         ModelFailureKind::ContextLimit
-    } else if semantic.kind == ModelFailureKind::QuotaExhausted
+    } else if status == reqwest::StatusCode::PAYMENT_REQUIRED
+        || semantic.kind == ModelFailureKind::QuotaExhausted
         || provider_code.as_deref().is_some_and(|code| {
             matches!(
                 code,
@@ -5849,6 +5850,146 @@ mod tests {
             .header("content-type", "text/event-stream")
             .body(Body::from_stream(body))
             .unwrap()
+    }
+
+    #[test]
+    fn payment_required_balance_failure_is_not_an_invalid_request() {
+        for body in [
+            json!({"error": {
+                "message": "Insufficient Balance (request_id: fixture-request)",
+                "type": "unknown_error", "param": null,
+                "code": "invalid_request_error"
+            }})
+            .to_string(),
+            "Payment required".to_string(),
+        ] {
+            let failure = http_model_failure(reqwest::StatusCode::PAYMENT_REQUIRED, body, Some(60));
+            assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+            assert_eq!(failure.http_status, Some(402));
+            assert_eq!(failure.retry_after_secs, Some(60));
+            assert!(!failure.kind.uses_provider_recovery());
+            assert!(!failure.kind.requires_configuration());
+            assert!(failure.message.contains("HTTP 402 Payment Required"));
+        }
+    }
+
+    #[test]
+    fn balance_failure_fix_preserves_unrelated_http_classifications() {
+        for (status, message, expected) in [
+            (
+                400,
+                "Invalid request parameters",
+                ModelFailureKind::InvalidModelOrRequest,
+            ),
+            (401, "Invalid API key", ModelFailureKind::Authentication),
+            (
+                403,
+                "This model is not enabled for the current project",
+                ModelFailureKind::InvalidModelOrRequest,
+            ),
+            (429, "Too many requests", ModelFailureKind::RateLimited),
+            (
+                503,
+                "Temporarily unavailable",
+                ModelFailureKind::ServerUnavailable,
+            ),
+        ] {
+            let failure = http_model_failure(
+                reqwest::StatusCode::from_u16(status).unwrap(),
+                json!({"error": {"message": message}}).to_string(),
+                None,
+            );
+            assert_eq!(failure.kind, expected, "status={status}");
+            assert_eq!(failure.http_status, Some(status));
+        }
+    }
+
+    #[test]
+    fn native_stream_balance_failure_does_not_become_a_provider_outage() {
+        let error = provider_stream_error(
+            ModelProtocol::OpenaiResponses,
+            r#"{"error":{"code":"insufficient_balance","message":"Insufficient Balance"}}"#,
+        );
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+        assert_eq!(
+            failure.provider_code.as_deref(),
+            Some("insufficient_balance")
+        );
+        assert!(!failure.kind.uses_provider_recovery());
+    }
+
+    #[tokio::test]
+    async fn http_balance_failure_is_terminal_for_chat_and_responses_with_or_without_streaming() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let handler = move || {
+            let observed = Arc::clone(&observed);
+            async move {
+                observed.fetch_add(1, Ordering::SeqCst);
+                (
+                    StatusCode::PAYMENT_REQUIRED,
+                    [("Retry-After", "60")],
+                    Json(json!({"error": {
+                        "message": "Insufficient Balance (request_id: fixture-request)",
+                        "type": "unknown_error", "param": null,
+                        "code": "invalid_request_error"
+                    }})),
+                )
+            }
+        };
+        let app = Router::new()
+            .route("/responses", post(handler.clone()))
+            .route("/chat/completions", post(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiResponses] {
+            let client = ProtocolClient::new(
+                &ProviderConfig {
+                    protocol,
+                    base_url: format!("http://{address}"),
+                    ..ProviderConfig::default()
+                },
+                "fixture-model".to_string(),
+                None,
+                &LlmConfig {
+                    max_retries: 5,
+                    initial_backoff_secs: 0,
+                    ..LlmConfig::default()
+                },
+            )
+            .unwrap();
+            let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
+            let previous = requests.load(Ordering::SeqCst);
+            let streamed = tokio::time::timeout(
+                Duration::from_secs(2),
+                client.send_stream("fixture-model", &json!({}), None, &stream, None),
+            )
+            .await
+            .expect("a payment failure must not sleep or retry")
+            .unwrap_err();
+            let ordinary = tokio::time::timeout(
+                Duration::from_secs(2),
+                client.send("fixture-model", &json!({})),
+            )
+            .await
+            .expect("a payment failure must not sleep or retry")
+            .unwrap_err();
+            for error in [streamed, ordinary] {
+                let failure = error.downcast_ref::<ModelFailure>().unwrap();
+                assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+                assert_eq!(failure.http_status, Some(402));
+                assert_eq!(
+                    failure.provider_code.as_deref(),
+                    Some("invalid_request_error")
+                );
+                assert_eq!(failure.retry_after_secs, Some(60));
+                assert!(!failure.kind.uses_provider_recovery());
+            }
+            assert_eq!(requests.load(Ordering::SeqCst), previous + 2);
+        }
+        server.abort();
     }
 
     #[test]
