@@ -5709,9 +5709,17 @@ impl MorphzRuntime {
                 &identity.thread_id,
             )
             .await?;
-        let routes = crate::execution_target::ArtifactTransferRouteSnapshot {
-            source: crate::execution_target::ExecutionRouteSnapshot::freeze(&source),
-            destination: crate::execution_target::ExecutionRouteSnapshot::freeze(&destination),
+        let routes = match self.inner.store.get_execution_job(&identity.job_id).await? {
+            // Admission already froze this intent's routes. A registry revision
+            // change must neither rebind its physical action nor break replay.
+            // Live authorization above and exact Store request checks still apply.
+            Some(existing) => {
+                crate::execution_target::artifact_transfer_routes_from_job(&existing)?
+            }
+            None => crate::execution_target::ArtifactTransferRouteSnapshot {
+                source: crate::execution_target::ExecutionRouteSnapshot::freeze(&source),
+                destination: crate::execution_target::ExecutionRouteSnapshot::freeze(&destination),
+            },
         };
         let mut job_request: Value = serde_json::from_str(&arguments)?;
         job_request
@@ -27851,14 +27859,130 @@ mod tests {
             "even a short transfer must persist its final progress snapshot"
         );
 
+        let original_routes =
+            crate::execution_target::artifact_transfer_routes_from_job(&first.job).unwrap();
+        let mut target = runtime
+            .get_execution_target(&request.destination.target_id)
+            .await
+            .unwrap()
+            .unwrap();
+        for status in [
+            ExecutionTargetStatus::Offline,
+            ExecutionTargetStatus::Online,
+        ] {
+            target = match runtime
+                .set_execution_target_status(&target.id, target.revision, status)
+                .await
+                .unwrap()
+            {
+                ExecutionTargetMutation::Updated(target) => target,
+                outcome => panic!("the isolated Target status change must commit: {outcome:?}"),
+            };
+        }
+        assert!(target.revision > original_routes.destination.target_revision);
+        let published = tokio::fs::metadata(&destination_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
         let replay = runtime
-            .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, request)
+            .submit_artifact_transfer(
+                &runtime.identity().principal_id,
+                &session.id,
+                request.clone(),
+            )
             .await
             .unwrap();
         assert_eq!(replay.job.id, first.job.id);
         assert_eq!(replay.thread.id, first.thread.id);
         assert_eq!(replay.activation.id, first.activation.id);
         assert_eq!(replay.request_event_sequence, first.request_event_sequence);
+        assert_eq!(replay.job.request, first.job.request);
+        assert_eq!(
+            crate::execution_target::artifact_transfer_routes_from_job(&replay.job).unwrap(),
+            original_routes
+        );
+        assert_eq!(
+            tokio::fs::metadata(&destination_path)
+                .await
+                .unwrap()
+                .modified()
+                .unwrap(),
+            published
+        );
+        for changed in [
+            ArtifactTransferRequest {
+                media_type: Some("text/plain".into()),
+                ..request.clone()
+            },
+            ArtifactTransferRequest {
+                expected_source_digest: Some(format!("sha256:{}", "a".repeat(64))),
+                ..request.clone()
+            },
+            ArtifactTransferRequest {
+                destination: crate::artifact::ArtifactLocation {
+                    path: root
+                        .path()
+                        .join("different.bin")
+                        .to_string_lossy()
+                        .into_owned(),
+                    ..request.destination.clone()
+                },
+                ..request.clone()
+            },
+        ] {
+            let error = runtime
+                .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, changed)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("因果键"), "{error}");
+        }
+        assert_eq!(
+            runtime
+                .get_execution_job(&first.job.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .request,
+            first.job.request
+        );
+        assert_eq!(
+            tokio::fs::read(&destination_path).await.unwrap(),
+            source_bytes
+        );
+        assert!(!root.path().join("different.bin").exists());
+        assert!(runtime
+            .submit_artifact_transfer("foreign-principal", &session.id, request.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("is not a participant"));
+        assert!(matches!(
+            runtime
+                .set_execution_target_status(
+                    &target.id,
+                    target.revision,
+                    ExecutionTargetStatus::Disabled,
+                )
+                .await
+                .unwrap(),
+            ExecutionTargetMutation::Updated(_)
+        ));
+        assert!(runtime
+            .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, request)
+            .await
+            .is_err());
+        assert_eq!(
+            runtime
+                .list_execution_jobs(ExecutionJobFilter {
+                    include_terminal: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
