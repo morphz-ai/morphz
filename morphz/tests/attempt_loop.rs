@@ -79,6 +79,7 @@ struct PrebindingRouteFailureClient {
     unscoped_probes: AtomicUsize,
     catalog_revision: AtomicUsize,
     reload_catalog_on_failure: bool,
+    recovery_authorized: tokio::sync::Notify,
 }
 
 struct UnconfiguredAgentClient {
@@ -485,6 +486,7 @@ impl Client for PrebindingRouteFailureClient {
                 "test Agent-authorized account is temporarily unavailable",
             ));
         }
+        self.recovery_authorized.notified().await;
         Ok(ModelAttemptBinding {
             requested_alias: alias.to_string(),
             route_id: alias.to_string(),
@@ -8889,6 +8891,7 @@ async fn run_prebinding_resource_recovery(reload_catalog_on_failure: bool) {
         unscoped_probes: AtomicUsize::new(0),
         catalog_revision: AtomicUsize::new(0),
         reload_catalog_on_failure,
+        recovery_authorized: tokio::sync::Notify::new(),
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -8916,6 +8919,7 @@ async fn run_prebinding_resource_recovery(reload_catalog_on_failure: bool) {
     );
     assert_eq!(client.calls.load(Ordering::SeqCst), 0);
     assert_eq!(client.unscoped_probes.load(Ordering::SeqCst), 0);
+    client.recovery_authorized.notify_one();
     let replies = tokio::time::timeout(
         std::time::Duration::from_secs(12),
         wait_for_topic(&store, "chat/reply", session_id),

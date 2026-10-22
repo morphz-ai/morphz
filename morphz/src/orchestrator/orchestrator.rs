@@ -2019,7 +2019,21 @@ struct EffectiveModelRequestPolicy {
 /// Keep that evidence together instead of passing unrelated recovery scalars.
 struct FailedModelRequest<'a> {
     configuration_snapshot: Option<(DateTime<Utc>, &'a ModelAttemptBinding)>,
+    provider_resource_snapshot: Option<&'a str>,
     policy: &'a EffectiveModelRequestPolicy,
+}
+
+impl<'a> FailedModelRequest<'a> {
+    fn from_completion(
+        error: &'a ModelCompletionError,
+        policy: &'a EffectiveModelRequestPolicy,
+    ) -> Self {
+        Self {
+            configuration_snapshot: error.model_configuration_snapshot(),
+            provider_resource_snapshot: error.provider_resource_snapshot.as_deref(),
+            policy,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2067,6 +2081,9 @@ struct ModelCompletionError {
     /// an old catalog/settings snapshot from a failure under the current one.
     model_request_started_at: Option<DateTime<Utc>>,
     model_binding: Option<ModelAttemptBinding>,
+    /// Admission can fail before an immutable account binding exists. Retain
+    /// that request's exact resource instead of consulting mutable defaults.
+    provider_resource_snapshot: Option<String>,
     origin: ModelCompletionErrorOrigin,
 }
 
@@ -2430,6 +2447,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::Provider,
         }
     }
@@ -2443,6 +2461,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::RuntimePersistence,
         }
     }
@@ -2456,6 +2475,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::RuntimeInternal,
         }
     }
@@ -2469,6 +2489,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::RuntimeInput,
         }
     }
@@ -2487,6 +2508,7 @@ impl ModelCompletionError {
             provider_continuation: accumulator.provider_continuation.clone(),
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin,
         }
     }
@@ -2508,6 +2530,13 @@ impl ModelCompletionError {
 
     fn model_configuration_snapshot(&self) -> Option<(DateTime<Utc>, &ModelAttemptBinding)> {
         Some((self.model_request_started_at?, self.model_binding.as_ref()?))
+    }
+
+    fn with_provider_resource_snapshot(mut self, resource: String) -> Self {
+        // A later, bound-resource admission may already be more precise than
+        // the first logical-route admission. Never overwrite that evidence.
+        self.provider_resource_snapshot.get_or_insert(resource);
+        self
     }
 
     fn is_runtime_failure(&self) -> bool {
@@ -4278,10 +4307,13 @@ impl Orchestrator {
             return;
         }
         let resource = resource.to_string();
-        if failure.kind.is_request_scoped_latency() {
+        if binding.is_none() || failure.kind.is_request_scoped_latency() {
             // A large request with a slow first byte, or one stalled stream,
             // is request-local evidence. Wake only its owning Context after a
             // short delay; never poison the endpoint+model shared circuit.
+            // Without a complete authorized binding there is no account to
+            // probe: the Client default may belong to another model/Principal.
+            // Retry the original work through its normal authorization path.
             let delay =
                 std::time::Duration::from_secs(failure.retry_after_secs.unwrap_or(5).clamp(1, 300));
             let bus = Arc::clone(&self.bus);
@@ -4300,6 +4332,12 @@ impl Orchestrator {
             });
             return;
         }
+
+        // Only an immutable, Agent-authorized binding may be probed. An
+        // unbound request has already taken the request-local retry path.
+        let Some(binding) = binding else {
+            return;
+        };
 
         let circuit = self
             .provider_circuits
@@ -4356,11 +4394,7 @@ impl Orchestrator {
                         return;
                     }
                 }
-                let probe_result = if let Some(binding) = binding.as_ref() {
-                    client.probe_health_bound(binding).await
-                } else {
-                    client.probe_health().await
-                };
+                let probe_result = client.probe_health_bound(&binding).await;
                 match probe_result {
                     Ok(()) => {
                         let mut contexts = {
@@ -4756,25 +4790,42 @@ impl Orchestrator {
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
-        let resource = self.client.provider_resource_key();
-        let contexts = persistent_provider_wait_contexts(store.as_ref(), &resource).await?;
-        if contexts.is_empty() {
-            return Ok(());
-        }
-        tracing::info!(
-            provider_resource = %resource,
-            waiting_contexts = contexts.len(),
-            event_code = "orchestrator.provider_probe.recovered_after_restart",
-            "Recovered Provider waiting probes after Runtime restart"
-        );
-        let failure = ModelFailure::new(
-            ModelFailureKind::ServerUnavailable,
-            "Runtime restart recovered persistent Provider waits",
-        )
-        .with_retry_after(Some(1));
-        for context_id in contexts {
-            self.record_provider_failure(&context_id, &resource, None, &failure)
-                .await;
+        let resources = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .map(|dependency| dependency.dependency_id)
+            .filter(|resource| {
+                resource.starts_with("model-route:") || resource.starts_with("model-provider:")
+            })
+            .collect::<BTreeSet<_>>();
+        for resource in resources {
+            // This helper rechecks live owner generation and Objective wait
+            // identity; a dependency row alone is not authority to wake work.
+            let contexts = persistent_provider_wait_contexts(store.as_ref(), &resource).await?;
+            if contexts.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                provider_resource = %resource,
+                waiting_contexts = contexts.len(),
+                event_code = "orchestrator.provider_probe.recovered_after_restart",
+                "Recovered exact Provider waiting resources after Runtime restart"
+            );
+            let failure = ModelFailure::new(
+                ModelFailureKind::ServerUnavailable,
+                "Runtime restart recovered persistent Provider waits",
+            )
+            .with_retry_after(Some(1));
+            for context_id in contexts {
+                self.record_provider_failure(&context_id, &resource, None, &failure)
+                    .await;
+            }
         }
         Ok(())
     }
@@ -11330,6 +11381,28 @@ impl Orchestrator {
         input: ModelCompletionInput<'_>,
         request_policy: &EffectiveModelRequestPolicy,
     ) -> Result<ModelCompletion, ModelCompletionError> {
+        let admission_resource = self
+            .client
+            .provider_resource_key_for_requested_model(Some(&request_policy.model_alias));
+        self.request_model_completion_for_resource(
+            session_id,
+            attempt_id,
+            input,
+            request_policy,
+            &admission_resource,
+        )
+        .await
+        .map_err(|error| error.with_provider_resource_snapshot(admission_resource))
+    }
+
+    async fn request_model_completion_for_resource(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        input: ModelCompletionInput<'_>,
+        request_policy: &EffectiveModelRequestPolicy,
+        admission_resource: &str,
+    ) -> Result<ModelCompletion, ModelCompletionError> {
         let ModelCompletionInput {
             messages,
             tools,
@@ -11375,11 +11448,8 @@ impl Orchestrator {
                         .get_for_activation(&route.activation_id)
                         .is_none()
             });
-        let admission_resource = self
-            .client
-            .provider_resource_key_for_requested_model(Some(&request_policy.model_alias));
         self.admit_provider_circuit(
-            &admission_resource,
+            admission_resource,
             &stream_context_id,
             explicit_dialogue_attempt,
         )
@@ -11502,7 +11572,10 @@ impl Orchestrator {
                 explicit_dialogue_attempt,
             )
             .await
-            .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
+            .map_err(|failure| {
+                ModelCompletionError::provider(Box::new(failure) as DynError)
+                    .with_provider_resource_snapshot(bound_provider_resource.clone())
+            })?;
         }
         let model_request_started_at = Utc::now();
         let effective_reasoning_effort = crate::provider::normalize_reasoning_effort_for_model(
@@ -15563,7 +15636,7 @@ impl Orchestrator {
                                 "critical_maintenance_minimum_projection",
                                 &failure,
                                 context.parent_session_id.as_deref(),
-                                FailedModelRequest { configuration_snapshot: error.model_configuration_snapshot(), policy: &request_policy },
+                                FailedModelRequest::from_completion(&error, &request_policy),
                             ))
                             .await;
                         }
@@ -15770,7 +15843,7 @@ impl Orchestrator {
                             "reasoning_continuation",
                             &failure,
                             context.parent_session_id.as_deref(),
-                            FailedModelRequest { configuration_snapshot: None, policy: &request_policy },
+                            FailedModelRequest { configuration_snapshot: None, provider_resource_snapshot: None, policy: &request_policy },
                         ))
                         .await;
                     }
@@ -15828,7 +15901,7 @@ impl Orchestrator {
                             "safety_refusal",
                             &failure,
                             context.parent_session_id.as_deref(),
-                            FailedModelRequest { configuration_snapshot: error.model_configuration_snapshot(), policy: &request_policy },
+                            FailedModelRequest::from_completion(&error, &request_policy),
                         ))
                         .await;
                     }
@@ -15963,7 +16036,7 @@ impl Orchestrator {
                         "llm_completion",
                         &failure,
                         context.parent_session_id.as_deref(),
-                        FailedModelRequest { configuration_snapshot: error.model_configuration_snapshot(), policy: &request_policy },
+                        FailedModelRequest::from_completion(&error, &request_policy),
                     ))
                     .await;
                 }
@@ -18981,6 +19054,7 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let FailedModelRequest {
             configuration_snapshot: model_configuration_snapshot,
+            provider_resource_snapshot,
             policy: request_policy,
         } = request;
         let context_id = self.context_id_for_session(session_id)?;
@@ -18988,7 +19062,11 @@ impl Orchestrator {
         let provider_resource = model_configuration_snapshot
             .as_ref()
             .map(|(_, binding)| self.client.provider_resource_key_for_binding(binding))
-            .unwrap_or_else(|| self.client.provider_resource_key());
+            .or_else(|| provider_resource_snapshot.map(ToOwned::to_owned))
+            .unwrap_or_else(|| {
+                self.client
+                    .provider_resource_key_for_requested_model(Some(&request_policy.model_alias))
+            });
         let wait_resource = match failure.kind {
             ModelFailureKind::ContextLimit => {
                 format!("context-maintenance:{context_id}")
@@ -19186,7 +19264,7 @@ impl Orchestrator {
                 json!(failure.kind.as_str()),
             ),
             ("runtime_failure_stage".to_string(), json!(stage)),
-            ("provider_resource".to_string(), json!(provider_resource)),
+            ("provider_resource".to_string(), json!(&provider_resource)),
             (
                 "runtime_failure_incident_id".to_string(),
                 json!(&incident.id),
@@ -19202,6 +19280,8 @@ impl Orchestrator {
         if let Some(seconds) = failure.retry_after_secs {
             attributes.push(("retry_after_secs".to_string(), json!(seconds)));
         }
+        let needs_unbound_retry =
+            model_configuration_snapshot.is_none() && failure.kind.uses_provider_recovery();
         if let Some((started_at, model_binding)) = model_configuration_snapshot {
             attributes.push(("model_request_started_at".to_string(), json!(started_at)));
             attributes.push(("model_binding".to_string(), json!(model_binding)));
@@ -19215,7 +19295,7 @@ impl Orchestrator {
                 parent_session_id,
                 attributes,
             )
-            .await
+            .await?;
         } else {
             attributes.push((
                 "runtime_failure_user_notice_suppressed".to_string(),
@@ -19227,8 +19307,16 @@ impl Orchestrator {
                 parent_session_id,
                 attributes,
             )
-            .await
+            .await?;
         }
+        if needs_unbound_retry {
+            // Objective failure handling commits its resource wait while
+            // publishing the outcome above. Arm recovery afterwards, just as
+            // the ordinary Thread path does after its durable wait commit.
+            self.record_provider_failure(&context_id, &provider_resource, None, failure)
+                .await;
+        }
+        Ok(())
     }
 
     async fn record_model_attempt_started(
@@ -26893,6 +26981,146 @@ mod tests {
             ),
             ProviderCircuitAdmission::Allowed
         );
+    }
+
+    #[tokio::test]
+    async fn provider_wait_resources_admission_rejection_retains_the_exact_blocked_route() {
+        struct AdmissionClient(AtomicUsize);
+
+        #[async_trait::async_trait]
+        impl crate::llm::Client for AdmissionClient {
+            fn provider_resource_key(&self) -> String {
+                "model-route:unrelated-process-default".into()
+            }
+
+            fn provider_resource_key_for_requested_model(&self, _: Option<&str>) -> String {
+                "model-route:requested".into()
+            }
+
+            async fn bind_requested_model_attempt(
+                &self,
+                request: &crate::llm::ModelRequestContext,
+                requested: Option<&str>,
+            ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ModelAttemptBinding {
+                    requested_alias: requested.unwrap().into(),
+                    route_id: "bound-route".into(),
+                    route_revision: "test-v1".into(),
+                    provider_instance_id: "model-route:bound".into(),
+                    auth_account_id: "agent-owned-account".into(),
+                    physical_model: "bound-physical-model".into(),
+                    protocol: "custom".into(),
+                    provider_adapter: "direct-client".into(),
+                    provider_adapter_version: "test".into(),
+                    endpoint: "http://127.0.0.1/synthetic-admission".into(),
+                    request_session_id: Some(request.session_id.clone()),
+                    capabilities: Vec::new(),
+                    model_input_limits: Default::default(),
+                })
+            }
+
+            async fn create_completion(
+                &self,
+                _: Vec<Message>,
+                _: Vec<ToolDefinition>,
+            ) -> Result<crate::llm::Response, DynError> {
+                panic!("rejected admission must never send a Provider request")
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("exact-admission.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "admission-agent".into(),
+                    title: "Admission Agent".into(),
+                    root_context_id: "admission-context".into(),
+                },
+                NewCognitiveContext {
+                    id: "admission-context".into(),
+                    agent_id: "admission-agent".into(),
+                    title: "Admission Context".into(),
+                },
+                NewSession {
+                    id: "admission-session".into(),
+                    agent_id: "admission-agent".into(),
+                    context_id: "admission-context".into(),
+                    parent_session_id: None,
+                    title: "Admission Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let config = crate::config::OrchestratorConfig::default();
+        let client = Arc::new(AdmissionClient(AtomicUsize::new(0)));
+        let orchestrator = Orchestrator::new_test_with_context_engine(
+            Arc::new(InMemoryEventBus::new()),
+            store.clone() as Arc<dyn EventStore>,
+            None,
+            store.clone() as Arc<dyn crate::memory::ActionGroupStore>,
+            client.clone(),
+            Arc::new(Registry::new()),
+            config.clone(),
+            Arc::new(
+                ContextEngine::new(store.clone() as Arc<dyn EventStore>, config)
+                    .with_session_store(store.clone() as Arc<dyn crate::memory::SessionStore>),
+            ),
+            Arc::new(TimerEngine::new(store.clone() as Arc<dyn TimerStore>)),
+            None,
+        )
+        .unwrap();
+        let policy = super::EffectiveModelRequestPolicy {
+            model_alias: "requested".into(),
+            reasoning_effort: "provider_default".into(),
+            thread_control_revision: None,
+            session_snapshot: crate::model_selection::SessionEvaluationSnapshot::new(
+                Some("requested"),
+                None,
+                true,
+                true,
+            ),
+        };
+        for (resource, binding_count) in [("model-route:requested", 0), ("model-route:bound", 1)] {
+            orchestrator.provider_circuits.clear();
+            orchestrator.provider_circuits.insert(
+                resource.into(),
+                Arc::new(std::sync::Mutex::new(ProviderCircuitState {
+                    phase: ProviderCircuitPhase::Open,
+                    consecutive_failures: 3,
+                    generation: 1,
+                    retry_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                    health_probe_in_flight: false,
+                    waiting_contexts: HashSet::new(),
+                })),
+            );
+            let result = orchestrator
+                .request_model_completion_with_policy(
+                    "admission-session",
+                    "automatic-admission-attempt",
+                    super::ModelCompletionInput {
+                        messages: Vec::new(),
+                        tools: Vec::new(),
+                        prompt_measurement: None,
+                        internal_return: None,
+                    },
+                    &policy,
+                )
+                .await;
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("automatic work must respect the exact open circuit"),
+            };
+            assert_eq!(error.provider_resource_snapshot.as_deref(), Some(resource));
+            assert!(error.model_configuration_snapshot().is_none());
+            assert_eq!(client.0.load(Ordering::SeqCst), binding_count);
+        }
     }
 
     #[tokio::test]
