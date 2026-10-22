@@ -35,6 +35,27 @@ pub mod routing;
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
 pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
 
+/// A local credential is absent, before any upstream request is sent. Keep
+/// this typed so control-plane clients can offer recovery without parsing or
+/// publishing private credential references from the diagnostic message.
+#[derive(Debug)]
+pub(crate) struct MissingProviderCredential {
+    pub credential_id: String,
+    pub environment_alias: String,
+}
+
+impl std::fmt::Display for MissingProviderCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Credential '{}' requires managed secret or environment variable {}",
+            self.credential_id, self.environment_alias
+        )
+    }
+}
+
+impl std::error::Error for MissingProviderCredential {}
+
 // ChatGPT's Codex catalog endpoint is versioned independently from Morphz.
 // Keep this compatibility value aligned with the Codex request headers and
 // allow operators to advance it without rebuilding if the upstream raises its

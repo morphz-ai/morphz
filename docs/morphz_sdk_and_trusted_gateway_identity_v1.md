@@ -98,7 +98,9 @@ Session 与初始 Principal 在同一个数据库事务中创建。带 `parent_s
 }
 ```
 
-当前机器码为 `invalid_argument`、`unauthorized`、`forbidden`、`not_found`、`conflict`、`internal`。
+当前机器码为 `invalid_argument`、`resource_exhausted`、`unauthorized`、`forbidden`、`not_found`、`conflict`、`unavailable`、`credential_missing`、`internal`。
+`credential_missing` 用于 Provider 控制面在本机未找到连接凭据的情形；HTTP
+返回 424 和固定安全消息，不冒充调用方身份认证失败，也不公开凭据引用。
 
 ### 3.1 Session 内的人工审批（2026-09-08）
 

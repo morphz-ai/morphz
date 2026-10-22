@@ -4067,6 +4067,7 @@ fn sdk_error_response(error: SdkError) -> axum::response::Response {
         SdkErrorCode::NotFound => StatusCode::NOT_FOUND,
         SdkErrorCode::Conflict => StatusCode::CONFLICT,
         SdkErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        SdkErrorCode::CredentialMissing => StatusCode::FAILED_DEPENDENCY,
         SdkErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
     };
     let message = if error.code == SdkErrorCode::Internal {
@@ -16793,13 +16794,7 @@ account = "xai-account"
                     name: Some("MORPHZ_WEB_TEST_LOCAL_PROVIDER_API_KEY".to_string()),
                     ..crate::config::CredentialConfig::default()
                 }),
-                managed_secret: Some(PutManagedSecretRequest {
-                    name: "MORPHZ_WEB_TEST_LOCAL_PROVIDER_API_KEY".to_string(),
-                    value: "durable-test-key".to_string(),
-                    scope_kind: crate::secret_store::SecretScopeKind::Runtime,
-                    scope_id: None,
-                    value_backend: None,
-                }),
+                managed_secret: None,
                 route_id: "route-a".to_string(),
                 route: ModelRouteConfig {
                     candidates: vec![crate::config::ModelRouteCandidateConfig {
@@ -16820,6 +16815,50 @@ account = "xai-account"
             runtime.provider_catalog_config().unwrap().llm.model,
             "route-a"
         );
+
+        // An environment-only connection can outlive the process that supplied
+        // its key. Report the missing credential, not an opaque server error;
+        // recovery uses the normal revision-fenced credential API.
+        let missing = handle_refresh_provider_account_catalog(
+            State(Arc::clone(&state)),
+            Path("local-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(ProviderAccountDiagnosticRequest { model: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(missing.status(), StatusCode::FAILED_DEPENDENCY);
+        let body = axum::body::to_bytes(missing.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let failure: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(failure["error"]["code"], "credential_missing");
+        assert_eq!(
+            failure["error"]["message"],
+            "Provider credential is missing"
+        );
+        assert!(runtime
+            .provider_control_snapshot()
+            .await
+            .unwrap()
+            .discovered_models
+            .is_empty());
+        let connection = state.sdk.api_connection_settings("local-account").unwrap();
+        let restored = handle_update_api_connection(
+            State(Arc::clone(&state)),
+            Path("local-account".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(crate::sdk::ApiConnectionUpdate::Credential {
+                expected_version: connection.version,
+                api_key: "durable-test-key".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(restored.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "route-a");
 
         let second_setup = handle_put_provider_catalog_setup(
             State(Arc::clone(&state)),

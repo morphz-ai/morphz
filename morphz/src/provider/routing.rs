@@ -1546,18 +1546,17 @@ impl RoutedClient {
                         )
                     })?;
                     Some(match auth_manager.as_ref() {
-                        Some(manager) => manager
-                            .materialize_static_credential(alias)?
-                            .ok_or_else(|| {
-                                format!(
-                                    "Credential '{}' requires managed secret or environment variable {alias}",
-                                    account.credential_ref
-                                )
-                            })?,
-                        None => resolve_credential(&account.credential_ref, config)?
-                            .ok_or_else(|| {
-                                format!("Credential '{}' resolved no value", account.credential_ref)
-                            })?,
+                        Some(manager) => {
+                            manager
+                                .materialize_static_credential(alias)?
+                                .ok_or_else(|| super::MissingProviderCredential {
+                                    credential_id: account.credential_ref.clone(),
+                                    environment_alias: alias.to_string(),
+                                })?
+                        }
+                        None => resolve_credential(&account.credential_ref, config)?.ok_or_else(
+                            || format!("Credential '{}' resolved no value", account.credential_ref),
+                        )?,
                     })
                 } else {
                     resolve_credential(&account.credential_ref, config)?

@@ -109,6 +109,7 @@ pub enum SdkErrorCode {
     NotFound,
     Conflict,
     Unavailable,
+    CredentialMissing,
     Internal,
 }
 
@@ -122,6 +123,7 @@ impl SdkErrorCode {
             Self::NotFound => "not_found",
             Self::Conflict => "conflict",
             Self::Unavailable => "unavailable",
+            Self::CredentialMissing => "credential_missing",
             Self::Internal => "internal",
         }
     }
@@ -155,6 +157,18 @@ impl fmt::Display for SdkError {
 impl std::error::Error for SdkError {}
 
 pub type SdkResult<T> = Result<T, SdkError>;
+
+fn provider_diagnostic_sdk_error(error: crate::provider::ProviderError) -> SdkError {
+    if error.is::<crate::provider::MissingProviderCredential>() {
+        SdkError::new(
+            SdkErrorCode::CredentialMissing,
+            "Provider credential is missing",
+        )
+    } else {
+        SdkError::internal(error)
+    }
+}
+
 fn terminal_sdk_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
     match error.downcast_ref::<crate::terminal::TerminalAccessError>() {
         Some(crate::terminal::TerminalAccessError::NotFound) => {
@@ -1661,7 +1675,7 @@ impl MorphzSdk {
         self.runtime
             .diagnose_model_route(alias, account_id)
             .await
-            .map_err(SdkError::internal)
+            .map_err(provider_diagnostic_sdk_error)
     }
 
     pub async fn refresh_model_catalog(
@@ -1672,7 +1686,7 @@ impl MorphzSdk {
         self.runtime
             .refresh_model_catalog(alias, account_id)
             .await
-            .map_err(SdkError::internal)
+            .map_err(provider_diagnostic_sdk_error)
     }
 
     pub async fn diagnose_provider_account(
@@ -1683,7 +1697,7 @@ impl MorphzSdk {
         self.runtime
             .diagnose_provider_account(account_id, model)
             .await
-            .map_err(SdkError::internal)
+            .map_err(provider_diagnostic_sdk_error)
     }
 
     pub async fn refresh_provider_account_catalog(
@@ -1694,7 +1708,7 @@ impl MorphzSdk {
         self.runtime
             .refresh_provider_account_catalog(account_id, model)
             .await
-            .map_err(SdkError::internal)
+            .map_err(provider_diagnostic_sdk_error)
     }
 
     pub async fn put_provider_instance_config(
