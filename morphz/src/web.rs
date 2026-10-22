@@ -1681,8 +1681,9 @@ impl Server {
             app
         };
         let listener = tokio::net::TcpListener::bind(addr).await?;
+        let bound_addr = listener.local_addr()?;
         tracing::info!(
-            addr = %addr,
+            addr = %bound_addr,
             dashboard_body_limit_bytes = dashboard_body_limit,
             event_code = "web.dashboard_api.started",
             "Dashboard API Server started"

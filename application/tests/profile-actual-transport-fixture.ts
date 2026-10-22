@@ -30,6 +30,7 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import type { CognitiveAppHostOptions } from "../packages/application/src/cognitive-app-host.js";
 import type { workInputFormats } from "../packages/application/src/session-io.js";
+import { runtimeListenerFromJsonLine } from "./runtime-listener-fixture.js";
 import {
   profileCustom,
   profileSnapshotSchema,
@@ -258,13 +259,6 @@ function fixtureEvaluation(
 }
 
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
-async function port() {
-  const server = createServer();
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const value = (server.address() as { port: number }).port;
-  await new Promise<void>((done) => server.close(() => done()));
-  return value;
-}
 export async function profileActualTransportFixture(
   options: {
     /** Optional trusted isolated-author setup. Only integration fixtures use
@@ -352,22 +346,7 @@ export async function profileActualTransportFixture(
   }
   const databasePath = join(runtimeRoot, "runtime.sqlite");
   const operator = randomBytes(32).toString("hex");
-  const runtimePort = await port(),
-    hostPort = await port();
   const namespace = randomUUID();
-  // Runtime protects the Host credential manifest's entire parent directory.
-  // Keep control material outside the separately authorized workspace, just
-  // as the installed application does; never relax the permission checker.
-  const hostControlRoot = join(directory, "host-control");
-  mkdirSync(hostControlRoot, { mode: 0o700 });
-  const manifest = prepareHostTools(hostControlRoot, hostPort, namespace);
-  if (inputFormats !== undefined) {
-    const value = JSON.parse(readFileSync(manifest.path, "utf8"));
-    value.formats = inputFormats;
-    writeFileSync(manifest.path, JSON.stringify(value), { mode: 0o600 });
-  }
-  const runtimeUrl = `http://127.0.0.1:${runtimePort}`;
-  const origin = `http://127.0.0.1:${hostPort}`;
   const workspaceReadFailures: Array<{ status: number; error: unknown }> = [];
   const requests: CapturedRequest[] = [];
   const modelReplies: string[] = [];
@@ -619,6 +598,45 @@ export async function profileActualTransportFixture(
     rmSync(directory, { recursive: true, force: true });
   };
   try {
+    const cognitiveApps = await options.cognitiveHost?.({
+      directory,
+      tenantId: await store.identity(),
+    });
+    domains = await openApplicationDomainsHost(directory, store, undefined, {
+      ...(cognitiveApps ? { cognitiveApps } : {}),
+    });
+    const hostOptions: Parameters<typeof createAppServer>[1] = {
+      port: 0,
+      webRoot: resolve("dist/web"),
+      profiles: domains.profiles,
+      platformWork: domains.work,
+      platformDocuments: domains.content,
+      platformScripts: domains.content,
+      platformReader: domains.reader,
+      messageAttachments: domains.messageAttachments,
+      images: domains.images,
+      uiPackages: domains.uiPackages,
+      cognitiveApps: domains.cognitiveApps,
+      bookmarkDomain: domains.browser,
+      notifications: domains.notifications,
+      workspaceChanges: domains.workspaceChanges,
+    };
+    // Keep the real Host's kernel-selected socket bound while the canonical
+    // Runtime starts. Nothing probes, releases and later reclaims a port.
+    server = createAppServer(store, hostOptions);
+    await new Promise<void>((done) => server!.listen(0, "127.0.0.1", done));
+    const hostPort = (server.address() as { port: number }).port;
+    const origin = `http://127.0.0.1:${hostPort}`;
+    // Runtime protects the manifest's parent separately from the authorized
+    // workspace. Its real callback URL and tool definitions never change.
+    const hostControlRoot = join(directory, "host-control");
+    mkdirSync(hostControlRoot, { mode: 0o700 });
+    const manifest = prepareHostTools(hostControlRoot, hostPort, namespace);
+    if (inputFormats !== undefined) {
+      const value = JSON.parse(readFileSync(manifest.path, "utf8"));
+      value.formats = inputFormats;
+      writeFileSync(manifest.path, JSON.stringify(value), { mode: 0o600 });
+    }
     if (harnessPackages !== undefined) {
       const packageRoot = join(directory, "fixture-harness-packages");
       mkdirSync(packageRoot, { mode: 0o700 });
@@ -682,18 +700,19 @@ export async function profileActualTransportFixture(
         });
       }
     }
+    const startupDeadline = performance.now() + 10000;
     child = spawn(
       runtimeBinaryPath(),
       [
         "serve",
         "--bind",
-        `127.0.0.1:${runtimePort}`,
+        "127.0.0.1:0",
         "--cwd",
         runtimeRoot,
         "--config-file",
         configFile,
         "--log-level",
-        "warn",
+        "warn,morphz::web=info",
       ],
       {
         env: {
@@ -705,19 +724,56 @@ export async function profileActualTransportFixture(
           MORPHZ_DASHBOARD_TOKEN: operator,
           PROFILE_ACTUAL_KEY: "synthetic-test-only",
           MORPHZ_HOST_TOOLS_FILE: manifest.path,
+          MORPHZ_LOG_FORMAT: "json",
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    let advertisedUrl: string | undefined;
+    let startupError: unknown;
+    let stdoutLine = "";
+    child.stdout!.setEncoding("utf8");
+    child.stdout!.on("data", (text: string) => {
+      stdoutLine += text;
+      const lines = stdoutLine.split("\n");
+      stdoutLine = lines.pop()!;
+      try {
+        assert.ok(
+          stdoutLine.length <= 65536,
+          "Isolated Runtime startup line is unbounded",
+        );
+        for (const line of lines) {
+          const address = runtimeListenerFromJsonLine(line);
+          if (address !== undefined) {
+            assert.equal(
+              advertisedUrl,
+              undefined,
+              "Isolated Runtime announced a second listener",
+            );
+            advertisedUrl = address;
+          }
+        }
+      } catch (error) {
+        startupError = error;
+      }
+    });
     for (const stream of [child.stdout, child.stderr])
       stream!.on("data", (bytes) => {
         logs = (logs + bytes.toString()).slice(-8000);
       });
     let started = false;
-    for (let attempt = 0; attempt < 100; attempt++) {
+    while (performance.now() < startupDeadline) {
+      if (startupError) throw startupError;
       assert.equal(child.exitCode, null, "Isolated Runtime exited: " + logs);
       try {
-        started = (await fetch(runtimeUrl + "/health")).ok;
+        if (advertisedUrl)
+          started = (
+            await fetch(advertisedUrl + "/health", {
+              signal: AbortSignal.timeout(
+                Math.max(1, Math.ceil(startupDeadline - performance.now())),
+              ),
+            })
+          ).ok;
       } catch {
         /* bounded startup */
       }
@@ -725,6 +781,11 @@ export async function profileActualTransportFixture(
       await pause(100);
     }
     assert.ok(started, "Isolated Runtime startup timed out: " + logs);
+    assert.ok(
+      advertisedUrl,
+      "Canonical Runtime did not publish its actual listener",
+    );
+    const runtimeUrl = advertisedUrl;
     const status = (await fetch(runtimeUrl + "/api/status", {
       headers: { Authorization: "Bearer " + operator },
     }).then((response) => response.json())) as { agent_id: string };
@@ -766,44 +827,17 @@ export async function profileActualTransportFixture(
         },
       },
     );
-    const cognitiveApps = await options.cognitiveHost?.({
-      directory,
-      tenantId: await store.identity(),
-    });
-    domains = await openApplicationDomainsHost(directory, store, undefined, {
-      ...(cognitiveApps ? { cognitiveApps } : {}),
-    });
     const bindingAuthority = domains.bindRuntime(runtime);
-    const hostOptions = {
-      port: hostPort,
-      webRoot: resolve("dist/web"),
-      runtime,
-      profiles: domains.profiles,
-      platformWork: domains.work,
-      platformDocuments: domains.content,
-      platformScripts: domains.content,
-      platformReader: domains.reader,
-      messageAttachments: domains.messageAttachments,
-      images: domains.images,
-      uiPackages: domains.uiPackages,
-      cognitiveApps: domains.cognitiveApps,
-      bookmarkDomain: domains.browser,
-      notifications: domains.notifications,
-      workspaceChanges: domains.workspaceChanges,
-      platformTaskRuns: domains.taskRuns(runtime),
-      agentTools: runtimeAgentTools(runtime, manifest.token, {
-        authority: bindingAuthority.authority,
-        work: domains.work.service,
-        content: domains.content,
-        profile: domains.profiles.service,
-        reader: domains.reader.service,
-        cognitiveApps: domains.cognitiveApps.service,
-      }),
-    };
-    server = createAppServer(store, hostOptions);
-    await new Promise<void>((done) =>
-      server!.listen(hostPort, "127.0.0.1", done),
-    );
+    hostOptions.runtime = runtime;
+    hostOptions.platformTaskRuns = domains.taskRuns(runtime);
+    hostOptions.agentTools = runtimeAgentTools(runtime, manifest.token, {
+      authority: bindingAuthority.authority,
+      work: domains.work.service,
+      content: domains.content,
+      profile: domains.profiles.service,
+      reader: domains.reader.service,
+      cognitiveApps: domains.cognitiveApps.service,
+    });
     runtime.start();
     if (options.startTaskDispatcher) bindingAuthority.dispatcher.start();
     const client = new HttpApplicationClient(origin);

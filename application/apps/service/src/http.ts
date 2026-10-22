@@ -2329,6 +2329,22 @@ export function createAppServer(
       });
     }
   });
+  if (options.port === 0) {
+    let localPort = 0;
+    server.on("listening", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") return;
+      for (const hostname of ["127.0.0.1", "localhost"]) {
+        const previous = new URL(`http://${hostname}:${localPort}`);
+        origins.delete(previous.origin);
+        hosts.delete(previous.host);
+        const actual = new URL(`http://${hostname}:${address.port}`);
+        origins.add(actual.origin);
+        hosts.add(actual.host);
+      }
+      localPort = address.port;
+    });
+  }
   return Object.assign(server, {
     closeStreams: () => {
       for (const close of streams) close();

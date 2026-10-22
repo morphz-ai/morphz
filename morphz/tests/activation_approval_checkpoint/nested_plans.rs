@@ -191,6 +191,39 @@ pub(super) async fn nested(
     (batch, coordinator, waiting)
 }
 
+async fn recheck_contended_checkpoint(
+    store: &dyn RuntimeStore,
+    batch: &Batch,
+    result: Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>,
+) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>> {
+    if result
+        .as_ref()
+        .is_err_and(|error| error.downcast_ref::<ApprovalOwnershipContended>().is_some())
+    {
+        // A rolled-back transaction made no ownership decision. The caller
+        // must re-read the authority and validate this same immutable batch,
+        // not accept contention as a successful checkpoint or lost wakeup.
+        let current = store
+            .get_thread_activation(&batch.request.activation_id)
+            .await?
+            .unwrap();
+        assert_eq!(current.status, ThreadActivationStatus::Running);
+        assert_eq!(current.revision, batch.request.expected_revision);
+        assert_eq!(
+            current.claimed_by.as_deref(),
+            Some(batch.request.claimed_by.as_str())
+        );
+        assert!(store
+            .get_thread_activation_approval_wait(&batch.request.activation_id)
+            .await?
+            .is_none());
+        return store
+            .suspend_thread_activation_for_approval(batch.request.clone())
+            .await;
+    }
+    result
+}
+
 async fn native_contract(store: Arc<dyn RuntimeStore>, prefix: &str) {
     for i in 0..8 {
         let (batch, _, _) =
@@ -211,6 +244,7 @@ async fn native_contract(store: Arc<dyn RuntimeStore>, prefix: &str) {
             decision.unwrap().mutation,
             ApprovalMutation::Updated(_)
         ));
+        let suspension = recheck_contended_checkpoint(store.as_ref(), &batch, suspension).await;
         if matches!(suspension, Ok(ThreadActivationMutation::Updated(_))) {
             assert_resumable(store.as_ref(), &batch).await;
         } else {
@@ -527,6 +561,127 @@ async fn postgres_nested_plan_checkpoints_track_every_dependency() {
             .await
             .unwrap(),
     );
+    for decide_before_recheck in [false, true] {
+        let label = format!(
+            "pg-held-{}-{decide_before_recheck}",
+            Utc::now().timestamp_nanos_opt().unwrap()
+        );
+        let (batch, _, plans) = nested(store.clone(), &label, true).await;
+        let owner = store
+            .get_thread_activation(&batch.request.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut before_plans = Vec::new();
+        for plan in &plans {
+            before_plans.push(store.get_plan_execution(&plan.id).await.unwrap().unwrap());
+        }
+        let mut before_jobs = Vec::new();
+        for job in &batch.jobs {
+            before_jobs.push(store.get_execution_job(&job.id).await.unwrap().unwrap());
+        }
+        let mut held = store.pool().begin().await.unwrap();
+        sqlx::query("SELECT id FROM threads WHERE id = $1 FOR UPDATE")
+            .bind(&batch.jobs[0].thread_id)
+            .fetch_one(&mut *held)
+            .await
+            .unwrap();
+        let contended = store
+            .suspend_thread_activation_for_approval(batch.request.clone())
+            .await;
+        assert!(
+            contended
+                .as_ref()
+                .is_err_and(|error| error.downcast_ref::<ApprovalOwnershipContended>().is_some()),
+            "the held real row lock must force the typed rollback path"
+        );
+        assert_eq!(
+            store
+                .get_thread_activation(&batch.request.activation_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            owner
+        );
+        assert!(store
+            .get_thread_activation_approval_wait(&batch.request.activation_id)
+            .await
+            .unwrap()
+            .is_none());
+        for plan in &before_plans {
+            assert_eq!(
+                store.get_plan_execution(&plan.id).await.unwrap().unwrap(),
+                *plan
+            );
+        }
+        for job in &before_jobs {
+            assert_eq!(
+                store.get_execution_job(&job.id).await.unwrap().unwrap(),
+                *job
+            );
+        }
+        held.rollback().await.unwrap();
+        let leaf = batch.approvals.last().unwrap();
+        if decide_before_recheck {
+            assert!(matches!(
+                store
+                    .commit_approval_decision(
+                        &leaf.id,
+                        leaf.revision,
+                        ApprovalResolution::Deny {
+                            rationale: "synthetic decision before authority recheck".into(),
+                            risk_tags: vec![]
+                        }
+                    )
+                    .await
+                    .unwrap()
+                    .mutation,
+                ApprovalMutation::Updated(_)
+            ));
+        }
+        let settled = recheck_contended_checkpoint(store.as_ref(), &batch, contended).await;
+        if decide_before_recheck {
+            assert!(settled
+                .unwrap_err()
+                .downcast_ref::<ActivationApprovalWaitChanged>()
+                .is_some());
+            assert_eq!(
+                store
+                    .get_thread_activation(&batch.request.activation_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                owner
+            );
+            assert!(store
+                .get_thread_activation_approval_wait(&batch.request.activation_id)
+                .await
+                .unwrap()
+                .is_none());
+        } else {
+            assert!(matches!(
+                settled.unwrap(),
+                ThreadActivationMutation::Updated(_)
+            ));
+            assert_waiting(store.as_ref(), &batch).await;
+            assert!(matches!(
+                store
+                    .commit_approval_decision(
+                        &leaf.id,
+                        leaf.revision,
+                        ApprovalResolution::Deny {
+                            rationale: "synthetic decision after valid checkpoint".into(),
+                            risk_tags: vec![]
+                        }
+                    )
+                    .await
+                    .unwrap()
+                    .mutation,
+                ApprovalMutation::Updated(_)
+            ));
+            assert_resumable(store.as_ref(), &batch).await;
+        }
+    }
     native_contract(
         store,
         &format!("pg-nested-{}", Utc::now().timestamp_nanos_opt().unwrap()),

@@ -29,6 +29,11 @@ on:
       - application/tests/cognitive-browser-channel.test.ts
       - application/tests/continuation.test.ts
       - application/packages/application/src/runtime.ts
+      - application/apps/service/src/http.ts
+      - application/tests/http.test.ts
+      - application/tests/profile-actual-transport-fixture.ts
+      - application/tests/runtime-listener-fixture.ts
+      - application/tests/runtime-listener-fixture.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
@@ -221,6 +226,8 @@ jobs:
           tests/workspace-navigation-host.test.ts
           tests/cognitive-browser-channel.test.ts
           tests/continuation.test.ts
+          tests/http.test.ts
+          tests/runtime-listener-fixture.test.ts
       - run: npm run build
       - name: Verify the previously unowned macOS sidebar contract early
         run: npx playwright test tests/sidebar-resize.spec.ts --grep '真实 Electron 图标栏隐藏再恢复与刷新保持80，Mac系统按钮安全区和宿主工具仍可用$' --forbid-only
