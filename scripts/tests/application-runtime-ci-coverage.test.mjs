@@ -29,6 +29,41 @@ function jobSource(source, name) {
   return next === -1 ? tail : tail.slice(0, next);
 }
 
+function verifyModelSettingsDiagnostic(source) {
+  const triggers = source.slice(0, source.indexOf("\npermissions:"));
+  for (const path of [
+    "application/apps/web/src/ModelSettings.tsx",
+    "application/tests/model-settings.spec.ts",
+    "application/tests/ui-consistency.spec.ts",
+  ]) assert.ok(triggers.includes(`      - ${path}\n`), `${path} must trigger diagnostics`);
+  const job = jobSource(source, "remaining-browser-regressions");
+  const step = job.split("\n      - ").find(part =>
+    part.includes("name: Reproduce every remaining full Web failure without retries"),
+  );
+  assert.ok(step);
+  assert.match(step, /npm run test:e2e -- --forbid-only/);
+  for (const path of ["tests/model-settings.spec.ts", "tests/ui-consistency.spec.ts"])
+    assert.ok(step.includes(`            ${path} \\\n`), `${path} must run as a complete file`);
+  assert.doesNotMatch(step, /--grep|--shard|--retries|--list|continue-on-error|\bif:|\|\|/);
+}
+
+test("model-setting icons and their global layout tests trigger complete early browser diagnostics", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  verifyModelSettingsDiagnostic(source);
+});
+
+test("settings diagnostic trigger omissions, narrowed files and hidden failures cannot pass coverage", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  for (const changed of [
+    source.replace("      - application/tests/ui-consistency.spec.ts\n", ""),
+    source.replace("            tests/ui-consistency.spec.ts \\\n", ""),
+    source.replace(" --forbid-only", ""),
+    source.replace(" --forbid-only", " --forbid-only --grep settings"),
+    source.replace(" --forbid-only", " --forbid-only --retries=1"),
+    source.replace("name: Reproduce every remaining full Web failure without retries", "continue-on-error: true\n        name: Reproduce every remaining full Web failure without retries"),
+  ]) assert.throws(() => verifyModelSettingsDiagnostic(changed));
+});
+
 function verifyNativeRuntimeArtifact(source) {
   const job = jobSource(source, "native-sandbox-macos");
   const steps = job.split("\n      - ");

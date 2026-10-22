@@ -16,8 +16,11 @@ on:
       - application/apps/web/src/ApplicationHost.tsx
       - application/apps/web/src/Conversation.tsx
       - application/apps/web/src/ExchangePanel.tsx
+      - application/apps/web/src/ModelSettings.tsx
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
+      - application/tests/model-settings.spec.ts
+      - application/tests/ui-consistency.spec.ts
       - application/tests/exchange-draft-state.spec.ts
       - application/tests/message-work-footer.spec.ts
       - application/tests/exchange-resize.spec.ts
@@ -77,7 +80,9 @@ jobs:
       - run: npx playwright install --with-deps chrome
       - name: Reproduce every remaining full Web failure without retries
         run: |
-          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --forbid-only \
+            tests/model-settings.spec.ts \
+            tests/ui-consistency.spec.ts \
             tests/profile-actual-transport.spec.ts \
             tests/workspace-panels-notifications.spec.ts \
             tests/shell-layout.spec.ts \

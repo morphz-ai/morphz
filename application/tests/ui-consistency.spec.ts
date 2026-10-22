@@ -11,6 +11,8 @@ import {
   seedAgentOriginal,
 } from "./platform-agent-original-fixture.js";
 
+const longAccountName = "TEST-" + "LongAccountName".repeat(8);
+
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
@@ -43,7 +45,7 @@ async function prepare(
         accounts: [
           {
             id: "test",
-            label: "TEST-" + "LongAccountName".repeat(8),
+            label: longAccountName,
             kind: "api",
             state: "configured",
             version: "v1",
@@ -365,7 +367,14 @@ test("设置表单的长账号名和模型 ID 不挤压动作，窄窗操作可�
   for (const width of [1380, 760, 320]) {
     await page.setViewportSize({ width, height: 540 });
     const dialog = await openSettings(page, "模型与账号");
-    await dialog.getByRole("button", { name: "选择模型", exact: true }).click();
+    const choose = dialog.getByRole("button", {
+      name: `选择模型：${longAccountName}`,
+      exact: true,
+    });
+    await expect(choose).toHaveText("");
+    await expect(choose).toHaveAttribute("title", `选择模型：${longAccountName}`);
+    await expect(choose.locator("svg")).toHaveCount(1);
+    await choose.click();
     const read = dialog.getByRole("button", {
       name: "读取并测试",
       exact: true,
