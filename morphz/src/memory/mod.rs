@@ -7311,6 +7311,9 @@ pub trait ActivationStore: Send + Sync {
     /// enter. The final transition remains protected by
     /// `update_thread_activation`; this query keeps blocked rows out of the
     /// in-memory admission window so they do not busy-loop.
+    /// A completed pass with an unreleased lane and its exact pending Signal
+    /// still owns that lane until its continuation materializes. Admitting a
+    /// later input in this gap would strand both it and the continuation.
     async fn dialogue_turn_activation_runnable(
         &self,
         activation_id: &str,

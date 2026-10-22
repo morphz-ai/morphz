@@ -569,6 +569,15 @@ impl PostgresStore {
                     activation::migrate_latency_fast_paths(&store.pool),
                 )
                 .await?;
+            // Completed context maintenance still owns an unreleased dialogue
+            // lane while its exact receipt waits for successor materialization.
+            // Upgrade the stored admission function on existing databases too.
+            store
+                .run_versioned_migration(
+                    "20261022_01_dialogue_maintenance_handoff_lane",
+                    activation::migrate_latency_fast_paths(&store.pool),
+                )
+                .await?;
             store
                 .run_versioned_migration(
                     "20260731_01_scheduler_dependencies",

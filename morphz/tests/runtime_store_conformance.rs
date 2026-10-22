@@ -3171,6 +3171,7 @@ where
     S: morphz::memory::RuntimeStore + 'static,
 {
     dialogue_maintenance_interrupt::assert_maintenance_interrupt(store.as_ref()).await;
+    dialogue_maintenance_interrupt::assert_maintenance_handoff_keeps_lane(store.as_ref()).await;
     let session_id = "conformance-dialogue-interruption";
     store
         .create_session(NewSession {
@@ -12850,6 +12851,31 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
             .unwrap(),
         fixed_definition
     );
+    // A database with every prior marker still has to upgrade the old
+    // running-only lane predicate. Merely editing an earlier migration would
+    // leave these installations vulnerable to the hand-off race.
+    let running_only_definition =
+        fixed_definition.replace("activation.status = 'completed'", "FALSE");
+    assert_ne!(running_only_definition, fixed_definition);
+    sqlx::query(&running_only_definition)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
+        .bind("20261022_01_dialogue_maintenance_handoff_lane")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store.pool().close().await;
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(function_definition_sql)
+            .fetch_one(store.pool())
+            .await
+            .unwrap(),
+        fixed_definition,
+        "the new marker must replace the admission function without clearing any old marker"
+    );
     let applied_migrations =
         sqlx::query_scalar::<_, String>("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(store.pool())
@@ -12887,6 +12913,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260901_01_agent_provider_bindings",
         "20261004_01_agent_provider_policy_modes",
         "20260911_01_scheduler_dependency_ready_fifo",
+        "20261022_01_dialogue_maintenance_handoff_lane",
     ] {
         assert!(
             applied_migrations.contains(version),

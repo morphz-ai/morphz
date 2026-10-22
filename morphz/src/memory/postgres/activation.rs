@@ -464,7 +464,20 @@ pub(super) async fn migrate_latency_fast_paths(pool: &PgPool) -> Result<(), Stor
                    ON thread.root_turn_id = activation.root_turn_id
                   AND thread.generation = activation.generation
                 WHERE activation.session_id = current_session_id
-                  AND activation.status = 'running'
+                  AND (
+                    activation.status = 'running'
+                    OR (
+                      activation.status = 'completed'
+                      AND thread.status = 'open'
+                      AND EXISTS (
+                        SELECT 1 FROM thread_signals handoff
+                        WHERE handoff.thread_id = thread.id
+                          AND handoff.thread_generation = thread.generation
+                          AND handoff.status = 'pending'
+                          AND handoff.parent_activation_id = activation.id
+                      )
+                    )
+                  )
                   AND activation.dialogue_lane_released_at IS NULL
                   AND activation.id <> p_id
                   AND activation.root_turn_id <> current_root_turn_id
@@ -2484,7 +2497,20 @@ impl ActivationStore for PostgresStore {
                            ON running_thread.root_turn_id = running.root_turn_id
                           AND running_thread.generation = running.generation
                          WHERE running.session_id = activations.session_id
-                           AND running.status = 'running'
+                           AND (
+                             running.status = 'running'
+                             OR (
+                               running.status = 'completed'
+                               AND running_thread.status = 'open'
+                               AND EXISTS (
+                                 SELECT 1 FROM thread_signals handoff
+                                 WHERE handoff.thread_id = running_thread.id
+                                   AND handoff.thread_generation = running_thread.generation
+                                   AND handoff.status = 'pending'
+                                   AND handoff.parent_activation_id = running.id
+                               )
+                             )
+                           )
                            AND running.dialogue_lane_released_at IS NULL
                            AND running.id != activations.id
                            AND running.root_turn_id != activations.root_turn_id
@@ -2600,7 +2626,20 @@ impl ActivationStore for PostgresStore {
                      ON running_thread.root_turn_id = running.root_turn_id
                     AND running_thread.generation = running.generation
                    WHERE running.session_id = candidate.session_id
-                     AND running.status = 'running'
+                     AND (
+                       running.status = 'running'
+                       OR (
+                         running.status = 'completed'
+                         AND running_thread.status = 'open'
+                         AND EXISTS (
+                           SELECT 1 FROM thread_signals handoff
+                           WHERE handoff.thread_id = running_thread.id
+                             AND handoff.thread_generation = running_thread.generation
+                             AND handoff.status = 'pending'
+                             AND handoff.parent_activation_id = running.id
+                         )
+                       )
+                     )
                      AND running.dialogue_lane_released_at IS NULL
                      AND running.id != candidate.id
                      AND running.root_turn_id != candidate.root_turn_id

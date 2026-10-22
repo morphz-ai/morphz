@@ -8221,17 +8221,16 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     );
     completion_gate.notify_one();
 
-    let replies = tokio::time::timeout(
+    let reply_wait = tokio::time::timeout(
         // Keep a generous loaded-runner margin while remaining well below the
         // thirty-second pending-Signal reconciler interval. Completion inside
         // this bound therefore still proves the direct hand-off path ran.
         tokio::time::Duration::from_secs(10),
         wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2),
     )
-    .await
-    .expect(
-        "context maintenance hand-off must not depend on the thirty-second pending-Signal reconciler",
-    );
+    .await;
+    let timed_out = reply_wait.is_err();
+    let replies = reply_wait.unwrap_or_default();
     if replies.len() < 2 {
         let activations = store
             .list_context_thread_activations("context-maintenance-dialogue", true)
@@ -8244,8 +8243,9 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
             })
             .await
             .unwrap();
+        let dispatch_errors = dispatch_errors.lock().unwrap().clone();
         panic!(
-            "context-maintenance dialogue did not resume: replies={replies:#?}\nactivations={activations:#?}\nevents={events:#?}"
+            "context maintenance hand-off must not depend on the thirty-second pending-Signal reconciler: timed_out={timed_out}\nreplies={replies:#?}\nactivations={activations:#?}\nevents={events:#?}\ndispatch_errors={dispatch_errors:#?}"
         );
     }
     assert_eq!(
