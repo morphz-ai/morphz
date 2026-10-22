@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer, transformWithOxc } from "vite";
 import react from "@vitejs/plugin-react";
-import { chromium, expect, type Page } from "@playwright/test";
+import { chromium, expect, type CDPSession, type Page } from "@playwright/test";
 
 // Real ApplicationHost + its opaque SandboxApplication iframe in StrictMode.
 // Only the WorkspaceClient reads and the consumer callback are fixtures; no
@@ -57,8 +57,9 @@ createRoot(document.getElementById('root')!).render(<StrictMode><Fixture/></Stri
 const frameHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body><button id="compose" disabled>准备输入</button><script>
 let channel; const pending = new Map(); window.ready = false;
 window.handshake = { initializations: 0, readyRequests: 0, responses: 0 };
-window.composeInput = { clicks: 0, trusted: 0, reply: null };
+window.composeInput = { over: 0, moves: 0, downs: 0, ups: 0, clicks: 0, trusted: 0, reply: null, events: [] };
 window.request = request => new Promise(resolve => { const requestId = crypto.randomUUID(); pending.set(requestId, resolve); parent.postMessage({ type: 'morphz-app:request', channel, requestId, request }, '*'); });
+for (const [type, field] of [['pointerover', 'over'], ['pointermove', 'moves'], ['pointerdown', 'downs'], ['pointerup', 'ups']]) document.getElementById('compose').addEventListener(type, event => { window.composeInput.events.push({ type, trusted: event.isTrusted, x: event.clientX, y: event.clientY, target: event.target.id }); if (event.isTrusted) window.composeInput[field]++; });
 document.getElementById('compose').onclick = async event => { window.composeInput.clicks++; if (event.isTrusted) window.composeInput.trusted++; window.composeInput.reply = await window.request({ method: 'compose', text: '鼠标追加' }); };
 window.addEventListener('message', async event => {
  if (event.source !== parent) return;
@@ -167,8 +168,29 @@ test(
               requested: 0,
               delivered: 0,
               released: false,
-              presented: false,
             };
+            const inputEvents: unknown[] = [];
+            for (const type of [
+              "pointerover",
+              "pointermove",
+              "pointerdown",
+              "pointerup",
+              "click",
+            ])
+              window.addEventListener(
+                type,
+                (event) => {
+                  const pointer = event as PointerEvent;
+                  inputEvents.push({
+                    type,
+                    trusted: event.isTrusted,
+                    x: pointer.clientX,
+                    y: pointer.clientY,
+                    target: (event.target as Element)?.tagName,
+                  });
+                },
+                true,
+              );
             window.requestAnimationFrame = (callback) => {
               const id = ++state.requested;
               pending.set(id, callback);
@@ -180,7 +202,8 @@ test(
             Object.assign(window, {
               fixturePaint: {
                 state,
-                async release() {
+                inputEvents,
+                release() {
                   state.released = true;
                   window.requestAnimationFrame = request;
                   window.cancelAnimationFrame = cancel;
@@ -190,13 +213,6 @@ test(
                       callback(time);
                     });
                   pending.clear();
-                  // Logical handshake readiness is deliberately checked before
-                  // any host frame. Physical input must wait until painting
-                  // has really resumed, not merely until RAF was reassigned.
-                  await new Promise<void>((resolve) =>
-                    request(() => request(() => resolve())),
-                  );
-                  state.presented = true;
                 },
               },
             });
@@ -251,91 +267,155 @@ test(
         throw error;
       }
     }
-    await context.test(
-      "宿主没有绘制帧时仍完成真实握手，恢复绘制后单击可准备输入",
-      async () => {
-        const { page, frame, errors, signals } = await fixture({
-          holdPaint: true,
-        });
-        try {
-          assert.deepEqual(
-            await page.evaluate(() => ({
-              delivered: (window as any).fixturePaint.state.delivered,
-              released: (window as any).fixturePaint.state.released,
-              presented: (window as any).fixturePaint.state.presented,
-            })),
-            { delivered: 0, released: false, presented: false },
-          );
-          assert.equal((await report(page)).callbacks.length, 0);
-          await page.evaluate(() => (window as any).fixturePaint.release());
-          assert.equal(
-            await page.evaluate(
-              () => (window as any).fixturePaint.state.presented,
-            ),
-            true,
-          );
-          const button = frame.getByRole("button", { name: "准备输入" });
-          await expect(button).toBeEnabled();
-          // Opaque iframes have a separate hit-test surface. Observe its actual
-          // presented pixels before the one real mouse click; no forced or
-          // repeated click can stand in for a delivered user action.
-          await button.screenshot();
-          await button.click();
-          await expect
-            .poll(async () => (await report(page)).body)
-            .toBe("读取前正文\n鼠标追加");
-          assert.equal((await report(page)).callbacks.length, 1);
-          assert.deepEqual(
-            await frame.locator("body").evaluate(() => ({
-              clicks: (window as any).composeInput.clicks,
-              trusted: (window as any).composeInput.trusted,
-            })),
-            { clicks: 1, trusted: 1 },
-          );
-          assert.deepEqual(errors, []);
-        } catch (error) {
-          const details = {
-            host: await report(page).catch(() => null),
-            frame: await frame
-              .locator("body")
-              .evaluate(() => ({
-                ready: (window as any).ready,
-                handshake: (window as any).handshake,
-                input: (window as any).composeInput,
-              }))
-              .catch(() => null),
-            paint: await page
-              .evaluate(() => (window as any).fixturePaint?.state)
-              .catch(() => null),
-            errors,
-            signals,
-          };
-          console.error(
-            "[compose paint/click failure]",
-            JSON.stringify(details),
-          );
+    for (const cpuRate of [1, 4])
+      await context.test(
+        cpuRate === 1
+          ? "宿主 RAF 暂停仍完成握手，恢复后首个真实单击只准备一次输入"
+          : "四倍慢速 CPU 下恢复后的首个真实单击仍只准备一次输入",
+        async () => {
+          const { page, frame, errors, signals } = await fixture({
+            holdPaint: true,
+          });
+          let pressed = false;
+          let cpu: CDPSession | undefined;
           try {
-            mkdirSync("test-results", { recursive: true });
-            const directory = mkdtempSync(
-              "test-results/compose-paint-failure-",
+            assert.deepEqual(
+              await page.evaluate(() => ({
+                delivered: (window as any).fixturePaint.state.delivered,
+                released: (window as any).fixturePaint.state.released,
+              })),
+              { delivered: 0, released: false },
             );
-            writeFileSync(
-              `${directory}/state.json`,
-              JSON.stringify(details, null, 2),
+            assert.equal((await report(page)).callbacks.length, 0);
+            await page.evaluate(() => (window as any).fixturePaint.release());
+            if (cpuRate > 1) {
+              cpu = await page.context().newCDPSession(page);
+              await cpu.send("Emulation.setCPUThrottlingRate", {
+                rate: cpuRate,
+              });
+            }
+            const button = frame.getByRole("button", { name: "准备输入" });
+            await expect(button).toBeEnabled();
+            // RAF and screenshots do not acknowledge the opaque iframe's input
+            // route. Playwright's no-delay click batches move/down/up. Use one
+            // real pointer gesture instead: observe entry and press in the child
+            // before releasing. No synthetic DOM click, forced click or retry.
+            await page.bringToFront();
+            const bounds = await button.boundingBox();
+            assert.ok(bounds && bounds.width > 0 && bounds.height > 0);
+            await page.mouse.move(
+              bounds.x + bounds.width / 2,
+              bounds.y + bounds.height / 2,
+              { steps: 4 },
             );
-            await page.screenshot({ path: `${directory}/window.png` });
-          } catch (captureError) {
+            await expect
+              .poll(
+                () =>
+                  frame.locator("body").evaluate(() => {
+                    const input = (window as any).composeInput;
+                    return input.over > 0 && input.moves > 0;
+                  }),
+                {
+                  message:
+                    "trusted pointer entry reached the actual opaque iframe",
+                },
+              )
+              .toBe(true);
+            await page.mouse.down();
+            pressed = true;
+            await expect
+              .poll(
+                () =>
+                  frame
+                    .locator("body")
+                    .evaluate(() => (window as any).composeInput.downs),
+                {
+                  message:
+                    "the one real press reached the actual button before release",
+                },
+              )
+              .toBe(1);
+            assert.equal((await report(page)).callbacks.length, 0);
+            assert.equal(
+              await frame
+                .locator("body")
+                .evaluate(() => (window as any).composeInput.clicks),
+              0,
+            );
+            await page.mouse.up();
+            pressed = false;
+            await expect
+              .poll(async () => (await report(page)).body)
+              .toBe("读取前正文\n鼠标追加");
+            assert.equal((await report(page)).callbacks.length, 1);
+            assert.deepEqual(
+              await frame.locator("body").evaluate(() => ({
+                clicks: (window as any).composeInput.clicks,
+                trusted: (window as any).composeInput.trusted,
+                downs: (window as any).composeInput.downs,
+                ups: (window as any).composeInput.ups,
+              })),
+              { clicks: 1, trusted: 1, downs: 1, ups: 1 },
+            );
+            assert.deepEqual(errors, []);
+          } catch (error) {
+            const details = {
+              host: await report(page).catch(() => null),
+              frame: await frame
+                .locator("body")
+                .evaluate(() => ({
+                  ready: (window as any).ready,
+                  handshake: (window as any).handshake,
+                  input: (window as any).composeInput,
+                  focused: document.hasFocus(),
+                  visibility: document.visibilityState,
+                  activeElement: document.activeElement?.tagName,
+                }))
+                .catch(() => null),
+              paint: await page
+                .evaluate(() => ({
+                  state: (window as any).fixturePaint?.state,
+                  inputEvents: (window as any).fixturePaint?.inputEvents,
+                  focused: document.hasFocus(),
+                  visibility: document.visibilityState,
+                  activeElement: document.activeElement?.tagName,
+                }))
+                .catch(() => null),
+              errors,
+              signals,
+            };
             console.error(
-              "Compose failure evidence could not be captured",
-              captureError,
+              "[compose paint/click failure]",
+              JSON.stringify(details),
             );
+            try {
+              mkdirSync("test-results", { recursive: true });
+              const directory = mkdtempSync(
+                "test-results/compose-paint-failure-",
+              );
+              writeFileSync(
+                `${directory}/state.json`,
+                JSON.stringify(details, null, 2),
+              );
+              await page.screenshot({ path: `${directory}/window.png` });
+            } catch (captureError) {
+              console.error(
+                "Compose failure evidence could not be captured",
+                captureError,
+              );
+            }
+            throw error;
+          } finally {
+            try {
+              if (pressed) await page.mouse.up().catch(() => {});
+              if (cpu)
+                await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+            } finally {
+              await page.close();
+            }
           }
-          throw error;
-        } finally {
-          await page.close();
-        }
-      },
-    );
+        },
+      );
     await context.test(
       "对象读取期间编辑正文和最高推理，不被旧 onCompose 回滚",
       async () => {
