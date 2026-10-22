@@ -18483,10 +18483,9 @@ mod tests {
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call < 100 {
-                // Keep every Activation shorter than the Objective heartbeat,
-                // while making the whole Evaluation cross multiple lease
-                // windows. This reproduces the production pattern of many
-                // quick tool/no-reply continuations.
+                // Exercise many quick no-reply continuations. The ordinary
+                // admission/heartbeat renewal contracts have separate tests;
+                // this end-to-end count is not an OS scheduling deadline.
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 return Ok(no_reply_response(format!("objective-long-run-call-{call}")));
             }
@@ -25772,7 +25771,11 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
-        config.orchestrator.objective_evaluation_lease_secs = 1;
+        // Keep the production lease. A process/SQLite stall longer than a
+        // three-second lease correctly reclaims an Evaluation before its next
+        // model call, so lease claims are not then a model-evaluation count.
+        // short_activation_chains_renew_one_ordinary_evaluation tests the
+        // near-expiry admission branch without a machine-speed assumption.
         let client = Arc::new(ObjectiveLongRunClient {
             calls: AtomicU64::new(0),
         });

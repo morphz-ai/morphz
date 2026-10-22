@@ -42,6 +42,17 @@ async fn fixture() -> (
     Arc<ObjectiveSupervisor>,
     ActiveObjectiveEvaluation,
 ) {
+    fixture_with_wait(true).await
+}
+
+async fn fixture_with_wait(
+    interrupt: bool,
+) -> (
+    crate::test_sqlite::TempSqliteDb,
+    Arc<SqliteStore>,
+    Arc<ObjectiveSupervisor>,
+    ActiveObjectiveEvaluation,
+) {
     let file = crate::test_sqlite::TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(&file.path().to_string_lossy())
@@ -88,43 +99,59 @@ async fn fixture() -> (
         })
         .await
         .unwrap();
-    let ObjectiveMutation::Updated(waiting) = store
-        .update_objective_state(
-            &objective.id,
-            objective.revision,
-            ObjectiveStatus::Active,
-            Some(ObjectiveWaitCondition::Timer {
-                deadline: Utc::now() + Duration::hours(1),
-            }),
-            Some("pending wait"),
-            None,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("wait not installed")
+    let waiting = if interrupt {
+        let ObjectiveMutation::Updated(waiting) = store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::Timer {
+                    deadline: Utc::now() + Duration::hours(1),
+                }),
+                Some("pending wait"),
+                None,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("wait not installed")
+        };
+        waiting
+    } else {
+        objective
     };
     let dependencies = store
         .list_scheduler_dependencies(SchedulerDependencyFilter {
             owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
-            owner_id: Some(objective.id.clone()),
+            owner_id: Some(waiting.id.clone()),
             required_only: true,
             ..Default::default()
         })
         .await
         .unwrap();
-    assert_eq!(dependencies.len(), 1);
-    let ObjectiveMutation::Updated(claimed) = store
-        .claim_objective_interrupt_evaluation(
-            &waiting.id,
-            waiting.revision,
-            "evaluation-route",
-            Utc::now() + Duration::seconds(20),
-            &dependencies[0].id,
-        )
-        .await
-        .unwrap()
-    else {
+    assert_eq!(dependencies.len(), usize::from(interrupt));
+    let pending_dependency_id = dependencies.first().map(|dependency| dependency.id.clone());
+    let claim = if let Some(dependency_id) = pending_dependency_id.as_deref() {
+        store
+            .claim_objective_interrupt_evaluation(
+                &waiting.id,
+                waiting.revision,
+                "evaluation-route",
+                Utc::now() + Duration::seconds(20),
+                dependency_id,
+            )
+            .await
+    } else {
+        store
+            .claim_objective_evaluation(
+                &waiting.id,
+                waiting.revision,
+                "evaluation-route",
+                Utc::now() + Duration::seconds(20),
+            )
+            .await
+    };
+    let ObjectiveMutation::Updated(claimed) = claim.unwrap() else {
         panic!("interrupt not claimed")
     };
     let binding = ActiveObjectiveEvaluation {
@@ -132,7 +159,7 @@ async fn fixture() -> (
         evaluation_id: "evaluation-route".into(),
         revision: claimed.revision,
         started_at: Utc::now(),
-        pending_dependency_id: Some(dependencies[0].id.clone()),
+        pending_dependency_id,
     };
     let supervisor = Arc::new(
         ObjectiveSupervisor::new(
@@ -159,6 +186,69 @@ fn tool_successor(binding: &ActiveObjectiveEvaluation, ordinal: usize) -> Event 
     binding.stamp_route(&mut event.payload);
     // Round-trip through durable Event JSON; no process-local registry fallback.
     serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn short_activation_chains_renew_one_ordinary_evaluation() {
+    let (_file, store, supervisor, binding) = fixture_with_wait(false).await;
+    // Do not start a heartbeat. Every short Activation must be able to renew
+    // at admission, including successive near-expiry windows. Set the durable
+    // remaining lease explicitly instead of racing a three-second OS deadline.
+    for window in 0..4 {
+        let near_expiry = Utc::now() + Duration::seconds(20);
+        assert!(matches!(
+            store
+                .renew_objective_evaluation(
+                    &binding.objective_id,
+                    &binding.evaluation_id,
+                    near_expiry,
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Updated(_)
+        ));
+        let mut renewed_until = None;
+        for ordinal in window * 26..(window + 1) * 26 {
+            let restored =
+                ActiveObjectiveEvaluation::from_event(&tool_successor(&binding, ordinal)).unwrap();
+            assert_eq!(restored, binding);
+            let activation = format!("short-activation-{ordinal}");
+            supervisor
+                .evaluations
+                .bind_activation(&activation, restored);
+            assert!(supervisor
+                .admit_routed_evaluation(
+                    &binding.objective_id,
+                    &binding.evaluation_id,
+                    false,
+                    &activation,
+                    "fixture-worker",
+                )
+                .await
+                .unwrap());
+            let current = store
+                .get_objective(&binding.objective_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let until = current.evaluation_lease_expires_at.unwrap();
+            assert!(until > near_expiry + Duration::seconds(60));
+            assert_eq!(
+                current.active_evaluation_id.as_deref(),
+                Some("evaluation-route")
+            );
+            assert_eq!(current.continuation_sequence, 1);
+            assert!(current.wait_condition.is_none());
+            if let Some(previous) = renewed_until {
+                assert_eq!(
+                    until, previous,
+                    "fresh admissions must not write another renewal"
+                );
+            } else {
+                renewed_until = Some(until);
+            }
+        }
+    }
 }
 
 #[tokio::test]
