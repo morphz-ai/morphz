@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, readlinkSync, statfsSync } from "node:fs";
-import { freemem, loadavg, totalmem } from "node:os";
+import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +30,47 @@ export function unifiedCgroupPath(text) {
   )
     return null;
   return `/sys/fs/cgroup${path === "/" ? "" : path}`;
+}
+
+export function parseCpuMax(text) {
+  if (text === null) return null;
+  const match = /^(max|\d+)\s+(\d+)$/.exec(text.trim());
+  if (!match) return null;
+  const period = Number(match[2]);
+  const quota = match[1] === "max" ? "max" : Number(match[1]);
+  if (
+    !Number.isSafeInteger(period) ||
+    period <= 0 ||
+    (quota !== "max" && (!Number.isSafeInteger(quota) || quota <= 0))
+  )
+    return null;
+  return {
+    quotaMicros: quota,
+    periodMicros: period,
+    quotaCores: quota === "max" ? null : quota / period,
+  };
+}
+
+export function parsePressure(text) {
+  if (text === null) return null;
+  const result = {};
+  for (const line of text.trim().split("\n")) {
+    const match =
+      /^(some|full) avg10=(\d+(?:\.\d+)?) avg60=(\d+(?:\.\d+)?) avg300=(\d+(?:\.\d+)?) total=(\d+)$/.exec(
+        line.trim(),
+      );
+    if (!match) continue;
+    const values = match.slice(2).map(Number);
+    if (!values.every(Number.isFinite) || !Number.isSafeInteger(values[3]))
+      continue;
+    result[match[1]] = {
+      avg10: values[0],
+      avg60: values[1],
+      avg300: values[2],
+      totalMicros: values[3],
+    };
+  }
+  return Object.keys(result).length ? result : null;
 }
 
 function optional(read, path) {
@@ -70,6 +111,12 @@ export function linuxCounters(read = readFileSync) {
               parsed[key] ?? null,
             ]),
           ),
+    pressure: Object.fromEntries(
+      ["cpu", "io", "memory"].map((kind) => [
+        kind,
+        parsePressure(optional(read, `/proc/pressure/${kind}`)),
+      ]),
+    ),
     cgroup:
       root === null
         ? null
@@ -82,6 +129,8 @@ export function linuxCounters(read = readFileSync) {
             pidsCurrent: value("pids.current"),
             pidsLimit: value("pids.max"),
             pidsEvents: counters("pids.events"),
+            cpuMax: parseCpuMax(optional(read, `${root}/cpu.max`)),
+            cpuStat: counters("cpu.stat"),
           },
   };
 }
@@ -110,14 +159,20 @@ export function linuxProcessMemory(
       // executable when available, but emit only the fixed category below.
       name = basename(link(`/proc/${id}/exe`).replace(/ \(deleted\)$/, ""));
     } catch {}
-    const kind = ["node", "tsc", "postgres", "chrome", "chromium"].includes(name)
+    const kind = ["node", "tsc", "postgres", "chrome", "chromium"].includes(
+      name,
+    )
       ? name
       : "other";
     const counters = parseCounters(status);
     const rss = counters.VmRSS;
     if (rss === undefined) continue;
     observed++;
-    const group = groups.get(kind) ?? { processes: 0, residentKiB: 0, largestKiB: 0 };
+    const group = groups.get(kind) ?? {
+      processes: 0,
+      residentKiB: 0,
+      largestKiB: 0,
+    };
     group.processes++;
     group.residentKiB += rss;
     group.largestKiB = Math.max(group.largestKiB, rss);
@@ -146,6 +201,7 @@ export function sample() {
   return {
     at: new Date().toISOString(),
     platform: process.platform,
+    availableParallelism: availableParallelism(),
     memoryBytes: { total: totalmem(), free: freemem() },
     load: loadavg(),
     filesystem,

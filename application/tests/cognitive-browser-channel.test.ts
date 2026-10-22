@@ -1,6 +1,6 @@
 /** UNIT: controlled Window and authority ports. This is not an actual iframe,
  * Host service, author server, Runtime or original-App acceptance. */
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
   cognitiveBrowserLimits,
@@ -15,6 +15,17 @@ import {
 } from "../apps/web/src/host/cognitive-browser-channel.js";
 
 const object = { objectId: "原件/😀", versionRef: "opaque/version:first" };
+function mockMonotonicTimers(t: TestContext) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  // Timer delivery and the channel's absolute monotonic deadline must share
+  // one clock. Real scheduling time cannot consume a fake 30-second budget.
+  return (milliseconds: number) => {
+    now += milliseconds;
+    t.mock.timers.tick(milliseconds);
+  };
+}
 function context(): BrowserContext {
   return parseBrowserContext({
     definition: {
@@ -434,7 +445,7 @@ test("UNIT channel: pending is exactly bounded, duplicate pending IDs do not dis
 });
 
 test("UNIT channel: 30-second expiry retires the document and preserves uncertain write IDs", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const advance = mockMonotonicTimers(t);
   const held = deferred<unknown>();
   const entered = deferred<void>();
   let signal: AbortSignal | undefined;
@@ -447,13 +458,13 @@ test("UNIT channel: 30-second expiry retires the document and preserves uncertai
   });
   const run = f.sendRequest(write());
   await entered.promise;
-  t.mock.timers.tick(cognitiveBrowserLimits.deadlineMs - 1);
+  advance(cognitiveBrowserLimits.deadlineMs - 1);
   assert.equal(
     f.messages.filter((m) => m.type === "morphz-cognitive-ui/v1:response")
       .length,
     0,
   );
-  t.mock.timers.tick(1);
+  advance(1);
   assert.equal(signal!.aborted, true);
   const value = f.messages.find(
     (m) => m.type === "morphz-cognitive-ui/v1:response",
@@ -617,7 +628,7 @@ test("UNIT channel: initialization publishes only its authorized snapshot after 
 });
 
 test("UNIT channel: initialization shares the fixed deadline and cannot publish after expiry", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const advance = mockMonotonicTimers(t);
   const held = deferred<void>();
   const entered = deferred<void>();
   const messages: unknown[] = [];
@@ -644,7 +655,7 @@ test("UNIT channel: initialization shares the fixed deadline and cannot publish 
   });
   const loading = channel.loaded();
   await entered.promise;
-  t.mock.timers.tick(cognitiveBrowserLimits.deadlineMs);
+  advance(cognitiveBrowserLimits.deadlineMs);
   assert.equal(signal!.aborted, true);
   held.resolve();
   await loading;
@@ -1097,7 +1108,7 @@ test("UNIT channel: unknown save discards its coalesced projection and retires w
 });
 
 test("UNIT channel: buffered presentation does not extend a visibility-cancelled save's original 30-second deadline", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const advance = mockMonotonicTimers(t);
   const entered = deferred<void>();
   const held = deferred<void>();
   const f = await fixture({
@@ -1122,9 +1133,9 @@ test("UNIT channel: buffered presentation does not extend a visibility-cancelled
     presentation: context().presentation,
     active: false,
   });
-  t.mock.timers.tick(cognitiveBrowserLimits.deadlineMs - 1);
+  advance(cognitiveBrowserLimits.deadlineMs - 1);
   assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:response");
-  t.mock.timers.tick(1);
+  advance(1);
   assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
   held.resolve();
   await saving;

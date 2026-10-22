@@ -175,8 +175,10 @@ jobs:
   storage-postgres:
     name: Application storage (PostgreSQL)
     runs-on: ubuntu-latest
-    # The managed entry runs the full inventory, not only the storage files.
-    timeout-minutes: 60
+    # This is the complete Node inventory plus live PostgreSQL/S3, not a small
+    # storage subset. Bound file scheduling below; keep every case and its own
+    # deadline. The old 60m job cap cancelled the still-running full inventory.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: application
@@ -234,7 +236,9 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          xvfb-run -a npm test
+          # Independent browser/author compiler files must not compete with
+          # the two backend services. Internal CAS/race concurrency is retained.
+          xvfb-run -a npm test -- --test-concurrency=1
 
   desktop:
     name: Embedded Desktop (macOS)
@@ -283,7 +287,8 @@ jobs:
       - run: npm run test:platform-embedded-desktop
       - run: npm run test:platform-desktop
       - run: npm run test:draft-restart
-      - run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts
+      - name: Require every declared macOS native browser file
+        run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts tests/sidebar-resize.spec.ts --forbid-only
       # Real, checksum-pinned local OCR. No Runtime, paid provider or user books.
       - name: Verify Reader OCR stage and failure-evidence contracts
         run: node --test ../scripts/tests/application-reader-ocr-smoke.test.mjs

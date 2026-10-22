@@ -7,6 +7,10 @@ on:
     branches: [fix/full-application-regressions-20261021]
     paths:
       - .github/workflows/application-native-regressions.yml
+      - .github/workflows/application.yml
+      - scripts/observe-ci-resources.mjs
+      - scripts/tests/observe-ci-resources.test.mjs
+      - scripts/tests/application-runtime-ci-coverage.test.mjs
       - application/apps/desktop/main.cjs
       - application/apps/desktop/preferences.cjs
       - application/apps/web/src/ApplicationHost.tsx
@@ -21,9 +25,14 @@ on:
       - application/tests/cognitive-app-manager-mounted.test.ts
       - application/tests/control-role-mounted.test.ts
       - application/tests/workspace-navigation-app-mounted.test.ts
+      - application/tests/workspace-navigation-host.test.ts
+      - application/tests/cognitive-browser-channel.test.ts
+      - application/tests/continuation.test.ts
+      - application/packages/application/src/runtime.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
+      - application/tests/sidebar-resize.spec.ts
       - application/tests/subject-objectives-restore.spec.ts
       - application/tests/e2e/reader-pagination.spec.ts
       - application/scripts/reader-ocr-model-fixture.mjs
@@ -202,4 +211,16 @@ jobs:
       - name: Check actual iframe and application mounts with bounded diagnosis
         env:
           MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT: "1"
-        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts tests/cognitive-app-manager-mounted.test.ts tests/control-role-mounted.test.ts tests/workspace-navigation-app-mounted.test.ts
+        run: >-
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1
+          tests/application-compose-race.test.ts
+          tests/task-run-panel-mounted.test.ts
+          tests/cognitive-app-manager-mounted.test.ts
+          tests/control-role-mounted.test.ts
+          tests/workspace-navigation-app-mounted.test.ts
+          tests/workspace-navigation-host.test.ts
+          tests/cognitive-browser-channel.test.ts
+          tests/continuation.test.ts
+      - run: npm run build
+      - name: Verify the previously unowned macOS sidebar contract early
+        run: npx playwright test tests/sidebar-resize.spec.ts --grep '真实 Electron 图标栏隐藏再恢复与刷新保持80，Mac系统按钮安全区和宿主工具仍可用$' --forbid-only

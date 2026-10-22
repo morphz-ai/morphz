@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { after, before, describe, it } from "node:test";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { createServer, transformWithOxc } from "vite";
@@ -275,62 +275,79 @@ const executable = process.env.MORPHZ_TEST_BROWSER_EXECUTABLE;
 const installed = executable
   ? existsSync(executable)
   : existsSync(chromium.executablePath());
-test(
+describe(
   "real StrictMode Host/private-origin lifetimes and fresh semantic gates",
-  { skip: !installed, timeout: 30000 },
-  async (context) => {
-    const cacheDir = mkdtempSync(
-      join(tmpdir(), "morphz-navigation-hook-cache-"),
-    );
-    const server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir,
-      optimizeDeps: {
-        noDiscovery: true,
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
-      },
-      plugins: [
-        react(),
-        {
-          name: "isolated-workspace-navigation-host",
-          resolveId(id) {
-            if (id === "/__navigation-host.tsx") return "\0" + id;
-          },
-          async load(id) {
-            if (id === "\0/__navigation-host.tsx")
-              return transformWithOxc(source, "navigation-host.tsx");
-          },
-          configureServer(vite) {
-            vite.middlewares.use(async (request, response, next) => {
-              if (request.url !== "/__navigation-host") return next();
-              response.setHeader("Content-Type", "text/html");
-              response.end(
-                await vite.transformIndexHtml(
-                  request.url,
-                  '<!doctype html><html><head><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module" src="/__navigation-host.tsx"></script></body></html>',
-                ),
-              );
-            });
-          },
-        },
-      ],
-      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
-    });
+  { skip: !installed },
+  () => {
+    let cacheDir: string | undefined;
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-    context.after(async () => {
-      await browser?.close();
-      await server.close();
-      rmSync(cacheDir, { recursive: true, force: true });
-    });
-    browser = await chromium.launch({
-      headless: true,
-      executablePath: executable || undefined,
-    });
-    await server.listen();
-    const address = server.httpServer!.address();
-    assert.ok(address && typeof address !== "string");
-    const url = `http://127.0.0.1:${address.port}/__navigation-host`;
+    let url: string;
+    // Five independent browser cases must not consume one shared 30-second
+    // deadline. Setup, teardown and every original case retain that bound.
+    before(
+      async () => {
+        cacheDir = mkdtempSync(join(tmpdir(), "morphz-navigation-hook-cache-"));
+        server = await createServer({
+          configFile: false,
+          root: resolve("apps/web"),
+          cacheDir,
+          optimizeDeps: {
+            noDiscovery: true,
+            include: ["react", "react-dom/client", "react/jsx-runtime"],
+          },
+          plugins: [
+            react(),
+            {
+              name: "isolated-workspace-navigation-host",
+              resolveId(id) {
+                if (id === "/__navigation-host.tsx") return "\0" + id;
+              },
+              async load(id) {
+                if (id === "\0/__navigation-host.tsx")
+                  return transformWithOxc(source, "navigation-host.tsx");
+              },
+              configureServer(vite) {
+                vite.middlewares.use(async (request, response, next) => {
+                  if (request.url !== "/__navigation-host") return next();
+                  response.setHeader("Content-Type", "text/html");
+                  response.end(
+                    await vite.transformIndexHtml(
+                      request.url,
+                      '<!doctype html><html><head><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module" src="/__navigation-host.tsx"></script></body></html>',
+                    ),
+                  );
+                });
+              },
+            },
+          ],
+          server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
+        });
+        browser = await chromium.launch({
+          headless: true,
+          executablePath: executable || undefined,
+        });
+        await server.listen();
+        const address = server.httpServer!.address();
+        assert.ok(address && typeof address !== "string");
+        url = `http://127.0.0.1:${address.port}/__navigation-host`;
+      },
+      { timeout: 30000 },
+    );
+    after(
+      async () => {
+        try {
+          await browser?.close();
+        } finally {
+          try {
+            await server?.close();
+          } finally {
+            if (cacheDir) rmSync(cacheDir, { recursive: true, force: true });
+          }
+        }
+      },
+      { timeout: 30000 },
+    );
     async function scene(
       run: (
         run: (action: string, value?: unknown) => Promise<Report>,
@@ -371,8 +388,9 @@ test(
         await page.close();
       }
     }
-    await context.test(
+    it(
       "same-identity empty projection unmounts private origin but retains Host state and completes authorized deferred navigation",
+      { timeout: 30000 },
       () =>
         scene(async (run, report) => {
           const first = await report();
@@ -424,8 +442,9 @@ test(
           );
         }),
     );
-    await context.test(
+    it(
       "same-session target revocation and a newer human intent each reject all late route/recency writes",
+      { timeout: 30000 },
       async () => {
         for (const invalidation of ["revoke", "human"]) {
           await scene(async (run) => {
@@ -443,8 +462,9 @@ test(
         }
       },
     );
-    await context.test(
+    it(
       "identity ABA, CSRF rotation and logout permanently retire old Host handles",
+      { timeout: 30000 },
       async () => {
         for (const next of ["B", "A-rotated", "logout"]) {
           await scene(async (run) => {
@@ -464,8 +484,9 @@ test(
         }
       },
     );
-    await context.test(
+    it(
       "a current-projection check runs again inside the actual React functional updater before evaluating a preference patch",
+      { timeout: 30000 },
       async () => {
         for (const action of ["guard-twice", "identity-between"]) {
           await scene(async (run, report) => {
@@ -482,8 +503,9 @@ test(
         }
       },
     );
-    await context.test(
+    it(
       "stable Host owns all three original persistence failures without dead-child callbacks or cross-component updates",
+      { timeout: 30000 },
       () =>
         scene(async (run) => {
           const messages = {

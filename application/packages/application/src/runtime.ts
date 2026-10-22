@@ -8066,27 +8066,29 @@ export class RuntimeBridge {
           }
           delivery.error = null;
         } catch (error) {
-          delivery.state = "failed";
-          if (delivery.supplement) {
-            delivery.supplement =
+          // Confirmation reads this same live delivery while the authoritative
+          // thread recheck awaits. Publish the final rejection and its message
+          // together, never the provisional "invalid" classification.
+          let supplement = delivery.supplement;
+          let rejection = delivery.rejection;
+          if (supplement) {
+            supplement =
               error instanceof UpstreamError &&
               [400, 403, 404, 409, 422].includes(error.status)
                 ? "rejected"
                 : "unknown";
             if (error instanceof ContinuationConflict) {
-              delivery.supplement = "rejected";
-              delivery.rejection = error.reason;
+              supplement = "rejected";
+              rejection = error.reason;
             } else if (error instanceof DomainError) {
-              delivery.supplement = "rejected";
-              delivery.rejection =
-                error.code === "forbidden" ? "forbidden" : "invalid";
+              supplement = "rejected";
+              rejection = error.code === "forbidden" ? "forbidden" : "invalid";
             }
             if (
               error instanceof UpstreamError &&
               [400, 403, 404, 409, 422].includes(error.status)
             ) {
-              delivery.rejection =
-                error.status === 403 ? "forbidden" : "invalid";
+              rejection = error.status === 403 ? "forbidden" : "invalid";
               const source = delivery.platformSource;
               const target = source?.continuation;
               if (source && target) {
@@ -8099,16 +8101,18 @@ export class RuntimeBridge {
                     ),
                   );
                 } catch (e) {
-                  if (e instanceof ContinuationConflict)
-                    delivery.rejection = e.reason;
+                  if (e instanceof ContinuationConflict) rejection = e.reason;
                 }
               }
             }
           }
+          delivery.state = "failed";
+          delivery.supplement = supplement;
+          delivery.rejection = rejection;
           delivery.error =
-            delivery.rejection === "closed"
+            rejection === "closed"
               ? new ContinuationConflict("closed").message
-              : delivery.rejection === "changed"
+              : rejection === "changed"
                 ? new ContinuationConflict("changed").message
                 : error instanceof UpstreamError
                   ? error.message
