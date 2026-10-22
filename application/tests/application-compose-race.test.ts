@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer, transformWithOxc } from "vite";
 import react from "@vitejs/plugin-react";
@@ -57,8 +57,9 @@ createRoot(document.getElementById('root')!).render(<StrictMode><Fixture/></Stri
 const frameHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body><button id="compose" disabled>准备输入</button><script>
 let channel; const pending = new Map(); window.ready = false;
 window.handshake = { initializations: 0, readyRequests: 0, responses: 0 };
+window.composeInput = { clicks: 0, trusted: 0, reply: null };
 window.request = request => new Promise(resolve => { const requestId = crypto.randomUUID(); pending.set(requestId, resolve); parent.postMessage({ type: 'morphz-app:request', channel, requestId, request }, '*'); });
-document.getElementById('compose').onclick = () => window.request({ method: 'compose', text: '鼠标追加' });
+document.getElementById('compose').onclick = async event => { window.composeInput.clicks++; if (event.isTrusted) window.composeInput.trusted++; window.composeInput.reply = await window.request({ method: 'compose', text: '鼠标追加' }); };
 window.addEventListener('message', async event => {
  if (event.source !== parent) return;
  if (event.data.type === 'morphz-app:init') { window.handshake.initializations++; if (!channel) { channel = event.data.channel; window.handshake.readyRequests++; const reply = await window.request({ method: 'ready' }); window.ready = !reply.error; document.getElementById('compose').disabled = !window.ready; } return; }
@@ -143,7 +144,15 @@ test(
     async function fixture({ holdPaint = false } = {}) {
       const page = await browser.newPage();
       const errors: string[] = [];
+      const signals: { kind: string; value: string }[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("framenavigated", (frame) =>
+        signals.push({ kind: "navigation", value: frame.url() }),
+      );
+      page.on("console", (message) => {
+        if (message.type() === "error" || message.text().includes("[vite]"))
+          signals.push({ kind: "console", value: message.text() });
+      });
       try {
         if (holdPaint)
           await page.addInitScript(() => {
@@ -154,7 +163,12 @@ test(
             const request = window.requestAnimationFrame.bind(window);
             const cancel = window.cancelAnimationFrame.bind(window);
             const pending = new Map<number, FrameRequestCallback>();
-            const state = { requested: 0, delivered: 0, released: false };
+            const state = {
+              requested: 0,
+              delivered: 0,
+              released: false,
+              presented: false,
+            };
             window.requestAnimationFrame = (callback) => {
               const id = ++state.requested;
               pending.set(id, callback);
@@ -166,7 +180,7 @@ test(
             Object.assign(window, {
               fixturePaint: {
                 state,
-                release() {
+                async release() {
                   state.released = true;
                   window.requestAnimationFrame = request;
                   window.cancelAnimationFrame = cancel;
@@ -176,6 +190,13 @@ test(
                       callback(time);
                     });
                   pending.clear();
+                  // Logical handshake readiness is deliberately checked before
+                  // any host frame. Physical input must wait until painting
+                  // has really resumed, not merely until RAF was reassigned.
+                  await new Promise<void>((resolve) =>
+                    request(() => request(() => resolve())),
+                  );
+                  state.presented = true;
                 },
               },
             });
@@ -197,23 +218,25 @@ test(
             },
           )
           .toMatchObject({ ready: true });
-        return { page, frame, errors };
+        return { page, frame, errors, signals };
       } catch (error) {
         console.error(
           "[compose fixture readiness]",
           JSON.stringify({
             errors,
-            frames: await Promise.all(page
-              .frames()
-              .map(async (frame) => ({
+            frames: await Promise.all(
+              page.frames().map(async (frame) => ({
                 url: frame.url(),
                 detached: frame.isDetached(),
-                state: await frame.evaluate(() => ({
-                  readyState: document.readyState,
-                  ready: (window as any).ready === true,
-                  handshake: (window as any).handshake ?? null,
-                })).catch(() => null),
-              }))),
+                state: await frame
+                  .evaluate(() => ({
+                    readyState: document.readyState,
+                    ready: (window as any).ready === true,
+                    handshake: (window as any).handshake ?? null,
+                  }))
+                  .catch(() => null),
+              })),
+            ),
             host: await page
               .evaluate(() => ({
                 readyState: document.readyState,
@@ -231,25 +254,83 @@ test(
     await context.test(
       "宿主没有绘制帧时仍完成真实握手，恢复绘制后单击可准备输入",
       async () => {
-        const { page, frame, errors } = await fixture({ holdPaint: true });
+        const { page, frame, errors, signals } = await fixture({
+          holdPaint: true,
+        });
         try {
           assert.deepEqual(
             await page.evaluate(() => ({
               delivered: (window as any).fixturePaint.state.delivered,
               released: (window as any).fixturePaint.state.released,
+              presented: (window as any).fixturePaint.state.presented,
             })),
-            { delivered: 0, released: false },
+            { delivered: 0, released: false, presented: false },
           );
           assert.equal((await report(page)).callbacks.length, 0);
           await page.evaluate(() => (window as any).fixturePaint.release());
+          assert.equal(
+            await page.evaluate(
+              () => (window as any).fixturePaint.state.presented,
+            ),
+            true,
+          );
           const button = frame.getByRole("button", { name: "准备输入" });
           await expect(button).toBeEnabled();
+          // Opaque iframes have a separate hit-test surface. Observe its actual
+          // presented pixels before the one real mouse click; no forced or
+          // repeated click can stand in for a delivered user action.
+          await button.screenshot();
           await button.click();
-          await expect.poll(async () => (await report(page)).body).toBe(
-            "读取前正文\n鼠标追加",
-          );
+          await expect
+            .poll(async () => (await report(page)).body)
+            .toBe("读取前正文\n鼠标追加");
           assert.equal((await report(page)).callbacks.length, 1);
+          assert.deepEqual(
+            await frame.locator("body").evaluate(() => ({
+              clicks: (window as any).composeInput.clicks,
+              trusted: (window as any).composeInput.trusted,
+            })),
+            { clicks: 1, trusted: 1 },
+          );
           assert.deepEqual(errors, []);
+        } catch (error) {
+          const details = {
+            host: await report(page).catch(() => null),
+            frame: await frame
+              .locator("body")
+              .evaluate(() => ({
+                ready: (window as any).ready,
+                handshake: (window as any).handshake,
+                input: (window as any).composeInput,
+              }))
+              .catch(() => null),
+            paint: await page
+              .evaluate(() => (window as any).fixturePaint?.state)
+              .catch(() => null),
+            errors,
+            signals,
+          };
+          console.error(
+            "[compose paint/click failure]",
+            JSON.stringify(details),
+          );
+          try {
+            mkdirSync("test-results", { recursive: true });
+            const directory = mkdtempSync(
+              "test-results/compose-paint-failure-",
+            );
+            writeFileSync(
+              `${directory}/state.json`,
+              JSON.stringify(details, null, 2),
+            );
+            await page.screenshot({ path: `${directory}/window.png` });
+          } catch (captureError) {
+            console.error(
+              "Compose failure evidence could not be captured",
+              captureError,
+            );
+          }
+          throw error;
         } finally {
           await page.close();
         }

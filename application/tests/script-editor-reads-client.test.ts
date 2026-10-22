@@ -408,7 +408,10 @@ test("actual mounted Client: a delayed old final navigation receipt cannot roll 
     }) => {
       const initial = (await client.snapshot())!;
       const old = await client.call("readScriptEditor", [productionId], "old");
-      await mutateOther();
+      // Settle the original projection before arming this test's next read.
+      // The mutation publishes a real SSE hint: its automatic refresh must
+      // not consume the changed catalog before the final-receipt hold exists.
+      await client.call("refresh", []);
       await client.control("clearReads");
       let navigationReceipts = 0;
       const gate = await hold(
@@ -424,7 +427,7 @@ test("actual mounted Client: a delayed old final navigation receipt cannot roll 
           assert.ok(Number.isSafeInteger(receipt.revisions.access));
         },
       );
-      const pending = client.call("refresh", []);
+      const pending = mutateOther().then(() => client.call("refresh", []));
       let current: ScriptEditorProduction | undefined;
       try {
         await reachedBeforeCompletion(gate, pending);
@@ -451,6 +454,12 @@ test("actual mounted Client: a delayed old final navigation receipt cannot roll 
         assert.ok(current.activityRevision > old.activityRevision);
         assert.equal(current.items[0]!.revision, revision.revision);
         assert.equal(current.items[0]!.title, revision.title);
+      } catch (error) {
+        console.error(
+          "[script delayed navigation fixture]",
+          JSON.stringify({ navigationReceipts, reads: await reads() }),
+        );
+        throw error;
       } finally {
         // Release even when the intended regression assertion is red. Await
         // this exact requester's Promise before restoring fetch or its stores.
