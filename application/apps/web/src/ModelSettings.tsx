@@ -5,6 +5,8 @@ import {
   Plus,
   RefreshCw,
   Pencil,
+  SlidersHorizontal,
+  Trash2,
   X,
 } from "lucide-react";
 import { ApiConnectionEditor } from "./ApiConnectionEditor.js";
@@ -37,9 +39,14 @@ export function ModelSettings({
   embedded?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState<ModelSettingsSnapshot | null>(null);
-  const [view, setView] = useState<"main" | "add" | "models" | "connection">(
-    "main",
-  );
+  const [view, setView] = useState<
+    "main" | "add" | "models" | "connection" | "delete"
+  >("main");
+  const [removal, setRemoval] = useState<{
+    id: string;
+    label: string;
+    version: string;
+  } | null>(null);
   const [connection, setConnection] = useState<ApiConnectionSettings | null>(
     null,
   );
@@ -75,19 +82,28 @@ export function ModelSettings({
   const callbacks = useRef({ onChanged, onBusy });
   callbacks.current = { onChanged, onBusy };
   const body = useRef<HTMLDivElement>(null);
+  const deleteCancel = useRef<HTMLButtonElement>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
+  const deleteButtons = useRef(new Map<string, HTMLButtonElement>());
+  const returnFocus = useRef<string | true | null>(null);
   activeLogin.current = login;
   const account = snapshot?.accounts.find((a) => a.id === accountId);
   function changed() {
     window.dispatchEvent(new Event("morphz:models-changed"));
     callbacks.current.onChanged();
   }
-  async function load(signal: AbortSignal) {
+  async function load(signal: AbortSignal, keepSelection = false) {
     const next = modelSettingsSchema.parse(
       await applicationCall("model-settings.read", undefined, { signal }),
     );
     if (!signal.aborted) {
       setSnapshot(next);
-      setModel(next.catalog.current);
+      setModel((current) =>
+        keepSelection &&
+        next.catalog.options.some((option) => option.id === current)
+          ? current
+          : next.catalog.current,
+      );
     }
     return next;
   }
@@ -137,8 +153,56 @@ export function ModelSettings({
     };
   }, []);
   useEffect(() => {
+    if (view === "delete") {
+      deleteCancel.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (view === "main" && returnFocus.current) {
+      // The new list can mount before the write/read cycle releases busy.
+      // Keep the return target until its real button can receive focus.
+      return;
+    }
     body.current?.focus({ preventScroll: true });
   }, [view, !!login]);
+  useEffect(() => {
+    if (busy || view !== "main" || !returnFocus.current) return;
+    const target =
+      (returnFocus.current === true
+        ? refreshButton.current
+        : deleteButtons.current.get(returnFocus.current)) ??
+      refreshButton.current;
+    returnFocus.current = null;
+    target?.focus({ preventScroll: true });
+  }, [busy, view]);
+  function cancelRemoval() {
+    returnFocus.current = removal?.id ?? true;
+    setRemoval(null);
+    setView("main");
+    setError("");
+    setNotice("");
+  }
+  function removeAccount() {
+    const target = removal;
+    if (!target) return;
+    return run(async (signal) => {
+      const result = await update(
+        {
+          action: "account-delete",
+          accountId: target.id,
+          expectedVersion: target.version,
+        },
+        signal,
+      );
+      if (result.kind !== "removed" || result.accountId !== target.id)
+        throw new Error("未能确认账号删除，请刷新设置后检查。");
+      changed();
+      returnFocus.current = true;
+      setRemoval(null);
+      setView("main");
+      setNotice("账号已从此应用删除。");
+      await load(signal, true);
+    });
+  }
   function editAccount(next: ModelSettingsSnapshot, id: string) {
     const found = next.accounts.find((a) => a.id === id);
     setAccountId(id);
@@ -256,6 +320,7 @@ export function ModelSettings({
               title={view === "main" ? "返回连接详情" : "返回模型设置"}
               onClick={() => {
                 if (view === "main") onBack?.();
+                else if (view === "delete") cancelRemoval();
                 else {
                   setView("main");
                   setConnection(null);
@@ -277,9 +342,11 @@ export function ModelSettings({
                   ? "选择模型"
                   : view === "connection"
                     ? "编辑 API 连接"
-                    : embedded
-                      ? "模型与账号"
-                      : "模型设置"}
+                    : view === "delete"
+                      ? "删除账号"
+                      : embedded
+                        ? "模型与账号"
+                        : "模型设置"}
           </h2>
         </div>
         {!embedded && (
@@ -395,13 +462,14 @@ export function ModelSettings({
               <div className="model-settings-section-heading">
                 <h3>已连接账号</h3>
                 <button
-                  className="secondary-action"
+                  ref={refreshButton}
+                  className="icon-button"
                   disabled={busy}
                   onClick={() => void run(load)}
                   aria-label="刷新模型设置"
+                  title="刷新模型设置"
                 >
-                  <RefreshCw size={14} />
-                  刷新
+                  <RefreshCw size={16} />
                 </button>
               </div>
               {!snapshot.accounts.length && (
@@ -430,7 +498,10 @@ export function ModelSettings({
                     <div className="model-account-actions">
                       {a.kind === "api" && (
                         <button
-                          className="secondary-action"
+                          type="button"
+                          className="icon-button"
+                          aria-label={`编辑连接：${a.label}`}
+                          title={`编辑连接：${a.label}`}
                           disabled={busy}
                           onClick={() => {
                             setAccountId(a.id);
@@ -439,12 +510,14 @@ export function ModelSettings({
                             void readConnection(a.id);
                           }}
                         >
-                          <Pencil size={14} />
-                          编辑连接
+                          <Pencil size={16} />
                         </button>
                       )}
                       <button
-                        className="secondary-action"
+                        type="button"
+                        className="icon-button"
+                        aria-label={`选择模型：${a.label}`}
+                        title={`选择模型：${a.label}`}
                         disabled={busy || a.state === "disabled"}
                         onClick={() => {
                           editAccount(snapshot, a.id);
@@ -452,7 +525,30 @@ export function ModelSettings({
                           setNotice("");
                         }}
                       >
-                        选择模型
+                        <SlidersHorizontal size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={`删除账号：${a.label}`}
+                        title={`删除账号：${a.label}`}
+                        disabled={busy}
+                        ref={(button) => {
+                          if (button) deleteButtons.current.set(a.id, button);
+                          else deleteButtons.current.delete(a.id);
+                        }}
+                        onClick={() => {
+                          setRemoval({
+                            id: a.id,
+                            label: a.label,
+                            version: a.version,
+                          });
+                          setView("delete");
+                          setError("");
+                          setNotice("");
+                        }}
+                      >
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </li>
@@ -473,6 +569,37 @@ export function ModelSettings({
               添加账号
             </button>
           </>
+        )}
+        {view === "delete" && removal && (
+          <section className="model-account-removal" aria-label="确认删除账号">
+            <p>
+              确定从此应用删除 <strong>{removal.label}</strong> 吗？
+            </p>
+            <p>
+              将移除此账号及仅由它使用的模型配置和凭据，共用配置会保留。
+              不会注销服务商账号，也不会删除对话或文件。
+            </p>
+            <p className="muted">
+              仍在使用此账号的任务可能受影响，请先切换模型或等任务完成。
+              删除后需要重新连接才能再次使用。
+            </p>
+            <div className="dialog-actions">
+              <button
+                ref={deleteCancel}
+                disabled={busy}
+                onClick={cancelRemoval}
+              >
+                取消
+              </button>
+              <button
+                className="primary danger"
+                disabled={busy}
+                onClick={() => void removeAccount()}
+              >
+                {busy ? "正在删除…" : "删除账号"}
+              </button>
+            </div>
+          </section>
         )}
         {snapshot && view === "add" && !login && (
           <>

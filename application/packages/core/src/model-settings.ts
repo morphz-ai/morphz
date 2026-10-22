@@ -40,6 +40,13 @@ export const modelSettingsActionSchema = z.discriminatedUnion("action", [
     .strict(),
   z.object({ action: z.literal("account-refresh"), accountId: id }).strict(),
   z
+    .object({
+      action: z.literal("account-delete"),
+      accountId: id,
+      expectedVersion: id,
+    })
+    .strict(),
+  z
     .object({ action: z.literal("api-connection-read"), accountId: id })
     .strict(),
   z
@@ -119,6 +126,7 @@ export const apiConnectionSettingsSchema = z.object({
 });
 export type ApiConnectionSettings = z.infer<typeof apiConnectionSettingsSchema>;
 export const modelSettingsResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("removed"), accountId: id }),
   z.object({
     kind: z.literal("connection"),
     connection: apiConnectionSettingsSchema,

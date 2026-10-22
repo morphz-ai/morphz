@@ -21,6 +21,7 @@ import { WorkspaceStore } from "../packages/application/src/store.js";
 import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { Application } from "../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
+import { LocalRuntimeConnection } from "../packages/application/src/runtime-connection.js";
 import {
   prepareHostTools,
   runtimeAgentTools,
@@ -270,6 +271,9 @@ export async function profileActualTransportFixture(
     /** Start the actual shared Host task dispatcher only for explicit scheduled
      * Runtime acceptance; the original input-only fixture remains unchanged. */
     startTaskDispatcher?: boolean;
+    /** Explicit test-owned local management capability. All other fixtures
+     * remain read-only for model settings, exactly as before. */
+    localModelManagement?: boolean;
     /** Explicit eval tool allowlist for this isolated Runtime's config only.
      * This never changes the production default or bypasses Host authority. */
     evalCallableTools?: readonly string[];
@@ -309,6 +313,7 @@ export async function profileActualTransportFixture(
   for (const model of additionalModels)
     assert.match(model, /^fixture-[a-z0-9-]{1,60}$/);
   assert.ok(!options.realProvider || additionalModels.length === 0);
+  assert.ok(!options.realProvider || !options.localModelManagement);
   const harnessPackages =
     options.harnessPackages === undefined
       ? undefined
@@ -829,6 +834,24 @@ export async function profileActualTransportFixture(
     );
     const bindingAuthority = domains.bindRuntime(runtime);
     hostOptions.runtime = runtime;
+    if (options.localModelManagement) {
+      writeFileSync(
+        join(hostControlRoot, "runtime.json"),
+        JSON.stringify({ url: runtimeUrl, token: operator, namespace }),
+        { mode: 0o600 },
+      );
+      hostOptions.connectionSetup = new LocalRuntimeConnection(
+        hostControlRoot,
+        store,
+        async (next) => {
+          runtime!.validateConnection(next);
+          return {
+            commit: () => runtime!.updateConnection(next),
+            discard: async () => {},
+          };
+        },
+      );
+    }
     hostOptions.platformTaskRuns = domains.taskRuns(runtime);
     hostOptions.agentTools = runtimeAgentTools(runtime, manifest.token, {
       authority: bindingAuthority.authority,

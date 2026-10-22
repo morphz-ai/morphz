@@ -4,7 +4,125 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
 import { sessionEvaluationSnapshotSchema } from "../packages/core/src/session-evaluation.js";
+import {
+  modelSettingsResultSchema,
+  modelSettingsSchema,
+} from "../packages/core/src/model-settings.js";
 import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
+
+test(
+  "actual local Host account deletion uses Runtime cleanup without model calls or Session changes and remains forbidden over HTTP",
+  {
+    skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
+    timeout: 120_000,
+  },
+  async () => {
+    const f = await profileActualTransportFixture({
+      localModelManagement: true,
+    });
+    try {
+      const embedded = await f.embeddedClient();
+      const before = modelSettingsSchema.parse(
+        await embedded.client.call(
+          "model-settings.read",
+          undefined,
+          embedded.options,
+        ),
+      );
+      const sessions = f.sql(
+        "SELECT id,model_alias,reasoning_effort FROM sessions ORDER BY id",
+      );
+      const created = modelSettingsResultSchema.parse(
+        await embedded.client.call(
+          "model-settings.update",
+          {
+            action: "connect-api",
+            requestId: randomUUID(),
+            label: "TEST 可删除的隔离账号",
+            protocol: "openai-chat",
+            baseUrl: "http://127.0.0.1:1",
+            apiKey: "synthetic-test-only",
+            model: "synthetic-uncontacted-model",
+          },
+          embedded.options,
+        ),
+      );
+      assert.equal(created.kind, "saved");
+      assert.ok(created.kind === "saved" && created.accountId);
+      await assert.rejects(
+        () => f.client.call("model-settings.read", undefined, f.options),
+        { code: "forbidden" },
+      );
+      const added = modelSettingsSchema.parse(
+        await embedded.client.call(
+          "model-settings.read",
+          undefined,
+          embedded.options,
+        ),
+      );
+      const account = added.accounts.find(
+        (account) => account.id === created.accountId,
+      )!;
+      assert.ok(account);
+      assert.equal(account.label, "TEST 可删除的隔离账号");
+      assert.equal(added.accounts.length, before.accounts.length + 1);
+      const command = {
+        action: "account-delete",
+        accountId: account.id,
+        expectedVersion: account.version,
+      } as const;
+      assert.deepEqual(
+        await embedded.client.call(
+          "model-settings.update",
+          command,
+          embedded.options,
+        ),
+        { kind: "removed", accountId: account.id },
+      );
+      const after = modelSettingsSchema.parse(
+        await embedded.client.call(
+          "model-settings.read",
+          undefined,
+          embedded.options,
+        ),
+      );
+      assert.ok(
+        !after.accounts.some((candidate) => candidate.id === account.id),
+      );
+      assert.deepEqual(
+        after.accounts.map((account) => account.id).sort(),
+        before.accounts.map((account) => account.id).sort(),
+      );
+      assert.equal(after.catalog.current, before.catalog.current);
+      assert.deepEqual(
+        await embedded.client.call(
+          "model-settings.update",
+          command,
+          embedded.options,
+        ),
+        { kind: "removed", accountId: account.id },
+      );
+      await assert.rejects(
+        () => f.client.call("model-settings.update", command, f.options),
+        { code: "forbidden" },
+      );
+      assert.deepEqual(
+        f.sql(
+          "SELECT id,model_alias,reasoning_effort FROM sessions ORDER BY id",
+        ),
+        sessions,
+      );
+      assert.equal(
+        f.requests.length,
+        0,
+        "Account administration must not probe or infer",
+      );
+      assert.equal(f.realCalls, 0);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test(
   "actual Host inherited input follows a live Session switch only after the in-flight request, while an explicit task remains fixed",

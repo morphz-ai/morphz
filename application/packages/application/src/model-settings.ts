@@ -182,6 +182,15 @@ export class RuntimeModelSettings {
             "此 API 连接缺少密钥。请返回账号列表，打开「编辑连接」填写原 API Key 并保存，再读取模型。",
           );
       }
+      if (
+        response.status === 409 &&
+        method === "DELETE" &&
+        /^\/api\/runtime\/providers\/accounts\/[^/]+$/.test(path)
+      )
+        throw new DomainError(
+          "conflict",
+          "无法删除此账号。它可能仍被其他智能体共用、来自外部配置，或是最后一个可用模型来源。请刷新设置后检查。",
+        );
       // Runtime/provider errors can echo keys, URLs or callback codes.
       throw new DomainError(
         response.status === 409
@@ -477,6 +486,7 @@ export class RuntimeModelSettings {
         return { kind: "saved", accountId: account };
       }
       if (
+        action.action === "account-delete" ||
         action.action === "account-refresh" ||
         action.action === "account-models"
       ) {
@@ -484,6 +494,38 @@ export class RuntimeModelSettings {
           await call("/api/runtime/providers"),
         );
         const account = snapshot.auth_accounts[action.accountId];
+        if (action.action === "account-delete") {
+          // Absence is the idempotent desired state after an uncertain reply.
+          // Never replay another account's operation or infer success from an
+          // optimistic renderer update. The Runtime owns catalog cleanup.
+          if (!account) return { kind: "removed", accountId: action.accountId };
+          if (
+            action.expectedVersion !==
+            accountVersion(snapshot, action.accountId)
+          )
+            throw new DomainError(
+              "conflict",
+              "账号配置已更新，请刷新设置后重新确认删除。",
+            );
+          const receipt = z
+            .object({
+              kind: z.literal("auth_account"),
+              id: z.literal(action.accountId),
+              restart_required: z.literal(false),
+            })
+            .safeParse(
+              await call(
+                `/api/runtime/providers/accounts/${encodeURIComponent(action.accountId)}`,
+                "DELETE",
+              ),
+            );
+          if (!receipt.success)
+            throw new DomainError(
+              "invalid",
+              "运行服务未确认账号删除，请刷新设置后检查。",
+            );
+          return { kind: "removed", accountId: action.accountId };
+        }
         if (!account)
           throw new DomainError("not_found", "账号已不存在，请刷新。");
         const path = `/api/runtime/providers/accounts/${encodeURIComponent(action.accountId)}`;

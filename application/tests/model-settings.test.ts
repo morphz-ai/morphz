@@ -25,6 +25,10 @@ async function fixture() {
     failureStatus: 400,
     missingCredential: false,
     annotations: "on",
+    deleted: false,
+    deleteStatus: 200,
+    deleteCommitsBeforeError: false,
+    deleteReceiptId: "existing",
   };
   const providers = {
     auth_adapters: [
@@ -103,7 +107,31 @@ async function fixture() {
       return;
     }
     const json = (value: unknown) => res.end(JSON.stringify(value));
-    if (req.url === "/api/runtime/providers") return json(providers);
+    if (req.url === "/api/runtime/providers") {
+      const { existing: _removed, ...remaining } = providers.auth_accounts;
+      return json({
+        ...providers,
+        auth_accounts: state.deleted ? remaining : providers.auth_accounts,
+      });
+    }
+    if (
+      req.url === "/api/runtime/providers/accounts/existing" &&
+      req.method === "DELETE"
+    ) {
+      if (state.deleteStatus !== 200) {
+        if (state.deleteCommitsBeforeError) state.deleted = true;
+        res.writeHead(state.deleteStatus);
+        return json({ error: secret });
+      }
+      state.deleted = true;
+      return json({
+        kind: "auth_account",
+        id: state.deleteReceiptId,
+        managed_config_path: secret,
+        restart_required: false,
+        credential: secret,
+      });
+    }
     if (req.url === "/api/runtime/response-annotations") {
       if (body) {
         const data = JSON.parse(body);
@@ -358,6 +386,138 @@ test("missing provider credentials name the recovery without exposing Runtime or
     await f.close();
   }
 });
+test("account deletion verifies the selected snapshot, uses the existing Runtime deletion and is idempotent without touching other settings", async () => {
+  const f = await fixture();
+  try {
+    const account = (await f.read()).accounts[0]!;
+    const action = {
+      action: "account-delete",
+      accountId: account.id,
+      expectedVersion: account.version,
+    };
+    await assert.rejects(
+      f.apply({ ...action, expectedVersion: "stale" }),
+      /账号.*更新.*刷新/,
+    );
+    assert.ok(!f.calls.some((call) => call.method === "DELETE"));
+    assert.deepEqual(await f.apply(action), {
+      kind: "removed",
+      accountId: account.id,
+    });
+    assert.equal((await f.read()).accounts.length, 0);
+    assert.deepEqual(await f.apply(action), {
+      kind: "removed",
+      accountId: account.id,
+    });
+    const writes = f.calls.filter((call) => call.method !== "GET");
+    assert.deepEqual(writes, [
+      {
+        method: "DELETE",
+        path: "/api/runtime/providers/accounts/existing",
+        body: undefined,
+      },
+    ]);
+    assert.equal(f.state.model, "first");
+    assert.equal(f.state.effort, "high");
+    assert.ok(f.providers.auth_accounts.pending);
+    assert.ok(!JSON.stringify(await f.apply(action)).includes(f.secret));
+  } finally {
+    await f.close();
+  }
+});
+test("rejected account deletion preserves the original account, names recovery and never leaks provider details", async () => {
+  const f = await fixture();
+  try {
+    const account = (await f.read()).accounts[0]!;
+    f.state.deleteStatus = 409;
+    await assert.rejects(
+      f.apply({
+        action: "account-delete",
+        accountId: account.id,
+        expectedVersion: account.version,
+      }),
+      (error: Error) => {
+        assert.match(error.message, /无法删除.*账号/);
+        assert.match(error.message, /共用|可用模型/);
+        assert.ok(!error.message.includes(f.secret));
+        return true;
+      },
+    );
+    assert.equal(f.state.deleted, false);
+    assert.equal((await f.read()).accounts[0]!.id, account.id);
+    assert.equal(f.calls.filter((call) => call.method === "DELETE").length, 1);
+  } finally {
+    await f.close();
+  }
+});
+test("account deletion rechecks live authority after its snapshot read and refuses an aborted request", async () => {
+  const f = await fixture();
+  try {
+    const account = (await f.read()).accounts[0]!;
+    const action = {
+      action: "account-delete",
+      accountId: account.id,
+      expectedVersion: account.version,
+    };
+    let checks = 0;
+    await assert.rejects(
+      f.settings.apply(action, AbortSignal.timeout(5000), () => {
+        if (++checks >= 4) throw new Error("revoked");
+      }),
+      /revoked/,
+    );
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await assert.rejects(f.settings.apply(action, cancelled.signal, () => {}));
+    assert.ok(!f.calls.some((call) => call.method === "DELETE"));
+    assert.equal(f.state.deleted, false);
+  } finally {
+    await f.close();
+  }
+});
+test("an uncertain deletion is recovered from authoritative absence without issuing a second delete", async () => {
+  const f = await fixture();
+  try {
+    const account = (await f.read()).accounts[0]!;
+    const action = {
+      action: "account-delete",
+      accountId: account.id,
+      expectedVersion: account.version,
+    };
+    f.state.deleteStatus = 503;
+    f.state.deleteCommitsBeforeError = true;
+    await assert.rejects(f.apply(action), /未确认操作成功/);
+    assert.equal(f.state.deleted, true);
+    assert.deepEqual(await f.apply(action), {
+      kind: "removed",
+      accountId: account.id,
+    });
+    assert.equal(f.calls.filter((call) => call.method === "DELETE").length, 1);
+  } finally {
+    await f.close();
+  }
+});
+test("a mismatched deletion receipt is not a successful removal and never exposes its private fields", async () => {
+  const f = await fixture();
+  try {
+    const account = (await f.read()).accounts[0]!;
+    f.state.deleteReceiptId = f.secret;
+    await assert.rejects(
+      f.apply({
+        action: "account-delete",
+        accountId: account.id,
+        expectedVersion: account.version,
+      }),
+      (error: Error) => {
+        assert.match(error.message, /未确认账号删除.*刷新/);
+        assert.ok(!error.message.includes(f.secret));
+        return true;
+      },
+    );
+  } finally {
+    await f.close();
+  }
+});
 test("default model writes only the requested setting, is retry safe, and rejects stale/unavailable selections", async () => {
   const f = await fixture();
   try {
@@ -565,6 +725,24 @@ test("remote and non-owner sessions cannot use host model management", async () 
         .modelSettings(undefined, AbortSignal.timeout(1000)),
       /本机/,
     );
+    for (const access of [
+      localAccess,
+      { ...localAccess, principalId: "another-user" },
+      { ...localAccess, actantId: "another-agent" },
+    ]) {
+      await assert.rejects(
+        application.session(access).modelSettings(
+          {
+            action: "account-delete",
+            accountId: "existing",
+            expectedVersion: "v1",
+          },
+          AbortSignal.timeout(1000),
+          true,
+        ),
+        /本机/,
+      );
+    }
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });
