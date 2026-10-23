@@ -114,18 +114,21 @@
   color: var(--accent-strong);
   font-weight: 550;
 }
-/* A high-contrast ink highlight travels through the text itself: near-black
-   on light surfaces, bright white on dark ones. No paragraph-sized backdrop. */
+/* A narrow, visibly lighter glint, not a paragraph-wide darkening. The light
+   theme uses luminous teal that remains readable on the inspector surface;
+   the dark theme uses white. Only the glyphs are painted, never a backdrop. */
 @supports (background-clip: text) {
   .execution-origin > .execution-activity-summary[data-motion-active] {
+    width: fit-content;
+    max-width: 100%;
     background-image: linear-gradient(
-      105deg,
-      var(--muted) 34%,
-      light-dark(#050506, #ffffff) 47%,
-      light-dark(#050506, #ffffff) 53%,
-      var(--muted) 66%
+      90deg,
+      light-dark(var(--text-secondary), var(--muted)) 45%,
+      light-dark(#007b8c, #ffffff) 49%,
+      light-dark(#007b8c, #ffffff) 51%,
+      light-dark(var(--text-secondary), var(--muted)) 55%
     );
-    background-size: 300% 100%;
+    background-size: 220% 100%;
     background-clip: text;
     -webkit-text-fill-color: transparent;
     font-weight: 500;
@@ -133,11 +136,9 @@
   }
 }
 @keyframes execution-summary-sweep {
-  0%,
-  4% {
+  0% {
     background-position: 100% 0;
   }
-  96%,
   100% {
     background-position: 0% 0;
   }
@@ -246,10 +247,20 @@
   color: var(--ink);
 }
 .app .execution-origin-actions > .execution-stop-thread:not(:disabled):hover {
-  color: var(--danger);
+  background: color-mix(in srgb, var(--execution-stop-fill), #000 12%);
+  color: #fff;
 }
 .app .execution-origin-actions > .execution-stop-thread {
-  color: var(--danger);
+  --execution-stop-fill: light-dark(var(--danger), #a72a32);
+  background: var(--execution-stop-fill);
+  color: #fff;
+}
+.app .execution-origin-actions > .execution-stop-thread:not(:disabled):active {
+  background: color-mix(in srgb, var(--execution-stop-fill), #000 20%);
+}
+.execution-origin-actions > .execution-stop-thread > svg {
+  fill: currentColor;
+  stroke-width: 0;
 }
 .execution-origin-actions > .icon-button > svg {
   width: 16px;

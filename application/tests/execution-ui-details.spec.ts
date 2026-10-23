@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import sharp from "sharp";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import {
@@ -925,13 +926,25 @@ test("活动顶行的补充和停止使用图标，明暗、窄窗与放大始�
       (document.querySelector(".app") as HTMLElement).dataset.appearance =
         appearance;
     }, appearance);
-    const stopColor = await stop.evaluate((node) =>
-      getComputedStyle(node)
-        .color.match(/[\d.]+/g)!
-        .map(Number),
+    const stopPaint = await stop.evaluate((node) => {
+      const css = getComputedStyle(node);
+      const glyph = getComputedStyle(node.querySelector("svg")!);
+      return {
+        background: css.backgroundColor.match(/[\d.]+/g)!.map(Number),
+        foreground: css.color,
+        fill: glyph.fill,
+        strokeWidth: glyph.strokeWidth,
+      };
+    });
+    expect(stopPaint.background[0]! - stopPaint.background[1]!).toBeGreaterThan(
+      80,
     );
-    expect(stopColor[0]! - stopColor[1]!).toBeGreaterThan(30);
-    expect(stopColor[0]! - stopColor[2]!).toBeGreaterThan(30);
+    expect(stopPaint.background[0]! - stopPaint.background[2]!).toBeGreaterThan(
+      80,
+    );
+    expect(stopPaint.foreground).toBe("rgb(255, 255, 255)");
+    expect(stopPaint.fill).toBe(stopPaint.foreground);
+    expect(stopPaint.strokeWidth).toBe("0px");
     for (const [width, zoom] of [
       [1440, 1],
       [760, 1],
@@ -1021,45 +1034,107 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
       summary.evaluate((node) => getComputedStyle(node).backgroundPosition),
     )
     .not.toBe(position);
-  for (const appearance of ["light", "dark"] as const) {
-    await page.evaluate((appearance) => {
-      document.documentElement.dataset.appearance = appearance;
-      document.querySelector<HTMLElement>(".app")!.dataset.appearance =
-        appearance;
-    }, appearance);
-    await settleTransitions(page);
-    await expect(title).toHaveCSS(
-      "color",
-      await status.evaluate((node) => getComputedStyle(node).color),
-    );
-    await expect(summary).toHaveCSS("background-clip", "text");
-    await expect(summary).toHaveCSS("animation-duration", "2.2s");
-    const shine = await summary.evaluate((node) => {
-      const css = getComputedStyle(node);
-      return {
-        image: css.backgroundImage,
-        duration: css.animationDuration,
-        weight: css.fontWeight,
-      };
-    });
-    expect(shine.duration).toBe("2.2s");
-    expect(shine.image).toContain("linear-gradient");
-    expect(shine.image).toContain(
-      appearance === "light" ? "rgb(5, 5, 6)" : "rgb(255, 255, 255)",
-    );
-    expect(shine.weight).toBe("500");
-    for (const width of [1440, 760]) {
-      await page.setViewportSize({ width, height: 700 });
+  for (const [sample, text] of [
+    ["wrapped", f.activity.summary],
+    ["short", "编译 v8 覆盖层"],
+  ] as const) {
+    f.activity.summary = text;
+    await f.fixture.refresh();
+    await expect(summary).toHaveText(text);
+    for (const appearance of ["light", "dark"] as const) {
+      await page.evaluate((appearance) => {
+        document.documentElement.dataset.appearance = appearance;
+        document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+          appearance;
+      }, appearance);
       await settleTransitions(page);
-      await summary.evaluate((node) => {
-        for (const animation of node.getAnimations()) {
-          animation.pause();
-          animation.currentTime = 1100;
+      await expect(title).toHaveCSS(
+        "color",
+        await status.evaluate((node) => getComputedStyle(node).color),
+      );
+      await expect(summary).toHaveCSS("background-clip", "text");
+      await expect(summary).toHaveCSS("animation-duration", "2.2s");
+      const shine = await summary.evaluate((node) => {
+        const css = getComputedStyle(node);
+        return {
+          image: css.backgroundImage,
+          duration: css.animationDuration,
+          weight: css.fontWeight,
+        };
+      });
+      expect(shine.duration).toBe("2.2s");
+      expect(shine.image).toContain("linear-gradient");
+      expect(shine.image).toContain(
+        appearance === "light" ? "rgb(0, 123, 140)" : "rgb(255, 255, 255)",
+      );
+      expect(shine.weight).toBe("500");
+      for (const width of [1440, 760]) {
+        await page.setViewportSize({ width, height: 700 });
+        await settleTransitions(page);
+        const highlights: Array<{ x: number; pixels: number }> = [];
+        for (const time of [550, 1650]) {
+          await summary.evaluate((node, time) => {
+            for (const animation of node.getAnimations()) {
+              animation.pause();
+              animation.currentTime = time;
+            }
+          }, time);
+          const frame = await summary.screenshot({ animations: "allow" });
+          await info.attach(
+            `painted-sweep-${sample}-${appearance}-${width}-${time}`,
+            {
+              body: frame,
+              contentType: "image/png",
+            },
+          );
+          const { data, info: pixels } = await sharp(frame)
+            .removeAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          let count = 0,
+            horizontalSum = 0;
+          for (let y = 0; y < pixels.height; y++) {
+            for (let x = 0; x < pixels.width; x++) {
+              const offset = (y * pixels.width + x) * pixels.channels;
+              const [r, g, b] = data.subarray(offset, offset + 3);
+              const lit =
+                appearance === "light"
+                  ? g! - r! > 25 && b! - r! > 30 && r! < 100
+                  : r! > 215 && g! > 215 && b! > 215;
+              if (lit) {
+                count++;
+                horizontalSum += x;
+              }
+            }
+          }
+          expect(
+            count,
+            "the glint must actually paint visible text pixels",
+          ).toBeGreaterThan(10);
+          highlights.push({ x: horizontalSum / count, pixels: count });
         }
-      });
-      await page.screenshot({
-        path: info.outputPath(`activity-focus-${appearance}-${width}.png`),
-      });
+        const bounds = (await summary.boundingBox())!;
+        if (sample === "short") {
+          const parent = (await summary.locator("..").boundingBox())!;
+          expect(bounds.width).toBeLessThan(parent.width * 0.8);
+        }
+        expect(
+          highlights[1]!.x - highlights[0]!.x,
+          "the painted glint must travel through the text, not darken the whole paragraph",
+        ).toBeGreaterThan(bounds.width * 0.3);
+        await info.attach(
+          `painted-sweep-${sample}-${appearance}-${width}-travel`,
+          {
+            body: JSON.stringify({ highlights, width: bounds.width }),
+            contentType: "application/json",
+          },
+        );
+        await page.screenshot({
+          path: info.outputPath(
+            `activity-focus-${sample}-${appearance}-${width}.png`,
+          ),
+        });
+      }
     }
   }
   await page.emulateMedia({ reducedMotion: "reduce" });
