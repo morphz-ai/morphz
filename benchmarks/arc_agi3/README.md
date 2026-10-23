@@ -103,7 +103,7 @@ working Linux binary.
 ## Observation-driven Harness experiment — 2026-10-23
 
 `arc-discovery.hns` is a versioned Harness installed through the real Morphz
-registry and selected with `--harness arc-discovery@0.1.0`. It reuses Runtime
+registry and selected with `--harness arc-discovery@0.2.2`. It reuses Runtime
 inference, structured Context, tools, persistence and output continuation; it
 does not introduce a second agent runtime or train a model.
 
@@ -147,10 +147,128 @@ attempt invalid, not a zero-score demonstration. The model server is terminated
 after the bounded experiment; also stop the Kaggle session after archival.
 
 The Linux experiment binary must include the output-limit continuation fix
-(`cda82d12` or a verified descendant). The new visible-grid bridge can be tested
-locally without a model, but improved solving ability is **unverified until an
-actual engine/model run is saved and audited**. Never relabel generated deployment
-files or passing interface tests as a completed competition result.
+(`cda82d12` or a verified descendant). The visible-grid bridge can be tested
+locally without a model, but passing those tests does not establish improved
+solving ability. The bounded real-model measurements are recorded below;
+generated deployment files are not competition results.
+
+### Tool-admission correction
+
+The first v0.1 candidate was **not a valid solving measurement**: all three
+actual provider requests had empty tool lists, so the model's tool-like text
+was not executed. Installation, binding, HTTP 200 and a successful process exit
+did not establish a working action loop. The runner now requires actual tool
+schemas and completed HTTP 200 requests before admitting a result.
+
+`arc-discovery@0.2.1` adds real observation and native image-read call nodes so
+the entry's executable effects expose `exec` and `read`. A logical `context_tx`
+operation must not be disguised as a durable physical Plan call. In this
+bounded version the model uses workspace notes if a Context control tool is
+not actually offered; it must not claim that a Context transaction occurred.
+Consequently this version does not isolate or establish the benefit of
+structured-Context mutation.
+
+An actual v0.2.1 `ft09` attempt exposed tools and took actions, but stopped at
+212.233 seconds after a tool-call response also included ordinary progress
+text. The typed-infer decoder rejected that content with `protocol_invalid`;
+process exit code zero did not mean a successful Evaluation. v0.2.2 explicitly
+requires empty assistant content on tool calls and documents the exact nested
+observation fields. Actual v0.2.2 testing reached all three games, but `vc33`
+still ended with a typed-content protocol failure. This instruction is not a
+complete protocol-recovery fix. The runner records protocol/evaluation failure
+independently of the engine's progress and process exit code.
+
+The optional regression below uses the actual Runtime and a local **mock**
+provider to inspect the request's offered tools. It proves transport admission,
+not model intelligence or a game win:
+
+```sh
+MORPHZ_ARC_TEST_RUNTIME=/absolute/path/to/morphz \
+  python -m unittest discover -s benchmarks/arc_agi3 -p test_harness_tool_admission.py -v
+```
+
+After an experiment, `arc_experiment_diagnostics.py` reads its saved receipts:
+
+```sh
+python benchmarks/arc_agi3/arc_experiment_diagnostics.py /path/to/experiment-output
+```
+
+It checks action accounting against trajectories, retains level transitions
+across resets, summarizes HTTP/stream outcomes and GPU memory, and identifies
+tool commands requiring manual source-access review. Missing game evidence is
+reported as unknown, not zero progress. Its request-level output-token rate
+includes prefill and other request overhead; it is not pure decode throughput.
+Run it after the writer processes have stopped so the JSONL files are complete.
+
+## Measured Harness v0.2.2 run — 2026-10-23
+
+The installed Harness actually exposed native tools, took official engine
+actions and completed **one level**, but did not win any complete game:
+
+| Public game | Best level progress | Submitted actions | Resets | Wall time | Stop |
+|---|---:|---:|---:|---:|---|
+| `ft09-0d8bbf25` | 0 / 6 | 59 | 1 | 600.569 s | Time budget |
+| `ls20-9607627b` | 0 / 7 | 17 | 0 | 600.543 s | Time budget |
+| `vc33-5430563c` | 1 / 7 | 49 | 0 | 574.525 s | Typed-content protocol failure |
+
+The first `vc33` level transition occurred at **456.999 seconds, action 30**.
+This is partial engine-confirmed progress, not a whole-game `WIN`, an official
+score or evidence of generalization. The configured per-game limit remained
+600 seconds / 200 actions, seed 0. Each game used a fresh database and workspace.
+
+All three used Linux Runtime build `f38245e906814b33fb4f92edd70534b3a233610f`,
+binary SHA-256
+`5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70`.
+Harness source SHA-256 was
+`76eb72ce399cbbdfd61f9f2813d02b38e60241aa40b3a30ba933fa675c0300ee`.
+The private base input ZIP still contains the initial v0.1 source; the Notebook
+applies hash-pinned v0.2.2 source overlays and preserves them in its output.
+The installed binding receipt and actual wire tools, not the base ZIP name,
+establish which candidate ran.
+
+The candidate saved 72 provider records, 70 completed HTTP 200 responses, two
+incomplete requests (broken pipe / connection reset), seven image-bearing requests and one
+`length` stream finish. No terminal output-limit failure was recorded, but
+`vc33` failed with `invalid_content_syntax: Invalid JSON at byte 2`; its process
+exit code was zero despite a failed Evaluation. Peak sampled GPU memory was
+96,551 / 97,887 MiB. Maximum reported prompt size was 139,696 tokens, not a full
+256K stress test. Mean output tokens per request-wall-second was 64.68,
+**including prefill/overhead**, not pure decoding throughput.
+
+This version tests the Harness plus visible-observation aids. It does not
+establish the benefit of structured-Context mutation, which was not exposed in
+this durable physical Plan path. Single attempts, a custom quantized backend,
+full-access tools and public games limit what can be concluded.
+
+### Comparison with the original configuration
+
+| Public game | Original best | v0.2.2 best | Original actions | v0.2.2 actions | Original wall time | v0.2.2 wall time |
+|---|---:|---:|---:|---:|---:|---:|
+| `ft09` | 0 / 6 | 0 / 6 | 43 | 59 | 600.482 s | 600.569 s |
+| `ls20` | 0 / 7 | 0 / 7 | 84 | 17 | 600.490 s | 600.543 s |
+| `vc33` | 1 / 7 | 1 / 7 | 124 | 49 | 600.573 s | 574.525 s |
+
+`ft09` and `vc33` controls use the identical verified Runtime binary. `ls20`
+has only the 10/21 historical control with the older Runtime; it is not a clean
+Harness A/B. The extra `vc33` control was selected **after** seeing the candidate
+make progress, so the comparison remains exploratory. No arm won a whole game.
+
+The original `vc33` configuration reached its first level in **437.981 seconds,
+action 23**, versus 456.999 seconds, action 30 for v0.2.2. The candidate's smaller
+total action count and shorter wall time are not an efficiency win: it failed
+before its time budget. **This run does not demonstrate a Harness improvement.**
+The 10/21 `vc33` result was 0 / 7; reporting only that older comparison would
+misattribute the current progress to the Harness.
+
+See [compact measured results](results-2026-10-23.json) and the
+[private Kaggle archive, version 361478232](https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-harness-experiment-20261023?scriptVersionId=361478232).
+The archive includes the failed setup/admission attempts, hash-pinned repaired
+sources, final three-game trajectories, same-binary `vc33` control, provider
+wire, SQLite/tool receipts, comparison and model-shutdown evidence. Game times
+exclude cold model loading (721 seconds initially, 641 seconds for the measured
+candidate's reload). No training, paid API or leaderboard submission occurred.
+After archive verification, the model health endpoint was unreachable, sampled
+GPU use was 0 MiB, and Kaggle visibly confirmed `Session stopped.`
 
 ## Measured run — 2026-10-21
 

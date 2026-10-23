@@ -10,6 +10,8 @@ GAMES=tuple(EXPERIMENT.get('games', ('ls20','ft09','vc33')))
 ARMS=tuple(EXPERIMENT.get('arms', ('baseline',)))
 BUDGET_S=int(EXPERIMENT.get('budget_s',600))
 MAX_ACTIONS=int(EXPERIMENT.get('max_actions',200))
+HARNESS_ID=EXPERIMENT.get('harness_id','arc-discovery')
+HARNESS_VERSION=EXPERIMENT.get('harness_version','0.1.0')
 assert ARMS and set(ARMS) <= {'baseline','discovery'}
 assert GAMES and BUDGET_S > 0 and MAX_ACTIONS > 0
 ARC_WORK=WORK/EXPERIMENT.get('output','arc-public-baseline')
@@ -182,7 +184,7 @@ artifact_dir={json.dumps(str(test/'artifacts'))}
             (test/'harness-install.stderr').write_text(install.stderr)
             assert install.returncode==0,install.stderr[-4000:]
             harness_receipt=json.loads(install.stdout)
-            assert (harness_receipt['id'],harness_receipt['version'])==('arc-discovery','0.1.0')
+            assert (harness_receipt['id'],harness_receipt['version'])==(HARNESS_ID,HARNESS_VERSION)
         prompt='''Play this single unfamiliar ARC-AGI-3 game to completion by discovering its rules through observations and experiments. This is a timed diagnostic of your own autonomous ability, not a request for general advice.
 You have at most 600 seconds and 200 game actions. Do not stop early merely to report progress. Keep observing, forming hypotheses, acting, and correcting until the engine says state WIN or stopped true. GAME_OVER is not the end of the attempt: use RESET and keep learning within budget. A game has several levels; levels_completed is not whole-game WIN.
 The ONLY interface to the game is the neutral local command: python3 arc_cli.py status; python3 arc_cli.py action ACTION1; python3 arc_cli.py action ACTION6 20 30. For a short sequence use python3 arc_cli.py batch '[{"action":"ACTION1"},{"action":"ACTION2"}]' (maximum 10). Only send actions from available_actions, except RESET which is always allowed. Coordinates are integers 0..63, top-left origin. Actions 1..4 are directional controls but infer their actual effect, 5 is an optional game-specific control, 6 is a click with x,y, 7 is undo when supported. RESET restarts according to engine rules.
@@ -193,7 +195,7 @@ Do not access game implementation, environment files, another solver, internet, 
             prompt=f'''Play the current unfamiliar ARC-AGI-3 game through all levels. You have at most {BUDGET_S} seconds and {MAX_ACTIONS} submitted environment actions, including resets. Follow the installed arc-discovery Harness. The local bridge is already running; use python3 arc_cli.py observe and python3 arc_cli.py step ACTIONn [x y]. Native images remain available as frame.png. Use only observations in this workspace, not engine/source files, network, another solver, or precomputed moves. Discover rules from evidence, revise them on contradiction, and continue until official state WIN or stopped=true. Start now.'''
         (test/'prompt.txt').write_text(prompt)
         args=[str(morphz),'exec','--cwd',str(workspace),'--config-file',str(config),'--approval','never','--sandbox','full-access','--reasoning-effort','medium','--log-level','info',prompt]
-        if arm=='discovery': args[-1:-1]=['--harness','arc-discovery@0.1.0']
+        if arm=='discovery': args[-1:-1]=['--harness',f'{HARNESS_ID}@{HARNESS_VERSION}']
         (test/'execution-argv.json').write_text(json.dumps(args,indent=2))
         start=time.monotonic(); start_wire=len(wire_records)
         with (test/'runtime.log').open('w') as out:
@@ -226,21 +228,37 @@ Do not access game implementation, environment files, another solver, internet, 
                     'SELECT payload FROM events WHERE topic=?',('runtime/evaluation_harness_binding',))]
         (test/'harness-bindings.json').write_text(json.dumps(bindings,indent=2))
         binding_verified=arm=='baseline' or any(
-            b.get('harness_id')=='arc-discovery' and b.get('harness_version')=='0.1.0'
+            b.get('harness_id')==HARNESS_ID and b.get('harness_version')==HARNESS_VERSION
             and b.get('artifact_hash')==harness_receipt['artifact_hash'] for b in bindings)
         (test/'tool-jobs.json').write_text(json.dumps(jobs,indent=2,default=str))
         total_input=sum((r.get('usage') or {}).get('prompt_tokens',0) for r in calls)
         total_output=sum((r.get('usage') or {}).get('completion_tokens',0) for r in calls)
+        tools_exposed=any(bool(r['request'].get('tools')) for r in calls)
+        successful_requests=sum(r.get('status')==200 and r.get('completed',False) for r in calls)
+        invalid_reasons=[]
+        if not binding_verified: invalid_reasons.append('harness_binding_missing_or_mismatched')
+        if not calls: invalid_reasons.append('no_model_requests')
+        if not tools_exposed: invalid_reasons.append('no_tools_exposed_on_provider_wire')
+        if not successful_requests: invalid_reasons.append('no_completed_http_200_model_request')
+        runtime_log=(test/'runtime.log').read_text(errors='replace')
+        runtime_protocol_failed='protocol_invalid' in runtime_log
+        runtime_evaluation_failed='Thread Activation evaluation failed' in runtime_log
+        runtime_end=('runtime_protocol_invalid' if runtime_protocol_failed else
+                     'runtime_evaluation_failed' if runtime_evaluation_failed else 'runtime_returned')
         result=dict(game=game,arm=arm,**final,wall_s=round(elapsed,3),runtime_exit_code=child.returncode,
-            termination=stop_reason or ('WIN' if final['state']=='WIN' else 'runtime_returned'),
+            termination=stop_reason or ('WIN' if final['state']=='WIN' else runtime_end),
+            runtime_protocol_failed=runtime_protocol_failed,
+            runtime_evaluation_failed=runtime_evaluation_failed,
             model_requests=len(calls),image_requests=sum(r['images_in_request']>0 for r in calls),
             prompt_tokens_total=total_input,completion_tokens_total=total_output,
             tool_jobs=len(jobs),runtime_version='v0.1.3',reasoning_effort='medium',
             runtime_binary_sha256=sha256(morphz),
-            harness='arc-discovery@0.1.0' if arm=='discovery' else None,
+            harness=f'{HARNESS_ID}@{HARNESS_VERSION}' if arm=='discovery' else None,
             harness_source_sha256=sha256(SOURCE/'arc-discovery.hns') if arm=='discovery' else None,
             harness_binding_verified=binding_verified if arm=='discovery' else None,
-            valid_run=bool(binding_verified and len(calls)>0),
+            tools_exposed_on_provider_wire=tools_exposed,
+            completed_http_200_model_requests=successful_requests,
+            valid_run=not invalid_reasons,invalid_reasons=invalid_reasons,
             memory_context_tokens=262144,formal_competition_score=False,
             source_access_enforcement='instruction and tool-log audit; full-access shell is not a sealed source sandbox')
         (test/'result.json').write_text(json.dumps(result,indent=2))

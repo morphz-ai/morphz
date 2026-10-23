@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import zipfile
@@ -15,6 +16,8 @@ HERE=Path(__file__).resolve().parent
 REPO=HERE.parents[1]
 SOURCES=('arc_bridge.py','arc_cli.py','arc_observation.py','arc-discovery.hns',
          'arc_runner.py','arc_experiment_report.py','flash_next_bootstrap_arc.py',
+         'arc_experiment_diagnostics.py','test_arc_experiment_diagnostics.py',
+         'test_harness_tool_admission.py',
          'test_arc_bridge.py','test_arc_cli.py','test_arc_observation.py')
 
 
@@ -34,11 +37,14 @@ def build(runtime,output,commit):
         raise ValueError('Expected a little-endian ELF64 x86_64 runtime, not the local Mac binary')
     output.mkdir(parents=True,exist_ok=True)
     content={name:(HERE/name).read_bytes() for name in SOURCES}
+    version_match=re.search(r'\(version\s+"([^"]+)"\)',content['arc-discovery.hns'].decode())
+    if version_match is None: raise ValueError('Harness manifest must declare a version')
+    harness_version=version_match.group(1)
     content['morphz']=binary
     for name in ('LICENSE','NOTICE','THIRD_PARTY_NOTICES.md'):
         if (REPO/name).is_file(): content[name]=(REPO/name).read_bytes()
     manifest={'schema':'morphz-arc-harness-deployment@1','runtime_commit':commit,
-              'runtime_sha256':digest(binary),'harness':'arc-discovery@0.1.0',
+              'runtime_sha256':digest(binary),'harness':f'arc-discovery@{harness_version}',
               'files':{name:digest(data) for name,data in content.items()},
               'training':False,'paid_services':[],'formal_submission':False}
     content['deployment.json']=json.dumps(manifest,indent=2).encode()
@@ -94,7 +100,7 @@ assert sha256(morphz)==RUNTIME_BUILD['runtime_sha256']
 print('ACTIVE_RUNTIME_VERIFIED',morphz,RUNTIME_BUILD['runtime_sha256'],flush=True)
 '''
     experiment='''# Targeted engineering A/B selected before this run, not a private-set score.
-ARC_EXPERIMENT={'games':['ft09'],'arms':['baseline','discovery'],'budget_s':600,'max_actions':200,'output':'arc-harness-v1-ft09-ab'}
+ARC_EXPERIMENT={'games':['ft09'],'arms':['baseline','discovery'],'budget_s':600,'max_actions':200,'harness_version':HARNESS_VERSION_PIN,'output':'arc-harness-v1-ft09-ab'}
 ARC_SOURCE=WORK/ARC_EXPERIMENT['output']/'bridge-source'
 ARC_SOURCE.mkdir(parents=True,exist_ok=True)
 for name in ('arc_bridge.py','arc_cli.py','arc_observation.py','arc-discovery.hns'):
@@ -112,6 +118,7 @@ finally:
         except subprocess.TimeoutExpired: server.kill(); server.wait()
 print('HARNESS_DIAGNOSTIC_ARCHIVE_READY',str(WORK),flush=True)
 '''
+    experiment=experiment.replace('HARNESS_VERSION_PIN',repr(harness_version))
     notebook={'nbformat':4,'nbformat_minor':5,'metadata':{
         'kernelspec':{'display_name':'Python 3','language':'python','name':'python3'},
         'language_info':{'name':'python'}},'cells':[

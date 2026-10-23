@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import tempfile
 import unittest
@@ -31,6 +32,11 @@ class DeploymentTest(unittest.TestCase):
                 self.assertNotIn('connection.json',archive.namelist())
                 self.assertNotIn('runtime.db',archive.namelist())
             notebook=json.loads(Path(result['notebook']).read_text())
+            expected_version=re.search(r'\(version\s+"([^"]+)"\)',
+                Path(__file__).with_name('arc-discovery.hns').read_text()).group(1)
+            self.assertEqual(manifest['harness'],f'arc-discovery@{expected_version}')
+            self.assertIn(f"'harness_version':{expected_version!r}",
+                ''.join(notebook['cells'][3]['source']))
             for i,cell in enumerate(notebook['cells']):
                 if cell['cell_type']=='code':
                     compile(''.join(cell['source']),f'generated-cell-{i}','exec')

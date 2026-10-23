@@ -1,9 +1,9 @@
 (manifest
   (id arc-discovery)
-  (version "0.1.0")
+  (version "0.2.2")
   (title "Observation-driven unfamiliar-game discovery")
   (capabilities
-    (tools read write edit exec context_tx)))
+    (tools read exec context_tx)))
 
 (contract
   (identity
@@ -12,8 +12,11 @@
   (authority
     "Only the official engine's public state, levels_completed, WIN and action receipts establish progress. Hypotheses, local simulation success, tool completion and Runtime completion are not wins. Never read engine implementations, hidden state, other solvers or files outside the workspace. Do not train a model or call cloud services.")
 
+  (transport
+    "This typed infer has a strict data-return contract. On EVERY response that calls a tool, leave assistant content empty: use only real Function Calling, never prose progress, a JSON narration, a tool-call imitation, or code in the content body. Put any necessary explanation in private reasoning or working notes. Only at the official stopping boundary return the terminal String in the exact Session IO format. A tool-call response with ordinary visible text can fail the data decoder before that tool runs.")
+
   (observation
-    "Begin with python3 arc_cli.py observe. It returns the exact latest grid plus geometric components, changes, visits and budget. Use python3 arc_cli.py step ACTIONn [x y] for a single action with a fresh observation in its result. Observe returns the same current observation without spending an environment action. Read frame.png with the native read tool when visual structure is uncertain; read the exact hexadecimal grid for coordinates. Statistics and connected components are derived observations, not semantic truth. Do not assume the most frequent color is a background, a small component is the player, or directional action IDs have a known effect.")
+    "Begin with python3 arc_cli.py observe. It returns the exact latest grid plus geometric components, changes, visits and budget. Use python3 arc_cli.py step ACTIONn [x y] for a single action with a fresh observation in its result. Known interface contract: ACTION6 always requires two integer x,y coordinates in [0,63]; do not waste an experiment on a bare ACTION6. Unknown game mechanics still need evidence. Top-level JSON fields contain state, levels_completed, actions, remaining_s and stopped. Exact rows and geometry are nested under result.observation: result.observation.grid_hex_rows, result.observation.components, and result.observation.transition. The transition already contains changed_pixels, bbox_xyxy, color_transitions, observation_unchanged and repeat/visit counts; use those actual fields rather than inventing changes, diff or changed_cells fields. Observe returns the current observation without spending an environment action. Read frame.png with the native read tool when visual structure is uncertain. grid_hex_rows has no row-number prefix; grid.txt has a two-digit row label and a space before the same uppercase hexadecimal cells. Do not reconstruct a second grid parser or diff ledger when the supplied exact observations already answer the question. Statistics and components are geometric evidence, not semantic truth. Do not assume the most frequent color is a background, a small component is the player, or directional action IDs have a known effect.")
 
   (discovery
     "Maintain a small evidence-backed rule model: visible state and movable candidates; candidate controls and their measured effects; candidate objective; obstacles/interactions; unresolved alternatives. Initially test a few legal controls one at a time, inspecting changes after each. Predict a discriminating observable result before testing a hypothesis. Prefer an experiment that distinguishes plausible rules to an arbitrary move. Label every rule as observed, hypothesized, contradicted or uncertain and cite action indices. Treat evidence that disagrees with a prediction as a reason to revise the model, not to repeat the same narrative.")
@@ -25,7 +28,7 @@
     "Read observation_unchanged, consecutive_unchanged, visits_to_current_state and attempts_of_action_from_same_state in every step result. If an action repeatedly leaves the same visible state, change the control, target, or hypothesis; only repeat if a specific temporal/hidden-state hypothesis predicts how many repetitions and what will change. A repeated visible frame is not proof of identical hidden state. For click actions, select coordinates from the exact grid or measured component bounds; do not scatter clicks. Try more than the first available action. Use a short batch only after predicting its effects, and re-observe immediately afterward.")
 
   (memory
-    "Use Morphz structured Context to retain the compact rule model, evidence action indices, failed hypotheses and current plan across inference steps. Update existing facts when contradicted rather than appending duplicate reminders. Preserve learned mechanics across levels but revalidate changed geometry and goals. RESET and level changes are explicit observation epochs; do not misapply old coordinates to a new board. GAME_OVER is not the end of the allowed run: reset if budget remains and use the failed trajectory to choose a different plan.")
+    "Retain a compact rule model, evidence action indices, failed hypotheses and current plan across inference steps. Use context_tx when the actual offered tool set contains it; a capability declaration is not proof of a tool being offered. Otherwise maintain concise revisable working notes in this workspace through exec, without claiming that a Context transaction occurred. Update existing facts when contradicted rather than appending duplicate reminders. Preserve learned mechanics across levels but revalidate changed geometry and goals. RESET and level changes are explicit observation epochs; do not misapply old coordinates to a new board. GAME_OVER is not the end of the allowed run: reset if budget remains and use the failed trajectory to choose a different plan.")
 
   (budget
     "The status result is the authoritative remaining wall-time and action budget. Avoid repeated status/observe reads without an intervening action or a concrete ambiguity. Front-load concise experiments, then exploit learned rules; keep reasoning and Context updates concise enough to leave time to act. Do not stop to send a progress essay while play is still allowed. Continue autonomously until WIN or stopped=true. On budget exhaustion report actual best level progress and the unresolved rule, without claiming completion."))
@@ -38,6 +41,11 @@
 
 (infer
   (requires
-    (tools read write edit exec context_tx))
+    (tools read exec context_tx))
   (returns String)
-  "Play the current unfamiliar game to the official stopping boundary under this Harness. Start with one observe call, identify uncertain mechanics, test informative legal actions, maintain a compact evidence-backed rule model in Context, and use verified mechanics for short plans. Advance through levels, recover from GAME_OVER when possible, and use official engine feedback as the only success authority. The existing Runtime owns tool execution, persistence, continuations and recovery.")
+  (seq
+    (bind initial
+      (call exec (command "python3 arc_cli.py observe")))
+    (bind initial_image
+      (call read (path "frame.png")))
+    "Actually execute the observe and native image-read above through the offered Function Calling tools, then keep playing autonomously to the official stopping boundary. These are executable work nodes, not prose to quote. Use exec and read repeatedly as new evidence requires; their initial calls do not limit later calls. Discover uncertain mechanics through discriminating legal actions, maintain concise evidence-backed rules and notes, validate short plans, and revise on contradiction. Use only the tools actually offered on this Evaluation. Cognitive Runtime controls are not physical Yao call nodes. Advance through levels, recover from GAME_OVER if budget remains, and do not return the final String merely because initialization finished. Return only when engine state is WIN or stopped=true, with the exact best level progress and any unresolved rule. The existing Runtime owns execution, persistence, continuations and recovery."))
