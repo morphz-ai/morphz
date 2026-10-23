@@ -383,6 +383,47 @@ test(
   },
 );
 
+test(
+  "real work-surface scopes show shared and named history failures, never content-owner/foreign/revoked notices",
+  { timeout: 60_000 },
+  async () => {
+    await withClient(true, async ({ client }) => {
+      await client.control("historyNoticeScopes");
+      const shared = client.page.getByTestId("shared-history");
+      assert.notEqual(
+        await shared.getAttribute("data-content-owner"),
+        await shared.getAttribute("data-history-owner"),
+        "global dialogue and content retain their intentionally different owners",
+      );
+      assert.equal(
+        await shared.getByRole("alert").innerText(),
+        "TEST shared history unavailable",
+      );
+      assert.equal(await shared.getByRole("alert").isVisible(), true);
+      assert.equal(
+        await client.page
+          .getByTestId("wrong-content-owner")
+          .getByRole("alert")
+          .count(),
+        0,
+        "the old App content-owner gate is a real negative counterexample",
+      );
+      const named = client.page.getByTestId("named-history");
+      assert.equal(await named.getAttribute("data-conversation"), "TEST-named");
+      assert.equal(
+        await named.getByRole("alert").innerText(),
+        "TEST named history unavailable",
+      );
+      assert.equal(await named.getByRole("alert").isVisible(), true);
+      for (const id of ["wrong-named-history", "revoked-history"])
+        assert.equal(
+          await client.page.getByTestId(id).getByRole("alert").count(),
+          0,
+        );
+    });
+  },
+);
+
 for (const before of [false, true]) {
   test(
     `actual Client publishes the final same-history Runtime observation: ${before} → ${!before}`,

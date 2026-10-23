@@ -3183,11 +3183,12 @@ function WorkspaceApp({
                   <Conversation
                     searchProjectId={project.id}
                     notice={
-                      client.historyError?.projectId === project.id &&
+                      client.historyError?.projectId ===
+                        conversationProjectId &&
                       client.historyError.conversationId === conversationId ? (
                         <ConversationHistoryNotice
                           error={client.historyError}
-                          projectId={project.id}
+                          projectId={conversationProjectId}
                           conversationId={conversationId}
                           onRetry={() => void client.refresh()}
                         />

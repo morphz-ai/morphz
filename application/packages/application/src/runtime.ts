@@ -3144,19 +3144,28 @@ export class RuntimeBridge {
           ),
         ).event;
     const link = requireDelegationLink(record, event, reference);
-    let root: RuntimeEvent | null = z
-      .object({ event: eventSchema })
-      .parse(
-        await this.request(
-          `/api/sessions/${encodeURIComponent(record.parent_session_id)}/events/${encodeURIComponent(link.rootId)}`,
-          "GET",
-          undefined,
-          access,
-          undefined,
-          "json",
-          true,
-        ),
-      ).event;
+    let root: RuntimeEvent | null = null;
+    try {
+      root = z
+        .object({ event: eventSchema })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(record.parent_session_id)}/events/${encodeURIComponent(link.rootId)}`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+            "json",
+            true,
+          ),
+        ).event;
+    } catch (error) {
+      // A logical turn ID need not be an Event ID. Only absence may use the
+      // existing exact turn-source proof; authorization/protocol failures stay
+      // failures and never grant a different source or child read scope.
+      if (!(error instanceof UpstreamError && error.status === 404))
+        throw error;
+    }
     if (!root || !payloadString(root, "client_message_id")) {
       root = z
         .object({ input_event: eventSchema.nullable() })

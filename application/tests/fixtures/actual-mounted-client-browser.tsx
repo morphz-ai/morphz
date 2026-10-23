@@ -12,6 +12,8 @@ import { PlatformClient } from "../../apps/web/src/platform-client.js";
 import { applicationCall } from "../../apps/web/src/application-transport.js";
 import { UnsentOperationError } from "../../apps/web/src/data/operation-delivery.js";
 import { ConversationHistoryNotice } from "../../apps/web/src/WorkspaceNotice.js";
+import { deriveWorkSurface } from "../../apps/web/src/host/work-surface.js";
+import { initialWorkspace } from "../../packages/core/src/model.js";
 import type {
   ApplicationInvocation,
   ApplicationReply,
@@ -198,11 +200,21 @@ const construction = {
 const publications: string[] = [];
 function Probe() {
   client = useWorkspace();
-  const dialogue = client.boot?.workspace.projects.find(
-    (project) =>
-      project.kind === "dialogue" &&
-      project.ownerPrincipalId === client.boot?.principalId,
-  );
+  const surface = deriveWorkSurface({
+    state: client.boot?.workspace,
+    principalId: client.boot?.principalId ?? "",
+    teamAuthentication: client.boot?.capabilities.teamAuthentication ?? false,
+    scriptLibrary: client.boot?.scriptLibrary ?? [],
+    prefs: {
+      view: "dialogue",
+      projectId: "",
+      projectOpen: false,
+      artifactId: null,
+    },
+    contentScope: "",
+    conversationDrafts: {},
+    restoredPlace: null,
+  });
   useLayoutEffect(() => {
     if (client.boot) publications.push(client.boot.csrfToken);
   });
@@ -213,10 +225,110 @@ function Probe() {
       </p>
       <ConversationHistoryNotice
         error={client.historyError}
-        projectId={dialogue?.id ?? ""}
-        conversationId={dialogue?.id ?? ""}
+        projectId={surface.conversationProjectId}
+        conversationId={surface.conversationId}
         onRetry={() => void client.refresh()}
       />
+    </>
+  );
+}
+// Opt-in presentation fixture: real work-surface derivation and production
+// notice, not a Host authorization or a second conversation-routing owner.
+function HistoryNoticeScopes() {
+  const state = initialWorkspace("2026-10-04T00:00:00.000Z");
+  state.conversations.push({
+    ...state.conversations[0]!,
+    id: "TEST-named",
+    projectId: "first-project",
+  });
+  const base = {
+    state,
+    principalId: "local-owner",
+    teamAuthentication: false,
+    scriptLibrary: [],
+    contentScope: "",
+    conversationDrafts: {},
+    restoredPlace: null,
+  };
+  const shared = deriveWorkSurface({
+    ...base,
+    prefs: {
+      view: "dialogue",
+      projectId: "",
+      projectOpen: false,
+      artifactId: null,
+    },
+  });
+  const named = deriveWorkSurface({
+    ...base,
+    prefs: {
+      view: "projects",
+      projectId: "first-project",
+      projectOpen: true,
+      artifactId: null,
+      selectedConversations: { "first-project": "TEST-named" },
+    },
+  });
+  const sharedError = {
+    projectId: shared.conversationProjectId,
+    conversationId: shared.conversationId,
+    message: "TEST shared history unavailable",
+  };
+  const namedError = {
+    projectId: named.conversationProjectId,
+    conversationId: named.conversationId,
+    message: "TEST named history unavailable",
+  };
+  const retry = () => {};
+  return (
+    <>
+      <section
+        data-testid="shared-history"
+        data-content-owner={shared.project?.id}
+        data-history-owner={shared.conversationProjectId}
+      >
+        <ConversationHistoryNotice
+          error={sharedError}
+          projectId={shared.conversationProjectId}
+          conversationId={shared.conversationId}
+          onRetry={retry}
+        />
+      </section>
+      <section data-testid="wrong-content-owner">
+        <ConversationHistoryNotice
+          error={sharedError}
+          projectId={shared.project?.id ?? ""}
+          conversationId={shared.conversationId}
+          onRetry={retry}
+        />
+      </section>
+      <section
+        data-testid="named-history"
+        data-conversation={named.conversationId}
+      >
+        <ConversationHistoryNotice
+          error={namedError}
+          projectId={named.conversationProjectId}
+          conversationId={named.conversationId}
+          onRetry={retry}
+        />
+      </section>
+      <section data-testid="wrong-named-history">
+        <ConversationHistoryNotice
+          error={namedError}
+          projectId={named.conversationProjectId}
+          conversationId="TEST-other"
+          onRetry={retry}
+        />
+      </section>
+      <section data-testid="revoked-history">
+        <ConversationHistoryNotice
+          error={null}
+          projectId={named.conversationProjectId}
+          conversationId={named.conversationId}
+          onRetry={retry}
+        />
+      </section>
     </>
   );
 }
@@ -520,6 +632,9 @@ const api = {
   },
   mount,
   unmount,
+  historyNoticeScopes() {
+    flushSync(() => root!.render(<HistoryNoticeScopes />));
+  },
   report() {
     return {
       snapshot: client.getSnapshot(),
