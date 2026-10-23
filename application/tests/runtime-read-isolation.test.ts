@@ -10,7 +10,8 @@ import {
 import { localAccess } from "../packages/core/src/model.js";
 
 test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Host 未接收输入", async () => {
-  type Mode = "healthy" | "network" | "body" | "malformed" | 401 | 403 | 503;
+  type Mode =
+    "healthy" | "network" | "body" | "malformed" | "timeline" | 401 | 403 | 503;
   let mode: Mode = "healthy";
   let posts = 0;
   let requests = 0;
@@ -48,6 +49,8 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
       return send(mode, { error: "Runtime unavailable" });
     if (mode === "malformed")
       return send(200, { not_a_runtime_response: true });
+    if (mode === "timeline" && url.pathname.endsWith("/timeline"))
+      return send(503, { error: "Controlled timeline unavailable" });
     if (url.pathname === "/api/status") return send(200, { model: "fixture" });
     if (url.pathname === "/api/runtime/inference")
       return send(200, { model: "fixture", models: [] });
@@ -137,6 +140,10 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
         .platformRuntimeNavigation(scope);
       assert.equal(navigation.runtime.connected, false);
       assert.ok(navigation.runtime.error);
+      await assert.rejects(
+        fixture.session().platformConversationHistory(scope),
+        "A formal history head must reject an unavailable Runtime, not publish only the old local queue as a fresh latest page",
+      );
       const history = await fixture.runtime.platformConversationHistory(
         scope,
         localAccess,
@@ -176,6 +183,24 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
             : "authentication-required",
       );
     }
+    mode = "timeline";
+    let published = 0;
+    await assert.rejects(
+      fixture.session().observePlatformConversation(
+        scope,
+        () => {
+          published++;
+        },
+        () => {},
+      ),
+      "A healthy Event head cannot authorize a partial local-only stream baseline",
+    );
+    assert.equal(
+      published,
+      0,
+      "the failed baseline never publishes the old local queue",
+    );
+    assert.equal(posts, 1, "head/stream recovery never resends input");
     const beforeDenied = requests;
     await assert.rejects(
       fixture.runtime.platformConversationHistory(scope, {

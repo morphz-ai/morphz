@@ -23,6 +23,7 @@ import { ComposerOptions } from "./ComposerOptions.js";
 import {
   executionActivityScope,
   executionActivityStatus,
+  executionActivityThreadAvailable,
 } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { objectiveDetailStatus } from "./subject-sidebar-model.js";
@@ -38,6 +39,7 @@ export function SubjectObjectiveDialog({
   threads,
   client,
   fresh,
+  statusFresh = fresh,
   onClose,
   onSelect,
   onSupplement,
@@ -46,6 +48,8 @@ export function SubjectObjectiveDialog({
   threads: Thread[];
   client: WorkspaceClient;
   fresh: boolean;
+  /** Display freshness never relaxes the independent action guard. */
+  statusFresh?: boolean;
   onClose(): void;
   onSelect(scope: ExecutionReadScope): void;
   onSupplement?: (target: InputContinuation) => Promise<void>;
@@ -310,7 +314,7 @@ export function SubjectObjectiveDialog({
           {view === "reading" && (
             <p className="muted" role="status">
               {feedback ||
-                (fresh
+                (statusFresh
                   ? objectiveDetailStatus(
                       goal.status,
                       goal.readiness,
@@ -480,7 +484,14 @@ export function SubjectObjectiveDialog({
         >
           {threads.length ? (
             threads.map((thread) => {
-              const status = executionActivityStatus(thread, fresh);
+              const status = executionActivityStatus(
+                thread,
+                client.online &&
+                  executionActivityThreadAvailable(
+                    thread,
+                    client.boot!.runtime,
+                  ),
+              );
               return (
                 <button
                   key={thread.id}

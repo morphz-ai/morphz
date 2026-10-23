@@ -464,6 +464,7 @@ export class PlatformClient {
   async navigationRuntime(
     signal?: AbortSignal,
     scope?: { projectId: string; conversationId: string } | null,
+    options?: { refreshActivity?: boolean },
   ) {
     return z
       .object({
@@ -476,7 +477,15 @@ export class PlatformClient {
           .regex(/^[a-f0-9]{64}$/)
           .optional(),
       })
-      .parse(await this.call("runtime.navigation", scope ?? undefined, signal));
+      .parse(
+        await this.call(
+          "runtime.navigation",
+          options?.refreshActivity
+            ? { ...scope, refreshActivity: true }
+            : (scope ?? undefined),
+          signal,
+        ),
+      );
   }
 
   async projects(

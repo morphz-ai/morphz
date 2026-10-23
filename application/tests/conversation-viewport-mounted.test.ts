@@ -489,6 +489,105 @@ test(
           );
         },
       );
+      if (lane === "current")
+        await context.test(
+          lane +
+            ": upward scrolling requests one older page, preserves the reading anchor and never drains history on mount or new output",
+          async () => {
+            phase = "scroll pagination";
+            let value = await reset({ earlier: true });
+            assert.equal(
+              value.requests.length,
+              0,
+              "mount follows the latest window without requesting older pages",
+            );
+            await call(page, "fireResize");
+            value = await settle(page);
+            assert.equal(
+              value.requests.length,
+              0,
+              "programmatic follow does not load older history",
+            );
+            await call(page, "scroll", 160);
+            value = await call(page, "scroll", 60);
+            assert.equal(
+              value.requests.length,
+              1,
+              "an actual upward scroll near the top loads the original cursor once",
+            );
+            assert.equal(value.requests[0]!.kind, "earlier");
+            assert(value.olderDisabled);
+            const before = await page.evaluate(() =>
+              Reflect.get(window, "viewportFixture").rect("reply-4"),
+            );
+            await call(page, "scroll", 40);
+            value = await settle(page);
+            assert.equal(
+              value.requests.length,
+              1,
+              "scrolling while busy cannot duplicate the page request",
+            );
+            // Restore the user's anchor used when the one page was requested.
+            await call(page, "scroll", 60);
+            await run("prepend", {
+              id: "scroll-older",
+              text: "Earlier body ".repeat(65),
+            });
+            value = await call(page, "settle", 0, undefined, null);
+            const after = await page.evaluate(() =>
+              Reflect.get(window, "viewportFixture").rect("reply-4"),
+            );
+            near(
+              after.top,
+              before.top,
+              "automatic prepend retains the original visible message position",
+            );
+            assert.equal(position(value).following, false);
+            assert.equal(value.olderDisabled, false);
+            await run("append", {
+              id: "new-output-while-reading",
+              text: "New output",
+              inputId: "input-A",
+            });
+            await call(page, "fireResize");
+            const retained = await page.evaluate(() =>
+              Reflect.get(window, "viewportFixture").rect("reply-4"),
+            );
+            near(
+              retained.top,
+              after.top,
+              "new output never steals the earlier reading position",
+            );
+            assert.equal(
+              (await settle(page)).requests.length,
+              1,
+              "new output does not drain another history page",
+            );
+            await reset({ earlier: true });
+            await call(page, "scroll", 160);
+            await call(page, "scroll", 60);
+            await run("config", { scope: "conversation-B" });
+            value = await call(page, "settle", 0, undefined, null);
+            assert.equal(position(value, "conversation-B:all").following, true);
+            await call(page, "scroll", 160);
+            value = await call(page, "scroll", 60);
+            assert.equal(
+              value.requests.length,
+              2,
+              "a retired scope's anchor cannot permanently block the new scope's next page",
+            );
+            assert.equal(value.requests[1]!.label, "conversation-B:0");
+            await call(page, "settle", 1, undefined, null);
+            value = await reset({ earlier: false });
+            await call(page, "scroll", 160);
+            value = await call(page, "scroll", 60);
+            assert.equal(
+              value.requests.length,
+              0,
+              "an exhausted cursor makes no request",
+            );
+          },
+        );
       await context.test(
         lane +
           ": deferred prepend preserves geometric anchor, rejects safely and retains captured scope",

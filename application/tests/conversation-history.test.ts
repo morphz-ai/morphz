@@ -75,9 +75,12 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
-type Owner = ReturnType<typeof createConversationHistory>;
+type Owner = Omit<
+  ReturnType<typeof createConversationHistory>,
+  "retainedForUnavailable"
+>;
 type Fixture = ReturnType<typeof fixture>;
-function fixture(factory: (ports: BaselinePorts) => Owner) {
+function fixture<T extends Owner>(factory: (ports: BaselinePorts) => T) {
   const events: unknown[][] = [];
   const seed = history("current", "z");
   let identity: string | undefined = "identity-A";
@@ -541,6 +544,32 @@ test("fixed original oracle: no connection/cursor/cache does not read; empty ver
     assert.deepEqual(f.events, []);
     return false;
   });
+});
+
+test("an unavailable head can retain only the already authorized same-scope window, without a catalog/version commit", () => {
+  const f = fixture(createConversationHistory);
+  try {
+    assert.equal(f.owner.cachedForCatalog(2), undefined);
+    assert.equal(f.owner.retainedForUnavailable(scope)?.value, f.seed);
+    assert.equal(f.owner.retainedForUnavailable(other), undefined);
+    assert.equal(
+      f.owner.retainedForUnavailable({
+        ...scope,
+        conversationId: "another-conversation",
+      }),
+      undefined,
+    );
+    assert.equal(f.owner.retainedForUnavailable(null), undefined);
+    assert.equal(f.owner.cachedForCatalog(1)?.version, "version-A");
+    f.owner.clear();
+    assert.equal(
+      f.owner.retainedForUnavailable(scope),
+      undefined,
+      "revoked identity/access cannot refill from the old window",
+    );
+  } finally {
+    f.finish();
+  }
 });
 
 async function productionHead(

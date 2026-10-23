@@ -11,6 +11,7 @@ import { draftKey } from "../../apps/web/src/local-preferences.js";
 import { PlatformClient } from "../../apps/web/src/platform-client.js";
 import { applicationCall } from "../../apps/web/src/application-transport.js";
 import { UnsentOperationError } from "../../apps/web/src/data/operation-delivery.js";
+import { ConversationHistoryNotice } from "../../apps/web/src/WorkspaceNotice.js";
 import type {
   ApplicationInvocation,
   ApplicationReply,
@@ -197,13 +198,26 @@ const construction = {
 const publications: string[] = [];
 function Probe() {
   client = useWorkspace();
+  const dialogue = client.boot?.workspace.projects.find(
+    (project) =>
+      project.kind === "dialogue" &&
+      project.ownerPrincipalId === client.boot?.principalId,
+  );
   useLayoutEffect(() => {
     if (client.boot) publications.push(client.boot.csrfToken);
   });
   return (
-    <p id="mounted-client">
-      {client.boot?.principalId ?? client.error ?? "connecting"}
-    </p>
+    <>
+      <p id="mounted-client">
+        {client.boot?.principalId ?? client.error ?? "connecting"}
+      </p>
+      <ConversationHistoryNotice
+        error={client.historyError}
+        projectId={dialogue?.id ?? ""}
+        conversationId={dialogue?.id ?? ""}
+        onRetry={() => void client.refresh()}
+      />
+    </>
   );
 }
 let root: Root | null = null;
@@ -510,6 +524,7 @@ const api = {
     return {
       snapshot: client.getSnapshot(),
       error: client.error,
+      historyError: client.historyError,
       publications,
       mounted: !!root,
       networkPending,

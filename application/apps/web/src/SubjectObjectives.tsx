@@ -12,6 +12,8 @@ import {
 import {
   executionActivityScope,
   executionActivityStatus,
+  executionActivityContextAvailable,
+  executionActivityThreadAvailable,
 } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { PersistentDetails } from "./PersistentDetails.js";
@@ -136,6 +138,9 @@ export function SubjectObjectives({
     ? []
     : goals.filter((goal) => objectiveIsTerminal(goal.status));
   const renderGoal = (goal: (typeof goals)[number]) => {
+    const goalFresh =
+      client.online &&
+      executionActivityContextAvailable(goal.contextId, runtime);
     const threads =
       runtime.activity?.threads.filter(
         (thread) =>
@@ -146,9 +151,13 @@ export function SubjectObjectives({
           goal.threadIds.includes(thread.id),
       ) ?? [];
     const open = expanded === goal.id;
-    const running = fresh
+    const running = goalFresh
       ? threads.filter(
-          (thread) => executionActivityStatus(thread, true).kind === "running",
+          (thread) =>
+            executionActivityStatus(
+              thread,
+              executionActivityThreadAvailable(thread, runtime),
+            ).kind === "running",
         ).length
       : 0;
     return (
@@ -164,7 +173,7 @@ export function SubjectObjectives({
           onView={() => setViewing(goal.id)}
           status={
             <>
-              {fresh
+              {goalFresh
                 ? goal.readiness === "waiting"
                   ? objectiveDetailStatus(
                       goal.status,
@@ -181,7 +190,7 @@ export function SubjectObjectives({
         {open && (
           <div className="subject-objective-detail">
             <p role="status">
-              {fresh
+              {goalFresh
                 ? objectiveDetailStatus(
                     goal.status,
                     goal.readiness,
@@ -190,7 +199,11 @@ export function SubjectObjectives({
                 : "目标状态待核对"}
             </p>
             {threads.map((thread) => {
-              const status = executionActivityStatus(thread, !!fresh);
+              const status = executionActivityStatus(
+                thread,
+                client.online &&
+                  executionActivityThreadAvailable(thread, runtime),
+              );
               return (
                 <Tooltip
                   key={thread.id}
@@ -280,6 +293,10 @@ export function SubjectObjectives({
                   goal={goal}
                   client={client}
                   fresh={!!fresh}
+                  statusFresh={
+                    client.online &&
+                    executionActivityContextAvailable(goal.contextId, runtime)
+                  }
                   threads={runtime.activity!.threads.filter(
                     (thread) =>
                       thread.kind === "execution" &&

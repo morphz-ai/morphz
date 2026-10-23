@@ -2,6 +2,7 @@ import type { ConversationRuntime } from "../../../packages/core/src/conversatio
 import type { RecordedInput } from "../../../packages/core/src/model.js";
 import {
   executionActivityStatus,
+  executionActivityThreadAvailable,
   type ActivityThread,
   type ActivityStatus,
 } from "./execution-activity.js";
@@ -41,7 +42,7 @@ export function inputExecutionRecordStatus(
   const statuses = (open.length ? open : threads).map((thread) =>
     executionActivityStatus(
       thread,
-      online && runtime.connected && !!runtime.activity?.available,
+      online && executionActivityThreadAvailable(thread, runtime),
     ),
   );
   return (

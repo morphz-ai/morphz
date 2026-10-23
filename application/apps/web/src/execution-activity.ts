@@ -26,6 +26,34 @@ export type ActivityStatus = {
   label: string;
 };
 
+/** A successfully read Context is independent of another Context's failure.
+ * Missing/conflicting observations never turn cached open work into live work.
+ * This helper is display-only; existing action authorization stays unchanged. */
+export function executionActivityContextAvailable(
+  contextId: string | undefined,
+  runtime: ConversationRuntime,
+): boolean {
+  if (!runtime.connected || !runtime.activity) return false;
+  const observations = runtime.activity.readScopes;
+  if (!observations) return runtime.activity.available;
+  if (!contextId) return false;
+  const matches = observations.filter((value) => value.contextId === contextId);
+  return matches.length === 1 && matches[0]!.currentAvailable;
+}
+
+export function executionActivityThreadAvailable(
+  thread: ActivityThread,
+  runtime: ConversationRuntime,
+): boolean {
+  if (thread.delegation)
+    return (
+      runtime.connected &&
+      runtime.activity?.available === true &&
+      runtime.activity.delegationsAvailable !== false
+    );
+  return executionActivityContextAvailable(thread.contextId, runtime);
+}
+
 /** Annotation prose describes the work; Runtime lifecycle remains authoritative.
  * Terminal summaries stay readable offline, but a cached open-work progress
  * must not look current after its execution snapshot becomes unavailable. */
@@ -147,7 +175,7 @@ export function executionActivityRoots(
 export function executionActivityGroupStatus(
   thread: ActivityThread,
   threads: readonly ActivityThread[],
-  available: boolean,
+  available: boolean | ((thread: ActivityThread) => boolean),
 ): ActivityStatus {
   const children = executionActivityDescendants(thread, threads);
   const open = [thread, ...children].filter(
@@ -155,7 +183,10 @@ export function executionActivityGroupStatus(
   );
   if (open.length) {
     const statuses = open.map((value) =>
-      executionActivityStatus(value, available),
+      executionActivityStatus(
+        value,
+        typeof available === "function" ? available(value) : available,
+      ),
     );
     const status =
       statuses.find((value) => value.kind === "running") ??
@@ -170,7 +201,10 @@ export function executionActivityGroupStatus(
     thread.lifecycle === "completed"
   )
     return { kind: "failed", label: "子任务执行失败" };
-  return executionActivityStatus(thread, available);
+  return executionActivityStatus(
+    thread,
+    typeof available === "function" ? available(thread) : available,
+  );
 }
 
 export function executionActivityTime(thread: ActivityThread): string {

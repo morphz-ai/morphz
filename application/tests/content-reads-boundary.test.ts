@@ -108,7 +108,15 @@ function refreshCommit() {
   if ((readCatalogCache && catalogCache.current === readCatalogCache && readCatalogCache.value !== readCatalogValue) || (readArtifacts && current.current?.workspace.artifacts !== readArtifacts)) {
     void refresh(); return false;
   }
-  const savedProjection = localInputDelivery.confirmAndProject(workspace,source);
+  if (!historyUnavailable && navigation.historyVersion !== finalNavigation.historyVersion)
+    throw new RequestError(409,"会话在读取期间已更新，请重试。","navigation_changed");
+  const savedProjection = historyUnavailable
+    ? withSavedInputs(workspace,localInputDelivery.readSaved(source.boot),source.boot,localInputDelivery.sendingInputIds(source.boot))
+    : localInputDelivery.confirmAndProject(workspace,source);
+}
+function historyPublication() {
+  if (!historyUnavailable) conversationHistory.commitProjection(resolvedScope,history,navigation.historyVersion,navigation.catalogVersion);
+  navigationCacheKey.current = historyUnavailable ? "" : navigationKey;
 }
 const selection = {scope: requestedScope, preferences: {...preferences,contentScope}, recentContentIds,
   confirmedScriptContentIds: [...new Set((readCatalogValue?.contents ?? [])
@@ -479,7 +487,7 @@ function violations(input = sources) {
     const commit = statements.indexOf(confirm.parent.parent);
     assert.ok(commit > start);
     assert.deepEqual(
-      statements.slice(commit - 5, commit + 1).map((node) => shape(node)),
+      statements.slice(commit - 6, commit + 1).map((node) => shape(node)),
       fn(expected, "refreshCommit").body!.statements.map((node) => shape(node)),
     );
     const guards = client.nodes
@@ -500,6 +508,52 @@ function violations(input = sources) {
       guards.length,
       1,
       "one original epoch/selection guard, before confirmation",
+    );
+  });
+  rule("unavailable-history-never-confirms-or-caches", () => {
+    same(
+      variable(client, "savedProjection"),
+      variable(expected, "savedProjection"),
+    );
+    const publication = fn(expected, "historyPublication").body!.statements;
+    const commits = client.nodes
+      .filter(isCallExpression)
+      .filter(
+        (node) =>
+          isPropertyAccessExpression(node.expression) &&
+          node.expression.expression.getText() === "conversationHistory" &&
+          node.expression.name.text === "commitProjection",
+      );
+    assert.equal(commits.length, 1, "one authorized history publication");
+    same(commits[0]!.parent.parent, publication[0]);
+    const projection = variable(client, "savedProjection");
+    const readBlock = projection.parent.parent.parent;
+    const publicationNodes: Node[] = [];
+    walk(readBlock, (node) => {
+      publicationNodes.push(node);
+    });
+    const keys = publicationNodes
+      .filter(isBinaryExpression)
+      .filter(
+        (node) =>
+          node.operatorToken.kind === SyntaxKind.EqualsToken &&
+          node.left.getText() === "navigationCacheKey.current",
+      );
+    assert.equal(keys.length, 2, "both snapshot branches guard the reuse key");
+    for (const key of keys) same(key.parent, publication[1]);
+    const calls: Node[] = [];
+    walk(projection, (node) => {
+      if (
+        isCallExpression(node) &&
+        node.expression.getText() === "withSavedInputs"
+      )
+        calls.push(node);
+    });
+    assert.equal(calls.length, 1);
+    assert.ok(isCallExpression(calls[0]!));
+    assert.equal(
+      client.symbols.get(calls[0]!.expression),
+      imported(client, "./local-saved-inputs.js", "withSavedInputs"),
     );
   });
   rule("confirmed-script-reference-selection", () => {
@@ -1003,6 +1057,42 @@ const negatives: Counterfactual[] = [
     "readCatalogCache.value !== readCatalogValue",
     "readCatalogCache.value === readCatalogValue",
     "refresh-authorized-catalog-preimage",
+  ],
+  [
+    "Client",
+    "navigation.historyVersion !== finalNavigation.historyVersion",
+    "navigation.historyVersion === finalNavigation.historyVersion",
+    "refresh-authorized-catalog-preimage",
+  ],
+  [
+    "Client",
+    "const savedProjection = historyUnavailable",
+    "const savedProjection = !historyUnavailable",
+    "unavailable-history-never-confirms-or-caches",
+  ],
+  [
+    "Client",
+    "if (!historyUnavailable)\n          conversationHistory.commitProjection(",
+    "if (true)\n          conversationHistory.commitProjection(",
+    "unavailable-history-never-confirms-or-caches",
+  ],
+  [
+    "Client",
+    'navigationCacheKey.current = historyUnavailable\n              ? ""\n              : navigationKey;',
+    "navigationCacheKey.current = navigationKey;",
+    "unavailable-history-never-confirms-or-caches",
+  ],
+  [
+    "Client",
+    'navigationCacheKey.current = historyUnavailable ? "" : navigationKey;',
+    "navigationCacheKey.current = navigationKey;",
+    "unavailable-history-never-confirms-or-caches",
+  ],
+  [
+    "Client",
+    "const snapshot = {",
+    "navigationCacheKey.current = navigationKey; const snapshot = {",
+    "unavailable-history-never-confirms-or-caches",
   ],
   [
     "Client",

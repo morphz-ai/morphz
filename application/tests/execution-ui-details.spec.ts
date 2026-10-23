@@ -6,7 +6,10 @@ import {
   type PaintedSweepFrame,
 } from "./fixtures/painted-sweep.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import {
+  disconnectedRuntime,
+  type ExecutionActivity,
+} from "../packages/core/src/conversation.js";
 import {
   mockPlatformConversation,
   test,
@@ -37,6 +40,7 @@ async function prepare(page: Page) {
     summary: undefined as string | undefined,
     controlState: undefined as "active" | "paused" | undefined,
     waitKinds: undefined as string[] | undefined,
+    readScopes: undefined as ExecutionActivity["readScopes"],
     lifecycle: "open" as "open" | "completed" | "failed" | "cancelled",
   };
   const fixture = await mockPlatformConversation(page, () => ({
@@ -54,6 +58,7 @@ async function prepare(page: Page) {
       })),
       activity: {
         available: activity.available,
+        readScopes: activity.readScopes,
         truncated: false,
         threads: inputs.map((input) => ({
           ...fixture.scope,
@@ -61,6 +66,7 @@ async function prepare(page: Page) {
           inputId: input.id,
           rootId: "TEST-ui-root",
           sessionId: "TEST-ui-session",
+          contextId: "TEST-ui-context",
           kind: "execution" as const,
           title: "TEST 交付人物设定与五场戏大纲",
           phase: activity.phase,
@@ -1329,6 +1335,73 @@ test("根活动仅实际运行时有动效，等待、失败、结束及断线�
   await expect(
     f.panel.getByRole("img", { name: "已完成", exact: true }),
   ).toHaveCount(2);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
+
+test("历史读取失败不抹掉当前执行，跨范围失败和真实断线仍保守禁用控制", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  f.activity.summary = "TEST 正在核对当前执行，不用历史结果猜状态";
+  f.activity.available = false;
+  f.activity.readScopes = [
+    {
+      contextId: "TEST-ui-context",
+      currentAvailable: true,
+      historyAvailable: false,
+    },
+    {
+      contextId: "TEST-unavailable-context",
+      currentAvailable: false,
+      historyAvailable: false,
+    },
+  ];
+  await f.fixture.refresh();
+  const status = f.panel.locator(".execution-origin-status");
+  await expect(status).toHaveAttribute("data-status", "running");
+  await expect(f.panel.locator(".execution-origin")).toContainText(
+    f.activity.summary,
+  );
+  await expect(
+    f.panel.getByRole("button", { name: "停止", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    f.panel.getByRole("button", { name: "补充", exact: true }),
+  ).toHaveCount(0);
+  await expect(f.panel).toContainText("部分后台状态暂不可用");
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    await settleTransitions(page);
+    await f.panel.screenshot({
+      path: info.outputPath(`activity-partial-read-${appearance}.png`),
+    });
+  }
+  f.activity.readScopes[0]!.currentAvailable = false;
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "unknown");
+  await expect(
+    f.panel.locator(".execution-origin .execution-activity-summary"),
+  ).toHaveCount(0);
+  f.activity.readScopes[0]!.currentAvailable = true;
+  f.activity.available = true;
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "running");
+  await expect(f.panel).toContainText("历史记录刷新失败，当前活动状态可用");
+  await f.panel.screenshot({
+    path: info.outputPath("activity-history-unavailable-dark.png"),
+  });
+  f.activity.connected = false;
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "unknown");
+  await expect(status.locator(".execution-signal-flow")).toHaveCount(0);
   await expect(f.input).toHaveValue("TEST 未发送的原草稿");
   expect(f.writes).toEqual([]);
 });

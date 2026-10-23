@@ -771,6 +771,14 @@ class RuntimeTransportError extends Error {
     super("无法连接 Morphz Runtime，请检查连接后重试。", { cause });
   }
 }
+/** Classified Runtime read failure after independent Platform authorization. */
+export class RuntimeConversationHistoryUnavailable extends Error {
+  constructor(cause: unknown) {
+    super("对话历史暂时无法读取；已保留现有消息，请恢复连接后重试。", {
+      cause,
+    });
+  }
+}
 const terminal = new Set([
   "session/io_state",
   "chat/reply",
@@ -1370,8 +1378,13 @@ export class RuntimeBridge {
       if (!(error instanceof UpstreamError && error.status === 404))
         throw error;
     }
-    const baseline = (await this.platformConversationHistory(scope, access))
-      .runtime.messages;
+    // A live subscription starts with a real latest page. An unavailable
+    // Runtime must not turn the Host's old local queue into a fresh head.
+    const baseline = (
+      await this.platformConversationHistory(scope, access, {
+        requireAvailable: true,
+      })
+    ).runtime.messages;
     type RootRoute = {
       inputId: string;
       source: PlatformInputSource;
@@ -2445,6 +2458,12 @@ export class RuntimeBridge {
   // Disposable provenance only. Runtime roots remain authoritative; current
   // Platform grants are checked when exposing a view, never cached here.
   private activitySources = new Map<string, PlatformInputSource>();
+  // Disposable read evidence only, never execution authority or persisted work.
+  // Keys bind the Runtime, actor, Context and exact registered Session domain.
+  private activitySnapshotCache = new Map<
+    string,
+    { active?: unknown; history?: unknown }
+  >();
   private activityRootRoutes = new Map<
     string,
     {
@@ -5240,7 +5259,8 @@ export class RuntimeBridge {
       } catch (error) {
         if (error instanceof UpstreamError && error.status === 404) break;
         if (this.runtimeReadUnavailable(error)) {
-          if (page.requireAvailable) throw error;
+          if (page.requireAvailable)
+            throw new RuntimeConversationHistoryUnavailable(error);
           // Do not present an incomplete scan or cached accepted history as a
           // fresh Runtime read. The local portion below retains only exact
           // not-yet-accepted inputs authorized for this reader.
@@ -5438,6 +5458,11 @@ export class RuntimeBridge {
           ? {
               activity: {
                 ...this.state.activity,
+                readScopes: this.platformActivityReadScopes(
+                  readableProjects,
+                  visibleInputs,
+                  access,
+                ),
                 threads: this.platformActivityThreads(
                   readableProjects,
                   visibleInputs,
@@ -5641,6 +5666,30 @@ export class RuntimeBridge {
     });
   }
 
+  /** Freshness is read evidence, not authority to disclose another Context.
+   * Derive its visible domain from the same current Platform grants/owned
+   * unassociated executions as the actual activity projection. */
+  private platformActivityReadScopes(
+    projects: ReadonlySet<string>,
+    inputs: ReadonlySet<string>,
+    access: AccessContext,
+    includeUnassociated = false,
+  ) {
+    const scopes = this.state.activity?.readScopes;
+    if (!scopes) return;
+    const contexts = new Set(
+      [...projects].map((projectId) => this.contextId(projectId)),
+    );
+    for (const thread of this.platformActivityThreads(
+      projects,
+      inputs,
+      access,
+      includeUnassociated,
+    ))
+      if (thread.contextId) contexts.add(thread.contextId);
+    return scopes.filter((scope) => contexts.has(scope.contextId));
+  }
+
   /** Compact, authorization-scoped navigation state. Runtime remains the
    * source of message/activity time; Platform supplies current project grants.
    * No message body or history is copied into the global workspace refresh. */
@@ -5733,6 +5782,12 @@ export class RuntimeBridge {
           ? {
               activity: {
                 ...this.state.activity,
+                readScopes: this.platformActivityReadScopes(
+                  readable,
+                  allowedInputIds,
+                  access,
+                  true,
+                ),
                 threads: this.platformActivityThreads(
                   readable,
                   allowedInputIds,
@@ -5777,6 +5832,39 @@ export class RuntimeBridge {
     );
   }
   private activityRefresh: Promise<void> | null = null;
+  private reportActivityReadFailure(
+    scope: string,
+    stage: "current" | "history" | "projection",
+    error: unknown,
+  ) {
+    const cause = error instanceof RuntimeTransportError ? error.cause : error;
+    const timeout =
+      cause instanceof Error &&
+      ["TimeoutError", "AbortError"].includes(cause.name);
+    const kind =
+      error instanceof z.ZodError
+        ? `schema-${Math.min(error.issues.length, 99)}`
+        : error instanceof UpstreamError
+          ? `http-${error.status}`
+          : error instanceof DomainError && error.code === "forbidden"
+            ? "forbidden"
+            : timeout
+              ? "timeout"
+              : error instanceof RuntimeTransportError
+                ? "transport"
+                : "unexpected";
+    // The existing private reporter redacts messages/body/credentials and
+    // bounds/rate-limits records. Only fixed stage, hash and error class enter
+    // its operation field; never put a Context/Session ID or schema value here.
+    try {
+      this.host.reportFailure?.(
+        `runtime.activity.${stage}:scope-${scope.slice(0, 12)}:${kind}`,
+        error,
+      );
+    } catch {
+      // Diagnostic failure is secondary, never a new business/read outcome.
+    }
+  }
   private refreshActivity() {
     if (!this.activityRefresh)
       this.activityRefresh = this.refreshActivityNow().finally(() => {
@@ -5807,6 +5895,44 @@ export class RuntimeBridge {
       threads: [],
     };
     const sessions = this.activeSessions();
+    const contextIds = [
+      ...new Set(sessions.map((session) => this.contextId(session.projectId))),
+    ];
+    const readScopeKey = (contextId: string, domain = sessions) =>
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            this.config.namespace,
+            this.config.url,
+            this.actor().principalId,
+            this.actor().actantId,
+            contextId,
+            domain
+              .filter(
+                (session) => this.contextId(session.projectId) === contextId,
+              )
+              .map((session) => [
+                session.id,
+                session.projectId,
+                session.conversationId ?? null,
+                session.sharedDefault,
+                session.runtimePrincipalId,
+              ])
+              .sort(([left], [right]) =>
+                String(left).localeCompare(String(right)),
+              ),
+          ]),
+        )
+        .digest("hex");
+    const initialKeys = new Map(contextIds.map((id) => [id, readScopeKey(id)]));
+    const currentKeys = new Set(initialKeys.values());
+    for (const key of this.activitySnapshotCache.keys())
+      if (!currentKeys.has(key)) this.activitySnapshotCache.delete(key);
+    activity.readScopes = contextIds.map((contextId) => ({
+      contextId,
+      currentAvailable: false,
+      historyAvailable: false,
+    }));
     const sessionsById = new Map(
       sessions.map((session) => [session.id, session]),
     );
@@ -6001,6 +6127,7 @@ export class RuntimeBridge {
         updated_at: z.string(),
       });
       const schema = z.object({
+        context_id: z.string().optional(),
         schedules: z.array(scheduleLink).optional(),
         detail_bounds: z
           .object({
@@ -6110,6 +6237,8 @@ export class RuntimeBridge {
       });
       const snapshots: {
         contextId: string;
+        currentAvailable: boolean;
+        historyAvailable: boolean;
         active: z.infer<typeof schema>;
         history: z.infer<typeof schema>;
       }[] = [];
@@ -6148,20 +6277,115 @@ export class RuntimeBridge {
           return null;
         return resolveRoot(source.session_id, source.root_turn_id, contextId);
       };
-      for (const contextId of new Set(
-        sessions.map((s) => this.contextId(s.projectId)),
-      )) {
-        const [active, history] = await Promise.all(
-          [false, true].map(async (terminal) =>
-            schema.parse(
+      for (const contextId of contextIds) {
+        const key = initialKeys.get(contextId)!;
+        const cached = this.activitySnapshotCache.get(key);
+        const read = async (terminal: boolean) => {
+          try {
+            const value = schema.parse(
               await this.request(
                 `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=200`,
               ),
-            ),
-          ),
-        );
-        snapshots.push({ contextId, active: active!, history: history! });
+            );
+            if (value.context_id !== undefined)
+              z.literal(contextId).parse(value.context_id);
+            return { value, denied: false };
+          } catch (error) {
+            this.reportActivityReadFailure(
+              key,
+              terminal ? "history" : "current",
+              error,
+            );
+            return {
+              value: undefined,
+              denied:
+                (error instanceof UpstreamError &&
+                  [401, 403, 404].includes(error.status)) ||
+                (error instanceof DomainError &&
+                  ["forbidden", "not_found"].includes(error.code)),
+            };
+          }
+        };
+        const [currentRead, historyRead] = await Promise.all([
+          read(false),
+          read(true),
+        ]);
+        const changed = key !== readScopeKey(contextId, this.activeSessions());
+        const denied = currentRead.denied || historyRead.denied || changed;
+        if (changed)
+          this.reportActivityReadFailure(
+            key,
+            "current",
+            new DomainError("forbidden", "Activity read scope changed."),
+          );
+        const currentAvailable = !denied && !!currentRead.value;
+        const historyAvailable = !denied && !!historyRead.value;
+        if (denied) this.activitySnapshotCache.delete(key);
+        else {
+          const next = {
+            ...cached,
+            ...(currentRead.value ? { active: currentRead.value } : {}),
+            ...(historyRead.value ? { history: historyRead.value } : {}),
+          };
+          if (next.active || next.history) {
+            this.activitySnapshotCache.delete(key);
+            this.activitySnapshotCache.set(key, next);
+          }
+          while (this.activitySnapshotCache.size > 16)
+            this.activitySnapshotCache.delete(
+              this.activitySnapshotCache.keys().next().value!,
+            );
+        }
+        const empty: z.infer<typeof schema> = {
+          threads: [],
+          objectives: [],
+          schedules: [],
+        };
+        const previousActive = schema.safeParse(cached?.active);
+        const previousHistory = schema.safeParse(cached?.history);
+        const active = denied
+          ? empty
+          : (currentRead.value ??
+            (previousActive.success ? previousActive.data : empty));
+        // A failed historical read may retain known terminal facts, never a
+        // previous open Thread/timer/goal that current inventory did not read.
+        const history = denied
+          ? empty
+          : (historyRead.value ??
+            (previousHistory.success
+              ? {
+                  ...previousHistory.data,
+                  threads: previousHistory.data.threads
+                    .filter((value) =>
+                      ["completed", "failed", "cancelled"].includes(
+                        value.thread.lifecycle,
+                      ),
+                    )
+                    .map((value) => ({ ...value, schedules: [] })),
+                  objectives: previousHistory.data.objectives?.filter((value) =>
+                    ["completed", "failed", "cancelled"].includes(
+                      value.objective.status,
+                    ),
+                  ),
+                  schedules: [],
+                }
+              : empty));
+        snapshots.push({
+          contextId,
+          currentAvailable,
+          historyAvailable,
+          active,
+          history,
+        });
       }
+      activity.readScopes = snapshots.map(
+        ({ contextId, currentAvailable, historyAvailable }) => ({
+          contextId,
+          currentAvailable,
+          historyAvailable,
+        }),
+      );
+      activity.available = snapshots.every((value) => value.currentAvailable);
       for (const { contextId, active, history } of snapshots) {
         const known = new Map(
           [...history.threads, ...active.threads].flatMap(({ thread }) =>
@@ -6225,9 +6449,11 @@ export class RuntimeBridge {
       // This Host's tracked Platform Sessions define the authority domain.
       // An empty registry is a complete empty domain, not a statement about
       // unrelated Runtime Sessions; connection/availability remain separate.
-      activity.openWorkComplete = snapshots.length > 0 || sessions.length === 0;
-      for (const { active } of snapshots) {
+      activity.openWorkComplete =
+        activity.available && (snapshots.length > 0 || sessions.length === 0);
+      for (const { active, currentAvailable } of snapshots) {
         activity.openWorkComplete &&=
+          currentAvailable &&
           !!active.detail_bounds &&
           !active.detail_bounds.has_more_threads &&
           active.detail_bounds.has_more_objectives === false &&
@@ -6284,7 +6510,16 @@ export class RuntimeBridge {
             );
         }
       }
-      for (const { contextId, active, history } of snapshots) {
+      for (const {
+        contextId,
+        active,
+        history,
+        historyAvailable,
+      } of snapshots) {
+        if (!historyAvailable) {
+          activity.truncated = true;
+          activity.objectivesTruncated = true;
+        }
         activity.truncated ||= [active, history].some(
           (view) =>
             view.detail_bounds?.has_more_threads ?? view.threads.length >= 200,
@@ -6429,6 +6664,7 @@ export class RuntimeBridge {
               thread.waitKinds = waitKinds;
           activity.objectives!.push({
             id: objective.id,
+            contextId,
             projectId: route.source.projectId,
             conversationId: route.source.conversationId,
             inputId: route.inputId,
@@ -6553,8 +6789,68 @@ export class RuntimeBridge {
       }
       await this.appendDelegatedActivity(activity, sources);
       activity.schedulesAvailable = snapshots.every(
-        ({ active }) => active.schedules !== undefined,
+        ({ active, currentAvailable }) =>
+          currentAvailable && active.schedules !== undefined,
       );
+      // Other Context/event reads can await after an earlier scope succeeded.
+      // Recheck the exact registered domain once more at publication: removal
+      // cannot publish old facts, and a newly registered Context is not read.
+      const finalSessions = this.activeSessions();
+      const changedContexts = new Set(
+        [...initialKeys].flatMap(([contextId, key]) =>
+          key !== readScopeKey(contextId, finalSessions) ? [contextId] : [],
+        ),
+      );
+      for (const contextId of changedContexts) {
+        const key = initialKeys.get(contextId)!;
+        this.activitySnapshotCache.delete(key);
+        this.reportActivityReadFailure(
+          key,
+          "current",
+          new DomainError("forbidden", "Activity publication scope changed."),
+        );
+      }
+      for (const scope of activity.readScopes!)
+        if (changedContexts.has(scope.contextId)) {
+          scope.currentAvailable = false;
+          scope.historyAvailable = false;
+        }
+      for (const contextId of new Set(
+        finalSessions.map((session) => this.contextId(session.projectId)),
+      ))
+        if (!initialKeys.has(contextId))
+          activity.readScopes!.push({
+            contextId,
+            currentAvailable: false,
+            historyAvailable: false,
+          });
+      if (changedContexts.size) {
+        activity.threads = activity.threads.filter(
+          (thread) =>
+            !changedContexts.has(thread.contextId ?? "") &&
+            !changedContexts.has(thread.delegation?.parentContextId ?? ""),
+        );
+        activity.objectives = activity.objectives?.filter(
+          (objective) => !changedContexts.has(objective.contextId ?? ""),
+        );
+        activity.schedules = activity.schedules?.filter(
+          (schedule) => !changedContexts.has(schedule.contextId),
+        );
+        const retainedInputs = new Set([
+          ...activity.threads.flatMap((thread) =>
+            thread.inputId ? [thread.inputId] : [],
+          ),
+          ...(activity.objectives ?? []).map((value) => value.inputId),
+          ...(activity.schedules ?? []).map((value) => value.inputId),
+        ]);
+        for (const inputId of sources.keys())
+          if (!retainedInputs.has(inputId)) sources.delete(inputId);
+      }
+      activity.available = activity.readScopes!.every(
+        (scope) => scope.currentAvailable,
+      );
+      activity.openWorkComplete &&= activity.available;
+      activity.schedulesAvailable &&= activity.available;
       this.state.activity = activity;
       this.activitySources = sources;
       for (const thread of activity.threads)
@@ -6570,15 +6866,28 @@ export class RuntimeBridge {
             conversationId: thread.conversationId,
             inputId: thread.inputId,
           };
-    } catch {
-      // Keep the last known records but explicitly mark them stale. A scheduler
-      // read failure must not cause message redelivery or fictitious completion.
+    } catch (error) {
+      this.reportActivityReadFailure(
+        createHash("sha256")
+          .update([...currentKeys].sort().join(":"))
+          .digest("hex"),
+        "projection",
+        error,
+      );
+      // Expected read failures retain scoped cached facts above. An unexpected
+      // projection failure must not copy a different actor's prior global view.
       this.state.activity = {
-        ...(this.state.activity ?? activity),
+        ...activity,
         available: false,
+        readScopes: contextIds.map((contextId) => ({
+          contextId,
+          currentAvailable: false,
+          historyAvailable: false,
+        })),
         schedulesAvailable: false,
         openWorkComplete: false,
       };
+      this.activitySources = sources;
     }
     this.notifyWorkspaceChanges();
   }

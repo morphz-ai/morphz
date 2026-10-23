@@ -60,7 +60,10 @@ import {
 } from "../../../packages/core/src/application-api.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import type { WorkspaceStore } from "./store.js";
-import type { RuntimeBridge } from "./runtime.js";
+import {
+  RuntimeConversationHistoryUnavailable,
+  type RuntimeBridge,
+} from "./runtime.js";
 import type { BrowserBroker } from "./browser.js";
 import { type SpeechProvider, ttsRequestSchema } from "./speech.js";
 import { IdentityCenter, requiresIdentity } from "./identity.js";
@@ -266,6 +269,12 @@ export class ApplicationUnavailable extends Error {
   readonly status = 503;
 }
 export function applicationFailure(error: unknown): ApplicationFailure {
+  if (error instanceof RuntimeConversationHistoryUnavailable)
+    return {
+      status: 503,
+      code: "runtime_history_unavailable",
+      message: error.message,
+    };
   if (error instanceof CognitiveAppServiceError)
     return {
       status: {
@@ -2585,7 +2594,7 @@ export class ApplicationSession {
     const history = await this.runtime().platformConversationHistory(
       scope,
       this.access,
-      { before, limit },
+      { before, limit, requireAvailable: true },
     );
     this.active();
     if (!this.options.platformScripts || !history.inputs.length)

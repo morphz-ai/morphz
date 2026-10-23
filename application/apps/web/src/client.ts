@@ -32,6 +32,7 @@ export {
 } from "./local-preferences.js";
 import { applicationStoragePrefix } from "../../../packages/core/src/application-names.js";
 import {
+  withSavedInputs,
   withoutSavedInputs,
   inputSubmissionSchema,
 } from "./local-saved-inputs.js";
@@ -781,6 +782,11 @@ export function useWorkspace() {
     >("connecting"),
     [online, setOnline] = useState(false),
     [error, setError] = useState(""),
+    [historyError, setHistoryError] = useState<{
+      projectId: string;
+      conversationId: string;
+      message: string;
+    } | null>(null),
     [authenticationRequired, setAuthenticationRequired] = useState(false);
   // Session metadata owns invalidation listening, never protected content or
   // permission. Clearing a private projection must not lose the hint that
@@ -806,6 +812,7 @@ export function useWorkspace() {
     > | null>(null),
     epoch = useRef(0),
     snapshotText = useRef(""),
+    activityRefreshRequested = useRef(false),
     refreshing = useRef<Promise<boolean> | null>(null),
     refreshDrain = useRef<ReturnType<typeof createRefreshDrain> | null>(null);
   history.current ??= createConversationHistory({
@@ -943,6 +950,7 @@ export function useWorkspace() {
     navigationCacheKey.current = "";
     snapshotText.current = "";
     setBoot(null);
+    setHistoryError(null);
     setContentCatalog([]);
     setContentCounts([]);
     setCognitiveAppCatalog({ versions: [], connections: [] });
@@ -955,7 +963,8 @@ export function useWorkspace() {
     pending: applicationViewWrites.current,
     execute: operationDelivery.execute,
   });
-  function refresh() {
+  function refresh(options?: { refreshActivity?: boolean }) {
+    if (options?.refreshActivity) activityRefreshRequested.current = true;
     refreshDrain.current ??= createRefreshDrain(refreshOnce);
     const pending = refreshDrain.current.request();
     refreshing.current = pending;
@@ -973,6 +982,8 @@ export function useWorkspace() {
     // An invalidation already queued in the shared drain must not start a
     // fresh read after its React owner has unmounted.
     if (!projectionMounted.current) return false;
+    const refreshActivity = activityRefreshRequested.current;
+    activityRefreshRequested.current = false;
     const version = epoch.current;
     const accessGeneration = protectedReadGeneration.current;
     const controller = new AbortController();
@@ -1041,6 +1052,7 @@ export function useWorkspace() {
         const navigation = await source.navigationRuntime(
           signal,
           requestedScope,
+          { refreshActivity },
         );
         if (
           catalogCache.current &&
@@ -1079,6 +1091,7 @@ export function useWorkspace() {
           runtime,
           historyScope: resolvedScope,
           history,
+          historyUnavailable,
           catalog,
           contentDeliveries,
           scriptOutputs,
@@ -1124,6 +1137,7 @@ export function useWorkspace() {
           ),
           preparedPersonal,
           navigation.historyVersion,
+          conversationHistory.retainedForUnavailable(requestedScope),
         );
         const finalNavigation = await source.navigationRuntime(
           signal,
@@ -1155,17 +1169,41 @@ export function useWorkspace() {
           void refresh();
           return false;
         }
+        if (
+          !historyUnavailable &&
+          navigation.historyVersion !== finalNavigation.historyVersion
+        )
+          throw new RequestError(
+            409,
+            "会话在读取期间已更新，请重试。",
+            "navigation_changed",
+          );
         // Read at publication time: a refresh may have started before the user
         // clicked Send. Only an authoritative same-ID input removes its overlay.
-        const savedProjection = localInputDelivery.confirmAndProject(
-          workspace,
-          source,
-        );
+        const savedProjection = historyUnavailable
+          ? withSavedInputs(
+              workspace,
+              localInputDelivery.readSaved(source.boot),
+              source.boot,
+              localInputDelivery.sendingInputIds(source.boot),
+            )
+          : localInputDelivery.confirmAndProject(workspace, source);
         const snapshot = {
           ...source.boot,
           workspace: savedProjection.workspace,
           scriptLibrary: catalog.scriptLibrary,
-          runtime,
+          // Activity/connection can change without changing history. Adopt the
+          // final authorized observation only after the history CAS, retaining
+          // this same-version selected page's messages and delivery receipts.
+          runtime:
+            navigation.historyVersion === undefined
+              ? runtime
+              : {
+                  ...finalNavigation.runtime,
+                  ...(historyUnavailable ? { error: runtime.error } : {}),
+                  messages: runtime.messages,
+                  deliveries: runtime.deliveries,
+                },
           localSavedInputIds: savedProjection.localInputIds,
           localInputSubmissions: savedProjection.submissions,
           activityByProject: navigation.activityByProject,
@@ -1224,12 +1262,13 @@ export function useWorkspace() {
             taskCompletion: true,
           },
         };
-        conversationHistory.commitProjection(
-          resolvedScope,
-          history,
-          navigation.historyVersion,
-          navigation.catalogVersion,
-        );
+        if (!historyUnavailable)
+          conversationHistory.commitProjection(
+            resolvedScope,
+            history,
+            navigation.historyVersion,
+            navigation.catalogVersion,
+          );
         catalogCache.current = {
           version: navigation.catalogVersion,
           revisions: navigation.revisions,
@@ -1257,7 +1296,9 @@ export function useWorkspace() {
             current.current = value;
             platform.current = source;
             snapshotText.current = serialized;
-            navigationCacheKey.current = navigationKey;
+            navigationCacheKey.current = historyUnavailable
+              ? ""
+              : navigationKey;
             migrateLegacyLocalState(
               localStorage,
               value.centerId,
@@ -1289,7 +1330,13 @@ export function useWorkspace() {
               );
             setBoot(value);
           }
-        } else navigationCacheKey.current = navigationKey;
+        } else
+          navigationCacheKey.current = historyUnavailable ? "" : navigationKey;
+        setHistoryError(
+          historyUnavailable && resolvedScope
+            ? { ...resolvedScope, message: runtime.error! }
+            : null,
+        );
         setOnline(true);
         setError("");
         return true;
@@ -1703,6 +1750,7 @@ export function useWorkspace() {
         await applicationCall("connection.configure", params, { signal }),
       ),
     authenticationRequired,
+    historyError,
     login,
     logout,
     speechStatus,

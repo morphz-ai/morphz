@@ -430,11 +430,13 @@ export async function readPlatformWorkspace(
   cachedCatalog?: Partial<PlatformWorkspaceCatalog>,
   preparedPersonal?: PlatformWorkspaceCatalog["personal"],
   historyVersion?: string,
+  retainedHistory?: CachedHistory,
 ): Promise<{
   workspace: Workspace;
   runtime: ConversationRuntime;
   historyScope: HistoryScope | null;
   history: PlatformHistory | null;
+  historyUnavailable: boolean;
   catalog: PlatformWorkspaceCatalog;
   contentDeliveries: PlatformContentDelivery[];
   scriptOutputs: PlatformHistory["scriptOutputs"];
@@ -559,13 +561,29 @@ export async function readPlatformWorkspace(
           signal,
         )
       : null;
-  const histories: PlatformHistory[] = historyHead
-    ? [
+  let historyUnavailable = false;
+  let historyValue: PlatformHistory | null = null;
+  if (historyHead) {
+    try {
+      historyValue =
         historyHead.kind === "cached"
           ? historyHead.value
-          : await historyHead.pending,
-      ]
-    : [];
+          : await historyHead.pending;
+    } catch (error) {
+      if (
+        !(error instanceof RequestError) ||
+        error.code !== "runtime_history_unavailable"
+      )
+        throw error;
+      historyUnavailable = true;
+      if (
+        retainedHistory?.scope.projectId === historyScope?.projectId &&
+        retainedHistory?.scope.conversationId === historyScope?.conversationId
+      )
+        historyValue = retainedHistory?.value ?? null;
+    }
+  }
+  const histories = historyValue ? [historyValue] : [];
   const visibleInputIds = histories.flatMap((history) =>
     history.inputs.map((input) => input.id),
   );
@@ -937,9 +955,18 @@ export async function readPlatformWorkspace(
   });
   return {
     workspace,
-    runtime: platformRuntime(runtimeSnapshot, histories),
+    runtime: platformRuntime(
+      historyUnavailable
+        ? {
+            ...runtimeSnapshot,
+            error: "对话历史暂时无法读取；已保留现有消息，请恢复连接后重试。",
+          }
+        : runtimeSnapshot,
+      histories,
+    ),
     historyScope,
     history: histories[0] ?? null,
+    historyUnavailable,
     catalog,
     contentDeliveries,
     scriptOutputs,
