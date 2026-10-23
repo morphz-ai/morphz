@@ -32,6 +32,7 @@ test("委派期间原消息保持运行反馈、主活动显示子任务且可�
         available: connected,
         truncated: false,
         delegationsAvailable: true,
+        delegationsTruncated: true,
         threads,
       },
     },
@@ -147,6 +148,9 @@ test("委派期间原消息保持运行反馈、主活动显示子任务且可�
   const children = panel.getByRole("region", { name: "委派子任务" });
   // A section without a heading remains a named region through aria-label.
   await expect(children).toContainText(child.title);
+  await expect(
+    panel.getByText("当前仅显示已核验的部分子任务。", { exact: true }),
+  ).toHaveCount(0);
   await page.screenshot({
     path: info.outputPath("delegated-parent-running.png"),
   });

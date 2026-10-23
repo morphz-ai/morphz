@@ -353,6 +353,16 @@ export function ExecutionSidebar({
           ))}
         </section>
       )}
+      {!detail && runtime.activity?.delegationsAvailable === false && (
+        <p className="muted" role="status">
+          子任务状态暂不可用，请刷新后核对。
+        </p>
+      )}
+      {!detail &&
+        runtime.activity?.delegationsAvailable &&
+        runtime.activity.delegationsTruncated && (
+          <p className="muted">当前仅显示已核验的部分子任务。</p>
+        )}
       {detail ? (
         <>
           {!scope.threadId && supplementAction}
@@ -495,15 +505,6 @@ export function ExecutionSidebar({
                   ),
                 ).map(row)}
               </section>
-            )}
-          {runtime.activity?.delegationsAvailable === false && (
-            <p className="muted" role="status">
-              子任务状态暂不可用，请刷新后核对。
-            </p>
-          )}
-          {runtime.activity?.delegationsAvailable &&
-            runtime.activity.delegationsTruncated && (
-              <p className="muted">当前仅显示已核验的部分子任务。</p>
             )}
           <ExecutionProgress
             messages={messages}
