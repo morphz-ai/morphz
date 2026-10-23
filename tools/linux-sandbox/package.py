@@ -7,7 +7,7 @@ import shutil
 from install import SOURCES
 
 
-BUNDLE_FILES = (*SOURCES, "launcher.c", "mounts.c", "mounts.h", "install.py", "INSTALL.md")
+BUNDLE_FILES = (*SOURCES, "launcher.c", "mounts.c", "mounts.h", "bootstrap.py", "install.py", "INSTALL.md")
 
 
 def stage(bundle):

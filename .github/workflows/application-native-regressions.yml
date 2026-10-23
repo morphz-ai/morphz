@@ -1,8 +1,8 @@
 name: Application native regression diagnosis
 
 on:
-  # Keep isolated Electron diagnostics separate from Runtime's reusable,
-  # source-only workflow. Reusable workflows inherit their caller's event.
+  # CI calls native diagnostics explicitly, independently of Runtime's
+  # source-only workflow. No job selects its lane from the caller's event.
   push:
     branches: [fix/full-application-regressions-20261021]
     paths:
@@ -52,6 +52,7 @@ on:
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

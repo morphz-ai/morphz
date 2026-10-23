@@ -2,51 +2,9 @@ name: Application
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "application/**"
-      - "morphz/**"
-      - "executor/**"
-      - "yao/**"
-      - "third_party/**"
-      - "Cargo.*"
-      - "LICENSE"
-      - "rust-toolchain.toml"
-      - "scripts/generate-third-party-licenses.py"
-      - "scripts/update-npm-license-records.py"
-      - "scripts/tests/test_npm_license_records.py"
-      - "scripts/tests/application-cognitive-ci-setup.test.mjs"
-      - "scripts/tests/application-electron-ci-setup.test.mjs"
-      - "scripts/tests/application-runtime-ci-coverage.test.mjs"
-      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
-      - "scripts/prune-orphan-test-sqlite.mjs"
-      - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
-      - "scripts/observe-ci-resources.mjs"
-      - "scripts/tests/observe-ci-resources.test.mjs"
-      - ".github/workflows/application.yml"
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
-    paths:
-      - "application/**"
-      - "morphz/**"
-      - "executor/**"
-      - "yao/**"
-      - "third_party/**"
-      - "Cargo.*"
-      - "LICENSE"
-      - "rust-toolchain.toml"
-      - "scripts/generate-third-party-licenses.py"
-      - "scripts/update-npm-license-records.py"
-      - "scripts/tests/test_npm_license_records.py"
-      - "scripts/tests/application-cognitive-ci-setup.test.mjs"
-      - "scripts/tests/application-electron-ci-setup.test.mjs"
-      - "scripts/tests/application-runtime-ci-coverage.test.mjs"
-      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
-      - "scripts/prune-orphan-test-sqlite.mjs"
-      - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
-      - "scripts/observe-ci-resources.mjs"
-      - "scripts/tests/observe-ci-resources.test.mjs"
-      - ".github/workflows/application.yml"
+    branches: [main, "release/**"]
   workflow_dispatch:
 
 permissions:

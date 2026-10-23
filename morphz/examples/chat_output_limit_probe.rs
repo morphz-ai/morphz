@@ -2,7 +2,7 @@
 //! Runtime database, user Context, tool execution or production config writes.
 //! Usage: chat_output_limit_probe <existing-config> <single-target-route> <new-report> <native-secret-catalog>
 use morphz::{
-    config::{AppConfig, ModelProtocol},
+    config::{AppConfig, CredentialSource, ModelProtocol},
     llm::{
         Message, ModelFailure, ModelFailureKind, ModelRequestContext, ModelStreamEvent,
         ReasoningEffort,
@@ -14,6 +14,27 @@ use morphz::{
 };
 use serde_json::json;
 use std::{error::Error, fs::OpenOptions, io::Write, sync::Arc, time::Duration};
+
+fn managed_credential_alias<'a>(
+    config: &'a AppConfig,
+    reference: &str,
+) -> Result<&'a str, Box<dyn Error + Send + Sync>> {
+    let credential = config
+        .credentials
+        .get(reference)
+        .ok_or("pinned credential configuration is missing")?;
+    // The routing adapter resolves the credential's alias, not the catalog ID.
+    // Require this same path, then prove the alias is native-managed below;
+    // never execute a helper or fall back to a plaintext/environment value.
+    if credential.source != CredentialSource::Env {
+        return Err("canary requires a native-managed static credential alias".into());
+    }
+    credential
+        .name
+        .as_deref()
+        .filter(|alias| !alias.is_empty())
+        .ok_or_else(|| "pinned credential alias is missing".into())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -44,6 +65,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         return Err("canary requires one enabled native credential account".into());
     }
     let credential_ref = account.credential_ref.clone();
+    let credential_alias = managed_credential_alias(&config, &credential_ref)?.to_owned();
     let provider = config
         .provider_instances
         .get_mut(&route.candidates[0].provider)
@@ -82,7 +104,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     if !secrets
         .list()?
         .iter()
-        .any(|entry| entry.name == credential_ref && entry.value_backend == secrets.backend_id())
+        .any(|entry| entry.name == credential_alias && entry.value_backend == secrets.backend_id())
     {
         return Err("pinned credential must already be managed by the native Secret Store".into());
     }
@@ -141,6 +163,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let report = json!({"passed":passed,"protocol":"openai-chat","endpoint":selected.base_url,
         "model":selected.model,"expected_output_tokens":32,"observed_output_tokens":output_tokens,
         "failure_kind":failure.map(|failure|format!("{:?}",failure.kind)),
+        "http_status":failure.and_then(|failure|failure.http_status),
         "finish_reason":failure.and_then(|failure|failure.provider_code.as_deref()),
         "timed_out":outcome.is_err(),"synthetic_prefix":text,"completed":completed,
         "production_config_changed":false,"user_context_sent":false,"tools":0});
@@ -159,4 +182,34 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         return Err("official Chat canary did not satisfy the output-limit gate".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use morphz::config::CredentialConfig;
+
+    #[test]
+    fn canary_uses_the_same_static_alias_as_production_routing() {
+        let mut config = AppConfig::default();
+        config.credentials.insert(
+            "official-account-credential".into(),
+            CredentialConfig {
+                source: CredentialSource::Env,
+                name: Some("SYNTHETIC_NATIVE_ALIAS".into()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            managed_credential_alias(&config, "official-account-credential").unwrap(),
+            "SYNTHETIC_NATIVE_ALIAS"
+        );
+        assert!(managed_credential_alias(&config, "missing").is_err());
+        let credential = config
+            .credentials
+            .get_mut("official-account-credential")
+            .unwrap();
+        credential.source = CredentialSource::Command;
+        assert!(managed_credential_alias(&config, "official-account-credential").is_err());
+    }
 }

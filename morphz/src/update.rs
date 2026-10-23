@@ -37,6 +37,8 @@ const MAX_CHECKSUM_BYTES: u64 = 64 * 1024;
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+    draft: bool,
+    prerelease: bool,
     assets: Vec<GitHubAsset>,
 }
 
@@ -183,14 +185,6 @@ async fn install_release(
 
     let release = fetch_release(requested.as_ref()).await?;
     let target = release_version(&release)?;
-    if let Some(requested) = requested.as_ref() {
-        if &target != requested {
-            return Err(message(format!(
-                "GitHub returned release {} for requested version {requested}",
-                release.tag_name
-            )));
-        }
-    }
     match target.cmp(&current) {
         std::cmp::Ordering::Equal => {
             if locale.is_chinese() {
@@ -382,6 +376,27 @@ fn release_version(release: &GitHubRelease) -> Result<Version> {
     parse_requested_version(&release.tag_name)
 }
 
+fn validate_release_channel(release: &GitHubRelease, requested: Option<&Version>) -> Result<()> {
+    let version = release_version(release)?;
+    if release.draft {
+        return Err(message("draft Morphz releases cannot be installed"));
+    }
+    if let Some(requested) = requested {
+        if &version != requested {
+            return Err(message(format!(
+                "GitHub returned release {} for requested version {requested}",
+                release.tag_name
+            )));
+        }
+    } else if release.prerelease || !version.pre.is_empty() {
+        return Err(message(format!(
+            "the stable update channel returned prerelease {}; select an exact version with --to to opt in",
+            release.tag_name
+        )));
+    }
+    Ok(())
+}
+
 fn repository() -> Result<String> {
     let value = std::env::var("MORPHZ_GITHUB_REPOSITORY")
         .unwrap_or_else(|_| DEFAULT_REPOSITORY.to_string());
@@ -424,11 +439,20 @@ async fn fetch_release(version: Option<&Version>) -> Result<GitHubRelease> {
         format!("{GITHUB_API}/repos/{repository}/releases/latest")
     };
     let client = github_client()?;
+    fetch_release_at(&client, &endpoint, version, github_token().as_deref()).await
+}
+
+async fn fetch_release_at(
+    client: &reqwest::Client,
+    endpoint: &str,
+    requested: Option<&Version>,
+    token: Option<&str>,
+) -> Result<GitHubRelease> {
     let mut request = client
         .get(endpoint)
         .header(USER_AGENT, format!("morphz/{}", env!("CARGO_PKG_VERSION")))
         .header(ACCEPT, "application/vnd.github+json");
-    if let Some(token) = github_token() {
+    if let Some(token) = token {
         request = request.bearer_auth(token);
     }
     let response = request.send().await?;
@@ -445,7 +469,9 @@ async fn fetch_release(version: Option<&Version>) -> Result<GitHubRelease> {
             detail.trim().chars().take(300).collect::<String>()
         )));
     }
-    response.json().await.map_err(Into::into)
+    let release = response.json::<GitHubRelease>().await?;
+    validate_release_channel(&release, requested)?;
+    Ok(release)
 }
 
 fn release_asset<'a>(release: &'a GitHubRelease, name: &str) -> Result<&'a GitHubAsset> {
@@ -1337,6 +1363,116 @@ mod tests {
         assert!(parse_requested_version("latest").is_err());
     }
 
+    async fn fetch_fixture_release(
+        body: serde_json::Value,
+        requested: Option<&Version>,
+        status: &str,
+    ) -> (Result<GitHubRelease>, String) {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let endpoint = if let Some(version) = requested {
+            format!("http://{address}/repos/example/morphz/releases/tags/v{version}")
+        } else {
+            format!("http://{address}/repos/example/morphz/releases/latest")
+        };
+        let body = body.to_string();
+        let status = status.to_owned();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let result = fetch_release_at(&client, &endpoint, requested, None).await;
+        (result, server.join().unwrap())
+    }
+
+    #[tokio::test]
+    async fn stable_release_fetch_rejects_drafts_flags_and_semver_prereleases() {
+        for (tag, draft, prerelease) in [
+            ("v0.1.4", true, false),
+            ("v0.1.4", false, true),
+            ("v0.1.4-rc.1", false, false),
+        ] {
+            let (result, request) = fetch_fixture_release(
+                serde_json::json!({"tag_name":tag,"draft":draft,"prerelease":prerelease,"assets":[]}),
+                None,
+                "200 OK",
+            )
+            .await;
+            assert!(result.is_err(), "stable channel accepted {tag}");
+            assert!(request.starts_with("GET /repos/example/morphz/releases/latest HTTP/1.1"));
+        }
+        let (result, _) = fetch_fixture_release(
+            serde_json::json!({"tag_name":"v0.1.4","draft":false,"prerelease":false,"assets":[]}),
+            None,
+            "200 OK",
+        )
+        .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn explicit_release_fetch_accepts_only_the_requested_published_rc() {
+        let requested = Version::parse("0.1.4-rc.1").unwrap();
+        let release = serde_json::json!({"tag_name":"v0.1.4-rc.1","draft":false,"prerelease":true,"assets":[]});
+        let (result, request) =
+            fetch_fixture_release(release.clone(), Some(&requested), "200 OK").await;
+        assert!(result.is_ok());
+        assert!(request.contains("/releases/tags/v0.1.4-rc.1 HTTP/1.1"));
+        let mut draft = release.clone();
+        draft["draft"] = serde_json::json!(true);
+        assert!(fetch_fixture_release(draft, Some(&requested), "200 OK")
+            .await
+            .0
+            .is_err());
+        let mismatch = Version::parse("0.1.4-rc.2").unwrap();
+        assert!(fetch_fixture_release(release, Some(&mismatch), "200 OK")
+            .await
+            .0
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn release_fetch_fails_closed_without_metadata_or_when_request_fails() {
+        let (result, _) = fetch_fixture_release(
+            serde_json::json!({"tag_name":"v0.1.4","assets":[]}),
+            None,
+            "200 OK",
+        )
+        .await;
+        assert!(result.is_err());
+        let (result, request) = fetch_fixture_release(
+            serde_json::json!({"message":"temporarily unavailable"}),
+            None,
+            "503 Service Unavailable",
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("503"));
+        assert!(request.contains("/releases/latest HTTP/1.1"));
+    }
+
     #[test]
     fn platform_assets_match_the_release_matrix() {
         let mac = platform_bundle("macos", "aarch64").unwrap();
@@ -1365,6 +1501,8 @@ mod tests {
     fn release_asset_selection_is_exact() {
         let release = GitHubRelease {
             tag_name: "v1.0.0".to_string(),
+            draft: false,
+            prerelease: false,
             assets: vec![
                 GitHubAsset {
                     name: "morphz-linux-x86_64.tar.gz".to_string(),

@@ -12,6 +12,7 @@ workspace="${MORPHZ_EDGE_WORKSPACE:-$(pwd)}"
 node_name="${MORPHZ_EDGE_NODE_NAME:-}"
 workers="${MORPHZ_EDGE_WORKERS:-}"
 full_access=0
+allow_prerelease="${MORPHZ_EDGE_ALLOW_PRERELEASE:-0}"
 manifest_url="${MORPHZ_EDGE_MANIFEST_URL:-https://morphz.ai/edge/releases/manifest.json}"
 
 while [ "$#" -gt 0 ]; do
@@ -23,6 +24,7 @@ while [ "$#" -gt 0 ]; do
     --workers) [ "$#" -ge 2 ] || fail "--workers requires a value"; workers=$2; shift 2 ;;
     --manifest-url) [ "$#" -ge 2 ] || fail "--manifest-url requires a value"; manifest_url=$2; shift 2 ;;
     --full-access) full_access=1; shift ;;
+    --allow-prerelease) allow_prerelease=1; shift ;;
     *) fail "unknown option '$1'" ;;
   esac
 done
@@ -80,13 +82,21 @@ printf '%s' "$public_key_b64" | openssl base64 -d -A > "$public_key" \
 openssl dgst -sha256 -verify "$public_key" -signature "$signature" "$manifest" >/dev/null \
   || fail "release manifest signature verification failed"
 
-selection=$(python3 - "$manifest" "$platform" "$architecture" <<'PY'
+selection=$(python3 - "$manifest" "$platform" "$architecture" "$allow_prerelease" <<'PY'
 import json, sys
-path, platform, architecture = sys.argv[1:]
+path, platform, architecture, allow_prerelease = sys.argv[1:]
 with open(path, "r", encoding="utf-8") as handle:
     manifest = json.load(handle)
 if manifest.get("schema_version") != 1:
     raise SystemExit("unsupported manifest schema")
+version = manifest.get("version")
+if not isinstance(version, str) or not version:
+    raise SystemExit("release manifest has no version")
+channel = manifest.get("channel", "stable")
+if channel not in ("stable", "prerelease"):
+    raise SystemExit("unsupported release channel")
+if allow_prerelease != "1" and (channel == "prerelease" or "-" in version.partition("+")[0]):
+    raise SystemExit("stable installation rejected prerelease; pass --allow-prerelease to opt in")
 matches = [item for item in manifest.get("artifacts", [])
            if item.get("platform") == platform and item.get("architecture") == architecture]
 if len(matches) != 1:
@@ -95,7 +105,7 @@ item = matches[0]
 for field in ("url", "sha256", "size_bytes", "archive_format"):
     if field not in item:
         raise SystemExit(f"artifact is missing {field}")
-print(manifest.get("version", ""))
+print(version)
 print(item["url"])
 print(item["sha256"])
 print(item["size_bytes"])

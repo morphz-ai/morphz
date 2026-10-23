@@ -111,6 +111,25 @@ mkdir -p "$temporary/unpacked"
 tar -xzf "$temporary/$asset" -C "$temporary/unpacked"
 [ -f "$temporary/unpacked/morphz" ] || fail "release archive does not contain morphz"
 
+# Inspect the checksum-verified native binary before replacing an installation.
+# GitHub /latest excludes drafts and prereleases; this additional gate also
+# rejects a prerelease accidentally labelled stable or supplied by a mirror.
+# Only the Cargo package-version field is inspected, not its git-source suffix.
+version_output=$("$temporary/unpacked/morphz" --version) || fail "release binary could not report its version"
+[ "$(printf '%s\n' "$version_output" | wc -l | tr -d ' ')" = "1" ] \
+  || fail "release binary reported an invalid version"
+package_version=$(printf '%s\n' "$version_output" | sed -n 's/^morphz \([^ ][^ ]*\)\( (git [^)]*)\)\{0,1\}$/\1/p')
+printf '%s\n' "$package_version" | LC_ALL=C grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.+-]+)?$' \
+  || fail "release binary reported an invalid version"
+if [ "$version" = "latest" ]; then
+  case "${package_version%%+*}" in
+    *-*) fail "stable installation rejected prerelease $package_version; set MORPHZ_VERSION to the exact release tag to opt in" ;;
+  esac
+else
+  [ "$package_version" = "${version#v}" ] \
+    || fail "release binary version $package_version does not match requested version $version"
+fi
+
 mkdir -p "$install_dir"
 staged_install="$install_dir/.morphz-install.$$"
 install -m 0755 "$temporary/unpacked/morphz" "$staged_install"

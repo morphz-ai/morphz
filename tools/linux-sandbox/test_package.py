@@ -15,7 +15,7 @@ class ReleasePackageTests(unittest.TestCase):
             destination = stage(directory)
             self.assertEqual({p.name for p in destination.iterdir()}, set(BUNDLE_FILES))
             self.assertEqual(set(BUNDLE_FILES),
-                             {*SOURCES, "launcher.c", "mounts.c", "mounts.h", "install.py", "INSTALL.md"})
+                             {*SOURCES, "launcher.c", "mounts.c", "mounts.h", "bootstrap.py", "install.py", "INSTALL.md"})
             for name in BUNDLE_FILES:
                 self.assertEqual((destination / name).read_bytes(), (source / name).read_bytes())
                 self.assertFalse((destination / name).is_symlink())

@@ -16,6 +16,7 @@ CONFIG = Path("/etc/morphz-sandbox/config.json")
 CONTROL = Path("/run/morphz-sandbox/control.sock")
 STATE = Path("/var/lib/morphz-sandbox")
 CGROUP = Path("/sys/fs/cgroup/morphz-sandbox-v1")
+READY = "ready.json"
 
 
 def installed_config():
@@ -57,11 +58,23 @@ def main():
                 TrustedExecutables([config["launcher"]]) as launchers:
             registration = Registration(leases, runtimes, launchers)
             loop = ServiceLoop(registration, CONTROL)
+            # Readiness is emitted only after recovery, pinned executable
+            # verification, the exclusive state lock and real control bind.
+            # The installer binds this root-owned record to systemd's MainPID.
+            store._write(loop.directory, READY, json.dumps(
+                {"pid": os.getpid(), "start_ticks": int(Path("/proc/self/stat").read_text().rpartition(")")[2].split()[19]),
+                 "launcher": config["launcher"], "abi": 1}).encode())
             print(json.dumps({"ready": True, "abi": 1, "recovered": len(leases.records)}), flush=True)
             while not stopping:
                 loop.step()
     finally:
         if loop is not None:
+            try:
+                ready = json.loads(read_file(loop.directory, READY))
+                if ready.get("pid") == os.getpid():
+                    os.unlink(READY, dir_fd=loop.directory)
+            except FileNotFoundError:
+                pass
             loop.close()
         if registration is not None:
             registration.close()

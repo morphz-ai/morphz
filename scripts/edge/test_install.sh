@@ -76,7 +76,7 @@ esac
 # the same public key embedded into the installers.
 built_manifest="$temporary/built-manifest.json"
 python3 "$script_dir/build_release_manifest.py" \
-  --version 0.1.0-test \
+  --version 0.1.0 \
   --signing-key "$private_key" \
   --output "$built_manifest" \
   --artifact "$platform=$architecture=$artifact=https://releases.example/morphz-edge"
@@ -99,7 +99,7 @@ import json, pathlib, sys
 path, platform, architecture, artifact, digest, size = sys.argv[1:]
 value = {
     "schema_version": 1,
-    "version": "0.1.0-test",
+    "version": "0.1.0",
     "published_at": "2026-09-01T00:00:00Z",
     "artifacts": [{
         "platform": platform,
@@ -135,6 +135,67 @@ grep -q 'http://127.0.0.1:8788' "$argument_log" || fail "Edge Server URL did not
 grep -Fq "$workspace" "$argument_log" || fail "workspace did not reach bootstrap"
 grep -q 'pair_once_only_for_test' "$home/.morphz/edge/bootstrap-receipt.json" \
   && fail "pairing code leaked into the persistent receipt"
+
+# A valid publisher signature is not opt-in to the prerelease channel. Older
+# manifests without a channel field must be guarded by their version as well.
+rc_manifest="$temporary/rc-manifest.json"
+python3 - "$manifest" "$rc_manifest" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+value["version"] = "0.1.4-rc.1"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(value) + "\n")
+PY
+openssl dgst -sha256 -sign "$private_key" -out "$rc_manifest.sig" "$rc_manifest"
+rc_home="$temporary/rc-home"
+mkdir -p "$rc_home"
+if HOME="$rc_home" MORPHZ_EDGE_ALLOW_INSECURE_TEST_URLS=1 MORPHZ_EDGE_INSTALL_NO_SERVICE=1 \
+  sh "$rendered/install" --manifest-url "file://$rc_manifest" --server-url http://127.0.0.1:8788 \
+  --workspace "$workspace" --code pair_rc_rejected >"$temporary/rc-rejected.log" 2>&1; then
+  fail "stable installer accepted a signed prerelease manifest"
+fi
+grep -Fq 'stable installation rejected prerelease' "$temporary/rc-rejected.log" \
+  || fail "stable rejection did not explain explicit opt-in"
+[ ! -e "$rc_home/.local/bin/morphz-edge" ] || fail "rejected RC wrote a binary"
+if grep -q pair_rc_rejected "$argument_log"; then fail "rejected RC consumed a pairing code"; fi
+
+# The signed channel label is authoritative even if its version is stable.
+python3 - "$rc_manifest" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["version"] = "0.1.4"
+value["channel"] = "prerelease"
+path.write_text(json.dumps(value) + "\n")
+PY
+openssl dgst -sha256 -sign "$private_key" -out "$rc_manifest.sig" "$rc_manifest"
+if HOME="$rc_home" MORPHZ_EDGE_ALLOW_INSECURE_TEST_URLS=1 MORPHZ_EDGE_INSTALL_NO_SERVICE=1 \
+  sh "$rendered/install" --manifest-url "file://$rc_manifest" --server-url http://127.0.0.1:8788 \
+  --workspace "$workspace" --code pair_label_rejected >/dev/null 2>&1; then
+  fail "stable installer accepted the prerelease channel label"
+fi
+
+python3 - "$rc_manifest" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["version"] = "0.1.4-rc.1"
+path.write_text(json.dumps(value) + "\n")
+PY
+openssl dgst -sha256 -sign "$private_key" -out "$rc_manifest.sig" "$rc_manifest"
+HOME="$rc_home" MORPHZ_EDGE_ALLOW_INSECURE_TEST_URLS=1 MORPHZ_EDGE_INSTALL_NO_SERVICE=1 \
+  sh "$rendered/install" --allow-prerelease --manifest-url "file://$rc_manifest" \
+  --server-url http://127.0.0.1:8788 --workspace "$workspace" --code pair_explicit_rc >/dev/null
+[ -x "$rc_home/.local/bin/morphz-edge" ] || fail "explicit RC was not installed"
+grep -q pair_explicit_rc "$argument_log" || fail "explicit RC did not pair"
+
+# Opt-in never weakens signature verification.
+printf ' ' >> "$rc_manifest"
+if HOME="$temporary/tampered-rc-home" MORPHZ_EDGE_ALLOW_INSECURE_TEST_URLS=1 MORPHZ_EDGE_INSTALL_NO_SERVICE=1 \
+  MORPHZ_EDGE_ALLOW_PRERELEASE=1 sh "$rendered/install" --manifest-url "file://$rc_manifest" \
+  --server-url http://127.0.0.1:8788 --workspace "$workspace" --code pair_tampered_rc >/dev/null 2>&1; then
+  fail "prerelease opt-in disabled signature verification"
+fi
+[ ! -e "$temporary/tampered-rc-home/.local/bin/morphz-edge" ] || fail "tampered RC installed a binary"
 
 # A tampered manifest must fail before installing anything.
 tampered_home="$temporary/tampered-home"
