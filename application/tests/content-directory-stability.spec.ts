@@ -1,9 +1,186 @@
 import { randomUUID } from "node:crypto";
+import type { Page } from "@playwright/test";
 import {
   test,
   expect,
   conversationClient,
 } from "./project-conversation-fixture.js";
+
+/** Real Host/catalog/original reads with only the original response delivery
+ * gated. Keep the catalog preview cold until the pointer is already down. */
+async function coldDocumentPreview(page: Page) {
+  await page.goto("/");
+  await expect(page.getByRole("navigation", { name: "主导航" })).toBeVisible();
+  const client = await conversationClient(page);
+  const spaces = await client.ensurePersonalSpaces();
+  const title = `TEST 预览水合不吞点击 ${randomUUID()}`;
+  const markdown = "TEST 水合期间按下，原生松手后打开确切原文。";
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holding = true;
+  let contentId: string | undefined;
+  const reads: string[] = [];
+  await page.route(
+    /\/api\/platform\/objects\/[^/?]+(?:\?.*)?$/,
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (
+        !holding ||
+        route.request().method() !== "GET" ||
+        (contentId && path !== `/api/platform/objects/${contentId}`)
+      )
+        return route.continue();
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      reads.push(path);
+      await held;
+      await route.fulfill({ response });
+    },
+  );
+  const unblock = () => {
+    holding = false;
+    release();
+  };
+  try {
+    const objectId = randomUUID();
+    await client.createDocument({
+      commandId: randomUUID(),
+      objectId,
+      projectId: spaces.deskId,
+      title,
+      markdown,
+    });
+    contentId = (
+      await client.resolveContent({
+        appId: "morphz.objects",
+        appObjectId: objectId,
+      })
+    ).id;
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: "内容库", exact: true })
+      .click();
+    const card = page.getByRole("button", {
+      name: `打开内容：${title}`,
+      exact: true,
+    });
+    await expect(card).toBeVisible();
+    await expect(card.locator(".artifact-preview")).toHaveText("正在载入预览…");
+    await expect
+      .poll(() => reads.includes(`/api/platform/objects/${contentId}`))
+      .toBe(true);
+    return {
+      card,
+      title,
+      markdown,
+      release: unblock,
+    };
+  } catch (error) {
+    unblock();
+    await page.unrouteAll({ behavior: "wait" });
+    throw error;
+  }
+}
+
+for (const appearance of ["light", "dark"] as const)
+  test(`真实卡片预览在按下和松开间水合仍单次打开原文：${appearance}`, async ({
+    page,
+    messageHost,
+  }, info) => {
+    await page.emulateMedia({ colorScheme: appearance });
+    const fixture = await coldDocumentPreview(page);
+    if (appearance === "dark")
+      await page.setViewportSize({ width: 390, height: 844 });
+    const button = (await fixture.card.elementHandle())!;
+    const preview = (await fixture.card
+      .locator(".artifact-preview")
+      .elementHandle())!;
+    await button.evaluate((node) => {
+      node.dataset.testClicks = "0";
+      node.addEventListener("click", () => {
+        node.dataset.testClicks = String(Number(node.dataset.testClicks) + 1);
+      });
+    });
+    try {
+      const box = (await fixture.card
+        .locator(".artifact-preview")
+        .boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      expect(await button.getAttribute("data-test-clicks")).toBe("0");
+      await page.screenshot({
+        path: info.outputPath(`preview-held-${appearance}.png`),
+      });
+      fixture.release();
+      await expect(
+        fixture.card.locator('.artifact-preview[data-kind="document"]'),
+      ).toContainText(fixture.markdown);
+      expect(await preview.evaluate((node) => node.isConnected)).toBe(false);
+      expect(
+        await button.evaluate(
+          (node, title) =>
+            node ===
+            document.querySelector(`[aria-label="打开内容：${title}"]`),
+          fixture.title,
+        ),
+      ).toBe(true);
+      // Completion belongs to native click on release, never pointerdown.
+      expect(await button.getAttribute("data-test-clicks")).toBe("0");
+      await page.mouse.up();
+      expect(await button.getAttribute("data-test-clicks")).toBe("1");
+      await expect(page.locator(".document-body")).toHaveText(fixture.markdown);
+      expect(messageHost.deliveries()).toEqual([]);
+      await page.screenshot({
+        path: info.outputPath(`preview-opened-${appearance}.png`),
+      });
+    } finally {
+      fixture.release();
+      await page.mouse.up();
+      await page.unrouteAll({ behavior: "wait" });
+    }
+  });
+
+test("预览水合时拖出取消不提前打开，原按钮的 Enter 和空格仍正常打开", async ({
+  page,
+  messageHost,
+}) => {
+  const fixture = await coldDocumentPreview(page);
+  const button = (await fixture.card.elementHandle())!;
+  try {
+    const box = (await fixture.card
+      .locator(".artifact-preview")
+      .boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    fixture.release();
+    await expect(
+      fixture.card.locator('.artifact-preview[data-kind="document"]'),
+    ).toContainText(fixture.markdown);
+    expect(await button.evaluate((node) => node.isConnected)).toBe(true);
+    await expect(page.locator(".document-body")).toHaveCount(0);
+    await page.mouse.move(10, 10);
+    await page.mouse.up();
+    await expect(fixture.card).toBeVisible();
+    await expect(page.locator(".document-body")).toHaveCount(0);
+    for (const key of ["Enter", "Space"]) {
+      await fixture.card.focus();
+      await fixture.card.press(key);
+      await expect(page.locator(".document-body")).toHaveText(fixture.markdown);
+      await page
+        .getByRole("navigation", { name: "主导航" })
+        .getByRole("button", { name: "内容库", exact: true })
+        .click();
+      await expect(fixture.card).toBeVisible();
+    }
+    expect(messageHost.deliveries()).toEqual([]);
+  } finally {
+    fixture.release();
+    await page.mouse.up();
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
 
 test("启动读取期间目录变化会重新读取一致快照，不用手动重新连接", async ({
   page,
