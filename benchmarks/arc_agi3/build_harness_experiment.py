@@ -204,7 +204,7 @@ print('ALGORITHM_EXPERIMENT_ARCHIVE_READY',str(WORK),flush=True)
         if profile=='actor-integration':
             algorithm_experiment=algorithm_experiment.replace("'games':['ft09','ls20','vc33']", "'games':['ft09','ls20']")
             algorithm_experiment=algorithm_experiment.replace("'arms':['baseline','discovery']", "'arms':['discovery']")
-            algorithm_experiment=algorithm_experiment.replace("'output':'arc-algorithms-v030-public-ab'", "'actor_adapter':True,'output':'arc-algorithms-v031-actor-integration'")
+            algorithm_experiment=algorithm_experiment.replace("'output':'arc-algorithms-v030-public-ab'", "'actor_adapter':True,'bounded_batches':16,'output':'arc-algorithms-v032-actor-integration'")
             notebook['cells'][0]=cell('# Morphz ARC-AGI-3 actor integration repair\n\nPrivate bounded follow-up, not a pure algorithm ablation. Same Flash-Next V1 and Runtime binary. Semantic actors receive the exact capture-bound PNG and constrained non-thinking JSON generation; native provider adaptation is explicitly recorded. Two public games, candidate only, 600 seconds / 200 actions each. No training, paid APIs or formal submission.\n','markdown')
         notebook['cells'][3]=cell(algorithm_experiment)
     destination=output/'morphz-arc-harness-experiment.ipynb'

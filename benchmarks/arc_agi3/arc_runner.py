@@ -15,6 +15,9 @@ HARNESS_VERSION=EXPERIMENT.get('harness_version','0.1.0')
 HARNESS_FILE=EXPERIMENT.get('harness_file',f'{HARNESS_ID}.hns')
 ALGORITHM_TOOLS=bool(EXPERIMENT.get('algorithm_tools',False))
 ACTOR_ADAPTER=bool(EXPERIMENT.get('actor_adapter',False))
+MAX_HARNESS_BATCHES=int(EXPERIMENT.get('bounded_batches',1))
+assert 1 <= MAX_HARNESS_BATCHES <= 16
+assert MAX_HARNESS_BATCHES==1 or (ALGORITHM_TOOLS and ACTOR_ADAPTER)
 if ACTOR_ADAPTER:
     sys.path.insert(0,str(DEPLOY))
     from arc_model_adapter import prepare_semantic_request, response_summary
@@ -42,6 +45,8 @@ assert WHEELHOUSE.is_dir() and ENVS.is_dir()
                         else 'Harness plus visible observation aids; not model training'),
     'semantic_inference_tool_free':ALGORITHM_TOOLS,
     'actor_provider_adapter':('captured-image-structured-nonthinking-actor@1' if ACTOR_ADAPTER else None),
+    'bounded_harness_batches':MAX_HARNESS_BATCHES,
+    'batch_boundary_note':'Separate finite Evaluations in the same Session; no Program budget is enlarged or replenished by restart. The game timer, actions, workspace and DB remain continuous.',
     'reasoning_policy_note':('Algorithm actors disable model thinking and constrain the declared JSON return; this is NOT a same-reasoning-policy ablation.' if ACTOR_ADAPTER else None),
     'formal_submission':False
 },indent=2))
@@ -229,26 +234,60 @@ Do not access game implementation, environment files, another solver, internet, 
         (test/'execution-argv.json').write_text(json.dumps(args,indent=2))
         start=time.monotonic(); start_wire=len(wire_records)
         active_wire_context={'enabled':ACTOR_ADAPTER and arm=='discovery','workspace':workspace}
-        with (test/'runtime.log').open('w') as out:
-            child=subprocess.Popen(args,cwd=workspace,env=runtime_env,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
         print('GAME_STARTED',game,'ARM',arm,'BUDGET',BUDGET_S,'ACTIONS',MAX_ACTIONS,flush=True)
         last_progress=0; last_status={}; stop_reason=None
-        while child.poll() is None:
-            elapsed=time.monotonic()-start
-            try: last_status=request_json(port,'/status')
-            except Exception as exc: stop_reason='bridge_error:'+repr(exc); break
-            if elapsed-last_progress>=20:
-                print('GAME_PROGRESS',game,arm,round(elapsed),json.dumps(last_status),flush=True); last_progress=elapsed
-            if last_status['stopped'] or elapsed>=BUDGET_S+5:
-                stop_reason=last_status.get('stop_reason') or 'wall_budget'; break
-            if ACTOR_ADAPTER and arm=='discovery':
-                current_calls=wire_records[start_wire:]
-                empty_stops=sum(response_summary(r)['empty_stop'] for r in current_calls)
-                rejected=sum(bool(r.get('adaptation_error')) for r in current_calls)
-                if empty_stops>=3 or rejected>=3:
-                    stop_reason='provider_empty_reply_livelock' if empty_stops>=3 else 'actor_projection_rejected'
-                    break
-            time.sleep(1)
+        batches=[]; runtime_session=None
+        for batch_index in range(MAX_HARNESS_BATCHES if arm=='discovery' else 1):
+            batch_args=list(args)
+            if runtime_session: batch_args[-1:-1]=['--session',runtime_session]
+            log_path=test/'runtime.log'
+            log_offset=log_path.stat().st_size if log_path.exists() else 0
+            batch_start=time.monotonic(); batch_start_wire=len(wire_records)
+            with log_path.open('a') as out:
+                child=subprocess.Popen(batch_args,cwd=workspace,env=runtime_env,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
+            while child.poll() is None:
+                elapsed=time.monotonic()-start
+                try: last_status=request_json(port,'/status')
+                except Exception as exc: stop_reason='bridge_error:'+repr(exc); break
+                if elapsed-last_progress>=20:
+                    print('GAME_PROGRESS',game,arm,round(elapsed),json.dumps(last_status),flush=True); last_progress=elapsed
+                if last_status['stopped'] or elapsed>=BUDGET_S+5:
+                    stop_reason=last_status.get('stop_reason') or 'wall_budget'; break
+                if ACTOR_ADAPTER and arm=='discovery':
+                    current_calls=wire_records[start_wire:]
+                    empty_stops=sum(response_summary(r)['empty_stop'] for r in current_calls)
+                    rejected=sum(bool(r.get('adaptation_error')) for r in current_calls)
+                    if empty_stops>=3 or rejected>=3:
+                        stop_reason='provider_empty_reply_livelock' if empty_stops>=3 else 'actor_projection_rejected'
+                        break
+                time.sleep(1)
+            if child.poll() is None:
+                child.terminate()
+                try: child.wait(timeout=15)
+                except subprocess.TimeoutExpired: child.kill(); child.wait()
+            batch_status=request_json(port,'/status')
+            batch_log=log_path.read_bytes()[log_offset:].decode(errors='replace')
+            with sqlite3.connect(test/'runtime.db') as db:
+                roots=db.execute('SELECT id FROM sessions WHERE parent_session_id IS NULL').fetchall()
+            assert len(roots)==1,'A continuous batch must have exactly one root Session'
+            if runtime_session: assert runtime_session==roots[0][0],'Batch changed root Session'
+            runtime_session=roots[0][0]
+            batch_failed=('Thread Activation evaluation failed' in batch_log or 'protocol_invalid' in batch_log or child.returncode!=0 and not stop_reason)
+            batches.append({'batch':batch_index+1,'session_id':runtime_session,'wall_s':round(time.monotonic()-batch_start,3),
+                'model_requests':len(wire_records)-batch_start_wire,'actions':batch_status['actions'],
+                'levels_completed':batch_status['levels_completed'],'runtime_exit_code':child.returncode,'evaluation_failed':batch_failed})
+            (test/'activation-batches.json').write_text(json.dumps(batches,indent=2))
+            print('HARNESS_BATCH_RESULT',game,json.dumps(batches[-1]),flush=True)
+            if stop_reason or batch_failed or batch_status['state']=='WIN' or batch_status['stopped']:
+                break
+            if batch_index+1==MAX_HARNESS_BATCHES:
+                if MAX_HARNESS_BATCHES>1: stop_reason='bounded_batch_limit'
+                break
+            # Preserve every proposal; create-mode writes in the next Evaluation
+            # must not overwrite a prior receipt. This is generated experiment data.
+            archived=workspace/f'batch-{batch_index+1:02d}'; archived.mkdir(exist_ok=False)
+            for request_path in workspace.glob('request-[0-9][0-9].json'):
+                request_path.rename(archived/request_path.name)
         elapsed=time.monotonic()-start
         if child.poll() is None:
             child.terminate()
@@ -300,6 +339,8 @@ Do not access game implementation, environment files, another solver, internet, 
         runtime_log=(test/'runtime.log').read_text(errors='replace')
         runtime_protocol_failed='protocol_invalid' in runtime_log
         runtime_evaluation_failed='Thread Activation evaluation failed' in runtime_log
+        if runtime_protocol_failed: invalid_reasons.append('runtime_protocol_invalid')
+        if runtime_evaluation_failed: invalid_reasons.append('runtime_evaluation_failed')
         runtime_end=('runtime_protocol_invalid' if runtime_protocol_failed else
                      'runtime_evaluation_failed' if runtime_evaluation_failed else
                      'provider_request_rejected' if terminal_provider_error else 'runtime_returned')
@@ -319,6 +360,7 @@ Do not access game implementation, environment files, another solver, internet, 
             actor_provider_adapter=ACTOR_ADAPTER and algorithm_execution,
             actor_thinking_enabled=False if ACTOR_ADAPTER and algorithm_execution else None,
             capture_bound_native_image_requests=sum(bool(r.get('actor_adaptation')) and r.get('images_in_request',0)>0 for r in calls),
+            activation_batches=batches,
             algorithm_module_calls=algorithm_modules,
             algorithm_search_calls=algorithm_searches,
             algorithm_recorded_actions=algorithm_actions,

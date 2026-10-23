@@ -66,3 +66,23 @@ V5 对照组曾在 full-access shell 中执行 `cd /root` 或 workspace 以外�
 
 私有运行、GPU 就绪、HTTP 200、Harness 绑定、算法入口执行、真正搜索、
 过关、完整 WIN、正式排行榜评分是不同证据层级，报告必须分别列出。
+
+## 6. V6 实测暴露固定 Program 推理预算
+
+v0.3.1 实际发出的 16 条请求均带捕获绑定的原生图像，HTTP 200、有效 JSON、
+stop 正常结束；但两个游戏均在第 9 个 infer 前终止：
+`program exceeds the infer limit of 8`。源码 `morphz/src/sexpr_eval.rs` 中
+`MAX_PROGRAM_INFERS=8` 是固定的单个 Program 额度，不是配置项。
+
+ft09 为 5 动作 / 79.136 秒，ls20 为 48 动作 / 82.164 秒，均为 0 关、0 次
+数学搜索。原始 `valid_run=true` 再次不等于有效完整评测；后审明确标为无效。
+新 runner 也会把 Runtime Evaluation 失败本身纳入 invalid_reasons。
+
+v0.3.2 不修改 Runtime 二进制或上述额度。每个有限 Program 改为 4 次推理，
+评测驱动最多发起 16 个独立 Evaluation，保持同一 root Session、DB、workspace
+和同一局引擎。Program 的持久预算不被重置；整局仍受 600 秒 / 200 动作限制。
+每段请求单独存档，create-mode 写入不会覆盖历史；错误停止而非伪装为正常接续。
+
+同时加入 model-free 连通区域追踪节点，避免相同颜色的玩家、目标、UI 被整个
+合并。它按真实图像位移和后续预测检验建立模型，再对可见同色区域做有界 A*
+探索。候选目标仍然只是假设；追踪合并、运动矛盾和引擎边界均会停止旧计划。

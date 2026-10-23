@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 
 from arc_algorithms import (astar_rigid, binary_state, discriminating_action,
-                            fit_motion, solve_gf2, xor_selected)
+                            component_masks, fit_component_motion, fit_motion, solve_gf2, xor_selected)
 from arc_observation import ObservationTracker
 from arc_solver import Solver
 
@@ -142,6 +142,18 @@ class MotionVisibleFixture(BinaryVisibleFixture):
         return self.status()
 
 
+class AliasedColorMotionFixture(MotionVisibleFixture):
+    """A stationary target shares the moving region's color, no semantic labels."""
+    def capture(self, action, data):
+        grid = [[0] * 8]
+        grid[0][7] = grid[0][self.position] = 1
+        self.tracker.capture(grid, action=action, data=data, actions=self.actions,
+                             levels_completed=0, state='NOT_FINISHED')
+        with (self.root/'trajectory.jsonl').open('a') as stream:
+            stream.write(json.dumps(dict(action=action,data=data,actions=self.actions,
+                levels_completed=0,state='NOT_FINISHED',frame=[grid]))+'\n')
+
+
 class AlgorithmTransport(unittest.TestCase):
     def run_fixture(self, nonlinear=False, fixture_type=BinaryVisibleFixture):
         temporary = tempfile.TemporaryDirectory()
@@ -233,6 +245,43 @@ class AlgorithmTransport(unittest.TestCase):
         self.assertEqual(fixture.actions,3)
         facts=solver.analyze()
         self.assertNotIn('toggle',facts['allowed_methods'])
+
+    def test_component_tracking_separates_stationary_same_color_target(self):
+        solver, fixture=self.run_fixture(fixture_type=AliasedColorMotionFixture)
+        solver.run({'method':'probe','actions':[{'action':'ACTION1'},{'action':'ACTION1'}]})
+        fitted=fit_component_motion(solver.rows())
+        self.assertEqual(len(fitted),1)
+        self.assertEqual(fitted[0]['body_cells'],[(2,0)])
+        self.assertTrue(fitted[0]['motion_models']['ACTION1']['validated'])
+        self.assertEqual(fitted[0]['walkable_colors'],[0])
+        whole=fit_motion(solver.rows(),1,[0])
+        self.assertEqual(whole,{})
+
+    def test_automatic_tracking_reaches_actual_astar_without_model_body_or_goal(self):
+        solver, fixture=self.run_fixture(fixture_type=AliasedColorMotionFixture)
+        result=solver.run({'method':'auto_motion','max_actions':16})
+        # At position 6 the moving pixel merges with the same-color target.
+        # The conservative tracker must reject its old shape, not invent a WIN.
+        self.assertEqual(fixture.position,6)
+        self.assertEqual(fixture.actions,6)
+        self.assertEqual(fixture.status()['levels_completed'],0)
+        self.assertTrue(result['model_rejected'])
+        events=[json.loads(x) for x in (solver.root/'algorithm-audit.jsonl').read_text().splitlines()]
+        self.assertTrue(any(x['event']=='astar_search' for x in events))
+        self.assertEqual(sum(x['event']=='navigation_prediction' and x['matched'] for x in events),3)
+        self.assertTrue(any(x['event']=='navigation_prediction' and not x['matched'] for x in events))
+
+    def test_automatic_identification_and_route_share_one_action_limit(self):
+        solver, fixture=self.run_fixture(fixture_type=AliasedColorMotionFixture)
+        solver.run({'method':'auto_motion','max_actions':3})
+        self.assertEqual(fixture.actions,3)
+        self.assertEqual(fixture.position,3)
+
+    def test_explicit_component_path_does_not_move_other_same_color_regions(self):
+        grid=[[1,0,0,0,0,0,0,1]]
+        path=astar_rigid(grid,1,[6,0],{'ACTION1':[1,0]},[0],body_cells=[[0,0]])
+        self.assertTrue(path['found'])
+        self.assertEqual(len(path['route']),6)
 
 
 if __name__ == "__main__":

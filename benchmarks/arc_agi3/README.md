@@ -8,7 +8,7 @@ competition submission or an official leaderboard score**.
 
 `arc-algorithms` changes executable computation, not just the discovery
 prompt. It runs on the same existing Morphz Runtime. The finite `.hns` program
-owns bounded rounds (24 in v0.3.0, 64 in v0.3.1): read visible evidence and image metadata, infer one typed
+owns four rounds per Program in v0.3.2: read visible evidence and image metadata, infer one typed
 semantic hypothesis, write a JSON request, and execute the reviewed Python
 module. The inference nodes deliberately receive **no model tools**; ordinary
 Runtime `read`/`write`/`exec` calls perform effects. Empty provider tool lists
@@ -108,7 +108,7 @@ the measured double-click restoration test. These are transport, method-selectio
 and model-assumption failures, not evidence that mathematical search is unable
 to compensate for model limitations.
 
-### v0.3.1 actor-integration follow-up
+### Actor-integration follow-ups: v0.3.1 and v0.3.2
 
 This is a separately declared two-game integration repair, **not a pure
 algorithm ablation or a same-reasoning-policy A/B**. Same Flash-Next V1 weights,
@@ -130,10 +130,39 @@ Runtime binary, GPU type, 256K context and 8192 output cap are retained. Changes
 - The runner rejects repeated empty-stop replies, attachment-projection errors
   and terminal provider rejection instead of treating exit code zero as success.
 
+The real v0.3.1 follow-up completed 16 image-bearing, structured non-thinking
+requests with HTTP 200, but both games stopped after eight infer nodes:
+`program exceeds the infer limit of 8`. ft09 took 5 actions in 79.136 seconds;
+ls20 took 48 in 82.164 seconds; neither completed a level or reached a math
+search. This is the existing Runtime's fixed per-Program budget, not a model
+failure or a configurable context limit. The original runner's `valid_run=true`
+is explicitly rejected in
+[actor-integration-v031-results-2026-10-24.json](actor-integration-v031-results-2026-10-24.json).
+
+v0.3.2 keeps the original binary and its Program limits. Each finite Harness
+Program has four infer nodes. The experiment driver can invoke at most 16
+separate Evaluations in the **same root Session**, preserving the same DB,
+workspace, game timer and cumulative actions. It never refills a persisted
+Program budget or resets the game between these Evaluations. All proposals
+are archived before the next create-mode write; each batch records Session,
+requests, actions, time and errors. A real-Runtime mock test executes 12 requests
+across three finite Programs in one Session; that is not a real game score.
+
+There is also a fixed, model-free component-motion node after each semantic
+round. It tracks uniquely matched 4-connected regions through visible frames,
+separating moving regions from stationary objects with the same color. First
+moving samples fit translation and traversable colors; remaining transitions
+check those hypotheses. Validated movement feeds an actual A* search towards
+unvisited same-color regions as **waypoint hypotheses**. No engine label or
+known game coordinate chooses the body or target. Every step is verified;
+merges, ambiguous tracking and contradictory motion reject the old plan.
+Waypoint arrival is never equated with a level transition. This bounded
+heuristic may be unsuitable for a game's real mechanics or goals.
+
 Build with `--harness arc-algorithms --profile actor-integration` and the same
 verified `--base-bundle`. The declared sample is ft09 and ls20, candidate only,
 600 seconds / 200 actions each. Scores, actual search counts and transport
-evidence must be inspected after the run; packaging and the 56 local tests
+evidence must be inspected after the run; packaging and the 61 local tests
 are not a game result.
 
 ## Fixed first-sample protocol

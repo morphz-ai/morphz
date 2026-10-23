@@ -174,6 +174,97 @@ def fit_motion(rows, chosen_color, walkable_colors, bounds=None):
     return models
 
 
+def component_masks(grid):
+    """Exact 4-connected regions keyed by color and translation-invariant shape."""
+    seen, result = set(), defaultdict(list)
+    height, width = len(grid), len(grid[0])
+    for y in range(height):
+        for x in range(width):
+            if (x, y) in seen:
+                continue
+            chosen, stack, cells = grid[y][x], [(x, y)], set()
+            seen.add((x, y))
+            while stack:
+                px, py = stack.pop(); cells.add((px, py))
+                for nx, ny in ((px-1,py),(px+1,py),(px,py-1),(px,py+1)):
+                    if 0 <= nx < width and 0 <= ny < height and (nx,ny) not in seen and grid[ny][nx] == chosen:
+                        seen.add((nx,ny)); stack.append((nx,ny))
+            if 1 <= len(cells) <= 256:
+                ox, oy = min(p[0] for p in cells), min(p[1] for p in cells)
+                signature = (chosen, tuple(sorted((px-ox,py-oy) for px,py in cells)))
+                result[signature].append(frozenset(cells))
+    return result
+
+
+def fit_component_motion(rows):
+    """Track visible regions backwards; stationary same-color goals stay separate.
+
+    Ambiguous splits/merges or two possible predecessor regions are rejected.
+    No semantic player/goal labels are supplied by an engine or a model.
+    """
+    transitions = list(same_epoch_transitions(rows))
+    if not transitions:
+        return []
+    masks = {id(row): component_masks(row['frame'][-1])
+             for pair in transitions for row in pair}
+    latest = transitions[-1][1]
+    candidates = []
+    for signature, regions in masks[id(latest)].items():
+        for current in regions:
+            target, measured = current, []
+            for before, after in reversed(transitions):
+                old = masks[id(before)].get(signature, [])
+                new = masks[id(after)].get(signature, [])
+                if target not in new:
+                    break
+                if target in old:
+                    source = target
+                else:
+                    removed = [p for p in old if p not in new]
+                    if len(removed) != 1:
+                        break
+                    source = removed[0]
+                measured.append((before,after,source,target))
+                target = source
+            measured.reverse()
+            walkable = set()
+            examples = defaultdict(list)
+            for before, after, source, destination in measured:
+                if after['action'] not in {'ACTION1','ACTION2','ACTION3','ACTION4'}:
+                    continue
+                grid = before['frame'][-1]
+                examples[after['action']].append((grid,source,destination,after.get('actions')))
+            # Only each action's first moving sample fits traversable colors.
+            # The remaining samples are checked without learning their outcome.
+            for samples in examples.values():
+                seed = next((s for s in samples if rigid_delta(s[1],s[2]) not in (None,(0,0))),None)
+                if seed:
+                    for x,y in seed[2]-seed[1]:
+                        walkable.add(seed[0][y][x])
+            fitted = {}
+            for action, samples in examples.items():
+                seed = next((i for i,(_,a,b,_) in enumerate(samples) if rigid_delta(a,b) not in (None,(0,0))),None)
+                if seed is None:
+                    continue
+                delta = rigid_delta(samples[seed][1],samples[seed][2])
+                passes, failures = [], []
+                for i,(grid,source,destination,index) in enumerate(samples):
+                    if i == seed:
+                        continue
+                    moved = translate(source,delta)
+                    predicted = moved if placement_allowed(grid,source,moved,walkable) else source
+                    (passes if predicted == destination else failures).append(index)
+                fitted[action] = {'delta':list(delta),'fit_action_index':samples[seed][3],
+                    'holdout_passes':passes,'counterexamples':failures,'validated':bool(passes) and not failures}
+            validated = {a:m for a,m in fitted.items() if m['validated']}
+            if validated:
+                candidates.append({'body_color':signature[0],'body_cells':sorted(current),
+                    'motion_models':fitted,'walkable_colors':sorted(walkable),
+                    'validated_actions':len(validated),
+                    'holdout_passes':sum(len(m['holdout_passes']) for m in validated.values())})
+    return sorted(candidates,key=lambda p:(-p['validated_actions'],-p['holdout_passes'],-len(p['body_cells']),p['body_color'],p['body_cells']))
+
+
 def placement_allowed(grid, original_body, candidate, walkable, bounds=None):
     height, width = len(grid), len(grid[0])
     x0, y0, x1, y1 = bounds or (0, 0, width - 1, height - 1)
@@ -184,14 +275,17 @@ def placement_allowed(grid, original_body, candidate, walkable, bounds=None):
 
 
 def astar_rigid(grid, body_color, goal_anchor, moves, walkable_colors,
-                bounds=None, max_states=20000):
+                bounds=None, max_states=20000, body_cells=None):
     """A* over a finite visible occupancy model; no calls to a real engine.
 
     Shape, walkable colors and goal are explicit hypotheses supplied by the
     caller. The resulting route still needs real transition-by-transition tests.
     """
     grid = normalize_grid(grid)
-    body = colored_cells(grid, body_color)
+    body = (colored_cells(grid, body_color) if body_cells is None else
+            frozenset(point(p,len(grid[0]),len(grid)) for p in body_cells))
+    if any(grid[y][x] != color(body_color) for x,y in body):
+        raise ValueError('Explicit body cells must match the visible color')
     if not body or len(body) > 256:
         raise ValueError("Rigid-body hypothesis must select 1..256 pixels")
     goal = point(goal_anchor, len(grid[0]), len(grid))

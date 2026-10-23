@@ -12,7 +12,7 @@ import time
 import urllib.request
 
 from arc_algorithms import (astar_rigid, binary_state, color, colored_cells,
-                            fit_motion, point, solve_gf2, translate)
+                            component_masks, fit_component_motion, fit_motion, point, solve_gf2, translate)
 from arc_observation import components
 
 
@@ -137,6 +137,9 @@ class Solver:
         previous_request = self.root / "last-algorithm-request.json"
         if previous_request.exists():
             facts["last_algorithm_request"] = json.loads(previous_request.read_text())
+        automatic = self.root / 'auto-motion-result.json'
+        if automatic.exists():
+            facts['last_auto_motion_result'] = json.loads(automatic.read_text())
         (self.root / "solver-context.json").write_text(json.dumps(facts, ensure_ascii=False, indent=2))
         return facts
 
@@ -299,6 +302,80 @@ class Solver:
         return {"method": "navigate", "search": route, "actual_actions": self.actions_this_call,
                 "warning": "Route is optimal only in the supplied static model, not necessarily the game"}
 
+    def auto_motion(self, limit=16):
+        """Finite identification and waypoint search over visible moving regions.
+
+        A same-color object is a goal hypothesis, not an asserted game objective.
+        This fixed algorithm node makes no model calls and reads no engine code.
+        """
+        current = self.observe()
+        directions = [a for a in current['available_actions'] if a in {'ACTION1','ACTION2','ACTION3','ACTION4'}]
+        if not directions or current['stopped'] or current['state']=='GAME_OVER':
+            return {'method':'auto_motion','not_applicable':True}
+        initial_level = current['levels_completed']
+        candidates = fit_component_motion(self.rows())
+        if not candidates:
+            for action in directions:
+                for _ in range(2):
+                    if self.actions_this_call >= min(8,limit-1):
+                        break
+                    self.audit({'event':'component_identification_probe','action':action})
+                    current = self.act(action,limit)
+                    if current['levels_completed']!=initial_level or current['stopped'] or current['state']=='GAME_OVER':
+                        raise LevelBoundary(current)
+            candidates = fit_component_motion(self.rows())
+        if not candidates:
+            return {'method':'auto_motion','model_rejected':True,'reason':'No uniquely tracked region passed held-out motion tests'}
+        chosen = candidates[0]
+        body = frozenset(map(tuple,chosen['body_cells']))
+        grid = self.grid(current)
+        moves = {a:m['delta'] for a,m in chosen['motion_models'].items() if m['validated']}
+        self.audit({'event':'component_motion_identified','candidate':chosen})
+        state_path = self.root/'auto-motion-state.json'
+        epoch = self.observe()['observation']['epoch']
+        history = json.loads(state_path.read_text()) if state_path.exists() else {}
+        visited = history.get('visited',[]) if history.get('epoch')==epoch else []
+        goals=[]
+        for (goal_color,_),regions in component_masks(grid).items():
+            for region in regions:
+                if region==body or goal_color!=chosen['body_color']:
+                    continue
+                anchor=[min(p[0] for p in region),min(p[1] for p in region)]
+                if anchor not in visited and anchor not in goals:
+                    goals.append(anchor)
+        paths=[]
+        for goal in sorted(goals)[:12]:
+            route=astar_rigid(grid,chosen['body_color'],goal,moves,
+                sorted(set(chosen['walkable_colors'])|{chosen['body_color']}),
+                max_states=5000,body_cells=body)
+            self.audit({'event':'astar_search','source':'automatic_component_waypoint',
+                        'goal_anchor':goal,'body_cells':sorted(body),'motion_models':chosen['motion_models'],'search':route})
+            if route['found'] and route['route']:
+                paths.append((len(route['route']),goal,route))
+        if not paths:
+            return {'method':'auto_motion','candidate':chosen,'reason':'No unvisited same-color waypoint is reachable in the measured model'}
+        _,goal,route=min(paths)
+        executed=0
+        for action in route['route']:
+            if self.actions_this_call>=limit:
+                break
+            predicted=translate(body,moves[action])
+            current=self.act(action,limit,prediction={'component_cells':sorted(predicted)})
+            executed+=1
+            if current['levels_completed']!=initial_level or current['stopped'] or current['state']=='GAME_OVER':
+                raise LevelBoundary(current)
+            actual_regions=component_masks(self.grid(current))
+            matched=any(predicted in regions for (c,_),regions in actual_regions.items() if c==chosen['body_color'])
+            self.audit({'event':'navigation_prediction','source':'automatic_component_waypoint','action':current['actions'],'matched':matched})
+            if not matched:
+                return {'method':'auto_motion','model_rejected':True,'counterexample':'Tracked component did not match next planned position','route':route}
+            body=predicted
+        if executed==len(route['route']):
+            visited.append(goal)
+        state_path.write_text(json.dumps({'epoch':epoch,'visited':visited}))
+        return {'method':'auto_motion','goal_hypothesis':goal,'route':route,'executed_route_actions':executed,
+                'warning':'Reaching a visible waypoint is not engine level success'}
+
     def run(self, request):
         allowed = {"method", "max_actions", "actions", "cells", "controls", "colors", "target_colors",
                    "body_color", "walkable_colors", "goal_anchor", "bounds"}
@@ -323,6 +400,8 @@ class Solver:
             return self.navigate(request, limit)
         if method == "identify_navigate":
             return self.navigate(request, limit, identify=True)
+        if method == 'auto_motion':
+            return self.auto_motion(limit)
         raise ValueError("Unknown algorithm method")
 
 
@@ -333,21 +412,22 @@ class LevelBoundary(Exception):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("analyze", "run"))
+    parser.add_argument("command", choices=("analyze", "run", "auto"))
     parser.add_argument("--request")
     args = parser.parse_args()
     solver = Solver(Path(__file__).resolve().parent)
-    if args.command == "run":
+    if args.command in ("run","auto"):
         name = args.request or ""
-        if not name.startswith("request-") or not name.endswith(".json") or Path(name).name != name:
+        if args.command=='run' and (not name.startswith("request-") or not name.endswith(".json") or Path(name).name != name):
             raise SystemExit("Use one workspace request-NN.json file")
         try:
-            raw = (solver.root / name).read_text()
+            raw = (solver.root / name).read_text() if args.command=='run' else json.dumps({'method':'auto_motion','max_actions':16})
             if len(raw) > 50000:
                 raise ValueError("Request exceeds size limit")
             request = json.loads(raw)
             # Keep the exact prior proposal across the next typed-infer boundary.
-            (solver.root / "last-algorithm-request.json").write_text(json.dumps(request))
+            if args.command=='run':
+                (solver.root / "last-algorithm-request.json").write_text(json.dumps(request))
             result = solver.run(request)
         except LevelBoundary as boundary:
             result = {"engine_boundary": {k: boundary.status[k] for k in (
@@ -357,7 +437,8 @@ def main():
             result = {"request_or_hypothesis_rejected": True, "reason": str(exc)}
         result.update(actual_actions=solver.actions_this_call,
                       algorithm_wall_s=round(time.monotonic() - solver.started, 6))
-        (solver.root / "algorithm-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        output = 'algorithm-result.json' if args.command=='run' else 'auto-motion-result.json'
+        (solver.root / output).write_text(json.dumps(result, ensure_ascii=False, indent=2))
         solver.audit({"event": "module_finished", "result": result})
     else:
         result = {"initialized": True}

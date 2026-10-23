@@ -30,6 +30,7 @@ class AlgorithmHarnessRuntime(unittest.TestCase):
     expected_last_actions = 12
     expected_total_actions = 12
     adapted = False
+    batches = 1
 
     def test_runtime_writes_typed_request_then_executes_the_real_solver(self):
         runtime = Path(os.environ["MORPHZ_ARC_TEST_RUNTIME"]).resolve()
@@ -132,10 +133,24 @@ workspace_root={json.dumps(str(workspace))}
             installed = subprocess.run([str(runtime), "harness", "install", str(package), *common, "--format", "json"],
                                        env=env, cwd=workspace, capture_output=True, text=True, timeout=30, check=True)
             receipt = json.loads(installed.stdout)
-            executed = subprocess.run([str(runtime), "exec", *common, "--approval", "never", "--sandbox", "full-access",
-                                       "--harness", f"{receipt['id']}@{receipt['version']}", "Synthetic algorithm transport only."],
-                                      env=env, cwd=workspace, capture_output=True, text=True, timeout=60)
-            self.assertEqual(executed.returncode, 0, executed.stderr + executed.stdout)
+            session_id = None
+            for batch in range(self.batches):
+                selected = ["--session", session_id] if session_id else []
+                executed = subprocess.run([str(runtime), "exec", *common, "--approval", "never", "--sandbox", "full-access",
+                                           *selected, "--harness", f"{receipt['id']}@{receipt['version']}", "Synthetic algorithm transport only."],
+                                          env=env, cwd=workspace, capture_output=True, text=True, timeout=60)
+                self.assertEqual(executed.returncode, 0, executed.stderr + executed.stdout)
+                self.assertNotIn('evaluation failed', executed.stderr + executed.stdout)
+                with sqlite3.connect(root / "runtime.db") as database:
+                    sessions=database.execute('SELECT id FROM sessions WHERE parent_session_id IS NULL').fetchall()
+                self.assertEqual(len(sessions),1)
+                if session_id: self.assertEqual(session_id,sessions[0][0])
+                session_id=sessions[0][0]
+                if batch+1 < self.batches:
+                    archived=workspace/f'batch-{batch+1:02d}'
+                    archived.mkdir()
+                    for path in workspace.glob('request-[0-9][0-9].json'):
+                        path.rename(archived/path.name)
             self.assertTrue((workspace / "algorithm-result.json").exists(),
                             executed.stdout + executed.stderr + json.dumps(SemanticProvider.requests)[-8000:])
             result = json.loads((workspace / "algorithm-result.json").read_text())
@@ -144,7 +159,7 @@ workspace_root={json.dumps(str(workspace))}
             self.assertEqual(fixture.actions, self.expected_total_actions)
             self.assertEqual(fixture.bits, 7)
             self.assertEqual(fixture.status()["levels_completed"], 0)
-            self.assertEqual(len(SemanticProvider.requests), self.rounds)
+            self.assertEqual(len(SemanticProvider.requests), self.rounds*self.batches)
             self.assertFalse(SemanticProvider.requests[0].get("tools"), "Semantic inference must be tool-free")
             if adapted:
                 for message in SemanticProvider.requests:
@@ -165,6 +180,14 @@ class AlgorithmHarnessTwoRounds(AlgorithmHarnessRuntime):
 
 class CaptureBoundImageActor(AlgorithmHarnessTwoRounds):
     adapted = True
+
+
+class ThreeContinuousBatches(CaptureBoundImageActor):
+    """Twelve real requests across three finite Programs, same Session and game."""
+    rounds = 4
+    batches = 3
+    expected_last_actions = 10
+    expected_total_actions = 122
 
 
 if __name__ == "__main__":
