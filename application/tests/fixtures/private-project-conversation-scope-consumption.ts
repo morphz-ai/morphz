@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { inverseHumanCreationFeature } from "./human-creation-consumption.js";
 import { virtualTypeScriptSnapshot } from "./virtual-typescript.js";
+import { assertSyntaxIdentity } from "./assert-syntax-identity.js";
 import {
   NodeFlags,
   isBinaryExpression,
@@ -403,7 +404,7 @@ export function inversePrivateProjectConversationScope(
         "real imported private scope call " + name,
       );
       const statement = statementOf(found[0]!);
-      assert.equal(
+      assertSyntaxIdentity(
         statement.parent,
         workspace.body,
         "private scope seam remains directly registered in WorkspaceApp " +
@@ -464,7 +465,7 @@ export function inversePrivateProjectConversationScope(
     );
     const actual = fn(owner, name),
       expected = fn(expectedOwnerSource, name);
-    assert.equal(
+    assertSyntaxIdentity(
       actual.parent,
       factory.body,
       "seven actions share one private scope owner",
@@ -521,7 +522,7 @@ export function inversePrivateProjectConversationScope(
     /^const leftSidebarPreference = sidebarPreference\(/,
     "private scope state keeps original registration successor",
   );
-  assert.equal(
+  assertSyntaxIdentity(
     statements[
       statements.indexOf(
         calls.get("useCommittedConversationDraftRetirement")!,
@@ -665,7 +666,7 @@ function currentScopeMethod(
         node.end < factory.end,
     );
   assert.equal(found.length, 1, "unique owned private scope method " + name);
-  assert.equal(
+  assertSyntaxIdentity(
     found[0]!.parent,
     factory.body,
     "seven actions share one private scope owner",
@@ -873,7 +874,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
         : "one real private scope call " + name,
     );
     const statement = statementOf(found[0]!);
-    assert.equal(
+    assertSyntaxIdentity(
       statement.parent,
       workspace.body,
       "private scope seam remains directly registered in WorkspaceApp " + name,
@@ -931,7 +932,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
     original.modifiers?.map((node) => node.kind),
     "synchronous original private scope constructor",
   );
-  assert.equal(
+  assertSyntaxIdentity(
     factory.asteriskToken,
     undefined,
     "non-generator original private scope constructor",
@@ -947,7 +948,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
   for (const name of privateProjectScopeActions) {
     const actual = currentScopeMethod(owner, factory, name),
       recipe = fn(expected, name);
-    assert.equal(
+    assertSyntaxIdentity(
       actual.parent,
       factory.body,
       "seven actions share one private scope owner",
