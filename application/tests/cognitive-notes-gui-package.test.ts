@@ -1,5 +1,6 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -11,6 +12,7 @@ import {
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Script } from "node:vm";
+import { fileURLToPath } from "node:url";
 import { applicationManifestSchema } from "../packages/core/src/applications.js";
 import {
   canonicalInvokeIdentityBytes,
@@ -444,14 +446,136 @@ test("missing optional GUI release refuses only explicit --gui without creating 
   }
 });
 
+test("Notes GUI diagnostics are bounded and never replace the original failure", async () => {
+  const { notesGuiDiagnostic } =
+    await import("./fixtures/cognitive-notes-gui-package.js");
+  assert.deepEqual(await notesGuiDiagnostic(() => new Promise(() => {}), 10), {
+    unavailable: "Diagnostic read timed out",
+  });
+  assert.deepEqual(
+    await notesGuiDiagnostic(() =>
+      Promise.reject(new Error("controlled diagnostic failure")),
+    ),
+    { unavailable: "controlled diagnostic failure" },
+  );
+});
+
+test("Notes GUI cleanup preserves the original failure but still rejects a successful test's failed cleanup", async (t) => {
+  const { notesGuiCleanup } =
+    await import("./fixtures/cognitive-notes-gui-package.js");
+  const original = new Error("controlled original failure");
+  const secondary = new Error("controlled cleanup failure");
+  const logs = t.mock.method(console, "error", () => {});
+  await assert.rejects(
+    (async () => {
+      try {
+        throw original;
+      } finally {
+        await notesGuiCleanup(() => Promise.reject(secondary), {
+          preserveFailure: true,
+        });
+      }
+    })(),
+    (error) => error === original,
+  );
+  assert.equal(logs.mock.calls.length, 1);
+  assert.equal(logs.mock.calls[0]!.arguments[1], secondary);
+  await assert.rejects(
+    notesGuiCleanup(() => Promise.reject(secondary)),
+    (error) => error === secondary,
+  );
+});
+
+test(
+  "Node timeout cancels the actual notes GUI fixture and exits failed without an owned Browser or server",
+  { timeout: 45_000 },
+  async () => {
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      MORPHZ_TEST_NOTES_GUI_ABORT_ROOT: packed.root,
+    };
+    delete environment.NODE_TEST_CONTEXT;
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        fileURLToPath(
+          new URL(
+            "./fixtures/cognitive-notes-gui-abort-child.ts",
+            import.meta.url,
+          ),
+        ),
+      ],
+      {
+        cwd: fileURLToPath(new URL("../", import.meta.url)),
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "",
+      forced = false;
+    child.stdout.on("data", (bytes) => {
+      output += bytes;
+    });
+    child.stderr.on("data", (bytes) => {
+      output += bytes;
+    });
+    const guard = setTimeout(() => {
+      forced = true;
+      child.kill("SIGTERM");
+    }, 40_000);
+    const force = setTimeout(() => child.kill("SIGKILL"), 43_000);
+    try {
+      const result = await new Promise<{
+        code: number | null;
+        signal: NodeJS.Signals | null;
+      }>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      assert.equal(forced, false, output);
+      assert.equal(result.signal, null, output);
+      assert.equal(result.code, 1, output);
+      assert.match(output, /test timed out after 1000ms/);
+      const ready = output.match(/NOTES_GUI_ABORT_READY (\{[^\n]+\})/);
+      assert.ok(ready, output);
+      assert.match(output, /NOTES_GUI_ABORT_CLOSED \{"connected":false\}/);
+      const origin = JSON.parse(ready[1]!).origin;
+      await assert.rejects(
+        fetch(origin, { signal: AbortSignal.timeout(1_000) }),
+        "Owned HTTP listener must also be closed, not just detached from the test",
+      );
+      console.info("Controlled notes GUI abort receipt", {
+        ready: true,
+        testTimeoutMs: 1_000,
+        exitCode: result.code,
+        forced,
+        browserConnected: false,
+        serverClosed: true,
+      });
+    } finally {
+      clearTimeout(guard);
+      clearTimeout(force);
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGTERM");
+    }
+  },
+);
+
 test(
   "ACTUAL packed GUI/shared Document/SDK/private port: explicit clicks and exact opaque references (controlled business, not SQL)",
   { timeout: 60_000 },
-  async () => {
+  async (t) => {
     const f = await openNotesGuiBrowser(
       readFileSync(join(packed.root, "dist/notes.html"), "utf8"),
       gui,
+      { signal: t.signal },
     );
+    let failed = false;
     try {
       const { page, guest } = f;
       const requests = () =>
@@ -556,8 +680,11 @@ test(
       await page.screenshot({
         path: "/tmp/morphz-notes-gui-light-wide-oct06.png",
       });
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await f.close();
+      await f.close({ preserveFailure: failed });
     }
   },
 );
@@ -565,11 +692,13 @@ test(
 test(
   "ACTUAL author editor keeps dirty input across context and failed reads; explicit discard and responsive paint",
   { timeout: 60_000 },
-  async () => {
+  async (t) => {
     const f = await openNotesGuiBrowser(
       readFileSync(join(packed.root, "dist/notes.html"), "utf8"),
       gui,
+      { signal: t.signal },
     );
+    let failed = false;
     try {
       const { page, guest } = f;
       await guest.locator("#new").click();
@@ -641,8 +770,11 @@ test(
       await guest.locator("#discard-confirm").click();
       assert.equal(await guest.locator("#title").inputValue(), "");
       assert.equal(await guest.locator("#markdown").inputValue(), "");
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await f.close();
+      await f.close({ preserveFailure: failed });
     }
   },
 );
@@ -650,39 +782,33 @@ test(
 test(
   "ACTUAL author unknown write keeps the original ID/draft with no retry; explicit status/recovery settle the same command",
   { timeout: 60_000 },
-  async () => {
+  async (t) => {
     const f = await openNotesGuiBrowser(
       readFileSync(join(packed.root, "dist/notes.html"), "utf8"),
       gui,
+      { signal: t.signal },
     );
+    let failed = false;
     try {
       const { page, guest } = f;
+      f.phase("create new draft");
       await guest.locator("#new").click();
       await guest.locator("#title").fill("新的原件");
       await guest.locator("#markdown").fill("创建正文\n精确保留");
+      f.phase("first save: click");
       await guest.locator("#save").click();
       try {
+        f.phase("first save: await unknown command facts");
         await guest.waitForFunction(() =>
           document
             .getElementById("status")
             ?.textContent?.includes("结果尚未确认"),
         );
       } catch (error) {
-        console.error("Controlled author first-write witness", {
-          host: await page.evaluate(
-            () => Reflect.get(window, "authorHost").report,
-          ),
-          author: await guest.evaluate(() => ({
-            status: document.getElementById("status")?.textContent,
-            command: (document.getElementById("command") as HTMLInputElement)
-              .value,
-            body: (document.getElementById("markdown") as HTMLTextAreaElement)
-              .value,
-          })),
-          errors: f.errors,
-        });
+        await f.witness("Controlled author first-write witness");
         throw error;
       }
+      f.phase("assert original unknown command ID and draft");
       const id = await guest.locator("#command").inputValue();
       assert.match(id, /^[a-f0-9-]{36}$/);
       assert.equal(
@@ -695,11 +821,13 @@ test(
       );
       assert.equal(await guest.locator("#save").isDisabled(), true);
       assert.equal(await guest.locator("#new").isDisabled(), true);
+      f.phase("explicit status: click and await idle");
       await guest.locator("#status-command").click();
       await guest.waitForFunction(
         () =>
           !(document.getElementById("recover") as HTMLButtonElement).disabled,
       );
+      f.phase("unknown recovery: click and await idle");
       await guest.locator("#recover").click();
       await guest.waitForFunction(
         () =>
@@ -717,6 +845,9 @@ test(
         before.every(
           (request: { commandId: string }) => request.commandId === id,
         ),
+      );
+      f.phase(
+        "committed recovery: set controlled receipt, click and await exact original",
       );
       await page.evaluate(() => {
         Reflect.get(window, "authorHost").report.writeState = "committed";
@@ -740,14 +871,33 @@ test(
         "Recovery does not resend or generate a second command",
       );
       assert.equal(after.at(-1).commandId, id);
+      f.phase("explicit revision: edit and fill");
       await guest.locator("#edit").click();
       await guest.locator("#markdown").fill("显式修订");
+      f.phase("explicit revision: click and await confirmation");
       await guest.locator("#save").click();
-      await guest.waitForFunction(() =>
-        document
-          .getElementById("status")
-          ?.textContent?.includes("作者已确认保存"),
+      await page.waitForFunction(
+        (previousId) =>
+          Reflect.get(window, "authorHost").report.requests.some(
+            (request: {
+              method: string;
+              operationId?: string;
+              commandId?: string;
+            }) =>
+              request.method === "invoke" &&
+              request.operationId === "notes.revise" &&
+              request.commandId !== previousId,
+          ),
+        id,
       );
+      await guest.waitForFunction(
+        () =>
+          document.getElementById("original")?.textContent === "显式修订" &&
+          document
+            .getElementById("status")
+            ?.textContent?.includes("作者已确认保存"),
+      );
+      f.phase("assert exact revision resources and fresh command ID");
       const revise = (
         await page.evaluate(
           () => Reflect.get(window, "authorHost").report.requests,
@@ -766,21 +916,11 @@ test(
       assert.notEqual(revise.commandId, id);
       assert.deepEqual(f.errors, []);
     } catch (error) {
-      console.error("Controlled author command/recovery witness", {
-        host: await f.page.evaluate(
-          () => Reflect.get(window, "authorHost").report,
-        ),
-        author: await f.guest.evaluate(() => ({
-          status: document.getElementById("status")?.textContent,
-          heading: document.getElementById("heading")?.textContent,
-          command: (document.getElementById("command") as HTMLInputElement)
-            .value,
-        })),
-        errors: f.errors,
-      });
+      failed = true;
+      await f.witness("Controlled author command/recovery witness");
       throw error;
     } finally {
-      await f.close();
+      await f.close({ preserveFailure: failed });
     }
   },
 );
@@ -788,11 +928,13 @@ test(
 test(
   "ACTUAL dirty editor must confirm before opening or composing elsewhere; retired Document cannot send or erase its draft",
   { timeout: 60_000 },
-  async () => {
+  async (t) => {
     const f = await openNotesGuiBrowser(
       readFileSync(join(packed.root, "dist/notes.html"), "utf8"),
       gui,
+      { signal: t.signal },
     );
+    let failed = false;
     try {
       const { page, guest } = f;
       await guest.locator("#refresh").click();
@@ -854,8 +996,11 @@ test(
         "A retired Document does not reclaim the facade or send a new operation",
       );
       assert.deepEqual(f.errors, []);
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await f.close();
+      await f.close({ preserveFailure: failed });
     }
   },
 );
