@@ -12,6 +12,136 @@ import {
   test,
 } from "./platform-conversation-fixture.js";
 import { openExecutionPanel } from "./interaction-helpers.js";
+import { openSettings } from "./settings-helpers.js";
+
+test("执行详情保留主执行真实等待原因和独立子任务状态，不依赖总览补齐", async ({
+  page,
+}, info) => {
+  const primary: ExecutionActivity["threads"][number] = {
+    id: "TEST-primary-wait",
+    kind: "execution",
+    projectId: null,
+    conversationId: null,
+    inputId: null,
+    sessionId: "TEST-session",
+    contextId: "TEST-context",
+    rootId: "TEST-primary-root",
+    title: "TEST 整书写作与审改",
+    phase: "idle",
+    lifecycle: "open",
+    revision: 2,
+    updatedAt: "2026-10-24T01:00:00Z",
+  };
+  const children: ExecutionActivity["threads"] = [
+    {
+      ...primary,
+      id: "TEST-review",
+      rootId: "TEST-review-root",
+      parentThreadId: primary.id,
+      title: "TEST 科学依赖审查",
+      phase: "running",
+    },
+    {
+      ...primary,
+      id: "TEST-writing",
+      rootId: "TEST-writing-root",
+      parentThreadId: primary.id,
+      title: "TEST 补齐第四篇",
+      phase: "idle",
+      lifecycle: "completed",
+    },
+  ];
+  await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      // Deliberately no overview waitKinds: the detail wire owns its facts.
+      activity: {
+        available: true,
+        truncated: false,
+        openWorkComplete: true,
+        threads: [primary, ...children],
+      },
+    },
+  }));
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/executions/control"))
+      writes.push(request.url());
+  });
+  await page.route("**/api/executions?*", (route) =>
+    route.fulfill({
+      json: {
+        jobs: [],
+        approvals: [],
+        limit: 100,
+        threadsTruncated: false,
+        threads: [primary, ...children].map((thread) => ({
+          id: thread.id,
+          parentThreadId: thread.parentThreadId ?? null,
+          sessionId: thread.sessionId,
+          contextId: thread.contextId!,
+          rootId: thread.rootId,
+          title: thread.title,
+          phase: thread.phase,
+          lifecycle: thread.lifecycle,
+          controlState: "active",
+          revision: thread.revision,
+          updatedAt: thread.updatedAt,
+          ...(thread.id === primary.id ? { waitKinds: ["thread_group"] } : {}),
+        })),
+      },
+    }),
+  );
+  await page.goto("/");
+  await openExecutionPanel(page);
+  const panel = page.getByRole("complementary", {
+    name: "Morphz 信息",
+    exact: true,
+  });
+  await panel.locator(`[data-thread-id="${primary.id}"]`).click();
+  await expect(panel.locator(".execution-thread-group")).toHaveCount(3);
+  const main = panel.locator(`[data-execution-thread="${primary.id}"]`);
+  await expect(main.locator(".execution-thread-status")).toHaveText(
+    "等待子任务结果",
+  );
+  await expect(main).toContainText("主执行");
+  const review = panel.locator('[data-execution-thread="TEST-review"]');
+  await expect(review).toContainText("TEST 科学依赖审查");
+  await expect(review.locator(".execution-thread-status")).toHaveText("执行中");
+  const writing = panel.locator('[data-execution-thread="TEST-writing"]');
+  await expect(writing).toContainText("TEST 补齐第四篇");
+  await expect(writing.locator(".execution-thread-status")).toHaveText(
+    "已结束",
+  );
+  await expect(panel).not.toContainText("未提供具体原因");
+  for (const [label, mode] of [
+    ["亮色", "light"],
+    ["暗色", "dark"],
+  ] as const) {
+    const settings = await openSettings(page, "外观");
+    await settings.getByRole("button", { name: label, exact: true }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".app")).toHaveAttribute("data-appearance", mode);
+    await expect(main.locator(".execution-thread-status")).toHaveText(
+      "等待子任务结果",
+    );
+    await page.screenshot({
+      path: info.outputPath(`execution-wait-${mode}.png`),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 760, height: 620 });
+  await expect(main.locator(".execution-thread-status")).toBeVisible();
+  await expect(panel.locator(".execution-thread-group")).toHaveCount(3);
+  await page.screenshot({
+    path: info.outputPath("execution-wait-narrow.png"),
+    fullPage: true,
+  });
+  expect(writes).toEqual([]);
+});
 
 test("无输入关联的真实执行保留全局活动与只读命令详情，不附会项目、不出现控制入口", async ({
   page,

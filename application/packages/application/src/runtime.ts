@@ -109,7 +109,6 @@ import { activityAnnotationFields } from "./response-annotations.js";
 import {
   authorizedExecutionThreadTree,
   readExecutionRecords,
-  executionRecordThread,
 } from "./execution-thread-tree.js";
 import {
   DomainError,
@@ -3073,7 +3072,6 @@ export class RuntimeBridge {
         return {
           ...value,
           approvals: [],
-          threads: records.threads.map(executionRecordThread),
         };
       },
       result: async (jobId: string) => {
@@ -3255,7 +3253,6 @@ export class RuntimeBridge {
         return {
           ...value,
           approvals: [],
-          threads: records.threads.map(executionRecordThread),
         };
       },
       result: async (jobId: string) => {
@@ -3574,7 +3571,7 @@ export class RuntimeBridge {
         limit: 100,
         ...(selectedTree
           ? {
-              threads: selectedTree.threads,
+              threads: views.flatMap((view) => view.threads ?? []),
               threadsTruncated: selectedTree.truncated,
             }
           : {}),

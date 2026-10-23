@@ -104,6 +104,9 @@ export const executionThreadSchema = z.object({
   phase: z.string(),
   lifecycle: z.string(),
   controlState: z.string().optional(),
+  /** Current, exact Runtime scheduler facts; absent means unknown. */
+  waitKinds: z.array(z.string()).optional(),
+  waitUntil: z.string().optional(),
   revision: z.number(),
   createdAt: z.string().optional(),
   updatedAt: z.string(),

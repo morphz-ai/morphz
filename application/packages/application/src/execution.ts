@@ -12,9 +12,9 @@ import {
 import { jobsWithRuntimeAnnotations } from "./response-annotations.js";
 import {
   readExecutionRecords,
-  executionRecordThread,
   type RuntimeExecutionRecords,
 } from "./execution-thread-tree.js";
+import { executionThreadsWithWait } from "./execution-wait-projection.js";
 
 export type RuntimeRequest = (
   path: string,
@@ -238,7 +238,10 @@ export class ExecutionControls {
       limit: 100,
       ...(binding.records
         ? {
-            threads: binding.records.threads.map(executionRecordThread),
+            threads: await executionThreadsWithWait(
+              this.request,
+              binding.records,
+            ),
             threadsTruncated: binding.records.threads_truncated,
           }
         : {}),
