@@ -40,7 +40,9 @@ jobs:
           set -euo pipefail
           diagnostic_dir="$RUNNER_TEMP/rc-node-oom-diagnostic"
           mkdir -m 0700 "$diagnostic_dir" "$diagnostic_dir/probes"
-          node -e 'const fs = require("node:fs"); const names = fs.readdirSync("tests").filter(name => name.endsWith(".test.ts") && name >= "subject-inspector-boundary.test.ts").sort(); if (!names.length) process.exit(1); console.log(names.map(name => "tests/" + name).join("\n"));' > "$diagnostic_dir/selected-files.txt"
+          # Retain the complete late inventory and add the three earlier files
+          # which cover native identity and immutable historical execution.
+          node -e 'const fs = require("node:fs"); const required = ["assert-syntax-identity.test.ts", "historical-syntax-identity-adaptation.test.ts", "private-project-conversation-scope-boundary.test.ts"]; const names = fs.readdirSync("tests").filter(name => name.endsWith(".test.ts") && (name >= "subject-inspector-boundary.test.ts" || required.includes(name))).sort(); if (!required.every(name => names.includes(name))) process.exit(1); console.log(names.map(name => "tests/" + name).join("\n"));' > "$diagnostic_dir/selected-files.txt"
           mapfile -t diagnostic_files < "$diagnostic_dir/selected-files.txt"
           diagnostic_unit="morphz-node-oom-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           node ../scripts/ci-node-probe-sampler.mjs "$diagnostic_dir/probes" > "$diagnostic_dir/process-memory.jsonl" &
