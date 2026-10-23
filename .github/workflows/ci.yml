@@ -243,7 +243,7 @@ jobs:
           file "$destination/morphz"
           (cd "$destination" && shasum -a 256 morphz > morphz.sha256)
       - name: Preserve the native-tested macOS development Runtime
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: morphz-macos-development-runtime-${{ runner.arch }}
           path: ${{ runner.temp }}/morphz-macos-development-runtime/
@@ -426,7 +426,7 @@ jobs:
           Compress-Archive -Path "$mainBundle/*" -DestinationPath "target/morphz-windows-x86_64.zip" -Force
           Compress-Archive -Path "$edgeBundle/*" -DestinationPath "target/morphz-edge-windows-x86_64.zip" -Force
       - name: Upload verified Windows bundles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: morphz-windows-x86_64
           path: |
