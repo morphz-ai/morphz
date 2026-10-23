@@ -1,0 +1,86 @@
+name: Isolated RC Node memory diagnosis
+
+on:
+  push:
+    branches: [diagnose/rc-node-oom-20261024]
+
+permissions:
+  contents: read
+
+# Diagnostic subset only. This branch and workflow cannot admit a release.
+jobs:
+  late-node-diagnosis:
+    name: Bounded late Node inventory with worker identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Prepare the same independent SDK cache as full CI
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: sudo apt-get update && sudo apt-get install --yes postgresql lsof xvfb xauth
+      - run: npx playwright install --with-deps chromium
+      - name: Verify the opt-in probe before using it
+        run: node --test ../scripts/tests/ci-node-worker-probe.test.mjs ../scripts/tests/ci-node-probe-sampler.test.mjs
+      - name: Diagnose the late inventory without risking the runner service
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostic_dir="$RUNNER_TEMP/rc-node-oom-diagnostic"
+          mkdir -m 0700 "$diagnostic_dir" "$diagnostic_dir/probes"
+          node -e 'const fs = require("node:fs"); const names = fs.readdirSync("tests").filter(name => name.endsWith(".test.ts") && name >= "subject-inspector-boundary.test.ts").sort(); if (!names.length) process.exit(1); console.log(names.map(name => "tests/" + name).join("\n"));' > "$diagnostic_dir/selected-files.txt"
+          mapfile -t diagnostic_files < "$diagnostic_dir/selected-files.txt"
+          diagnostic_unit="morphz-node-oom-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          node ../scripts/ci-node-probe-sampler.mjs "$diagnostic_dir/probes" > "$diagnostic_dir/process-memory.jsonl" &
+          sampler_pid=$!
+          # Invoked by the EXIT trap, including on command failure.
+          # shellcheck disable=SC2329
+          cleanup() {
+            kill "$sampler_pid" 2>/dev/null || true
+            wait "$sampler_pid" 2>/dev/null || true
+            sudo systemctl stop "$diagnostic_unit.service" 2>/dev/null || true
+            sudo systemctl reset-failed "$diagnostic_unit.service" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          node --version | tee "$diagnostic_dir/node-version.txt"
+          # Only this synthetic test tree is bounded; the Actions runner and
+          # evidence uploader remain outside its cgroup. Never change global
+          # memory policy, the original Mac or production nodes.
+          set +e
+          sudo systemd-run --unit="$diagnostic_unit" --wait --pipe --collect \
+            --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" \
+            --property=MemoryAccounting=yes --property=MemoryMax=8G \
+            --property=MemorySwapMax=0 --property=OOMPolicy=kill \
+            --property=TasksMax=2048 \
+            --property=RuntimeMaxSec=12min --property=TimeoutStopSec=10s \
+            --property=KillMode=control-group \
+            --setenv="PATH=$PATH" \
+            --setenv=CI=true --setenv=GITHUB_ACTIONS=true \
+            --setenv="MORPHZ_TEST_COGNITIVE_NPM_CACHE=$MORPHZ_TEST_COGNITIVE_NPM_CACHE" \
+            --setenv="MORPHZ_CI_NODE_PROBE_DIR=$diagnostic_dir/probes" \
+            --setenv="NODE_OPTIONS=--max-old-space-size=1536 --import=$GITHUB_WORKSPACE/scripts/ci-node-worker-probe.mjs" \
+            xvfb-run -a npm test -- --test-concurrency=4 "${diagnostic_files[@]}" \
+            2>&1 | tee "$diagnostic_dir/test-command.log"
+          command_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$command_status" > "$diagnostic_dir/exit-status.txt"
+          exit "$command_status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: rc-node-oom-diagnostic
+          path: ${{ runner.temp }}/rc-node-oom-diagnostic/
+          if-no-files-found: error
+          retention-days: 7
