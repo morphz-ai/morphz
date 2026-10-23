@@ -1,5 +1,10 @@
-import { useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  MessageSquarePlus,
+  Square,
+} from "lucide-react";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -27,6 +32,7 @@ import {
 import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ExecutionProgress } from "./ExecutionProgress.js";
+import { Tooltip } from "./ui/Tooltip.js";
 import {
   executionModelLabel,
   executionModelDescription,
@@ -44,6 +50,7 @@ export function ExecutionSidebar({
   onOpenScript,
   viewOptions,
   embedded = false,
+  headerLeading,
   leading,
   onRefresh,
 }: {
@@ -58,6 +65,7 @@ export function ExecutionSidebar({
   onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
   embedded?: boolean;
+  headerLeading?: ReactNode;
   leading?: ReactNode;
   onRefresh?: () => void | Promise<void>;
 }) {
@@ -130,16 +138,39 @@ export function ExecutionSidebar({
         activityAvailable && !!currentThread,
       )
     : undefined;
+  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const [summaryVisible, setSummaryVisible] = useState(true);
+  useEffect(() => {
+    const node = summaryRef.current;
+    if (!node || threadStatus?.kind !== "running") return;
+    let intersecting = true;
+    const sync = () =>
+      setSummaryVisible(intersecting && document.visibilityState !== "hidden");
+    const observer = new IntersectionObserver(([entry]) => {
+      intersecting = !!entry?.isIntersecting;
+      sync();
+    });
+    observer.observe(node);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [threadStatus?.kind, threadSummary]);
   const supplementAction = supplementTarget && onSupplement && (
-    <button
-      className="secondary-action execution-supplement"
-      disabled={
-        !client.online || !runtime.connected || !runtime.activity?.available
-      }
-      onClick={() => onSupplement(supplementTarget)}
-    >
-      补充
-    </button>
+    <Tooltip label="补充要求">
+      <button
+        className="icon-button execution-supplement"
+        aria-label="补充"
+        disabled={
+          !client.online || !runtime.connected || !runtime.activity?.available
+        }
+        onClick={() => onSupplement(supplementTarget)}
+      >
+        <MessageSquarePlus aria-hidden="true" />
+      </button>
+    </Tooltip>
   );
   const activitySummary = executionActivityOverviewSummary(
     runtime,
@@ -197,6 +228,48 @@ export function ExecutionSidebar({
       setStopping(false);
     }
   }
+  const detailStatus = scope.threadId && (
+    <span
+      className="execution-origin-status"
+      data-status={threadStatus?.kind ?? "unknown"}
+    >
+      <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
+      {threadStatus?.label ?? "此分支不在当前快照中"}
+    </span>
+  );
+  const detailActions = (
+    <div className="execution-origin-actions">
+      {supplementAction}
+      {scope.threadId && !readOnly && currentThread?.lifecycle === "open" && (
+        <Tooltip
+          label={
+            stopping
+              ? "正在请求停止"
+              : stopRequested
+                ? "停止请求已发送"
+                : "停止当前执行"
+          }
+        >
+          <button
+            className="icon-button execution-stop-thread"
+            aria-label="停止"
+            aria-busy={stopping}
+            disabled={
+              stopping || stopRequested || !activityAvailable || !client.online
+            }
+            onClick={stopThread}
+          >
+            <Square aria-hidden="true" />
+          </button>
+        </Tooltip>
+      )}
+      {(stopping || stopRequested) && scope.threadId && (
+        <span className="sr-only" role="status">
+          {stopping ? "正在请求停止" : "停止请求已发送"}
+        </span>
+      )}
+    </div>
+  );
   const row = (t: ActivityThread) => {
     const status = executionActivityGroupStatus(
       t,
@@ -296,6 +369,13 @@ export function ExecutionSidebar({
   };
   const content = (
     <div className="execution-sidebar-scroll">
+      {embedded && detail && (
+        <div className="execution-detail-header">
+          {headerLeading}
+          {detailStatus}
+          {detailActions}
+        </div>
+      )}
       {!detail && (
         <small className="sr-only execution-scope-count">
           {activitySummary}
@@ -358,21 +438,26 @@ export function ExecutionSidebar({
           子任务状态暂不可用，请刷新后核对。
         </p>
       )}
-      {!detail &&
-        runtime.activity?.delegationsAvailable &&
-        runtime.activity.delegationsTruncated && (
-          <p className="muted">当前仅显示已核验的部分子任务。</p>
-        )}
       {detail ? (
         <>
-          {!scope.threadId && supplementAction}
           {scope.threadId && (
-            <section className="execution-origin">
+            <section
+              className="execution-origin"
+              data-status={threadStatus?.kind ?? "unknown"}
+            >
               <p className="execution-origin-title" title={thread?.title}>
                 {thread?.title ?? "执行分支"}
               </p>
               {threadSummary && (
-                <p className="execution-activity-summary" title={threadSummary}>
+                <p
+                  ref={summaryRef}
+                  className="execution-activity-summary"
+                  title={threadSummary}
+                  data-motion-active={
+                    (threadStatus?.kind === "running" && summaryVisible) ||
+                    undefined
+                  }
+                >
                   {threadSummary}
                 </p>
               )}
@@ -382,45 +467,6 @@ export function ExecutionSidebar({
               >
                 最近调用：{executionModelLabel(thread?.executionModel)}
               </p>
-              <div>
-                <span
-                  className="execution-origin-status"
-                  data-status={threadStatus?.kind ?? "unknown"}
-                >
-                  <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
-                  {threadStatus?.label ?? "此分支不在当前快照中"}
-                </span>
-                <div className="execution-origin-actions">
-                  {supplementAction}
-                  {!readOnly && currentThread?.lifecycle === "open" && (
-                    <button
-                      className="secondary-action execution-stop-thread"
-                      aria-busy={stopping}
-                      title={
-                        stopping
-                          ? "正在请求停止"
-                          : stopRequested
-                            ? "停止请求已发送"
-                            : undefined
-                      }
-                      disabled={
-                        stopping ||
-                        stopRequested ||
-                        !activityAvailable ||
-                        !client.online
-                      }
-                      onClick={stopThread}
-                    >
-                      停止
-                    </button>
-                  )}
-                  {(stopping || stopRequested) && (
-                    <span className="sr-only" role="status">
-                      {stopping ? "正在请求停止" : "停止请求已发送"}
-                    </span>
-                  )}
-                </div>
-              </div>
               {error && (
                 <p className="delivery-error" role="alert">
                   {error}
@@ -616,6 +662,14 @@ export function ExecutionSidebar({
       onClose={onClose}
       focusOnMount={false}
       viewOptions={viewOptions}
+      actions={
+        detail ? (
+          <>
+            {detailStatus}
+            {detailActions}
+          </>
+        ) : undefined
+      }
       leading={
         detail && (
           <button

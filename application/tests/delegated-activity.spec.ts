@@ -144,6 +144,9 @@ test("委派期间原消息保持运行反馈、主活动显示子任务且可�
   await expect(panel.locator(".execution-activity-row")).toContainText(
     "1 个子任务",
   );
+  await expect(
+    panel.getByText("当前仅显示已核验的部分子任务。", { exact: true }),
+  ).toHaveCount(0);
   await panel.locator(`[data-thread-id="${parent.id}"]`).click();
   const children = panel.getByRole("region", { name: "委派子任务" });
   // A section without a heading remains a named region through aria-label.

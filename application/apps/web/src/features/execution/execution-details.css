@@ -58,9 +58,6 @@
   line-height: 1.5;
 }
 .execution-origin-status[data-status="running"] {
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--accent-strong) 10%, var(--paper));
   color: var(--accent-strong);
   font-weight: 550;
 }
@@ -87,6 +84,73 @@
   gap: 6px;
   margin-left: auto;
   flex-shrink: 0;
+}
+.execution-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  margin-bottom: 10px;
+  padding-inline: 6px;
+}
+.app .execution-detail-header > .subject-back {
+  flex-shrink: 0;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px 0;
+}
+.execution-detail-header > .execution-origin-status {
+  min-width: 0;
+}
+.execution-detail-header > .execution-origin-status > svg {
+  width: 20px;
+  height: 20px;
+}
+.execution-origin[data-status="running"] > .execution-origin-title {
+  color: var(--accent-strong);
+  font-weight: 550;
+}
+/* One bounded sweep on the current detail, never on every list row. Use the
+   readable foreground accent on light surfaces, luminous accent on dark ones. */
+@supports (background-clip: text) {
+  .execution-origin > .execution-activity-summary[data-motion-active] {
+    background-image: linear-gradient(
+      105deg,
+      var(--muted) 38%,
+      var(--ink) 46%,
+      var(--accent-strong) 50%,
+      var(--ink) 54%,
+      var(--muted) 62%
+    );
+    background-size: 300% 100%;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: execution-summary-sweep 3.2s ease-in-out infinite;
+  }
+}
+@keyframes execution-summary-sweep {
+  0%,
+  12% {
+    background-position: 100% 0;
+  }
+  82%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .execution-origin > .execution-activity-summary[data-motion-active] {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+:root[data-app-motion="reduce"]
+  .execution-origin
+  > .execution-activity-summary[data-motion-active] {
+  animation: none;
+  background-image: none;
+  -webkit-text-fill-color: currentColor;
 }
 .execution-progress {
   min-width: 0;
@@ -160,13 +224,29 @@
   padding-top: 10px;
   border-top: 1px solid var(--hairline);
 }
-.workspace .execution-origin-actions > .secondary-action {
-  justify-content: center;
-  min-width: 52px;
-  height: 28px;
-  min-height: 28px;
+.app .execution-origin-actions > .icon-button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
   margin: 0;
-  padding-block: 0;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.app .execution-origin-actions > .icon-button:not(:disabled):hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.app .execution-origin-actions > .execution-stop-thread:not(:disabled):hover {
+  color: var(--danger);
+}
+.execution-origin-actions > .icon-button > svg {
+  width: 16px;
+  height: 16px;
 }
 .execution-job {
   --execution-step-action-size: 28px;
@@ -386,9 +466,14 @@
   .execution-job {
     --execution-step-action-size: 44px;
   }
-  .workspace .execution-origin-actions > .secondary-action {
+  .app .execution-origin-actions > .icon-button,
+  .app .execution-detail-header > .subject-back {
     height: 44px;
     min-height: 44px;
+    min-width: 44px;
+  }
+  .app .execution-origin-actions > .icon-button {
+    width: 44px;
   }
   .workspace .execution-data-modes > button {
     min-width: 44px;

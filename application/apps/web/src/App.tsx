@@ -4143,9 +4143,10 @@ function WorkspaceApp({
                     ?.click(),
                 );
               }}
-              activity={
+              activity={(navigation) => (
                 <ExecutionSidebar
                   embedded
+                  headerLeading={navigation}
                   key={
                     activityScope.threadId ??
                     activityScope.inputId ??
@@ -4185,7 +4186,7 @@ function WorkspaceApp({
                     />
                   }
                 />
-              }
+              )}
             />
           )}
         {understandingOpen && (
