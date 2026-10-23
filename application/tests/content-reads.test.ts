@@ -449,11 +449,14 @@ function clientPublicationContracts() {
       statements.push(node);
     });
     const index = statements.indexOf(confirmations[0]!.parent.parent);
-    assert.ok(index >= 2);
+    assert.ok(index >= 3);
+    assert.ok(isIfStatement(statements[index - 3]!));
     assert.ok(isIfStatement(statements[index - 2]!));
     assert.ok(isIfStatement(statements[index - 1]!));
+    // Keep all three real pre-publication fences: epoch/selection, borrowed
+    // catalog/content identity, and the independently versioned history read.
     const commit = statements
-      .slice(index - 2, index)
+      .slice(index - 3, index)
       .map((node) => node.getText())
       .join("\n");
     return {
@@ -481,6 +484,10 @@ function clientPublicationContracts() {
         "refresh",
         "readArtifacts = undefined",
         "current = { current: undefined }",
+        "historyUnavailable = false",
+        'navigation = { historyVersion: "coherent" }',
+        "finalNavigation = navigation",
+        "RequestError",
         commit + "\nreturn true;",
       ) as (
         version: number,
@@ -491,6 +498,14 @@ function clientPublicationContracts() {
         cacheRef: { current: PlatformNavigationCache | null },
         value: PlatformNavigationCache["value"] | undefined,
         refresh: () => Promise<boolean>,
+        artifacts?: unknown,
+        current?: {
+          current: { workspace: { artifacts: unknown } } | undefined;
+        },
+        historyUnavailable?: boolean,
+        navigation?: { historyVersion: string },
+        finalNavigation?: { historyVersion: string },
+        requestError?: typeof RequestError,
       ) => boolean,
     };
   } finally {
@@ -1049,6 +1064,39 @@ test("actual Client catalog commit preflight retires a changed borrowed value th
     0,
     "a replaced authority cache is not the same-object invalidation",
   );
+});
+test("actual Client publication keeps the added history fence without disabling the independent cold-history path", () => {
+  const { commit } = clientPublicationContracts();
+  let requests = 0;
+  const preflight = (historyUnavailable: boolean) =>
+    commit(
+      4,
+      { current: 4 },
+      { isSelectionCurrent: () => true },
+      {},
+      null,
+      { current: null },
+      undefined,
+      async () => {
+        requests++;
+        return true;
+      },
+      undefined,
+      undefined,
+      historyUnavailable,
+      { historyVersion: "previous" },
+      { historyVersion: "changed" },
+      RequestError,
+    );
+  assert.throws(
+    () => preflight(false),
+    (error) =>
+      error instanceof RequestError &&
+      error.status === 409 &&
+      error.code === "navigation_changed",
+  );
+  assert.equal(preflight(true), true);
+  assert.equal(requests, 0, "preflight never dispatches or retries itself");
 });
 test("remember is synchronous: absent identity/cache and the original four-field match are no-ops", async () => {
   await compare((h) => {

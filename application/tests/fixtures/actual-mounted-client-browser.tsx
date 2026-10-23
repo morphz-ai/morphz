@@ -638,6 +638,7 @@ const api = {
   report() {
     return {
       snapshot: client.getSnapshot(),
+      online: client.online,
       error: client.error,
       historyError: client.historyError,
       publications,

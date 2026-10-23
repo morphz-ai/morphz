@@ -22,6 +22,7 @@ async function withClient(
     host: Awaited<ReturnType<typeof platformRuntimeHostFixture>>;
     activity(available: boolean): void;
     advanceHistoryAfterNavigation(): () => number;
+    stopAdvancingHistory(): void;
     record(body: string): Promise<string>;
     schedulerReads: string[];
     historyAvailable(available: boolean): void;
@@ -189,6 +190,9 @@ async function withClient(
       advanceHistoryAfterNavigation() {
         advanceHistory = true;
         return () => navigationReads;
+      },
+      stopAdvancingHistory() {
+        advanceHistory = false;
       },
     });
 
@@ -528,7 +532,12 @@ test(
   async () => {
     await withClient(
       true,
-      async ({ client, activity, advanceHistoryAfterNavigation }) => {
+      async ({
+        client,
+        activity,
+        advanceHistoryAfterNavigation,
+        stopAdvancingHistory,
+      }) => {
         const previous = (await client.snapshot())!;
         activity(false);
         const reads = advanceHistoryAfterNavigation();
@@ -540,14 +549,60 @@ test(
         );
         const report = await client.control("report");
         assert.match(report.error, /会话在读取期间已更新/);
+        assert.equal(
+          report.online,
+          true,
+          "a changing Runtime history token is not loss of the authenticated Platform transport",
+        );
         assert.deepEqual(
           (await client.snapshot())!.workspace.inputs,
           previous.workspace.inputs,
         );
+        const retained = (await client.snapshot())!;
+        const facts = ({
+          activity: _activity,
+          attention: _attention,
+          error: _error,
+          ...value
+        }: typeof previous.runtime) => value;
         assert.deepEqual(
-          (await client.snapshot())!.runtime,
-          previous.runtime,
-          "an unproven version never partially replaces the last coherent Runtime/history projection",
+          facts(retained.runtime),
+          facts(previous.runtime),
+          "an unproven version never replaces messages, delivery receipts, model or connection facts",
+        );
+        assert.deepEqual(
+          retained.runtime.activity?.threads,
+          previous.runtime.activity?.threads,
+        );
+        assert.deepEqual(
+          retained.runtime.activity?.objectives,
+          previous.runtime.activity?.objectives,
+        );
+        assert.equal(retained.runtime.activity?.available, false);
+        assert.equal(retained.runtime.activity?.openWorkComplete, false);
+        assert.equal(retained.runtime.activity?.schedulesAvailable, false);
+        assert.equal(retained.runtime.activity?.delegationsAvailable, false);
+        assert.equal(retained.runtime.attention, undefined);
+        assert.ok(
+          retained.runtime.activity?.readScopes?.every(
+            (scope) => !scope.currentAvailable && !scope.historyAvailable,
+          ) ?? true,
+        );
+        assert.equal(
+          await client.page.evaluate(
+            async () => (await fetch("/api/platform/app-views")).status,
+          ),
+          200,
+          "an independent authenticated catalog stays reachable during history contention",
+        );
+        stopAdvancingHistory();
+        activity(true);
+        assert.equal(await client.call("refresh"), true);
+        assert.equal((await client.control("report")).error, "");
+        assert.equal(
+          (await client.snapshot())!.runtime.activity?.available,
+          true,
+          "an ordinary coherent read restores actual freshness without a reload or any dispatch",
         );
       },
     );
