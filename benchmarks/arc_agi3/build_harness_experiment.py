@@ -100,6 +100,7 @@ ARC_SOURCE.mkdir(parents=True,exist_ok=True)
 for name in ('arc_bridge.py','arc_cli.py','arc_observation.py','arc-discovery.hns'):
     shutil.copy2(DEPLOY/name,ARC_SOURCE/name)
 try:
+    ARC_RUNNER_RECEIPT={'sha256':sha256(DEPLOY/'arc_runner.py'),'source':'verified deployment bundle'}
     exec(compile((DEPLOY/'arc_runner.py').read_text(),str(DEPLOY/'arc_runner.py'),'exec'))
     exec(compile((DEPLOY/'arc_experiment_report.py').read_text(),str(DEPLOY/'arc_experiment_report.py'),'exec'))
 finally:

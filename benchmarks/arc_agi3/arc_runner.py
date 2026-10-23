@@ -28,6 +28,7 @@ assert WHEELHOUSE.is_dir() and ENVS.is_dir()
     'submission':False,'official_score':False,
     'runtime_build':globals().get('RUNTIME_BUILD',{'git_release':'7e8f7d81f8b00fd45544d94d5b9a321214633df1'}),
     'runtime_binary_sha256':sha256(morphz),
+    'runner_source_receipt':globals().get('ARC_RUNNER_RECEIPT'),
     'source_sha256':{p.name:sha256(p) for p in SOURCE.iterdir() if p.is_file()},
     'comparison_scope':'Harness plus visible observation aids; not model training',
     'formal_submission':False
@@ -175,7 +176,7 @@ artifact_dir={json.dumps(str(test/'artifacts'))}
         bind_account(test,workspace,config,runtime_env)
         if arm=='discovery':
             install=subprocess.run([str(morphz),'harness','install',str(SOURCE/'arc-discovery.hns'),
-                '--cwd',str(workspace),'--config-file',str(config),'--format','json'],
+                '--cwd',str(workspace),'--config-file',str(config),'--format','json','--log-level','error'],
                 cwd=workspace,env=runtime_env,capture_output=True,text=True,timeout=45)
             (test/'harness-install.json').write_text(install.stdout)
             (test/'harness-install.stderr').write_text(install.stderr)
