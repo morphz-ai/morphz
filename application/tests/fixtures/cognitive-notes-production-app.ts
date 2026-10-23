@@ -29,6 +29,7 @@ import type { InputDraft } from "../../apps/web/src/host/exchange-drafts.js";
 import { platformContentSchema } from "../../apps/web/src/platform-client.js";
 import { parseCognitiveAppViewResponse } from "../../packages/core/src/cognitive-app-view-api.js";
 import { retainCognitiveNetworkResponses } from "./cognitive-network-observer.js";
+import { startCognitiveGuiDiagnosticTrace } from "./cognitive-gui-diagnostic-trace.js";
 
 /** Public automatic-fixture login configuration. The frozen transport fixture
  * initializes its real IdentityCenter member from SHA256 of this synthetic
@@ -296,6 +297,7 @@ export async function openNotesProductionApp(
   const resolutionHolds = notesResolutionResponseHolds(server, f);
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
+  let saveDiagnosticTrace: (() => Promise<void>) | undefined;
   let network: CDPSession | undefined;
   const close = async () => {
     try {
@@ -303,7 +305,11 @@ export async function openNotesProductionApp(
     } finally {
       await network?.detach().catch(() => undefined);
       try {
-        await context?.close();
+        try {
+          await saveDiagnosticTrace?.();
+        } finally {
+          await context?.close();
+        }
       } finally {
         try {
           await browser?.close();
@@ -330,6 +336,10 @@ export async function openNotesProductionApp(
     context = await browser.newContext({
       viewport: { width: 1440, height: 1000 },
     });
+    saveDiagnosticTrace = await startCognitiveGuiDiagnosticTrace(
+      context,
+      "production-app-web",
+    );
     const cookie = f.local.authenticationCookie();
     assert.ok(
       cookie,

@@ -50,6 +50,7 @@ import {
   packCognitiveNotesGui,
   startNotesGuiAuthor,
 } from "./cognitive-notes-gui-package.js";
+import { startCognitiveGuiDiagnosticTrace } from "./cognitive-gui-diagnostic-trace.js";
 
 export type NotesGuiAdapter = "Web" | "Local" | "Remote";
 export type NotesGuiPack = ReturnType<typeof packCognitiveNotesGui>;
@@ -547,8 +548,10 @@ export async function openNotesGuiTransports(
       async mount(adapter: NotesGuiAdapter) {
         const currentSource = await source();
         const context = await browser!.newContext();
-        const page = await context.newPage();
-        page.setDefaultTimeout(8000);
+        const saveDiagnosticTrace = await startCognitiveGuiDiagnosticTrace(
+          context,
+          `transport-${backend}-${adapter.toLowerCase()}`,
+        );
         const errors: string[] = [],
           calls: { method: string; params: unknown; ok?: boolean }[] = [],
           resources: {
@@ -557,12 +560,18 @@ export async function openNotesGuiTransports(
             bytes: number;
             adapter: string;
           }[] = [];
-        page.on("pageerror", (error) => errors.push(error.message));
         const dispose = async () => {
           closes.delete(dispose);
-          await context.close();
+          try {
+            await saveDiagnosticTrace();
+          } finally {
+            await context.close();
+          }
         };
         closes.add(dispose);
+        const page = await context.newPage();
+        page.setDefaultTimeout(8000);
+        page.on("pageerror", (error) => errors.push(error.message));
         const value = cookie!;
         const at = value.indexOf("=");
         await context.addCookies([

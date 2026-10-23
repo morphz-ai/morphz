@@ -1,8 +1,16 @@
-name: Isolated RC Node memory diagnosis
+name: Isolated RC Node diagnostics
 
 on:
   push:
     branches: [diagnose/rc-node-oom-20261024]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Explicit isolated diagnosis; neither mode admits a release
+        type: choice
+        options: [gui, node-oom]
+        default: gui
+        required: true
 
 permissions:
   contents: read
@@ -10,6 +18,7 @@ permissions:
 # Diagnostic subset only. This branch and workflow cannot admit a release.
 jobs:
   late-node-diagnosis:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'node-oom'
     name: Bounded late Node inventory with worker identity
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -84,5 +93,88 @@ jobs:
         with:
           name: rc-node-oom-diagnostic
           path: ${{ runner.temp }}/rc-node-oom-diagnostic/
+          if-no-files-found: error
+          retention-days: 7
+
+  cognitive-gui-diagnosis:
+    if: github.event_name == 'push' || inputs.mode == 'gui'
+    name: Four unchanged cognitive GUI files with actual context traces
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Prepare the same independent SDK cache as full CI
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: sudo apt-get update && sudo apt-get install --yes postgresql lsof xvfb xauth
+      - run: npx playwright install --with-deps chromium
+      - name: Verify diagnostic helper and retained OOM probes
+        run: node --test ../scripts/tests/ci-gui-diagnostic-trace.test.mjs ../scripts/tests/ci-node-worker-probe.test.mjs ../scripts/tests/ci-node-probe-sampler.test.mjs
+      - name: Run the four complete GUI files once at the default concurrency
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostic_dir="$RUNNER_TEMP/rc-cognitive-gui-diagnostic"
+          mkdir -m 0700 "$diagnostic_dir" "$diagnostic_dir/traces"
+          diagnostic_files=(
+            tests/cognitive-notes-gui-transports.test.ts
+            tests/cognitive-notes-native-embedded.test.ts
+            tests/cognitive-notes-native-production.test.ts
+            tests/cognitive-notes-production-app.test.ts
+          )
+          printf '%s\n' "${diagnostic_files[@]}" > "$diagnostic_dir/selected-files.txt"
+          sha256sum "${diagnostic_files[@]}" tests/fixtures/cognitive-gui-diagnostic-trace.ts \
+            tests/fixtures/cognitive-notes-{gui-transports,native-embedded,native-production,production-app}.ts \
+            > "$diagnostic_dir/source-files.sha256"
+          node -e 'const os = require("node:os"); console.log(JSON.stringify({headSha:process.env.GITHUB_SHA,runId:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,job:process.env.GITHUB_JOB,node:process.version,parallelism:os.availableParallelism(),totalMemoryBytes:os.totalmem(),subtreeMemoryMax:"14G; runner/uploader remain outside",concurrency:"managed default 4",selection:"four complete files; no retry, name filter, heap override or timeout change"}));' > "$diagnostic_dir/identity.json"
+          test "$(node -p 'require("node:os").availableParallelism()')" -eq 4
+          node ../scripts/observe-ci-resources.mjs > "$diagnostic_dir/resources.jsonl" &
+          observer_pid=$!
+          diagnostic_unit="morphz-gui-diagnostic-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          # The observer/uploader stay outside the synthetic managed PG/Xvfb
+          # subtree. The host retains its production-sized 4 cores/~16GiB;
+          # reserve ~1.6GiB outside the test subtree for the runner/uploader.
+          # This 14G safety ceiling is diagnostic-only, not a full-CI admission.
+          # shellcheck disable=SC2329
+          cleanup() {
+            kill "$observer_pid" 2>/dev/null || true
+            wait "$observer_pid" 2>/dev/null || true
+            sudo systemctl stop "$diagnostic_unit.service" 2>/dev/null || true
+            sudo systemctl reset-failed "$diagnostic_unit.service" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          set +e
+          sudo systemd-run --unit="$diagnostic_unit" --wait --pipe --collect \
+            --uid="$(id -u)" --gid="$(id -g)" --working-directory="$PWD" \
+            --property=MemoryAccounting=yes --property=MemoryMax=14G \
+            --property=MemorySwapMax=0 --property=OOMPolicy=kill \
+            --property=TasksMax=4096 --property=RuntimeMaxSec=25min \
+            --property=TimeoutStopSec=10s --property=KillMode=control-group \
+            --setenv="PATH=$PATH" --setenv=CI=true --setenv=GITHUB_ACTIONS=true \
+            --setenv="MORPHZ_TEST_COGNITIVE_NPM_CACHE=$MORPHZ_TEST_COGNITIVE_NPM_CACHE" \
+            --setenv="MORPHZ_CI_GUI_TRACE_DIR=$diagnostic_dir/traces" \
+            xvfb-run -a npm test -- "${diagnostic_files[@]}" \
+            2>&1 | tee "$diagnostic_dir/test-command.log"
+          command_status=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$command_status" > "$diagnostic_dir/exit-status.txt"
+          exit "$command_status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: rc-cognitive-gui-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rc-cognitive-gui-diagnostic/
           if-no-files-found: error
           retention-days: 7

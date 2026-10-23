@@ -34,6 +34,7 @@ import {
   startNotesGuiAuthor,
   type packCognitiveNotesGui,
 } from "./cognitive-notes-gui-package.js";
+import { startCognitiveGuiDiagnosticTrace } from "./cognitive-gui-diagnostic-trace.js";
 
 const principalId = "alice",
   actantId = "alice-human",
@@ -96,6 +97,7 @@ export async function openNotesNativeEmbedded(
     database = join(authorDirectory, "author.sqlite"),
     bindingsFile = join(root, "bindings.json");
   let electron: ElectronApplication | undefined;
+  let saveDiagnosticTrace: (() => Promise<void>) | undefined;
   let author: Awaited<ReturnType<typeof startNotesGuiAuthor>> | undefined;
   let page: Page | undefined;
   let stderr = "";
@@ -144,7 +146,11 @@ export async function openNotesNativeEmbedded(
   };
   const close = async () => {
     try {
-      await electron?.close();
+      try {
+        await saveDiagnosticTrace?.();
+      } finally {
+        await electron?.close();
+      }
     } finally {
       try {
         await author?.stop();
@@ -191,6 +197,10 @@ export async function openNotesNativeEmbedded(
       },
       timeout: 30_000,
     });
+    saveDiagnosticTrace = await startCognitiveGuiDiagnosticTrace(
+      electron.context(),
+      "native-embedded-local",
+    );
     electron.process().stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + String(chunk)).slice(-12_000);
     });

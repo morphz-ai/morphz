@@ -30,6 +30,7 @@ import {
 import type { InputDraft } from "../../apps/web/src/host/exchange-drafts.js";
 import type { NotesGuiTransports } from "./cognitive-notes-gui-transports.js";
 import { nativeTestEnvironment as environment } from "./native-test-environment.js";
+import { startCognitiveGuiDiagnosticTrace } from "./cognitive-gui-diagnostic-trace.js";
 
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -116,10 +117,15 @@ export async function openNotesNativeProduction(
   assert.ok(!url.username && !url.password && !url.search && !url.hash);
   const profile = await mkdtemp(join(build.root, "profile-"));
   let electron: ElectronApplication | undefined;
+  let saveDiagnosticTrace: (() => Promise<void>) | undefined;
   let stderr = "";
   const close = async () => {
     try {
-      await electron?.close();
+      try {
+        await saveDiagnosticTrace?.();
+      } finally {
+        await electron?.close();
+      }
     } finally {
       await rm(profile, { recursive: true, force: true });
     }
@@ -137,6 +143,10 @@ export async function openNotesNativeProduction(
       },
       timeout: 30_000,
     });
+    saveDiagnosticTrace = await startCognitiveGuiDiagnosticTrace(
+      electron.context(),
+      "native-production-remote",
+    );
     electron.process().stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + String(chunk)).slice(-12_000);
     });
