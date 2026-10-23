@@ -205,6 +205,31 @@ const templates = parse({
     "const glyph = <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />;",
   SidebarDetailFacts:
     "const threadStatus = thread ? executionActivityGroupStatus(thread, activityThreads, activityAvailable && !!currentThread) : undefined;",
+  // User-approved 5ddfb935/aae741c7 visibility-only motion. Exclude only these
+  // exact calls AND their original local bindings from the old lifecycle
+  // digest. Keep every historical digest unchanged; inspect the React owner
+  // and exact cardinality separately below. No timer, request or control write.
+  SidebarMotion: `
+    const summaryRef = useRef<HTMLParagraphElement>(null);
+    const [summaryVisible, setSummaryVisible] = useState(true);
+    useEffect(() => {
+      const node = summaryRef.current;
+      if (!node || threadStatus?.kind !== "running") return;
+      let intersecting = true;
+      const sync = () =>
+        setSummaryVisible(intersecting && document.visibilityState !== "hidden");
+      const observer = new IntersectionObserver(([entry]) => {
+        intersecting = !!entry?.isIntersecting;
+        sync();
+      });
+      observer.observe(node);
+      document.addEventListener("visibilitychange", sync);
+      sync();
+      return () => {
+        observer.disconnect();
+        document.removeEventListener("visibilitychange", sync);
+      };
+    }, [threadStatus?.kind, threadSummary]);`,
   DialogCall:
     "const glyph = <ExecutionStatusIcon kind={status?.kind} size={18} />;",
 });
@@ -226,6 +251,23 @@ function attribute(element: Node, name: string) {
     .filter(isJsxAttribute)
     .find((node) => node.name.getText() === name);
 }
+const reviewedMotionCalls = templates
+  .get("SidebarMotion")!
+  .nodes.filter(isCallExpression)
+  .filter((node) => /^use[A-Z]/.test(node.expression.getText()));
+function visibilityHookShape(node: Node) {
+  return [
+    syntax(node),
+    isVariableDeclaration(node.parent) ? syntax(node.parent.name) : undefined,
+  ];
+}
+function reviewedVisibilityHook(node: Node) {
+  return reviewedMotionCalls.some(
+    (expected) =>
+      JSON.stringify(visibilityHookShape(node)) ===
+      JSON.stringify(visibilityHookShape(expected)),
+  );
+}
 function scopes(parsed: Parsed, owner: "Sidebar" | "Dialog") {
   const component = parsed.nodes
     .filter(isFunctionDeclaration)
@@ -237,7 +279,8 @@ function scopes(parsed: Parsed, owner: "Sidebar" | "Dialog") {
   });
   const hooks = inside
     .filter(isCallExpression)
-    .filter((node) => /^use[A-Z]/.test(node.expression.getText()));
+    .filter((node) => /^use[A-Z]/.test(node.expression.getText()))
+    .filter((node) => owner !== "Sidebar" || !reviewedVisibilityHook(node));
   let scope: unknown;
   if (owner === "Sidebar") {
     const row = inside
@@ -330,6 +373,24 @@ function inspect(sources: Sources) {
   );
   for (const owner of ["Sidebar", "Dialog"] as const) {
     const consumer = parsed.get(owner)!;
+    if (owner === "Sidebar")
+      rule("Sidebar-exact-read-only-motion-visibility", () => {
+        const hooks = consumer.nodes
+          .filter(isCallExpression)
+          .filter(reviewedVisibilityHook);
+        assert.equal(hooks.length, 3);
+        assert.deepEqual(
+          hooks.map(visibilityHookShape),
+          reviewedMotionCalls.map(visibilityHookShape),
+        );
+        for (const hook of hooks) {
+          assert.ok(isIdentifier(hook.expression));
+          assert.equal(
+            consumer.symbols.get(hook.expression),
+            imported(consumer, "react", hook.expression.text),
+          );
+        }
+      });
     rule(`${owner}-actual-import-kind-size`, () => {
       const symbol = imported(
         consumer,
@@ -484,7 +545,7 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     for (const [before, after] of changes) {
       assert.ok(
         source[file].includes(before),
-        `${file}: actual source must change`,
+        `${file}: actual source must change at ${JSON.stringify(before).slice(0, 120)}`,
       );
       const candidate = {
         ...source,
@@ -536,6 +597,10 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
       "  const [refreshing, setRefreshing] = useState(false);",
       "  const [refreshing, setRefreshing] = useState(false); const [allWork, setAllWork] = useState(false);",
     ],
+    [
+      "  const [refreshing, setRefreshing] = useState(false);",
+      "  const [refreshing, setRefreshing] = useState(false); const [otherVisibility, setOtherVisibility] = useState(true);",
+    ],
     ["          origin,\n", ""],
   );
   reject(
@@ -552,9 +617,18 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     'className="execution-signal-flow"',
     'className="execution-signal-base"',
   ]);
+  const lucideImport = parse({ Sidebar: source.Sidebar })
+    .get("Sidebar")!
+    .nodes.filter(isImportDeclaration)
+    .find(
+      (node) =>
+        isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === "lucide-react",
+    );
+  assert.ok(lucideImport);
   reject("Sidebar", "Sidebar-sole-shared-glyph-consumption", [
-    'import { ArrowLeft, ChevronRight } from "lucide-react";',
-    'import { ArrowLeft, ChevronRight, CircleHelp } from "lucide-react";',
+    lucideImport.getText(),
+    `import { CircleHelp } from "lucide-react";\n${lucideImport.getText()}`,
   ]);
   reject("Sidebar", "Sidebar-detail-authoritative-live-facts", [
     "activityAvailable && !!currentThread,\n      )",
@@ -564,4 +638,22 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     "kind={threadStatus?.kind} size={18}",
     'kind={"running"} size={18}',
   ]);
+  reject(
+    "Sidebar",
+    "Sidebar-exact-read-only-motion-visibility",
+    [
+      'setSummaryVisible(intersecting && document.visibilityState !== "hidden")',
+      'client.cancelInput("TEST-forbidden-motion-control")',
+    ],
+    [
+      'document.removeEventListener("visibilitychange", sync)',
+      'document.addEventListener("visibilitychange", sync)',
+    ],
+    ["const summaryRef =", "const unrelatedRef ="],
+    [
+      "const summaryRef = useRef<HTMLParagraphElement>(null);",
+      "const summaryRef = useRef<HTMLParagraphElement>(null); { const summaryRef = useRef<HTMLParagraphElement>(null); }",
+    ],
+    ["observer.disconnect()", "observer.observe(node)"],
+  );
 });
