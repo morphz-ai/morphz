@@ -1348,10 +1348,47 @@ export function useWorkspace() {
         if (
           e instanceof RequestError &&
           e.code === "navigation_changed" &&
-          protectedReadGeneration.current === accessGeneration &&
-          refreshDrain.current?.retry()
-        )
+          protectedReadGeneration.current === accessGeneration
+        ) {
+          if (refreshDrain.current?.retry()) return false;
+          // Successful authorized reads raced a changing projection; this is
+          // not loss of the Platform transport. Keep durable content/identity,
+          // but retire every cached live-work proof until a coherent read wins.
+          const previous = current.current;
+          if (previous) {
+            const value: Boot = {
+              ...previous,
+              runtime: {
+                ...previous.runtime,
+                error: e.message,
+                attention: undefined,
+                activity: previous.runtime.activity && {
+                  ...previous.runtime.activity,
+                  available: false,
+                  openWorkComplete: false,
+                  schedulesAvailable: false,
+                  delegationsAvailable: false,
+                  readScopes: previous.runtime.activity.readScopes?.map(
+                    (scope) => ({
+                      ...scope,
+                      currentAvailable: false,
+                      historyAvailable: false,
+                    }),
+                  ),
+                },
+              },
+            };
+            current.current = value;
+            setBoot(value);
+          }
+          // Do not let the last success key or identical serialized bytes
+          // short-circuit recovery of the retired display freshness proof.
+          navigationCacheKey.current = "";
+          snapshotText.current = "";
+          setOnline(true);
+          setError(e.message);
           return false;
+        }
         if (
           e instanceof RequestError &&
           (e.status === 401 || e.status === 403)

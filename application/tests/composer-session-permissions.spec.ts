@@ -224,11 +224,18 @@ async function fixture(
             ...projection,
             runtime: connected(projection.runtime as Record<string, unknown>),
           };
-          if (
-            state.continuation &&
-            request.method === "conversations.history"
-          ) {
-            const inputs = projection.inputs as Array<{
+          if (state.continuation) {
+            // Current work comes from the final navigation observation, not
+            // a historical response. Give both reads the same explicitly
+            // synthetic work for these actual persisted test inputs; this
+            // fixture still starts no Runtime execution or permission grant.
+            const inputs = (
+              request.method === "conversations.history"
+                ? projection.inputs
+                : host
+                    .deliveries()
+                    .map((delivery) => host.input(delivery.inputId))
+            ) as Array<{
               id: string;
               projectId: string;
               conversationId: string;
@@ -237,11 +244,12 @@ async function fixture(
             }>;
             const runtime = (value as { runtime: Record<string, unknown> })
               .runtime;
-            runtime.deliveries = inputs.map((input) => ({
-              inputId: input.id,
-              state: "running",
-              error: null,
-            }));
+            if (request.method === "conversations.history")
+              runtime.deliveries = inputs.map((input) => ({
+                inputId: input.id,
+                state: "running",
+                error: null,
+              }));
             runtime.activity = {
               available: true,
               truncated: false,

@@ -449,7 +449,10 @@ const expected = parse({
     return {activityThreads,active,recent,activeCount,activityAvailable,activityComplete};
   }`,
   Summary: `export function executionActivityOverviewSummary(runtime:ConversationRuntime,activityAvailable:boolean,activeCount:number):string{${fixed.recipes.activitySummary.raw} return activitySummary;}`,
-  Prose: fixed.threadSummary,
+  // The a1acc archive above stays immutable. Current detail freshness is
+  // independently scoped, rather than depending on every history scope.
+  Prose:
+    'const threadSummary = thread ? executionActivitySummary(thread, client.online && !!currentThread && executionActivityThreadAvailable(thread, runtime)) : "";',
 });
 function typedCoreInputs(owner: Parsed) {
   for (const [name, module, methods] of [
@@ -856,8 +859,24 @@ function validate(contents: Sources) {
     statement(prose),
     expected.get("Prose")!.source.statements[0]!,
     "original-thread-prose-phase",
+    sidebar,
   );
-  references(sidebar, prose, overview.fields, "original-thread-prose-phase");
+  references(
+    sidebar,
+    prose,
+    {
+      client: param(sidebarFn, "client"),
+      runtime: boundName(runtime),
+      currentThread: boundName(variable(sidebarFn, "currentThread")),
+      thread: boundName(variable(sidebarFn, "thread")),
+      executionActivitySummary: imported(sidebar, "executionActivitySummary"),
+      executionActivityThreadAvailable: imported(
+        sidebar,
+        "executionActivityThreadAvailable",
+      ),
+    },
+    "original-thread-prose-phase",
+  );
   const summary = variable(sidebarFn, "activitySummary"),
     summaryImport = imported(sidebar, "executionActivityOverviewSummary");
   assert.ok(
@@ -1155,6 +1174,31 @@ test("real input import, direct alias and captured item-online guard reject wrap
   );
 });
 test("overview uses the original captured render facts and keeps collect-prose-summary in one evaluation phase", () => {
+  const parsed = parse(sources).get("Sidebar")!,
+    component = fn(parsed, "ExecutionSidebar");
+  const prose = statement(variable(component, "threadSummary")).getText();
+  for (const [before, after] of [
+    ["client.online &&\n          !!currentThread &&", "!!currentThread &&"],
+    [
+      "!!currentThread &&\n          executionActivityThreadAvailable",
+      "executionActivityThreadAvailable",
+    ],
+    ["executionActivityThreadAvailable(thread, runtime)", "activityAvailable"],
+    [
+      "executionActivityThreadAvailable(thread, runtime)",
+      "executionActivityThreadAvailable(thread, client.boot!.runtime)",
+    ],
+  ] as const) {
+    assert.equal(
+      prose.split(before).length,
+      2,
+      "one detail freshness mutation",
+    );
+    rejected(
+      changed("Sidebar", prose, prose.replace(before, after)),
+      "original-thread-prose-phase",
+    );
+  }
   rejected(
     changed(
       "Sidebar",
@@ -1187,10 +1231,7 @@ test("overview uses the original captured render facts and keeps collect-prose-s
     ),
     "overview-summary-direct-consumer",
   );
-  const parsed = parse(sources).get("Sidebar")!,
-    component = fn(parsed, "ExecutionSidebar");
-  const summary = statement(variable(component, "activitySummary")).getText(),
-    prose = statement(variable(component, "threadSummary")).getText();
+  const summary = statement(variable(component, "activitySummary")).getText();
   const reordered = {
     ...sources,
     Sidebar: sources.Sidebar.replace(summary, "").replace(
