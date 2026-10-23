@@ -30,6 +30,7 @@ export const originalProjectionClear =
 // algorithm and its digest above unchanged: cancellation and this separate
 // read-only catalog must supplement every old clear, not replace its lifetime.
 export const cognitiveProjectionClear = originalProjectionClear
+  .replace("setBoot(null);", "setBoot(null);\n    setHistoryError(null);")
   .replace(
     "function clearProtectedProjection()",
     "function clearProtectedProjection(keepRead?: AbortController)",

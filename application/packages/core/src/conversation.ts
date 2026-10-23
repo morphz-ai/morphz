@@ -42,6 +42,17 @@ export const runtimeScheduleSchema = z.object({
 export type RuntimeSchedule = z.infer<typeof runtimeScheduleSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
+  /** Read observations, not execution/control authority. A failed Context must
+   * not erase another Context's successfully read current work. */
+  readScopes: z
+    .array(
+      z.object({
+        contextId: z.string().min(1),
+        currentAvailable: z.boolean(),
+        historyAvailable: z.boolean(),
+      }),
+    )
+    .optional(),
   truncated: z.boolean().default(false),
   /** Current open threads/Objectives were fully read in the authorized domain.
    * Independent of the bounded terminal activity history; absent is unknown. */
@@ -65,6 +76,7 @@ export const activitySchema = z.object({
         inputId: z.string(),
         rootId: z.string(),
         sessionId: z.string(),
+        contextId: z.string().optional(),
         title: z.string(),
         status: z.string(),
         /** Missing control metadata cannot authorize an action. */

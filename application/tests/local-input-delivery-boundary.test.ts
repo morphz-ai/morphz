@@ -8,8 +8,27 @@ import {
   verifyLocalInputDeliveryOwner,
   operationDeliveryOwnerText,
 } from "./fixtures/local-input-delivery-consumption.js";
+import { verifyClientProjectionLifetime } from "./fixtures/client-projection-lifetime-21cb34dc.js";
 
 const client = readFileSync("apps/web/src/client.ts", "utf8");
+test("identity and permission clear retires the exact scoped unavailable-history notice without weakening the historical clear", () => {
+  verifyClientProjectionLifetime(client);
+  for (const replacement of [
+    "",
+    "setHistoryError({ projectId: 'foreign', conversationId: 'foreign', message: 'stale' });",
+  ])
+    assert.throws(
+      () =>
+        verifyClientProjectionLifetime(
+          changed(client, "setHistoryError(null);", replacement),
+        ),
+      {
+        name: "AssertionError",
+        message:
+          /complete original protected projection clear and approval lifetime/,
+      },
+    );
+});
 function changed(text: string, before: string, after: string) {
   assert.equal(text.split(before).length, 2, "one existing mutation target");
   const result = text.replace(before, after);
@@ -109,8 +128,23 @@ test("legal Client mutations fail designated real import, capture, synchronous b
       "original early refresh read seam",
     ],
     [
-      "const savedProjection = localInputDelivery.confirmAndProject(\n          workspace,\n          source,",
-      "const savedProjection = localInputDelivery.confirmAndProject(\n          workspace,\n          platform.current!,",
+      ": localInputDelivery.confirmAndProject(workspace, source);",
+      ": localInputDelivery.confirmAndProject(workspace, platform.current!);",
+      "original publication-time refresh seam",
+    ],
+    [
+      "const savedProjection = historyUnavailable",
+      "const savedProjection = !historyUnavailable",
+      "original publication-time refresh seam",
+    ],
+    [
+      "              localInputDelivery.readSaved(source.boot),",
+      "              localInputDelivery.readSaved(current.current!),",
+      "original publication-time refresh seam",
+    ],
+    [
+      "              localInputDelivery.sendingInputIds(source.boot),",
+      "              localInputDelivery.sendingInputIds(current.current!),",
       "original publication-time refresh seam",
     ],
   ];

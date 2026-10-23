@@ -6,6 +6,7 @@ import {
   SyntaxKind,
   isBlock,
   isCallExpression,
+  isConditionalExpression,
   isFunctionDeclaration,
   isIdentifier,
   isIfStatement,
@@ -91,7 +92,9 @@ const expected = parseReaderSources({
     const instances = await source.appViews(signal);
     const savedInputs = localInputDelivery.readSaved(source.boot);
     if (!navigationReadStillCurrent(navigation, finalNavigation)) throw new RequestError(409, "目录在读取期间已更新，请重试。", "navigation_changed");
-    const savedProjection = localInputDelivery.confirmAndProject(workspace, source);
+    const savedProjection = historyUnavailable
+      ? withSavedInputs(workspace,localInputDelivery.readSaved(source.boot),source.boot,localInputDelivery.sendingInputIds(source.boot))
+      : localInputDelivery.confirmAndProject(workspace,source);
   }
   import { withoutSavedInputs, inputSubmissionSchema } from "./local-saved-inputs.js";
   import { contentOrganizationChangesSchema, stateSchema, taskContentSchema, type Operation, type Receipt, type Workspace } from "../../../packages/core/src/model.js";
@@ -288,7 +291,7 @@ export function verifyLocalInputDeliveryOwner(
   return { owner, fixed };
 }
 
-// Verify actual ownership and the four Client consumers without rewriting
+// Verify actual ownership and the finite Client consumers without rewriting
 // another owner or fingerprinting unrelated Client feature growth.
 export function verifyLocalInputDeliveryConsumption(
   clientText: string,
@@ -417,10 +420,16 @@ export function verifyLocalInputDeliveryConsumption(
     );
   assert.deepEqual(
     deliveryUses.map((node) => node.name.text).sort(),
-    ["confirmAndProject", "dispatchInput", "readSaved"],
-    "only four actual Client delivery consumers",
+    [
+      "confirmAndProject",
+      "dispatchInput",
+      "readSaved",
+      "readSaved",
+      "sendingInputIds",
+    ],
+    "only the five actual Client delivery property consumers",
   );
-  // The fourth consumer moved with complete durable delivery. Its actual
+  // The synchronous record consumer moved with complete durable delivery. Its actual
   // constructor still borrows this exact local-input owner, not a mirror.
   const operationBinding = readerVariable(scoped, "operationDelivery");
   assert.ok(
@@ -511,6 +520,15 @@ export function verifyLocalInputDeliveryConsumption(
     late,
     readerVariable(expected, "savedProjection").parent.parent,
     "original publication-time refresh seam",
+  );
+  const saved = readerVariable(scoped, "savedProjection").initializer;
+  assert.ok(
+    saved && isConditionalExpression(saved) && isCallExpression(saved.whenTrue),
+  );
+  assert.equal(
+    client.symbols.get(saved.whenTrue.expression),
+    readerImport(client, "./local-saved-inputs.js", "withSavedInputs").symbol,
+    "unavailable history borrows the actual inert saved-input projection, not a replacement confirmer",
   );
   assert.ok(isBlock(early.parent) && early.parent === late.parent);
   const refreshStatements = early.parent.statements;

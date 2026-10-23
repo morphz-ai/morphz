@@ -234,6 +234,14 @@ export function createConversationHistory(ports: {
       selectedScope === captured,
     cachedForCatalog: (catalogVersion: number) =>
       cache?.catalogVersion === catalogVersion ? cache : undefined,
+    // Called only after the Client invalidates identity/access changes.
+    // This retains a same-scope old window, never certifies a fresh head.
+    retainedForUnavailable: (scope: HistoryScope | null) =>
+      scope &&
+      cache?.scope.projectId === scope.projectId &&
+      cache.scope.conversationId === scope.conversationId
+        ? cache
+        : undefined,
     commitProjection(
       resolvedScope: HistoryScope | null,
       history: PlatformHistory | null,

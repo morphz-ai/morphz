@@ -150,7 +150,12 @@ export function useConversationViewportCommit(
     setAwayFromLatest,
   } = viewport[viewportRegistration];
   async function loadEarlier() {
-    if (!onLoadEarlierHistory || loadingEarlier) return;
+    if (
+      !onLoadEarlierHistory ||
+      loadingEarlier ||
+      prependPosition.current?.key === positionKey
+    )
+      return;
     const el = scroller.current;
     if (el)
       prependPosition.current = {
@@ -342,6 +347,7 @@ export function useConversationViewportCommit(
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
+    const previousTop = positions.get(positionKey)?.top;
     following.current = shouldFollow(
       el.scrollHeight - el.clientHeight - el.scrollTop,
     );
@@ -351,6 +357,15 @@ export function useConversationViewportCommit(
       following: following.current,
       revealed: revealed.current,
     });
+    // Only movement towards older content requests a page. Mount/restore,
+    // auto-follow and prepend anchoring must never drain the history cursor.
+    if (
+      hasEarlierHistory &&
+      previousTop !== undefined &&
+      el.scrollTop < previousTop &&
+      el.scrollTop < 80
+    )
+      void loadEarlier();
   };
   const returnLatest = () => {
     following.current = true;

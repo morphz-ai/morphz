@@ -139,8 +139,21 @@ const authorityGuard = `        const finalNavigation = await source.navigationR
 const beforeConfirmation = `        // Read at publication time: a refresh may have started before the user
         // clicked Send. Only an authoritative same-ID input removes its overlay.
         const savedProjection = `;
+// This independent read-coherence guard is preserved by the script-publication
+// inverse, never erased or treated as a substitute for its original guards.
+const historyVersionGuard = `        if (
+          !historyUnavailable &&
+          navigation.historyVersion !== finalNavigation.historyVersion
+        )
+          throw new RequestError(
+            409,
+            "会话在读取期间已更新，请重试。",
+            "navigation_changed",
+          );
+`;
 const originalInlineConfirmationPosition =
   authorityGuard +
+  historyVersionGuard +
   beforeConfirmation.slice(
     0,
     beforeConfirmation.indexOf("        const savedProjection"),
@@ -157,11 +170,11 @@ const capturePosition = `          platform.current = source;
 const beforeRead =
   "        const {\n          workspace,\n          runtime,\n";
 const commitPosition =
-  "        };\n        conversationHistory.commitProjection(\n";
+  "        };\n        if (!historyUnavailable)\n          conversationHistory.commitProjection(\n";
 const originalCommitPosition =
   "        };\n" +
   originalScriptEpochSelectionGuard +
-  "        conversationHistory.commitProjection(\n";
+  "        if (!historyUnavailable)\n          conversationHistory.commitProjection(\n";
 
 function once(source: string, span: string, rule: string) {
   assert.equal(source.split(span).length, 2, rule);
@@ -222,7 +235,9 @@ export function inverseScriptCatalogPublicationFix(clientText: string) {
       "already-inverse original catalog read position",
     );
     assert.equal(
-      clientText.split(authorityGuard + beforeConfirmation).length -
+      clientText.split(
+        authorityGuard + historyVersionGuard + beforeConfirmation,
+      ).length -
         1 +
         clientText.split(originalInlineConfirmationPosition).length -
         1,
@@ -295,6 +310,7 @@ export function inverseScriptCatalogPublicationFix(clientText: string) {
     authorityGuard +
       originalScriptEpochSelectionGuard +
       approvedScriptCatalogCas +
+      historyVersionGuard +
       beforeConfirmation,
     "approved authority then epoch/selection then CAS before any confirmation write",
   );

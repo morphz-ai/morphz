@@ -26,6 +26,7 @@ import {
   executionActivityRoots,
   executionActivityDescendants,
   executionActivityGroupStatus,
+  executionActivityThreadAvailable,
   executionActivityOrigin,
   type ActivityThread,
 } from "./execution-activity.js";
@@ -129,13 +130,21 @@ export function ExecutionSidebar({
     runtime,
   );
   const threadSummary = thread
-    ? executionActivitySummary(thread, activityAvailable && !!currentThread)
+    ? executionActivitySummary(
+        thread,
+        client.online &&
+          !!currentThread &&
+          executionActivityThreadAvailable(thread, runtime),
+      )
     : "";
   const threadStatus = thread
     ? executionActivityGroupStatus(
         thread,
         activityThreads,
-        activityAvailable && !!currentThread,
+        (value) =>
+          client.online &&
+          !!currentThread &&
+          executionActivityThreadAvailable(value, runtime),
       )
     : undefined;
   const summaryRef = useRef<HTMLParagraphElement>(null);
@@ -274,10 +283,14 @@ export function ExecutionSidebar({
     const status = executionActivityGroupStatus(
       t,
       activityThreads,
-      activityAvailable,
+      (value) =>
+        client.online && executionActivityThreadAvailable(value, runtime),
     );
     const children = executionActivityDescendants(t, activityThreads);
-    const summary = executionActivitySummary(t, activityAvailable);
+    const summary = executionActivitySummary(
+      t,
+      client.online && executionActivityThreadAvailable(t, runtime),
+    );
     const origin = executionActivityOrigin(
       t,
       state,
@@ -393,7 +406,13 @@ export function ExecutionSidebar({
       )}
       {runtime.connected && !runtime.activity?.available && (
         <p className="execution-activity-notice" role="status">
-          <span>后台状态暂不可用，以下保留上次记录。</span>
+          <span>
+            {runtime.activity?.readScopes?.some(
+              (value) => value.currentAvailable,
+            )
+              ? "部分后台状态暂不可用，未核对部分保留上次记录。"
+              : "后台状态暂不可用，以下保留上次记录。"}
+          </span>
           {onRefresh && (
             <button disabled={refreshing} onClick={() => void refresh()}>
               {refreshing ? "刷新中" : "刷新"}
@@ -401,6 +420,20 @@ export function ExecutionSidebar({
           )}
         </p>
       )}
+      {runtime.connected &&
+        runtime.activity?.available &&
+        runtime.activity.readScopes?.some(
+          (value) => !value.historyAvailable,
+        ) && (
+          <p className="execution-activity-notice" role="status">
+            <span>历史记录刷新失败，当前活动状态可用。</span>
+            {onRefresh && (
+              <button disabled={refreshing} onClick={() => void refresh()}>
+                {refreshing ? "刷新中" : "刷新"}
+              </button>
+            )}
+          </p>
+        )}
       {!detail && error && (
         <p className="delivery-error" role="alert">
           {error}

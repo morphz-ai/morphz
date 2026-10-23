@@ -67,7 +67,10 @@ import {
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { exchangeDraftLengthError } from "./host/exchange-draft-validation.js";
-import { WorkspaceNotice } from "./WorkspaceNotice.js";
+import {
+  ConversationHistoryNotice,
+  WorkspaceNotice,
+} from "./WorkspaceNotice.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import "./features/exchange/composer-collapsed-entry.css";
 import { CollapsedComposerEntry } from "./features/exchange/CollapsedComposerEntry.js";
@@ -3180,7 +3183,15 @@ function WorkspaceApp({
                   <Conversation
                     searchProjectId={project.id}
                     notice={
-                      notice ? (
+                      client.historyError?.projectId === project.id &&
+                      client.historyError.conversationId === conversationId ? (
+                        <ConversationHistoryNotice
+                          error={client.historyError}
+                          projectId={project.id}
+                          conversationId={conversationId}
+                          onRetry={() => void client.refresh()}
+                        />
+                      ) : notice ? (
                         <WorkspaceNotice
                           message={notice}
                           scrollable
@@ -4167,7 +4178,7 @@ function WorkspaceApp({
                   onOpen={openUser}
                   onOpenScript={openScript}
                   onRefresh={async () => {
-                    await client.refresh();
+                    await client.refresh({ refreshActivity: true });
                   }}
                   leading={
                     <SubjectObjectives
