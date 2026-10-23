@@ -59,8 +59,13 @@ Merely calling `probe` or rejecting a hypothesis does not prove a search ran.
 python benchmarks/arc_agi3/build_harness_experiment.py \
   --runtime /absolute/path/to/verified-linux-x86_64/morphz \
   --runtime-commit f38245e906814b33fb4f92edd70534b3a233610f \
-  --harness arc-algorithms --output /tmp/morphz-arc-algorithms-deployment
+  --harness arc-algorithms --profile actor-integration \
+  --output /tmp/morphz-arc-algorithms-deployment
 ```
+
+This builds the current integration profile. The exact historical v0.3.0
+comparison used source commit `1629ee03`; do not reconstruct that frozen
+experiment from a newer Harness and call it the same run.
 
 If a newly created private Dataset fails to mount, optional `--base-bundle
 /absolute/path/to/previously-verified-deployment.zip` reuses only its identical
@@ -164,6 +169,36 @@ verified `--base-bundle`. The declared sample is ft09 and ls20, candidate only,
 600 seconds / 200 actions each. Scores, actual search counts and transport
 evidence must be inspected after the run; packaging and the 61 local tests
 are not a game result.
+
+### Real v0.3.2 result: search exercised, full comparison still blocked
+
+The actual [private V7 run](https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-executable-algorithms-20261023?scriptVersionId=361544395)
+completed as a Kaggle job. Both game attempts were **invalid for a full-budget
+comparison**, not wins or normal completions:
+
+| Game | Best levels | Actions | Wall seconds | Actual A* calls | End |
+| --- | --- | ---: | ---: | ---: | --- |
+| ft09 | 0/6 | 82 | 186.689 | 0 | Provider rejected 281581 input tokens |
+| ls20 | 0/7 | 50 | 172.348 | 56 | Provider rejected 282554 input tokens |
+
+All four batches for each game used the same root Session. In ls20, automatic
+component tracking fitted real translations and executed 56 A* searches,
+expanding 1848 states. None found a route in the proposed model; no planned
+navigation moves were executed. In particular, using the raw target-component
+anchor ignores the lattice induced by measured 5-pixel steps. This is a defect
+of the current goal abstraction, not evidence that A* or algorithms generally
+cannot compensate for model limitations. Same-color targets may also be UI.
+
+The Runtime request included repeated grid captures and eventually exceeded the
+262144-token server window. The SGLang-specific error was classified as
+`invalid_model_or_request`, bypassing the existing `ContextLimit` recovery branch.
+The separate projection-growth cause remains under investigation.
+See [the bounded Runtime bug report](BUG_CONTEXT_LIMIT_SGLANG_2026-10-24.md)
+and [the actual V7 receipts](actor-integration-v032-results-2026-10-24.json).
+Peak sampled GPU memory was 96511 / 97887 MiB. The server was stopped after the
+job; no prediction was submitted. The implementation is delivered and real
+search was exercised, but **no game-solving improvement or completed clean A/B
+has been established**.
 
 ## Fixed first-sample protocol
 

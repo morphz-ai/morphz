@@ -1,0 +1,632 @@
+{
+  "schema": "morphz-arc-executable-algorithm-followup@1",
+  "status": "execution_complete_comparison_incomplete",
+  "valid_for_full_budget_comparison": false,
+  "measurement_date": "2026-10-24",
+  "formal_submission": false,
+  "official_score": false,
+  "archive": {
+    "version": 7,
+    "private": true,
+    "url": "https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-executable-algorithms-20261023?scriptVersionId=361544395",
+    "worker_status": "COMPLETE"
+  },
+  "source_commit": "6fdaf2e2",
+  "deployment_bundle_sha256": "bdf76e09159c8ea766a731ae79044f17c18ea8266f77aeb9d0822a45c4337410",
+  "protocol": {
+    "games": [
+      "ft09",
+      "ls20"
+    ],
+    "arms": [
+      "discovery"
+    ],
+    "seed": 0,
+    "max_actions_per_game": 200,
+    "wall_budget_s_per_game": 600,
+    "context_window_tokens": 262144,
+    "model": "Qwen3.8-Flash-Next W4A16 AutoRound",
+    "runtime": "Morphz v0.1.3",
+    "submission": false,
+    "official_score": false,
+    "runtime_build": {
+      "schema": "morphz-arc-harness-deployment@1",
+      "runtime_commit": "f38245e906814b33fb4f92edd70534b3a233610f",
+      "runtime_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": "arc-algorithms@0.3.2",
+      "files": {
+        "arc_bridge.py": "3219617432bde09e5b9451ad9805ddb736f9c7c679e8cd2dde55948f996fe918",
+        "arc_cli.py": "c1514ddc4ff67871ee878385c805f76cce16719697c7e0f2e95d1f46306ba8e3",
+        "arc_observation.py": "56393dddb779f3d596db4635b68d4080e0f57567276210046316dd25fa2af2ce",
+        "arc-discovery.hns": "76eb72ce399cbbdfd61f9f2813d02b38e60241aa40b3a30ba933fa675c0300ee",
+        "arc-algorithms.hns": "77eb4f779368d6f5b28997f636f1450d1b720117b4fee27a03472241b51608d7",
+        "arc_algorithms.py": "2afc41980da6dd8bafe4a9b874b1d3212013e2378f4d4653e3b256b799c94fff",
+        "arc_solver.py": "6a21ee581992258c0082dcf8c38a1bcecdd66cfe8699c361857367cac159c339",
+        "arc_model_adapter.py": "020d7ad669bf902989b222c65c0dc6dddde029d7d1124296966b03cb274300e8",
+        "test_arc_algorithms.py": "d4d2ba40dd6f759f945c8abce4b6eef07d08ee4b17a5467c3f5bc6dfe8c186e0",
+        "test_algorithm_harness_runtime.py": "100087481d16e139802432abbf72bdf86e6da4feaa173eaee26bc9dfa59c8d3e",
+        "arc_runner.py": "1d7503882a05930e9e9248b14d39d86b59c64413ca6d60b877f8fb35c7ee0355",
+        "arc_experiment_report.py": "cce3a2fa6ac0e6f6a34dbb4582f37687af567382dc4002859a96c73f7d671fa4",
+        "flash_next_bootstrap_arc.py": "1ee8a0da28f8b9bf839105490124f61d97cce5a3d59dd1227fd58c991ab7d3fb",
+        "arc_experiment_diagnostics.py": "154094afebfd3c8ab7b95855f4bf64caf8f89b89aa01a7b0140ea5735e049be1",
+        "test_arc_experiment_diagnostics.py": "8ccdb5b3b387cc9a078d2213929435275d00691f681083e4c90e120c77186d4d",
+        "test_harness_tool_admission.py": "d5183ed879098f2ed75c11ef7acd3e1d1fce2f45075a97d932ea25b5ec98a713",
+        "test_arc_bridge.py": "9c1e1f75f539b646a46509c505933cf5fb1bc315d67118105f02a646b7b146ca",
+        "test_arc_cli.py": "bb2ddf9738eb3a07dd4f6a5bf7a5255c4c40fd90c0b1a65dd56fe14089c8e800",
+        "test_arc_observation.py": "1a397ed16629d0b830109a6cabed01f75029190a2b574296775b7db8182dd713",
+        "morphz": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+        "LICENSE": "c9283b050868c19c3e364ac764cc07a8b69a584403dbe980344517c25c6deb1f",
+        "NOTICE": "a49e31b1a6c2d6d938d6c0c201f66093f31953082225c08aa74728a2bd8406be",
+        "THIRD_PARTY_NOTICES.md": "2690d6f20918b62ac627f9a74fb4ff2faef83f54e1876c3216af948c37f5df7c"
+      },
+      "training": false,
+      "paid_services": [],
+      "formal_submission": false
+    },
+    "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+    "runner_source_receipt": {
+      "sha256": "1d7503882a05930e9e9248b14d39d86b59c64413ca6d60b877f8fb35c7ee0355",
+      "source": "verified algorithm deployment bundle"
+    },
+    "source_sha256": {
+      "arc-algorithms.hns": "77eb4f779368d6f5b28997f636f1450d1b720117b4fee27a03472241b51608d7",
+      "arc_solver.py": "6a21ee581992258c0082dcf8c38a1bcecdd66cfe8699c361857367cac159c339",
+      "arc_cli.py": "c1514ddc4ff67871ee878385c805f76cce16719697c7e0f2e95d1f46306ba8e3",
+      "arc_algorithms.py": "2afc41980da6dd8bafe4a9b874b1d3212013e2378f4d4653e3b256b799c94fff",
+      "arc_bridge.py": "3219617432bde09e5b9451ad9805ddb736f9c7c679e8cd2dde55948f996fe918",
+      "arc_observation.py": "56393dddb779f3d596db4635b68d4080e0f57567276210046316dd25fa2af2ce",
+      "arc_model_adapter.py": "020d7ad669bf902989b222c65c0dc6dddde029d7d1124296966b03cb274300e8"
+    },
+    "comparison_scope": "Runtime-owned Harness plus executable algorithms",
+    "semantic_inference_tool_free": true,
+    "actor_provider_adapter": "captured-image-structured-nonthinking-actor@1",
+    "bounded_harness_batches": 16,
+    "batch_boundary_note": "Separate finite Evaluations in the same Session; no Program budget is enlarged or replenished by restart. The game timer, actions, workspace and DB remain continuous.",
+    "reasoning_policy_note": "Algorithm actors disable model thinking and constrain the declared JSON return; this is NOT a same-reasoning-policy ablation.",
+    "formal_submission": false
+  },
+  "startup": {
+    "model_server_ready_s": 901,
+    "real_model_smoke_passed": true
+  },
+  "results": [
+    {
+      "game": "ft09",
+      "arm": "discovery",
+      "game_id": "ft09-0d8bbf25",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 6,
+      "actions": 82,
+      "resets": 0,
+      "available_actions": [
+        "ACTION6"
+      ],
+      "elapsed_s": 186.688,
+      "remaining_s": 413.312,
+      "stopped": false,
+      "stop_reason": null,
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 186.689,
+      "runtime_exit_code": 0,
+      "termination": "runtime_evaluation_failed",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": true,
+      "model_requests": 15,
+      "image_requests": 15,
+      "prompt_tokens_total": 1848955,
+      "completion_tokens_total": 2132,
+      "tool_jobs": 79,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": "arc-algorithms@0.3.2",
+      "harness_source_sha256": "77eb4f779368d6f5b28997f636f1450d1b720117b4fee27a03472241b51608d7",
+      "harness_binding_verified": true,
+      "tools_exposed_on_provider_wire": false,
+      "semantic_inference_tool_free_expected": true,
+      "actor_provider_adapter": true,
+      "actor_thinking_enabled": false,
+      "capture_bound_native_image_requests": 15,
+      "activation_batches": [
+        {
+          "batch": 1,
+          "session_id": "session_1792780008305439187_1253",
+          "wall_s": 37.093,
+          "model_requests": 4,
+          "actions": 2,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": false
+        },
+        {
+          "batch": 2,
+          "session_id": "session_1792780008305439187_1253",
+          "wall_s": 49.154,
+          "model_requests": 4,
+          "actions": 34,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": false
+        },
+        {
+          "batch": 3,
+          "session_id": "session_1792780008305439187_1253",
+          "wall_s": 64.254,
+          "model_requests": 4,
+          "actions": 66,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": false
+        },
+        {
+          "batch": 4,
+          "session_id": "session_1792780008305439187_1253",
+          "wall_s": 36.184,
+          "model_requests": 3,
+          "actions": 82,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": true
+        }
+      ],
+      "algorithm_module_calls": 28,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 82,
+      "completed_http_200_model_requests": 14,
+      "valid_run": false,
+      "invalid_reasons": [
+        "terminal_provider_request_rejected",
+        "runtime_evaluation_failed"
+      ],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    },
+    {
+      "game": "ls20",
+      "arm": "discovery",
+      "game_id": "ls20-9607627b",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 7,
+      "actions": 50,
+      "resets": 0,
+      "available_actions": [
+        "ACTION1",
+        "ACTION2",
+        "ACTION3",
+        "ACTION4"
+      ],
+      "elapsed_s": 172.347,
+      "remaining_s": 427.653,
+      "stopped": false,
+      "stop_reason": null,
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 172.348,
+      "runtime_exit_code": 0,
+      "termination": "runtime_evaluation_failed",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": true,
+      "model_requests": 15,
+      "image_requests": 15,
+      "prompt_tokens_total": 1841774,
+      "completion_tokens_total": 777,
+      "tool_jobs": 79,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": "arc-algorithms@0.3.2",
+      "harness_source_sha256": "77eb4f779368d6f5b28997f636f1450d1b720117b4fee27a03472241b51608d7",
+      "harness_binding_verified": true,
+      "tools_exposed_on_provider_wire": false,
+      "semantic_inference_tool_free_expected": true,
+      "actor_provider_adapter": true,
+      "actor_thinking_enabled": false,
+      "capture_bound_native_image_requests": 15,
+      "activation_batches": [
+        {
+          "batch": 1,
+          "session_id": "session_1792780196839385886_2783",
+          "wall_s": 26.035,
+          "model_requests": 4,
+          "actions": 12,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": false
+        },
+        {
+          "batch": 2,
+          "session_id": "session_1792780196839385886_2783",
+          "wall_s": 49.083,
+          "model_requests": 4,
+          "actions": 24,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": false
+        },
+        {
+          "batch": 3,
+          "session_id": "session_1792780196839385886_2783",
+          "wall_s": 62.129,
+          "model_requests": 4,
+          "actions": 36,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": false
+        },
+        {
+          "batch": 4,
+          "session_id": "session_1792780196839385886_2783",
+          "wall_s": 35.098,
+          "model_requests": 3,
+          "actions": 50,
+          "levels_completed": 0,
+          "runtime_exit_code": 0,
+          "evaluation_failed": true
+        }
+      ],
+      "algorithm_module_calls": 28,
+      "algorithm_search_calls": 56,
+      "algorithm_recorded_actions": 50,
+      "completed_http_200_model_requests": 14,
+      "valid_run": false,
+      "invalid_reasons": [
+        "terminal_provider_request_rejected",
+        "runtime_evaluation_failed"
+      ],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    }
+  ],
+  "audit": [
+    {
+      "run": "ft09-discovery",
+      "admitted_for_full_budget_comparison": false,
+      "trajectory_rows": 83,
+      "actions_match_trajectory": true,
+      "single_root_session_across_batches": true,
+      "batch_count": 4,
+      "methods": {
+        "identify_navigate": 1,
+        "auto_motion": 14,
+        "probe": 11,
+        "toggle": 2
+      },
+      "actual_search_calls": 0,
+      "astar_search_calls": 0,
+      "expanded_astar_states": 0,
+      "found_paths": 0,
+      "executed_navigation_predictions": 0,
+      "provider_errors": [
+        [
+          "{\"object\":\"error\",\"message\":\"The input (281581 tokens) is longer than the model's context length (262144 tokens).\",\"type\":\"BadRequestError\",\"param\":null,\"code\":400}"
+        ]
+      ],
+      "context_growth": [
+        {
+          "request": 1,
+          "http_status": 200,
+          "prompt_tokens": 46030,
+          "context_text_chars": 100306,
+          "grid_copies": 4,
+          "context_schema_copies": 4
+        },
+        {
+          "request": 2,
+          "http_status": 200,
+          "prompt_tokens": 61971,
+          "context_text_chars": 128590,
+          "grid_copies": 6,
+          "context_schema_copies": 6
+        },
+        {
+          "request": 3,
+          "http_status": 200,
+          "prompt_tokens": 77935,
+          "context_text_chars": 156725,
+          "grid_copies": 8,
+          "context_schema_copies": 8
+        },
+        {
+          "request": 4,
+          "http_status": 200,
+          "prompt_tokens": 94503,
+          "context_text_chars": 185704,
+          "grid_copies": 10,
+          "context_schema_copies": 10
+        },
+        {
+          "request": 5,
+          "http_status": 200,
+          "prompt_tokens": 113339,
+          "context_text_chars": 220031,
+          "grid_copies": 12,
+          "context_schema_copies": 12
+        },
+        {
+          "request": 6,
+          "http_status": 200,
+          "prompt_tokens": 129762,
+          "context_text_chars": 249406,
+          "grid_copies": 14,
+          "context_schema_copies": 14
+        },
+        {
+          "request": 7,
+          "http_status": 200,
+          "prompt_tokens": 146275,
+          "context_text_chars": 278784,
+          "grid_copies": 16,
+          "context_schema_copies": 16
+        },
+        {
+          "request": 8,
+          "http_status": 200,
+          "prompt_tokens": 162763,
+          "context_text_chars": 308152,
+          "grid_copies": 18,
+          "context_schema_copies": 18
+        },
+        {
+          "request": 9,
+          "http_status": 200,
+          "prompt_tokens": 180921,
+          "context_text_chars": 341992,
+          "grid_copies": 20,
+          "context_schema_copies": 20
+        },
+        {
+          "request": 10,
+          "http_status": 200,
+          "prompt_tokens": 197376,
+          "context_text_chars": 371370,
+          "grid_copies": 22,
+          "context_schema_copies": 22
+        },
+        {
+          "request": 11,
+          "http_status": 200,
+          "prompt_tokens": 213841,
+          "context_text_chars": 400747,
+          "grid_copies": 24,
+          "context_schema_copies": 24
+        },
+        {
+          "request": 12,
+          "http_status": 200,
+          "prompt_tokens": 82807,
+          "context_text_chars": 199528,
+          "grid_copies": 2,
+          "context_schema_copies": 14
+        },
+        {
+          "request": 13,
+          "http_status": 200,
+          "prompt_tokens": 248578,
+          "context_text_chars": 463956,
+          "grid_copies": 28,
+          "context_schema_copies": 28
+        },
+        {
+          "request": 14,
+          "http_status": 200,
+          "prompt_tokens": 92854,
+          "context_text_chars": 223891,
+          "grid_copies": 2,
+          "context_schema_copies": 16
+        },
+        {
+          "request": 15,
+          "http_status": 400,
+          "prompt_tokens": null,
+          "context_text_chars": 522710,
+          "grid_copies": 32,
+          "context_schema_copies": 32
+        }
+      ],
+      "trajectory_sha256": "ceaee1aaf5b709f642b9f61a93267286d2449a37e07ccba7c2b03f727d8995c8",
+      "audit_sha256": "f1154a595f9ffab2b386e3f9c69f9ed9ec066468b8edce4d7eac4fba9e2f16f4"
+    },
+    {
+      "run": "ls20-discovery",
+      "admitted_for_full_budget_comparison": false,
+      "trajectory_rows": 51,
+      "actions_match_trajectory": true,
+      "single_root_session_across_batches": true,
+      "batch_count": 4,
+      "methods": {
+        "navigate": 7,
+        "auto_motion": 14,
+        "probe": 4,
+        "identify_navigate": 3
+      },
+      "actual_search_calls": 56,
+      "astar_search_calls": 56,
+      "expanded_astar_states": 1848,
+      "found_paths": 0,
+      "executed_navigation_predictions": 0,
+      "provider_errors": [
+        [
+          "{\"object\":\"error\",\"message\":\"The input (282554 tokens) is longer than the model's context length (262144 tokens).\",\"type\":\"BadRequestError\",\"param\":null,\"code\":400}"
+        ]
+      ],
+      "context_growth": [
+        {
+          "request": 1,
+          "http_status": 200,
+          "prompt_tokens": 45948,
+          "context_text_chars": 100437,
+          "grid_copies": 4,
+          "context_schema_copies": 4
+        },
+        {
+          "request": 2,
+          "http_status": 200,
+          "prompt_tokens": 62440,
+          "context_text_chars": 129858,
+          "grid_copies": 6,
+          "context_schema_copies": 6
+        },
+        {
+          "request": 3,
+          "http_status": 200,
+          "prompt_tokens": 78923,
+          "context_text_chars": 159222,
+          "grid_copies": 8,
+          "context_schema_copies": 8
+        },
+        {
+          "request": 4,
+          "http_status": 200,
+          "prompt_tokens": 95292,
+          "context_text_chars": 188575,
+          "grid_copies": 10,
+          "context_schema_copies": 10
+        },
+        {
+          "request": 5,
+          "http_status": 200,
+          "prompt_tokens": 113486,
+          "context_text_chars": 222540,
+          "grid_copies": 12,
+          "context_schema_copies": 12
+        },
+        {
+          "request": 6,
+          "http_status": 200,
+          "prompt_tokens": 129916,
+          "context_text_chars": 251836,
+          "grid_copies": 14,
+          "context_schema_copies": 14
+        },
+        {
+          "request": 7,
+          "http_status": 200,
+          "prompt_tokens": 146432,
+          "context_text_chars": 281321,
+          "grid_copies": 16,
+          "context_schema_copies": 16
+        },
+        {
+          "request": 8,
+          "http_status": 200,
+          "prompt_tokens": 162921,
+          "context_text_chars": 310739,
+          "grid_copies": 18,
+          "context_schema_copies": 18
+        },
+        {
+          "request": 9,
+          "http_status": 200,
+          "prompt_tokens": 181214,
+          "context_text_chars": 344801,
+          "grid_copies": 20,
+          "context_schema_copies": 20
+        },
+        {
+          "request": 10,
+          "http_status": 200,
+          "prompt_tokens": 197769,
+          "context_text_chars": 374235,
+          "grid_copies": 22,
+          "context_schema_copies": 22
+        },
+        {
+          "request": 11,
+          "http_status": 200,
+          "prompt_tokens": 214313,
+          "context_text_chars": 403621,
+          "grid_copies": 24,
+          "context_schema_copies": 24
+        },
+        {
+          "request": 12,
+          "http_status": 200,
+          "prompt_tokens": 77299,
+          "context_text_chars": 188564,
+          "grid_copies": 2,
+          "context_schema_copies": 14
+        },
+        {
+          "request": 13,
+          "http_status": 200,
+          "prompt_tokens": 249360,
+          "context_text_chars": 467440,
+          "grid_copies": 28,
+          "context_schema_copies": 28
+        },
+        {
+          "request": 14,
+          "http_status": 200,
+          "prompt_tokens": 86461,
+          "context_text_chars": 211041,
+          "grid_copies": 2,
+          "context_schema_copies": 16
+        },
+        {
+          "request": 15,
+          "http_status": 400,
+          "prompt_tokens": null,
+          "context_text_chars": 526621,
+          "grid_copies": 32,
+          "context_schema_copies": 32
+        }
+      ],
+      "trajectory_sha256": "07f920451b4a1b0aeb48b8e3ac5b78adca0e776be63a263d92bc2c7d97c23f26",
+      "audit_sha256": "033a37ed6ffe6cf1d5204cadba0ba5d5f33d6461b18aaf4f07b121f72d21cd39"
+    }
+  ],
+  "transport": {
+    "saved_request_records": 30,
+    "http_status_counts": {
+      "200": 28,
+      "400": 2
+    },
+    "request_error_count": 0,
+    "completed_http_200": 28,
+    "image_requests": 30,
+    "stream_finish_reasons": {
+      "stop": 28
+    },
+    "max_reported_prompt_tokens": 249360,
+    "output_tokens_per_request_second_including_prefill_mean": 10.417291131593192
+  },
+  "gpu": {
+    "samples": 357,
+    "peak_used_mib": 96511,
+    "total_mib": 97887
+  },
+  "outcome": {
+    "whole_game_wins": 0,
+    "levels_completed": [
+      0,
+      0
+    ],
+    "actual_astar_calls": 56,
+    "expanded_astar_states": 1848,
+    "found_paths": 0,
+    "conclusion": "No improvement established; both attempts ended early at the 256K input limit. Real component fitting and A* ran, but the proposed waypoint model found no route. This is not evidence that algorithmic compensation is impossible."
+  },
+  "known_gaps": [
+    "The exact-anchor waypoint rule ignores the lattice induced by measured step sizes. In saved ls20 observations, body anchor [34,47] and 5-pixel movement cannot reach raw target anchor [35,11]. Target components are hypotheses, including possible UI regions.",
+    "Full grids and algorithm context copies accumulated in typed-infer requests. In ft09 the count grew 4 -> 32; requests 12 and 14 temporarily dropped to two grid copies, then rebounded. Parent/child projection or retirement propagation is a hypothesis requiring Runtime investigation, not a proven source-level root cause.",
+    "Server rejected 281581 and 282554 input tokens against 262144, rather than an output-generation truncation.",
+    "The actor profile changed native-image projection and thinking policy; not a pure algorithm A/B.",
+    "Source isolation is not OS sealed. Baseline comparisons have separate source-access and provider-failure limitations."
+  ],
+  "artifacts": {
+    "local_directory": "/tmp/morphz-arc-algorithms-v7-output-20261024/morphz-arc3-harness-20261023/arc-algorithms-v032-actor-integration",
+    "provider_wire_sha256": "d667c4b0d65b7751a581b2d9fc68122e569894fd26631ed05644f54d0ce2bab5",
+    "model_server_stopped_after_run": true
+  }
+}
