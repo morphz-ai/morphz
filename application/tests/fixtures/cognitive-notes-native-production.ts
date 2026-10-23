@@ -30,6 +30,10 @@ import {
 import type { InputDraft } from "../../apps/web/src/host/exchange-drafts.js";
 import type { NotesGuiTransports } from "./cognitive-notes-gui-transports.js";
 import { nativeTestEnvironment as environment } from "./native-test-environment.js";
+import {
+  isNotesOperationSuccess,
+  waitForNotesOperationStatus,
+} from "./cognitive-notes-operation-status.js";
 
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -412,6 +416,8 @@ export type NotesNativeProduction = Awaited<
   ReturnType<typeof openNotesNativeProduction>
 >;
 export async function notesNativeStatus(guest: Frame, value: string) {
+  if (isNotesOperationSuccess(value))
+    return waitForNotesOperationStatus(guest, value);
   await expect(guest.locator("#status")).toContainText(value);
 }
 
