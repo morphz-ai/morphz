@@ -12,6 +12,10 @@ import {
 } from "./fixtures/cognitive-notes-production-app.js";
 import { expect, type Frame } from "@playwright/test";
 import {
+  isNotesOperationSuccess,
+  waitForNotesOperationStatus,
+} from "./fixtures/cognitive-notes-operation-status.js";
+import {
   parseCognitiveAppCommandResult,
   parseCognitiveAppGrant,
 } from "../packages/core/src/cognitive-app-api.js";
@@ -39,6 +43,8 @@ after(async () => {
   }
 });
 async function status(guest: Frame, value: string) {
+  if (isNotesOperationSuccess(value))
+    return waitForNotesOperationStatus(guest, value);
   await guest.waitForFunction(
     (value) => document.getElementById("status")?.textContent?.includes(value),
     value,
