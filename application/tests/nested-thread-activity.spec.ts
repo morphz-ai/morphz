@@ -194,9 +194,7 @@ test("embedded 逻辑 family 无 Jobs/审批时按真实 family 截断显示，�
   await expect(panel.locator(".execution-thread-group")).toHaveCount(2);
   await expect(panel.locator(".execution-job")).toHaveCount(0);
   await expect(panel.locator(".approval-card")).toHaveCount(0);
-  const hint = panel.locator(
-    ".execution-dialog-toolbar .execution-history-bound",
-  );
+  const hint = panel.locator(".execution-details > .execution-history-bound");
   await expect(hint).toHaveText("部分子任务记录尚未载入");
   await expect(hint).toBeVisible();
   await expect(

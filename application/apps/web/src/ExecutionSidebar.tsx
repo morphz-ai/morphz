@@ -465,7 +465,7 @@ export function ExecutionSidebar({
                 className="execution-model"
                 title={executionModelDescription(thread?.executionModel)}
               >
-                最近调用：{executionModelLabel(thread?.executionModel)}
+                {executionModelLabel(thread?.executionModel)}
               </p>
               {error && (
                 <p className="delivery-error" role="alert">

@@ -144,7 +144,7 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
   await expect(current.locator("time")).toHaveAttribute("dateTime", stamp);
   await current.click();
   await expect(panel.locator(".execution-model")).toHaveText(
-    "最近调用：gpt-6.1-sol · max",
+    "gpt-6.1-sol · max",
   );
   await expect(panel.locator(".execution-origin")).toContainText(
     "架构已确认，正在核对新增的启动要求",

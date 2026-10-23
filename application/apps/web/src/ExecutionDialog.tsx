@@ -51,18 +51,13 @@ export function ExecutionDialog({
   const branchIds = [...new Set(jobs.map((job) => job.thread_id))];
   const groups = executionThreadGroups(snapshot);
   const grouped = !!snapshot?.threads && groups.length > 1;
-  const atReadLimit =
-    !!snapshot && snapshot.limit > 0 && jobs.length >= snapshot.limit;
   const content = (
     <>
       {!embedded && (
         <header>
           <div>
             <h2 id="execution-title">执行记录</h2>
-            <p className="muted">
-              {scope.threadId ? "本次执行" : "当前对话"} · 最近{" "}
-              {snapshot?.limit ?? 100} 项执行
-            </p>
+            <p className="muted">{scope.threadId ? "本次执行" : "当前对话"}</p>
           </div>
           <button onClick={onClose} aria-label="关闭执行记录">
             <X />
@@ -92,22 +87,17 @@ export function ExecutionDialog({
                 ? "执行步骤"
                 : ""}
           </span>
-          {embedded && atReadLimit && (
-            <small className="execution-history-bound">
-              当前为最近 {snapshot!.limit} 项执行
-            </small>
-          )}
-          {snapshot?.threadsTruncated && (
-            <small className="execution-history-bound">
-              部分子任务记录尚未载入
-            </small>
-          )}
           <Tooltip label="刷新执行记录">
             <button aria-label="刷新执行记录" onClick={() => void refresh()}>
               <RefreshCw />
             </button>
           </Tooltip>
         </div>
+      )}
+      {snapshot?.threadsTruncated && (
+        <small className="execution-history-bound">
+          部分子任务记录尚未载入
+        </small>
       )}
       {!snapshot && !error && <p className="muted">正在读取执行记录…</p>}
       <div className="execution-list">

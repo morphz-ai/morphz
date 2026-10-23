@@ -925,6 +925,13 @@ test("活动顶行的补充和停止使用图标，明暗、窄窗与放大始�
       (document.querySelector(".app") as HTMLElement).dataset.appearance =
         appearance;
     }, appearance);
+    const stopColor = await stop.evaluate((node) =>
+      getComputedStyle(node)
+        .color.match(/[\d.]+/g)!
+        .map(Number),
+    );
+    expect(stopColor[0]! - stopColor[1]!).toBeGreaterThan(30);
+    expect(stopColor[0]! - stopColor[2]!).toBeGreaterThan(30);
     for (const [width, zoom] of [
       [1440, 1],
       [760, 1],
@@ -1026,14 +1033,29 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
       await status.evaluate((node) => getComputedStyle(node).color),
     );
     await expect(summary).toHaveCSS("background-clip", "text");
-    await expect(summary).toHaveCSS("animation-duration", "3.2s");
+    await expect(summary).toHaveCSS("animation-duration", "2.2s");
+    const shine = await summary.evaluate((node) => {
+      const css = getComputedStyle(node);
+      return {
+        image: css.backgroundImage,
+        duration: css.animationDuration,
+        weight: css.fontWeight,
+      };
+    });
+    expect(shine.duration).toBe("2.2s");
+    expect(shine.image).toContain("linear-gradient");
+    expect(shine.image).toContain(
+      appearance === "light" ? "rgb(5, 5, 6)" : "rgb(255, 255, 255)",
+    );
+    expect(shine.weight).toBe("500");
     for (const width of [1440, 760]) {
       await page.setViewportSize({ width, height: 700 });
       await settleTransitions(page);
       await summary.evaluate((node) => {
-        const animation = node.getAnimations()[0]!;
-        animation.pause();
-        animation.currentTime = 1500;
+        for (const animation of node.getAnimations()) {
+          animation.pause();
+          animation.currentTime = 1100;
+        }
       });
       await page.screenshot({
         path: info.outputPath(`activity-focus-${appearance}-${width}.png`),
