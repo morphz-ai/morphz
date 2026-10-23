@@ -8,7 +8,9 @@ const success = [
   "已记住阅读位置",
 ] as const;
 export type NotesOperationSuccess = (typeof success)[number];
-export function isNotesOperationSuccess(value: string): value is NotesOperationSuccess {
+export function isNotesOperationSuccess(
+  value: string,
+): value is NotesOperationSuccess {
   return success.includes(value as NotesOperationSuccess);
 }
 
@@ -37,7 +39,9 @@ export async function waitForNotesOperationStatus(
         const control = document.getElementById(id);
         return control instanceof HTMLButtonElement && !control.disabled;
       });
-      const ended = document.getElementById("connection")?.textContent?.includes("已结束");
+      const ended = document
+        .getElementById("connection")
+        ?.textContent?.includes("已结束");
       return failed && (idle || ended) ? { ok: false, text } : false;
     },
     expected,
