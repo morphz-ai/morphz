@@ -279,7 +279,7 @@ This bundle covers locked production npm dependencies and the Electron package u
 | `xmlbuilder 10.1.1` | `MIT` | L049 |
 | `xtend 4.0.2` | `MIT` | L042 |
 | `yauzl 3.4.0` | `MIT` | L111 |
-| `zod 4.5.4` | `MIT` | L133 |
+| `zod 4.6.6` | `MIT` | L133 |
 | `zwitch 2.0.4` | `MIT` | L108 |
 
 ## License texts
@@ -15221,7 +15221,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### L133
 
-Applies to: `zod 4.5.4`
+Applies to: `zod 4.6.6`
 
 ~~~~text
 MIT License

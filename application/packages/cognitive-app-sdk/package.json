@@ -37,7 +37,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "zod": "4.5.4"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "typescript": "7.0.2"

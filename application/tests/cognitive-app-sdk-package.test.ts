@@ -32,7 +32,7 @@ test("experimental author package declares only pure public ESM and portable typ
   );
   assert.equal(pkg.type, "module");
   assert.equal(pkg.license, "Apache-2.0");
-  assert.deepEqual(pkg.dependencies, { zod: "4.5.4" });
+  assert.deepEqual(pkg.dependencies, { zod: "4.6.6" });
   assert.deepEqual(pkg.devDependencies, { typescript: "7.0.2" });
   assert.deepEqual(Object.keys(pkg.exports).sort(), [
     ".",
@@ -224,7 +224,7 @@ test(
       assert.deepEqual(
         JSON.parse(readFileSync(join(installed, "package.json"), "utf8"))
           .dependencies,
-        { zod: "4.5.4" },
+        { zod: "4.6.6" },
       );
       assert.equal(
         readFileSync(join(installed, "LICENSE"), "utf8"),
@@ -263,7 +263,7 @@ test(
       assert.equal(
         graph.dependencies["@morphz/cognitive-app-sdk"].dependencies.zod
           .version,
-        "4.5.4",
+        "4.6.6",
       );
       assert.deepEqual(
         graph.dependencies["@morphz/cognitive-app-sdk"].dependencies.zod
@@ -383,7 +383,7 @@ export { definition, describe, request, result, value };
       );
       assert.equal(runtime.sdk, true);
       console.log(
-        `[independent SDK package] ${JSON.stringify({ name: "@morphz/cognitive-app-sdk", version: "0.3.0", runtimeDependency: "zod@4.5.4", packedFiles: expectedFiles, tarballIntegrity: archive.integrity, bytes: archive.size, strictConsumer: true, invalidConsumerRejected: true, realNodeImports: [".", "./protocol", "./domain-wire", "./browser"], offline: true })}`,
+        `[independent SDK package] ${JSON.stringify({ name: "@morphz/cognitive-app-sdk", version: "0.3.0", runtimeDependency: "zod@4.6.6", packedFiles: expectedFiles, tarballIntegrity: archive.integrity, bytes: archive.size, strictConsumer: true, invalidConsumerRejected: true, realNodeImports: [".", "./protocol", "./domain-wire", "./browser"], offline: true })}`,
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });
