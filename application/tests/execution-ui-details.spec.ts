@@ -926,6 +926,7 @@ test("活动顶行的补充和停止使用图标，明暗、窄窗与放大始�
       (document.querySelector(".app") as HTMLElement).dataset.appearance =
         appearance;
     }, appearance);
+    await settleTransitions(page);
     const stopPaint = await stop.evaluate((node) => {
       const css = getComputedStyle(node);
       const glyph = getComputedStyle(node.querySelector("svg")!);
@@ -938,6 +939,9 @@ test("活动顶行的补充和停止使用图标，明暗、窄窗与放大始�
       };
     });
     expect(stopPaint.background).toBe("rgba(0, 0, 0, 0)");
+    expect(stopPaint.foreground).toEqual(
+      appearance === "light" ? [229, 83, 94] : [255, 141, 152],
+    );
     expect(stopPaint.foreground[0]! - stopPaint.foreground[1]!).toBeGreaterThan(
       30,
     );
@@ -1065,7 +1069,7 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
       });
       expect(shine.duration).toBe("1.8s");
       expect(shine.image).toContain("linear-gradient");
-      expect(shine.image).toContain("rgb(255, 255, 255)");
+      expect(shine.image).not.toContain("rgb(255, 255, 255)");
       expect(shine.weight).toBe("500");
       for (const width of [1440, 760]) {
         await page.setViewportSize({ width, height: 700 });
@@ -1118,19 +1122,15 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
           expect(pixels.height).toBe(baseline.info.height);
           expect(pixels.channels).toBe(baseline.info.channels);
           let count = 0,
-            horizontalSum = 0;
+            horizontalSum = 0,
+            maximumGain = 0;
           for (let y = 0; y < pixels.height; y++) {
             for (let x = 0; x < pixels.width; x++) {
               const offset = (y * pixels.width + x) * pixels.channels;
               const [r, g, b] = data.subarray(offset, offset + 3);
               const [br, bg, bb] = baseline.data.subarray(offset, offset + 3);
-              const lit =
-                r! > 225 &&
-                g! > 225 &&
-                b! > 225 &&
-                r! - br! > 45 &&
-                g! - bg! > 45 &&
-                b! - bb! > 45;
+              maximumGain = Math.max(maximumGain, r! - br!, g! - bg!, b! - bb!);
+              const lit = r! - br! > 35 && g! - bg! > 35 && b! - bb! > 35;
               if (lit) {
                 count++;
                 horizontalSum += x;
@@ -1141,6 +1141,10 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
             count,
             "the glint must actually paint visible text pixels",
           ).toBeGreaterThan(10);
+          expect(
+            maximumGain,
+            "the light must not wash the text out to pure white",
+          ).toBeLessThanOrEqual(appearance === "light" ? 115 : 60);
           highlights.push({ x: horizontalSum / count, pixels: count });
         }
         const bounds = (await summary.boundingBox())!;

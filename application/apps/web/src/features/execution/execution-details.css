@@ -114,20 +114,21 @@
   color: var(--accent-strong);
   font-weight: 550;
 }
-/* A silver-white light reflection moves over the glyphs, not a hue shift or a
+/* A soft silver-white reflection moves over the glyphs, not a hue shift or a
    paragraph backdrop. The original text stays still beneath the light sweep. */
 @supports (background-clip: text) {
   .execution-origin > .execution-activity-summary[data-motion-active] {
+    --execution-sheen-base: light-dark(var(--text-secondary), var(--muted));
     width: fit-content;
     max-width: 100%;
     background-image: linear-gradient(
       100deg,
-      light-dark(var(--text-secondary), var(--muted)) 42%,
-      light-dark(#bfcbd2, #d9e7ed) 47%,
-      #ffffff 49%,
-      #ffffff 51%,
-      light-dark(#bfcbd2, #d9e7ed) 53%,
-      light-dark(var(--text-secondary), var(--muted)) 58%
+      var(--execution-sheen-base) 42%,
+      color-mix(in srgb, var(--execution-sheen-base), #ffffff 28%) 47%,
+      color-mix(in srgb, var(--execution-sheen-base), #ffffff 60%) 49%,
+      color-mix(in srgb, var(--execution-sheen-base), #ffffff 60%) 51%,
+      color-mix(in srgb, var(--execution-sheen-base), #ffffff 28%) 53%,
+      var(--execution-sheen-base) 58%
     );
     background-size: 220% 100%;
     background-clip: text;
@@ -248,10 +249,11 @@
   color: var(--ink);
 }
 .app .execution-origin-actions > .execution-stop-thread:not(:disabled):hover {
-  color: var(--danger);
+  color: var(--execution-stop-ink);
 }
 .app .execution-origin-actions > .execution-stop-thread {
-  color: var(--danger);
+  --execution-stop-ink: light-dark(#e5535e, #ff8d98);
+  color: var(--execution-stop-ink);
 }
 .execution-origin-actions > .execution-stop-thread > svg {
   fill: currentColor;
