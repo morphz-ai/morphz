@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Script } from "node:vm";
 import { buildSync } from "esbuild";
-import { chromium } from "@playwright/test";
+import { chromium, type Browser } from "@playwright/test";
 import type { CognitiveAppDefinition } from "../../packages/cognitive-app-sdk/src/index.js";
 import { appContentSecurityPolicy } from "../../packages/core/src/resource-policy.js";
 import {
@@ -257,7 +257,9 @@ export async function expectNotesGuiStartupRefusal(
 export async function openNotesGuiBrowser(
   html: string,
   definition: CognitiveAppDefinition,
+  { signal }: { signal?: AbortSignal } = {},
 ) {
+  signal?.throwIfAborted();
   const proof = randomUUID();
   const wrapper = await createCognitiveDocumentBootstrap(html, proof);
   const hostCode = buildSync({
@@ -367,24 +369,71 @@ export async function openNotesGuiBrowser(
       response.end();
     }
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const browser = await chromium.launch({
-    executablePath: process.env.MORPHZ_TEST_BROWSER_EXECUTABLE || undefined,
-    headless: true,
-  });
+  let browser: Browser | undefined;
+  let launching: Promise<Browser> | undefined;
+  let closing: Promise<void> | undefined;
+  let phase = "start ephemeral server";
+  const errors: string[] = [],
+    requests: string[] = [];
+  const release = () =>
+    (closing ??= (async () => {
+      signal?.removeEventListener("abort", abort);
+      // Always attempt both releases, including launch/startup failure. Stop
+      // keep-alive connections too: this server carries this fixture's bytes only.
+      const stoppedServer = new Promise<void>((resolve, reject) => {
+        server.close((error?: NodeJS.ErrnoException) => {
+          if (error && error.code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+          else resolve();
+        });
+        server.closeAllConnections();
+      });
+      const stoppedBrowser = (async () => {
+        // A launch in flight still owns its eventual Browser; abort must not
+        // leave it behind simply because launch had not returned a handle yet.
+        const owned = browser ?? (await launching?.catch(() => undefined));
+        await owned?.close();
+      })();
+      const results = await Promise.allSettled([stoppedServer, stoppedBrowser]);
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length)
+        throw new AggregateError(
+          failures.map((result) => result.reason),
+          "Notes GUI fixture cleanup failed",
+        );
+    })());
+  const close = (options: { preserveFailure?: boolean } = {}) =>
+    notesGuiCleanup(release, options);
+  const abort = () => {
+    // No remote evaluate before cleanup: a hung renderer must not prevent
+    // TestContext.signal from cancelling its in-flight Playwright operation.
+    console.error("Controlled author GUI aborted", { phase, errors, requests });
+    void close().catch((error) =>
+      console.error("Controlled author GUI abort cleanup", error),
+    );
+  };
+  signal?.addEventListener("abort", abort, { once: true });
   try {
+    signal?.throwIfAborted();
+    server.listen({ port: 0, host: "127.0.0.1", signal });
+    await once(server, "listening", { signal });
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    phase = "launch owned Browser";
+    launching = chromium.launch({
+      executablePath: process.env.MORPHZ_TEST_BROWSER_EXECUTABLE || undefined,
+      headless: true,
+    });
+    browser = await launching;
+    signal?.throwIfAborted();
     const page = await browser.newPage({
       viewport: { width: 960, height: 640 },
     });
-    const errors: string[] = [],
-      requests: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => requests.push(request.url()));
+    phase = "navigate controlled Host";
     await page.goto(`http://127.0.0.1:${address.port}/`);
     try {
+      phase = "wait for private Document carrier";
       await page.waitForFunction(
         () =>
           document.querySelector<HTMLIFrameElement>("#guest")?.contentWindow
@@ -402,43 +451,101 @@ export async function openNotesGuiBrowser(
       .frames()
       .find((frame) => frame.parentFrame() === page.mainFrame())!;
     const guest = carrier.childFrames()[0]!;
+    const witness = async (label: string) => {
+      const [host, author] = await Promise.all([
+        notesGuiDiagnostic(() =>
+          page.evaluate(() => Reflect.get(window, "authorHost")?.report),
+        ),
+        notesGuiDiagnostic(() =>
+          guest.evaluate(() => ({
+            text: document.body?.textContent?.slice(0, 1000),
+            status: document.getElementById("status")?.textContent,
+            heading: document.getElementById("heading")?.textContent,
+            command: (
+              document.getElementById("command") as HTMLInputElement | null
+            )?.value,
+            facade: typeof Reflect.get(window, "__morphzCognitiveDocument"),
+            origin: location.origin,
+          })),
+        ),
+      ]);
+      console.error(label, { phase, errors, requests, host, author });
+    };
     try {
+      phase = "wait for author connection";
       await guest.waitForFunction(
         () =>
           document.getElementById("connection")?.textContent === "工作区已连接",
       );
     } catch (error) {
-      console.error("Controlled author GUI connection witness", {
-        errors,
-        requests,
-        host: await page.evaluate(
-          () => Reflect.get(window, "authorHost")?.report,
-        ),
-        author: await guest.evaluate(() => ({
-          text: document.body?.textContent?.slice(0, 1000),
-          facade: typeof Reflect.get(window, "__morphzCognitiveDocument"),
-          origin: location.origin,
-        })),
-      });
-      await page.screenshot({
-        path: "/tmp/morphz-notes-gui-connection-FAILED-oct06.png",
-      });
+      await witness("Controlled author GUI connection witness");
+      await notesGuiDiagnostic(() =>
+        page.screenshot({
+          path: "/tmp/morphz-notes-gui-connection-FAILED-oct06.png",
+          timeout: 1_000,
+        }),
+      );
       throw error;
     }
+    phase = "author connected";
     return {
       browser,
       page,
       guest,
       errors,
       requests,
-      async close() {
-        await browser.close();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+      phase(value: string) {
+        phase = value;
       },
+      witness,
+      close,
     };
   } catch (error) {
-    await browser.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await close().catch((cleanupError) =>
+      console.error("Controlled author GUI cleanup witness", cleanupError),
+    );
     throw error;
+  }
+}
+
+/** Diagnostic reads are secondary to the original failure. A stalled renderer,
+ * rejected evaluate or screenshot must neither mask it nor postpone cleanup. */
+export async function notesGuiDiagnostic(
+  read: () => Promise<unknown>,
+  timeoutMs = 1_000,
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve()
+        .then(read)
+        .catch((error) => ({
+          unavailable:
+            error instanceof Error ? error.message : "Diagnostic read failed",
+        })),
+      new Promise((resolve) => {
+        timer = setTimeout(
+          () => resolve({ unavailable: "Diagnostic read timed out" }),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A test already throwing its original failure must not replace that error
+ * with a secondary cleanup error. Cleanup failure on a successful test is
+ * still a failure, never silently accepted. */
+export async function notesGuiCleanup(
+  release: () => Promise<void>,
+  { preserveFailure = false }: { preserveFailure?: boolean } = {},
+) {
+  try {
+    await release();
+  } catch (error) {
+    if (!preserveFailure) throw error;
+    console.error("Controlled author GUI secondary cleanup failure", error);
   }
 }
