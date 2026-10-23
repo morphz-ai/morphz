@@ -35,6 +35,9 @@ function verifyModelSettingsDiagnostic(source) {
     "application/apps/web/src/ModelSettings.tsx",
     "application/tests/model-settings.spec.ts",
     "application/tests/ui-consistency.spec.ts",
+    "application/tests/execution-ui-details.spec.ts",
+    "application/tests/fixtures/painted-sweep.ts",
+    "application/tests/painted-sweep.test.ts",
   ]) assert.ok(triggers.includes(`      - ${path}\n`), `${path} must trigger diagnostics`);
   const job = jobSource(source, "remaining-browser-regressions");
   const step = job.split("\n      - ").find(part =>
@@ -42,7 +45,7 @@ function verifyModelSettingsDiagnostic(source) {
   );
   assert.ok(step);
   assert.match(step, /npm run test:e2e -- --forbid-only/);
-  for (const path of ["tests/model-settings.spec.ts", "tests/ui-consistency.spec.ts"])
+  for (const path of ["tests/model-settings.spec.ts", "tests/ui-consistency.spec.ts", "tests/execution-ui-details.spec.ts"])
     assert.ok(step.includes(`            ${path} \\\n`), `${path} must run as a complete file`);
   assert.doesNotMatch(step, /--grep|--shard|--retries|--list|continue-on-error|\bif:|\|\|/);
 }
@@ -57,6 +60,8 @@ test("settings diagnostic trigger omissions, narrowed files and hidden failures 
   for (const changed of [
     source.replace("      - application/tests/ui-consistency.spec.ts\n", ""),
     source.replace("            tests/ui-consistency.spec.ts \\\n", ""),
+    source.replace("      - application/tests/fixtures/painted-sweep.ts\n", ""),
+    source.replace("            tests/execution-ui-details.spec.ts \\\n", ""),
     source.replace(" --forbid-only", ""),
     source.replace(" --forbid-only", " --forbid-only --grep settings"),
     source.replace(" --forbid-only", " --forbid-only --retries=1"),

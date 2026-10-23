@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 export const paintedSweepTimes = [300, 450, 600, 1200, 1350, 1500] as const;
 export type PaintedSweepFrame = {
   time: number;
-  pixels: number;
-  x: number | null;
+  painted: readonly (readonly [number, number])[];
   maximumGain: number;
 };
 
@@ -27,10 +26,10 @@ export function assertPaintedSweep(
       "the light must not wash the text out to pure white at any phase",
     );
   const early = frames.filter(
-    (frame) => frame.time <= 600 && frame.pixels > 10,
+    (frame) => frame.time <= 600 && frame.painted.length,
   );
   const late = frames.filter(
-    (frame) => frame.time >= 1200 && frame.pixels > 10,
+    (frame) => frame.time >= 1200 && frame.painted.length,
   );
   assert(
     early.length >= 2,
@@ -40,14 +39,29 @@ export function assertPaintedSweep(
     late.length >= 2,
     "the glint must paint visible text at two late phases",
   );
-  const center = (samples: readonly PaintedSweepFrame[]) => {
-    assert(samples.every((sample) => Number.isFinite(sample.x)));
-    return samples.reduce((sum, sample) => sum + sample.x!, 0) / samples.length;
+  const coverage = (samples: readonly PaintedSweepFrame[]) => {
+    const pixels = new Map<string, number>();
+    for (const sample of samples)
+      for (const [x, y] of sample.painted) {
+        assert(Number.isInteger(x) && x >= 0 && x < Math.ceil(width));
+        assert(Number.isInteger(y) && y >= 0);
+        pixels.set(`${x}:${y}`, x);
+      }
+    assert(
+      pixels.size > 10,
+      "the fixed interval must paint more than ten distinct high-gain glyph pixels",
+    );
+    return {
+      pixels: pixels.size,
+      x: [...pixels.values()].reduce((sum, x) => sum + x, 0) / pixels.size,
+    };
   };
-  const travel = center(late) - center(early);
+  const earlyCoverage = coverage(early),
+    lateCoverage = coverage(late);
+  const travel = lateCoverage.x - earlyCoverage.x;
   assert(
     travel > width * 0.3,
     "the painted glint must travel through the text, not darken the whole paragraph",
   );
-  return { early, late, travel, width };
+  return { early, late, earlyCoverage, lateCoverage, travel, width };
 }

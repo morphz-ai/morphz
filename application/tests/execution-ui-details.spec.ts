@@ -1131,9 +1131,8 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
           expect(pixels.width).toBe(baseline.info.width);
           expect(pixels.height).toBe(baseline.info.height);
           expect(pixels.channels).toBe(baseline.info.channels);
-          let count = 0,
-            horizontalSum = 0,
-            maximumGain = 0;
+          const painted: [number, number][] = [];
+          let maximumGain = 0;
           for (let y = 0; y < pixels.height; y++) {
             for (let x = 0; x < pixels.width; x++) {
               const offset = (y * pixels.width + x) * pixels.channels;
@@ -1141,16 +1140,12 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
               const [br, bg, bb] = baseline.data.subarray(offset, offset + 3);
               maximumGain = Math.max(maximumGain, r! - br!, g! - bg!, b! - bb!);
               const lit = r! - br! > 35 && g! - bg! > 35 && b! - bb! > 35;
-              if (lit) {
-                count++;
-                horizontalSum += x;
-              }
+              if (lit) painted.push([x, y]);
             }
           }
           highlights.push({
             time,
-            x: count ? horizontalSum / count : null,
-            pixels: count,
+            painted,
             maximumGain,
           });
         }

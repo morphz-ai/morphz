@@ -21,6 +21,9 @@ on:
       - application/tests/conversation-performance.spec.ts
       - application/tests/model-settings.spec.ts
       - application/tests/ui-consistency.spec.ts
+      - application/tests/execution-ui-details.spec.ts
+      - application/tests/fixtures/painted-sweep.ts
+      - application/tests/painted-sweep.test.ts
       - application/tests/exchange-draft-state.spec.ts
       - application/tests/message-work-footer.spec.ts
       - application/tests/exchange-resize.spec.ts
@@ -83,6 +86,7 @@ jobs:
           xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --forbid-only \
             tests/model-settings.spec.ts \
             tests/ui-consistency.spec.ts \
+            tests/execution-ui-details.spec.ts \
             tests/profile-actual-transport.spec.ts \
             tests/workspace-panels-notifications.spec.ts \
             tests/shell-layout.spec.ts \
