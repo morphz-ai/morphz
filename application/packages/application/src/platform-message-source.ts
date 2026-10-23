@@ -1,7 +1,6 @@
 import { unified } from "unified";
 import remarkParse from "remark-parse";
-import remarkGfm from "remark-gfm";
-import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
+import { markdownRemarkPlugins } from "../../core/src/markdown-parsing.js";
 
 type MarkdownNode = {
   type: string;
@@ -33,10 +32,7 @@ function displayedText(node: MarkdownNode): string {
 
 const normalize = (value: string) => value.replace(/\s+/gu, " ").trim();
 // Match SafeMarkdown's parsing rules, including emphasis next to CJK text.
-const markdown = unified()
-  .use(remarkParse)
-  .use(remarkCjkFriendly)
-  .use(remarkGfm);
+const markdown = unified().use(remarkParse).use(markdownRemarkPlugins);
 
 /** Message text can be selected in the rendered Markdown view. Verify the
  * actual quoted words against either the saved source or its visible text.
@@ -46,5 +42,7 @@ export function sourceContainsSelection(source: string, selected: string) {
   const target = normalize(selected);
   if (!target) return false;
   if (normalize(source).includes(target)) return true;
-  return normalize(displayedText(markdown.parse(source))).includes(target);
+  return normalize(
+    displayedText(markdown.runSync(markdown.parse(source), source)),
+  ).includes(target);
 }

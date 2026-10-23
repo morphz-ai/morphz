@@ -20,9 +20,11 @@ const longLabel =
 function markdown(targetId: string) {
   return [
     `常规链接：[产品说明](${externalURL})，以及 [本地资料](artifact:${targetId})。`,
+    "**https://github.com/shafreeck/24frames**：public，默认分支 `main`，远端 HEAD。",
     `[${longLabel}](https://example.org/long)`,
     "[HTTP 兼容链接](http://example.org/plain)",
     "[危险协议](javascript:alert%281%29) [不允许的凭据链接](https://test:fixture@example.org/private) [数据协议](data:text/html,test)",
+    "https://test:fixture@example.org/bare，普通说明。",
     "![外部图片](https://example.org/markdown-image.png)",
     '<a href="https://example.org/raw">原始 HTML 链接</a>',
   ].join("\n\n");
@@ -30,7 +32,7 @@ function markdown(targetId: string) {
 
 /** Only presentation is synthetic. Documents and object opening use the actual
  * Platform client/Host; neither consumer is mounted by a test-only component. */
-async function prepare(page: Page, consumer: Consumer) {
+async function prepare(page: Page, consumer: Consumer, content = markdown) {
   let text = "";
   const presentation = await mockPlatformConversation(page, () => ({
     inputs: [],
@@ -61,7 +63,7 @@ async function prepare(page: Page, consumer: Consumer) {
     title: `TEST 链接目标 ${randomUUID()}`,
     markdown: "TEST 引用对象原文，打开链接不发送模型请求。",
   })) as { contentId: string };
-  const source = markdown(target.contentId);
+  const source = content(target.contentId);
   const document = (await presentation.client.createDocument({
     commandId: randomUUID(),
     objectId: randomUUID(),
@@ -78,7 +80,7 @@ async function prepare(page: Page, consumer: Consumer) {
   const reply = page.locator(
     '[data-message-id="markdown-appearance-reply"] .reply-content',
   );
-  await expect(reply.getByRole("link", { name: "产品说明" })).toBeVisible();
+  await expect(reply).toBeVisible();
   if (consumer === "文档正文") {
     await reply
       .getByRole("button", { name: "打开测试文档", exact: true })
@@ -390,6 +392,16 @@ for (const consumer of consumers) {
     await expect(link).toHaveAttribute("href", externalURL);
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    const bare = root.getByRole("link", {
+      name: "https://github.com/shafreeck/24frames",
+      exact: true,
+    });
+    await expect(bare).toHaveAttribute(
+      "href",
+      "https://github.com/shafreeck/24frames",
+    );
+    await expect(bare.locator("..")).toHaveJSProperty("tagName", "STRONG");
+    await expect(root).toContainText("：public，默认分支 main，远端 HEAD。");
     await expect(
       root.getByRole("link", { name: "HTTP 兼容链接" }),
     ).toHaveAttribute("href", "http://example.org/plain");
@@ -403,6 +415,17 @@ for (const consumer of consumers) {
           .getByText(name, { exact: true }),
       ).toBeVisible();
     }
+    await expect(
+      root.getByRole("link", {
+        name: "https://test:fixture@example.org/bare",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await expect(
+      root
+        .locator('span[title="不支持的链接地址"]')
+        .getByText("https://test:fixture@example.org/bare", { exact: true }),
+    ).toBeVisible();
     await expect(root.locator('a[href="https://example.org/raw"]')).toHaveCount(
       0,
     );
@@ -445,5 +468,89 @@ for (const consumer of consumers) {
     await expect
       .poll(() => page.evaluate(() => (window as any).__markdownExternal))
       .toEqual([externalURL]);
+  });
+}
+
+for (const appearance of appearances) {
+  test(`对话 Markdown 阅读层次、原文与局部溢出：${appearance}`, async ({
+    page,
+  }, info) => {
+    const { root } = await prepare(page, "对话回复", () =>
+      [
+        "# 项目已经创建并推送",
+        "已建好并推上去了。后续说明保留原文，只调整阅读层次。",
+        "**https://github.com/shafreeck/24frames**：public，默认分支 `main`。",
+        "## 许可怎么拆",
+        "代码、设计与媒体素材分开说明，先看结论，再看依据。",
+        "- 代码：沿用开源许可。\n- 图片：核对原始来源。\n  - 保留署名和使用条件。",
+        "> 原始资料与推断必须分开。\n> 这条说明仍保留原来的换行。",
+        "### 下一步",
+        "| 对象 | 建议 | 验证方式 | 状态 | 备注 |\n| --- | --- | --- | --- | --- |\n| 源代码 | 保留许可 | 检查文件 | 已完成 | 保留原文 |",
+        "```text\n" +
+          "literal-content-with-no-line-break/".repeat(12) +
+          "\n```",
+        "正文结束，不新增任何模型请求。",
+      ].join("\n\n"),
+    );
+    await chooseAppearance(page, appearance, "电光青");
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1100 });
+      await root.locator("h1").scrollIntoViewIfNeeded();
+      const typography = await root.evaluate((element) => {
+        const size = (selector: string) =>
+          parseFloat(
+            getComputedStyle(element.querySelector(selector)!).fontSize,
+          );
+        return {
+          body: parseFloat(getComputedStyle(element).fontSize),
+          line: parseFloat(getComputedStyle(element).lineHeight),
+          headings: [size("h1"), size("h2"), size("h3")],
+          paragraphGap: getComputedStyle(element.querySelector("p")!)
+            .marginBottom,
+          overflow: element.scrollWidth - element.clientWidth,
+          pageOverflow:
+            document.documentElement.scrollWidth -
+            document.documentElement.clientWidth,
+          tableScroll: !!element.querySelector(".markdown-table-scroll"),
+        };
+      });
+      expect(typography.body).toBe(15);
+      expect(typography.line / typography.body).toBeCloseTo(1.65);
+      expect(typography.headings[0]).toBeGreaterThan(typography.headings[1]!);
+      expect(typography.headings[1]).toBeGreaterThan(typography.headings[2]!);
+      expect(typography.headings[2]).toBeGreaterThan(typography.body);
+      expect(typography.paragraphGap).toBe("11.25px");
+      expect(typography.overflow).toBeLessThanOrEqual(1);
+      expect(typography.pageOverflow).toBeLessThanOrEqual(1);
+      expect(typography.tableScroll).toBe(true);
+      await expect(
+        root.getByRole("link", {
+          name: "https://github.com/shafreeck/24frames",
+          exact: true,
+        }),
+      ).toHaveAttribute("href", "https://github.com/shafreeck/24frames");
+      await expect(root).toContainText("这条说明仍保留原来的换行。");
+      await page.screenshot({ path: info.outputPath(`message-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    for (const [preference, expectedSize] of [
+      ["large", 17],
+      ["larger", 19],
+    ] as const) {
+      const settings = await openSettings(page, "外观");
+      await settings
+        .getByRole("combobox", { name: "阅读字号" })
+        .selectOption(preference);
+      await page.keyboard.press("Escape");
+      await expect(root).toHaveCSS("font-size", `${expectedSize}px`);
+      await expect(root.locator("h1")).toHaveCSS(
+        "font-size",
+        `${(expectedSize * 1.4).toFixed(1)}px`,
+      );
+      await expect(root.locator("h2")).toHaveCSS(
+        "font-size",
+        `${(expectedSize * 1.2).toFixed(1)}px`,
+      );
+    }
   });
 }

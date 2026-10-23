@@ -1326,15 +1326,6 @@ body:has(dialog[open]) .cognitive-application-frame {
     pointer-events: auto;
   }
 }
-.conversation .reply-content > :first-child {
-  margin-top: 0;
-}
-.conversation .reply-content > :last-child {
-  margin-bottom: 0;
-}
-.conversation .reply-content > p {
-  margin-block: 0 0.9em;
-}
 .conversation .human-message > p {
   margin: 0;
   font-size: 15px;

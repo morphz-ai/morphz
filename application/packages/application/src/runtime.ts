@@ -5191,6 +5191,20 @@ export class RuntimeBridge {
       scope.conversationId,
       grant.personalDefault,
     );
+    // Freeze the Host side's membership before reading Runtime history.
+    // A timeline response can predate input acceptance even when it arrives
+    // after dispatch has filled rootId. Reading the mutable outbox afterwards
+    // would then omit the input from both sides for one refresh. Capture the
+    // IDs, not just the array: dispatch updates rootId in place. Delivery
+    // status/errors can still reflect a dispatch which settled during the read.
+    const local = this.platformReadDeliveries(scope, access, grant).filter(
+      (delivery) => delivery.sessionId === sessionId,
+    );
+    const awaitingAcceptance = new Set(
+      local
+        .filter((delivery) => !delivery.rootId)
+        .map((delivery) => delivery.inputId),
+    );
     const limit = Math.min(Math.max(page.limit ?? 100, 1), 100);
     const accepted: HistoryEntry[] = [];
     const pageMessageSources = new Map<string, SessionTimelineItem>();
@@ -5269,12 +5283,9 @@ export class RuntimeBridge {
           before.entry_id,
         );
     }
-    const local = this.platformReadDeliveries(scope, access, grant).filter(
-      (delivery) => delivery.sessionId === sessionId,
-    );
     const pending: HistoryEntry[] = local.flatMap((delivery) => {
       const source = delivery.platformSource;
-      if (!source || delivery.rootId) return [];
+      if (!source || !awaitingAcceptance.has(delivery.inputId)) return [];
       const input: PlatformConversationHistory["inputs"][number] = {
         id: delivery.inputId,
         ...inputInferenceSelection(delivery.request.activation),

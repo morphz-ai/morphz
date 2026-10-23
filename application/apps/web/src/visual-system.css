@@ -933,7 +933,7 @@
   font-size: calc(12px + var(--reading-increment));
 }
 .app:is([data-text-size="large"], [data-text-size="larger"])
-  :is(.document-body h3, .reply-content :is(h1, h2, h3)) {
+  .document-body h3 {
   font-size: calc(17px + var(--reading-increment));
 }
 .app:is([data-text-size="large"], [data-text-size="larger"]) .document-body h1 {

@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
+import { markdownRemarkPlugins } from "../apps/web/src/markdown-parsing.js";
 import { preserveMarkdownLineBreaks } from "../apps/web/src/markdown-line-breaks.js";
 import { streamingTextPlugin } from "../apps/web/src/streaming-text.js";
 import { omitRepeatedDocumentTitle } from "../apps/web/src/document-presentation.js";
@@ -15,8 +14,7 @@ const render = (source: string, streaming = false, title?: string) =>
       children: source,
       skipHtml: true,
       remarkPlugins: [
-        remarkGfm,
-        remarkCjkFriendly,
+        ...markdownRemarkPlugins,
         [omitRepeatedDocumentTitle, { title }],
       ],
       rehypePlugins: [
