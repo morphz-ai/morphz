@@ -3,6 +3,8 @@ import importlib.util
 import json
 import sys
 import tempfile
+import shutil
+import subprocess
 import time
 import types
 import unittest
@@ -51,6 +53,7 @@ class ContractTest(unittest.TestCase):
         self.s.actions=self.s.resets=self.s.max_levels=0
         self.s.started=None; self.s.closed_reason=None
         self.s.lock=__import__('threading').RLock()
+        self.s.observations=bridge.ObservationTracker()
         self.s.capture('INITIAL',{})
     def tearDown(self): self.tmp.cleanup()
     def test_lossless_grid_and_official_palette(self):
@@ -74,7 +77,8 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(status['max_levels_completed'],1)
         self.assertEqual(status['resets'],1)
     def test_invalid_action_or_coordinate_rejected(self):
-        for payload in ({'action':'ACTION2'},{'action':'ACTION6','data':{'x':64,'y':0}}):
+        for payload in ({'action':'ACTION2'},{'action':'ACTION6','data':{'x':64,'y':0}},
+                        {'action':'ACTION6','data':{'x':True,'y':0}}):
             with self.assertRaises(ValueError): self.s.act(payload)
         self.assertEqual(self.s.actions,0)
     def test_action_budget_is_not_win(self):
@@ -87,6 +91,57 @@ class ContractTest(unittest.TestCase):
         status=self.s.act({'action':'ACTION1'})
         self.assertEqual(status['stop_reason'],'time_budget')
         self.assertEqual(status['actions'],0)
+    def test_observe_does_not_take_a_game_action_or_inflate_visit_count(self):
+        first=self.s.observe()
+        second=self.s.observe()
+        self.assertEqual(first['actions'],0)
+        self.assertEqual(first['observation'],second['observation'])
+        self.assertEqual(first['observation']['grid_hex_rows'],['0A','EF'])
+        self.assertEqual(first['observation']['action_index'],0)
+    def test_step_attaches_current_observation_and_action_stays_backwards_compatible(self):
+        plain=self.s.act({'action':'ACTION6','data':{'x':1,'y':0}})
+        self.assertNotIn('observation',plain)
+        stepped=self.s.act({'action':'ACTION6','data':{'x':1,'y':0},'with_observation':True})
+        self.assertEqual(stepped['observation']['action_index'],2)
+        self.assertTrue(stepped['observation']['transition']['observation_unchanged'])
+        self.assertEqual(stepped['observation']['transition']['attempts_of_action_from_same_state'],2)
+    def test_stopped_step_returns_last_observation_without_moving(self):
+        self.s.max_actions=1
+        self.s.act({'action':'ACTION6','data':{'x':1,'y':0}})
+        result=self.s.act({'action':'ACTION1','with_observation':True})
+        self.assertTrue(result['stopped'])
+        self.assertEqual(result['actions'],1)
+        self.assertEqual(result['observation']['action_index'],1)
+    def test_frameless_receipt_does_not_publish_stale_observation(self):
+        self.s.env.observation_space.frame=[]
+        self.s.capture('ACTION6',{})
+        self.assertIsNone(self.s.observe()['observation'])
+        self.assertIsNone(json.loads((self.s.output/'observation.json').read_text()))
+        self.assertFalse(self.s.status()['frame_available'])
+    def test_real_http_and_cli_transport_against_explicit_fixture(self):
+        # Real socket + subprocess; fake engine. This is not a game/model score.
+        from http.server import ThreadingHTTPServer
+        import threading
+        server=ThreadingHTTPServer(('127.0.0.1',0),bridge.make_handler(self.s))
+        worker=threading.Thread(target=server.serve_forever,daemon=True)
+        worker.start()
+        shutil.copy2(Path(__file__).with_name('arc_cli.py'),self.s.output/'arc_cli.py')
+        (self.s.output/'connection.json').write_text(json.dumps({'port':server.server_port}))
+        def cli(*args):
+            result=subprocess.run([sys.executable,str(self.s.output/'arc_cli.py'),*args],
+                                  capture_output=True,text=True,timeout=10,check=True)
+            return json.loads(result.stdout)
+        try:
+            initial=cli('observe')
+            self.assertEqual(initial['actions'],0)
+            self.assertEqual(initial['observation']['grid_hex_rows'],['0A','EF'])
+            stepped=cli('step','ACTION6','1','0')
+            self.assertEqual(stepped['actions'],1)
+            self.assertEqual(stepped['observation']['action_index'],1)
+            self.assertEqual(stepped['observation']['transition']['from_action_index'],0)
+            self.assertNotIn('observation',cli('status'))
+        finally:
+            server.shutdown(); server.server_close(); worker.join(timeout=3)
 
 
 if __name__=='__main__': unittest.main()

@@ -5,18 +5,39 @@ import sys
 import urllib.error
 import urllib.request
 
-root=pathlib.Path(__file__).resolve().parent
-port=json.loads((root/'connection.json').read_text())['port']
-if len(sys.argv)==1 or sys.argv[1]=='status':
-    request=urllib.request.Request(f'http://127.0.0.1:{port}/status')
-else:
-    # action ACTION1; action ACTION6 20 30; batch '[{"action":"ACTION1"}, ...]'
-    if sys.argv[1]=='batch': body={'actions':json.loads(sys.argv[2])}
-    elif sys.argv[1]=='action':
-        body={'action':sys.argv[2]}
-        if len(sys.argv)>=5: body['data']={'x':int(sys.argv[3]),'y':int(sys.argv[4])}
-    else: raise SystemExit('Commands: status | action ACTIONn [x y] | batch JSON')
-    request=urllib.request.Request(f'http://127.0.0.1:{port}/action',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
-try:
-    with urllib.request.urlopen(request,timeout=60) as result: print(result.read().decode())
-except urllib.error.HTTPError as exc: print(exc.read().decode()); raise SystemExit(1)
+def build_request(port, args):
+    command = args[0] if args else 'status'
+    if command in ('status', 'observe'):
+        if len(args) > 1:
+            raise ValueError('status/observe do not accept arguments')
+        return urllib.request.Request(f'http://127.0.0.1:{port}/{command}')
+    if command == 'batch' and len(args) == 2:
+        body = {'actions': json.loads(args[1])}
+    elif command in ('action', 'step') and len(args) in (2, 4):
+        body = {'action': args[1]}
+        if len(args) == 4:
+            body['data'] = {'x': int(args[2]), 'y': int(args[3])}
+        if command == 'step':
+            body['with_observation'] = True
+    else:
+        raise ValueError('Commands: status | observe | action/step ACTIONn [x y] | batch JSON')
+    return urllib.request.Request(f'http://127.0.0.1:{port}/action',
+        data=json.dumps(body).encode(), headers={'Content-Type': 'application/json'})
+
+
+def main():
+    root = pathlib.Path(__file__).resolve().parent
+    port = json.loads((root/'connection.json').read_text())['port']
+    try:
+        request = build_request(port, sys.argv[1:])
+        with urllib.request.urlopen(request, timeout=60) as result:
+            print(result.read().decode())
+    except urllib.error.HTTPError as exc:
+        print(exc.read().decode())
+        raise SystemExit(1)
+    except (ValueError, IndexError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+if __name__ == '__main__':
+    main()

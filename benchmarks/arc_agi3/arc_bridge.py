@@ -11,6 +11,7 @@ import arc_agi
 import numpy as np
 from arcengine import GameAction
 from PIL import Image
+from arc_observation import ObservationTracker
 
 PALETTE = ['#FFFFFF','#CCCCCC','#999999','#666666','#333333','#000000',
            '#E53AA3','#FF7BCC','#F93C31','#1E93FF','#88D8F1','#FFDC00',
@@ -32,6 +33,7 @@ class Session:
         self.started = None
         self.closed_reason = None
         self.lock = threading.RLock()
+        self.observations = ObservationTracker()
         self.capture('INITIAL', {})
 
     def status(self):
@@ -48,6 +50,7 @@ class Session:
             available_actions=[a.name for a in self.env.action_space],
             elapsed_s=round(elapsed,3), remaining_s=round(max(0,self.budget_s-elapsed),3),
             stopped=bool(reason), stop_reason=reason,
+            frame_available=self.observations.latest is not None,
             frame_png='frame.png', grid_txt='grid.txt', frame_json='frame.json')
 
     def capture(self, action, data):
@@ -64,6 +67,13 @@ class Session:
             image.save(self.output/'frames'/f'{self.actions:04d}.png')
             (self.output/'grid.txt').write_text(''.join(f'{y:02d} '+''.join(format(int(c),'X') for c in row)+'\n' for y,row in enumerate(grid)))
             (self.output/'frame.json').write_text(json.dumps(grid.tolist()))
+            self.observations.capture(grid.tolist(), action=action, data=data,
+                actions=self.actions, levels_completed=obs.levels_completed,
+                state=obs.state.name)
+        else:
+            self.observations.latest = None
+        # A frameless receipt must not leave a stale observation advertised as current.
+        (self.output/'observation.json').write_text(json.dumps(self.observations.latest))
         record=dict(timestamp=time.time(), action=action, data=data, **self.status())
         record['frame']= [frame.tolist() for frame in frames]
         record['frame_sha256']=hashlib.sha256(json.dumps(record['frame']).encode()).hexdigest()
@@ -71,10 +81,20 @@ class Session:
         (self.output/'status.json').write_text(json.dumps(self.status(),indent=2))
         return self.status()
 
+    def observe(self):
+        with self.lock:
+            if self.started is None:
+                self.started = time.monotonic()
+            return dict(**self.status(), observation=self.observations.latest)
+
     def act(self, payload):
         with self.lock:
             if self.started is None: self.started=time.monotonic()
-            if self.status()['stopped']: return self.status()
+            if self.status()['stopped']:
+                result = self.status()
+                if payload.get('with_observation'):
+                    result['observation'] = self.observations.latest
+                return result
             sequence=payload.get('actions')
             if sequence is None: sequence=[payload]
             if not 1 <= len(sequence) <= 10: raise ValueError('Use 1 to 10 actions per request')
@@ -86,7 +106,7 @@ class Session:
                 if name != 'RESET' and name not in valid: raise ValueError(f'Illegal action {name}; legal={valid}')
                 if self.status()['state']=='GAME_OVER' and name!='RESET': raise ValueError('GAME_OVER requires RESET')
                 data=item.get('data',{})
-                if name=='ACTION6' and not all(isinstance(data.get(k),int) and 0<=data[k]<=63 for k in ('x','y')):
+                if name=='ACTION6' and not all(type(data.get(k)) is int and 0<=data[k]<=63 for k in ('x','y')):
                     raise ValueError('ACTION6 requires integer x,y in [0,63]')
                 obs=self.env.step(GameAction[name],data=data,reasoning={'comment':str(item.get('reasoning',''))[:4000]})
                 if obs is None: raise RuntimeError('Official engine returned no observation')
@@ -94,15 +114,14 @@ class Session:
                 if name=='RESET': self.resets+=1
                 snapshots.append(self.capture(name,data))
                 if self.status()['state'] in ('WIN','GAME_OVER'): break
-            return dict(**self.status(), intermediate=snapshots)
+            result = dict(**self.status(), intermediate=snapshots)
+            if payload.get('with_observation'):
+                result['observation'] = self.observations.latest
+            return result
 
 
-def main():
-    p=argparse.ArgumentParser()
-    p.add_argument('--game',required=True); p.add_argument('--env-dir',required=True)
-    p.add_argument('--output',required=True); p.add_argument('--port',type=int,required=True)
-    p.add_argument('--budget-s',type=int,default=600); p.add_argument('--max-actions',type=int,default=200)
-    args=p.parse_args(); session=Session(args.game,args.env_dir,args.output,args.budget_s,args.max_actions)
+def make_handler(session):
+    """The production HTTP contract, also exercised by transport fixtures."""
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*_): pass
         def respond(self,data,status=200):
@@ -110,7 +129,9 @@ def main():
             self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(body)))
             self.end_headers(); self.wfile.write(body)
         def do_GET(self):
-            if self.path=='/status':
+            if self.path=='/observe':
+                self.respond(session.observe())
+            elif self.path=='/status':
                 with session.lock:
                     if session.started is None: session.started=time.monotonic()
                     self.respond(session.status())
@@ -123,8 +144,17 @@ def main():
                     session.closed_reason=data.get('reason','runner_stop'); self.respond(session.status())
                 else: self.respond({'error':'Not found'},404)
             except Exception as exc: self.respond({'error':repr(exc)},400)
+    return Handler
+
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('--game',required=True); p.add_argument('--env-dir',required=True)
+    p.add_argument('--output',required=True); p.add_argument('--port',type=int,required=True)
+    p.add_argument('--budget-s',type=int,default=600); p.add_argument('--max-actions',type=int,default=200)
+    args=p.parse_args(); session=Session(args.game,args.env_dir,args.output,args.budget_s,args.max_actions)
     print(json.dumps({'ready':True,**session.status()}),flush=True)
-    ThreadingHTTPServer(('127.0.0.1',args.port),Handler).serve_forever()
+    ThreadingHTTPServer(('127.0.0.1',args.port),make_handler(session)).serve_forever()
 
 
 if __name__=='__main__': main()

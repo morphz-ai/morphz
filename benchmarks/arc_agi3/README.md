@@ -94,8 +94,63 @@ FP8 KV cache and the custom inference backend need separate numerical validation
 python -m unittest discover -s benchmarks/arc_agi3 -p 'test_*.py'
 ```
 
-These seven tests use explicit fake engine fixtures. They test rendering,
-validation and accounting only, and are **not** model/game performance results.
+These tests use explicit fake engine fixtures and synthetic geometry. They cover
+rendering, validation, accounting, actual local HTTP/CLI transport, repeat/delta
+observations and deployment packaging. They are **not** model/game performance
+results. The deployment fixture uses a deliberately fake ELF header, not a
+working Linux binary.
+
+## Observation-driven Harness experiment — 2026-10-23
+
+`arc-discovery.hns` is a versioned Harness installed through the real Morphz
+registry and selected with `--harness arc-discovery@0.1.0`. It reuses Runtime
+inference, structured Context, tools, persistence and output continuation; it
+does not introduce a second agent runtime or train a model.
+
+The domain discipline is: observe, distinguish alternative mechanics with a
+small experiment, revise evidence-backed rules, plan a short verified path, and
+re-observe after an unexpected result. Component roles, goals and success are
+never inferred by bridge code. No game ID, known move sequence, coordinate or
+color encodes an answer.
+
+`arc_observation.py` derives exact visible-grid facts: lossless hexadecimal rows,
+four-connected color components (explicitly bounded), changed-pixel regions,
+state revisits, repeated actions and no-change streaks. Geometric components are
+not semantic objects. Identical pixels need not imply identical hidden states.
+`python3 arc_cli.py observe` reads the current observation without an environment
+action; `step ACTIONn [x y]` returns fresh state and observations in one receipt.
+Legacy `status`, `action` and `batch` remain available. A frameless receipt marks
+the current observation unavailable rather than returning stale geometry.
+
+The first targeted A/B configuration selects `ft09`, seed 0, one baseline and one
+discovery attempt, each capped at 600 seconds and 200 actions. Both arms must use
+the **same verified Runtime binary**, Flash-Next model, 256K context, 8192 output
+cap and medium effort. Fresh DB/Context/workspace per arm. This tests the Harness
+**plus** advertised observation aids, not an isolated prompt effect. The
+10/21 historical run used an older Runtime and is not the clean A/B control.
+
+```sh
+python benchmarks/arc_agi3/build_harness_experiment.py \
+  --runtime /absolute/path/to/verified-linux-x86_64/morphz \
+  --runtime-commit FULL_COMMIT_USED_FOR_BUILD \
+  --output /absolute/path/to/private-deployment
+```
+
+The generator creates a small importable Notebook plus a deployment ZIP with an
+explicit source allowlist and hashes; it never uploads or submits. User configs,
+keys and databases are not packaged. Attach this ZIP as a **private** Kaggle
+input, alongside the same four approved inputs from the baseline. The Notebook
+checks ZIP/file/binary hashes before loading the model, installs the Harness in
+the candidate's isolated DB, and saves the actual Evaluation binding/hash and
+engine/provider/tool evidence. Missing binding or no model requests makes an
+attempt invalid, not a zero-score demonstration. The model server is terminated
+after the bounded experiment; also stop the Kaggle session after archival.
+
+The Linux experiment binary must include the output-limit continuation fix
+(`cda82d12` or a verified descendant). The new visible-grid bridge can be tested
+locally without a model, but improved solving ability is **unverified until an
+actual engine/model run is saved and audited**. Never relabel generated deployment
+files or passing interface tests as a completed competition result.
 
 ## Measured run — 2026-10-21
 

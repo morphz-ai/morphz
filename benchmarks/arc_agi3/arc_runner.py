@@ -5,22 +5,32 @@ import sqlite3
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ARC_WORK=WORK/'arc-public-baseline'
+EXPERIMENT=globals().get('ARC_EXPERIMENT', {})
+GAMES=tuple(EXPERIMENT.get('games', ('ls20','ft09','vc33')))
+ARMS=tuple(EXPERIMENT.get('arms', ('baseline',)))
+BUDGET_S=int(EXPERIMENT.get('budget_s',600))
+MAX_ACTIONS=int(EXPERIMENT.get('max_actions',200))
+assert ARMS and set(ARMS) <= {'baseline','discovery'}
+assert GAMES and BUDGET_S > 0 and MAX_ACTIONS > 0
+ARC_WORK=WORK/EXPERIMENT.get('output','arc-public-baseline')
 ARC_WORK.mkdir(exist_ok=True)
 SOURCE=ARC_WORK/'bridge-source'
 SOURCE.mkdir(exist_ok=True)
-# The enclosing cell writes reviewed arc_bridge.py and arc_cli.py into SOURCE.
+# The enclosing cell writes reviewed bridge/CLI/observation/Harness files here.
 COMP=Path('/kaggle/input/competitions/arc-prize-2026-arc-agi-3')
 WHEELHOUSE=COMP/'arc_agi_3_wheels'
 ENVS=COMP/'environment_files'
 assert WHEELHOUSE.is_dir() and ENVS.is_dir()
 (ARC_WORK/'protocol.json').write_text(json.dumps({
-    'games':['ls20','ft09','vc33'],'seed':0,'max_actions_per_game':200,
-    'wall_budget_s_per_game':600,'context_window_tokens':262144,
+    'games':GAMES,'arms':ARMS,'seed':0,'max_actions_per_game':MAX_ACTIONS,
+    'wall_budget_s_per_game':BUDGET_S,'context_window_tokens':262144,
     'model':'Qwen3.8-Flash-Next W4A16 AutoRound','runtime':'Morphz v0.1.3',
     'submission':False,'official_score':False,
-    'git_release':'7e8f7d81f8b00fd45544d94d5b9a321214633df1',
-    'bridge_source_sha256':{p.name:sha256(p) for p in SOURCE.glob('*.py')}
+    'runtime_build':globals().get('RUNTIME_BUILD',{'git_release':'7e8f7d81f8b00fd45544d94d5b9a321214633df1'}),
+    'runtime_binary_sha256':sha256(morphz),
+    'source_sha256':{p.name:sha256(p) for p in SOURCE.iterdir() if p.is_file()},
+    'comparison_scope':'Harness plus visible observation aids; not model training',
+    'formal_submission':False
 },indent=2))
 ARC_VENV=PREFIX/'arc-venv'
 arc_env=dict(install_env,MPLBACKEND='Agg')
@@ -115,14 +125,17 @@ def bind_account(test,workspace,config,runtime_env):
         try: child.wait(timeout=10)
         except subprocess.TimeoutExpired: child.kill(); child.wait()
 
-def run_game(game):
-    test=ARC_WORK/game; test.mkdir(exist_ok=True)
+def run_game(game,arm):
+    test=ARC_WORK/(f'{game}-{arm}' if EXPERIMENT else game)
+    # Reusing an existing DB or trajectory would invalidate a fresh-context comparison.
+    test.mkdir(exist_ok=False)
     workspace=test/'workspace'; workspace.mkdir(exist_ok=True)
+    harness_receipt=None
     shutil.copy2(SOURCE/'arc_cli.py',workspace/'arc_cli.py')
     port=free_port()
     (workspace/'connection.json').write_text(json.dumps({'port':port}))
     with (test/'engine.log').open('w') as out:
-        bridge=subprocess.Popen([str(ARC_PYTHON),str(SOURCE/'arc_bridge.py'),'--game',game,'--env-dir',str(ENVS),'--output',str(workspace),'--port',str(port),'--budget-s','600','--max-actions','200'],env=arc_env,stdout=out,stderr=subprocess.STDOUT)
+        bridge=subprocess.Popen([str(ARC_PYTHON),str(SOURCE/'arc_bridge.py'),'--game',game,'--env-dir',str(ENVS),'--output',str(workspace),'--port',str(port),'--budget-s',str(BUDGET_S),'--max-actions',str(MAX_ACTIONS)],env=arc_env,stdout=out,stderr=subprocess.STDOUT)
     try:
         deadline=time.monotonic()+60
         while not (workspace/'status.json').exists():
@@ -160,25 +173,39 @@ artifact_dir={json.dumps(str(test/'artifacts'))}
         runtime_env={k:v for k,v in os.environ.items() if k in ('PATH','LANG','TMPDIR','TEMP','TMP','LD_LIBRARY_PATH')}
         runtime_env.update(MORPHZ_HOME=str(test/'host'),MORPHZ_STORAGE_SQLITE_PATH=str(test/'runtime.db'),NO_PROXY='127.0.0.1,localhost')
         bind_account(test,workspace,config,runtime_env)
+        if arm=='discovery':
+            install=subprocess.run([str(morphz),'harness','install',str(SOURCE/'arc-discovery.hns'),
+                '--cwd',str(workspace),'--config-file',str(config),'--format','json'],
+                cwd=workspace,env=runtime_env,capture_output=True,text=True,timeout=45)
+            (test/'harness-install.json').write_text(install.stdout)
+            (test/'harness-install.stderr').write_text(install.stderr)
+            assert install.returncode==0,install.stderr[-4000:]
+            harness_receipt=json.loads(install.stdout)
+            assert (harness_receipt['id'],harness_receipt['version'])==('arc-discovery','0.1.0')
         prompt='''Play this single unfamiliar ARC-AGI-3 game to completion by discovering its rules through observations and experiments. This is a timed diagnostic of your own autonomous ability, not a request for general advice.
 You have at most 600 seconds and 200 game actions. Do not stop early merely to report progress. Keep observing, forming hypotheses, acting, and correcting until the engine says state WIN or stopped true. GAME_OVER is not the end of the attempt: use RESET and keep learning within budget. A game has several levels; levels_completed is not whole-game WIN.
 The ONLY interface to the game is the neutral local command: python3 arc_cli.py status; python3 arc_cli.py action ACTION1; python3 arc_cli.py action ACTION6 20 30. For a short sequence use python3 arc_cli.py batch '[{"action":"ACTION1"},{"action":"ACTION2"}]' (maximum 10). Only send actions from available_actions, except RESET which is always allowed. Coordinates are integers 0..63, top-left origin. Actions 1..4 are directional controls but infer their actual effect, 5 is an optional game-specific control, 6 is a click with x,y, 7 is undo when supported. RESET restarts according to engine rules.
 Each command returns authoritative state and refreshes frame.png (512px nearest-neighbor visualization of the latest 64x64 grid), grid.txt (row numbers then hexadecimal color IDs 0..F), frame.json (the exact grid). Use the read tool on frame.png to see the native image now, and after meaningful changes. For exact analysis you can read the text grid or write your own scripts using only observations in this workspace. You may batch a few purposeful actions but inspect feedback and adapt. Prior animation frames and observations are recorded automatically; current frame is always the last frame returned by the game.
 Do not access game implementation, environment files, another solver, internet, precomputed solutions, hidden state, or files outside this workspace. The neutral CLI contains no rules. Discover and maintain your own rules/plans in Morphz memory; do not ask a human for moves. Do not claim success unless engine state is WIN. Start by running status and reading frame.png. Then actually play.'''
+        prompt=prompt.replace('600 seconds and 200 game actions',f'{BUDGET_S} seconds and {MAX_ACTIONS} game actions')
+        if arm=='discovery':
+            prompt=f'''Play the current unfamiliar ARC-AGI-3 game through all levels. You have at most {BUDGET_S} seconds and {MAX_ACTIONS} submitted environment actions, including resets. Follow the installed arc-discovery Harness. The local bridge is already running; use python3 arc_cli.py observe and python3 arc_cli.py step ACTIONn [x y]. Native images remain available as frame.png. Use only observations in this workspace, not engine/source files, network, another solver, or precomputed moves. Discover rules from evidence, revise them on contradiction, and continue until official state WIN or stopped=true. Start now.'''
         (test/'prompt.txt').write_text(prompt)
         args=[str(morphz),'exec','--cwd',str(workspace),'--config-file',str(config),'--approval','never','--sandbox','full-access','--reasoning-effort','medium','--log-level','info',prompt]
+        if arm=='discovery': args[-1:-1]=['--harness','arc-discovery@0.1.0']
+        (test/'execution-argv.json').write_text(json.dumps(args,indent=2))
         start=time.monotonic(); start_wire=len(wire_records)
         with (test/'runtime.log').open('w') as out:
             child=subprocess.Popen(args,cwd=workspace,env=runtime_env,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
-        print('GAME_STARTED',game,'BUDGET',600,'ACTIONS',200,flush=True)
+        print('GAME_STARTED',game,'ARM',arm,'BUDGET',BUDGET_S,'ACTIONS',MAX_ACTIONS,flush=True)
         last_progress=0; last_status={}; stop_reason=None
         while child.poll() is None:
             elapsed=time.monotonic()-start
             try: last_status=request_json(port,'/status')
             except Exception as exc: stop_reason='bridge_error:'+repr(exc); break
             if elapsed-last_progress>=20:
-                print('GAME_PROGRESS',game,round(elapsed),json.dumps(last_status),flush=True); last_progress=elapsed
-            if last_status['stopped'] or elapsed>=605:
+                print('GAME_PROGRESS',game,arm,round(elapsed),json.dumps(last_status),flush=True); last_progress=elapsed
+            if last_status['stopped'] or elapsed>=BUDGET_S+5:
                 stop_reason=last_status.get('stop_reason') or 'wall_budget'; break
             time.sleep(1)
         elapsed=time.monotonic()-start
@@ -188,19 +215,31 @@ Do not access game implementation, environment files, another solver, internet, 
             except subprocess.TimeoutExpired: child.kill(); child.wait()
         final=request_json(port,'/status')
         calls=wire_records[start_wire:]
-        jobs=[]
+        jobs=[]; bindings=[]
         with sqlite3.connect(test/'runtime.db') as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='execution_jobs'").fetchone():
                 db.row_factory=sqlite3.Row
                 jobs=[dict(row) for row in db.execute('SELECT * FROM execution_jobs')]
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='events'").fetchone():
+                bindings=[json.loads(row[0]) for row in db.execute(
+                    'SELECT payload FROM events WHERE topic=?',('runtime/evaluation_harness_binding',))]
+        (test/'harness-bindings.json').write_text(json.dumps(bindings,indent=2))
+        binding_verified=arm=='baseline' or any(
+            b.get('harness_id')=='arc-discovery' and b.get('harness_version')=='0.1.0'
+            and b.get('artifact_hash')==harness_receipt['artifact_hash'] for b in bindings)
         (test/'tool-jobs.json').write_text(json.dumps(jobs,indent=2,default=str))
         total_input=sum((r.get('usage') or {}).get('prompt_tokens',0) for r in calls)
         total_output=sum((r.get('usage') or {}).get('completion_tokens',0) for r in calls)
-        result=dict(game=game,**final,wall_s=round(elapsed,3),runtime_exit_code=child.returncode,
+        result=dict(game=game,arm=arm,**final,wall_s=round(elapsed,3),runtime_exit_code=child.returncode,
             termination=stop_reason or ('WIN' if final['state']=='WIN' else 'runtime_returned'),
             model_requests=len(calls),image_requests=sum(r['images_in_request']>0 for r in calls),
             prompt_tokens_total=total_input,completion_tokens_total=total_output,
             tool_jobs=len(jobs),runtime_version='v0.1.3',reasoning_effort='medium',
+            runtime_binary_sha256=sha256(morphz),
+            harness='arc-discovery@0.1.0' if arm=='discovery' else None,
+            harness_source_sha256=sha256(SOURCE/'arc-discovery.hns') if arm=='discovery' else None,
+            harness_binding_verified=binding_verified if arm=='discovery' else None,
+            valid_run=bool(binding_verified and len(calls)>0),
             memory_context_tokens=262144,formal_competition_score=False,
             source_access_enforcement='instruction and tool-log audit; full-access shell is not a sealed source sandbox')
         (test/'result.json').write_text(json.dumps(result,indent=2))
@@ -212,12 +251,13 @@ Do not access game implementation, environment files, another solver, internet, 
         except subprocess.TimeoutExpired: bridge.kill(); bridge.wait()
 
 results=[]
-for game in ('ls20','ft09','vc33'):
-    try: results.append(run_game(game))
-    except Exception as exc:
-        failure=dict(game=game,run_error=repr(exc)); results.append(failure)
-        print('GAME_FAILED',json.dumps(failure),flush=True)
-    (ARC_WORK/'results.json').write_text(json.dumps(results,indent=2))
+for game in GAMES:
+    for arm in ARMS:
+        try: results.append(run_game(game,arm))
+        except Exception as exc:
+            failure=dict(game=game,arm=arm,run_error=repr(exc)); results.append(failure)
+            print('GAME_FAILED',json.dumps(failure),flush=True)
+        (ARC_WORK/'results.json').write_text(json.dumps(results,indent=2))
 print('PUBLIC_SAMPLE_COMPLETE',json.dumps(results),flush=True)
 gpu_stop_arc.set()
 proxy.shutdown()

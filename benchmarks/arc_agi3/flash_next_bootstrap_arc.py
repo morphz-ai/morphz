@@ -7,7 +7,7 @@ import threading, concurrent.futures
 
 MODEL_DIR = Path('/kaggle/input/models/dfranzen/intel-qwen3.8-flash-next-w4a16-autoround/transformers/default/1')
 BUNDLE = Path('/kaggle/input/datasets/dfranzen/pennyroyal-v253')
-WORK = Path('/kaggle/working/morphz-arc3-public-baseline')
+WORK = Path(globals().get('MORPHZ_ARC_WORK','/kaggle/working/morphz-arc3-public-baseline'))
 WORK.mkdir(exist_ok=True)
 PREFIX = Path('/tmp/morphz-flash-next-serving')
 PREFIX.mkdir(exist_ok=True)
