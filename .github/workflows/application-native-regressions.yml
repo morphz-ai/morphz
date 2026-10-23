@@ -88,7 +88,7 @@ jobs:
             tests/shell-layout.spec.ts \
             tests/subject-objectives-restore.spec.ts \
             tests/e2e/reader-pagination.spec.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: remaining-browser-regressions
@@ -120,7 +120,7 @@ jobs:
         run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
       - run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
       - run: npm run test:reader-stability -- "$RUNNER_TEMP/reader-ocr-models"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: isolated-reader-regressions
@@ -191,7 +191,7 @@ jobs:
             tests/message-work-footer.spec.ts \
             tests/exchange-resize.spec.ts \
             tests/exchange-floating-controls.spec.ts --trace on
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: isolated-linux-native-failures
