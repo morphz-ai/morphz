@@ -12,6 +12,8 @@ BUDGET_S=int(EXPERIMENT.get('budget_s',600))
 MAX_ACTIONS=int(EXPERIMENT.get('max_actions',200))
 HARNESS_ID=EXPERIMENT.get('harness_id','arc-discovery')
 HARNESS_VERSION=EXPERIMENT.get('harness_version','0.1.0')
+HARNESS_FILE=EXPERIMENT.get('harness_file',f'{HARNESS_ID}.hns')
+ALGORITHM_TOOLS=bool(EXPERIMENT.get('algorithm_tools',False))
 assert ARMS and set(ARMS) <= {'baseline','discovery'}
 assert GAMES and BUDGET_S > 0 and MAX_ACTIONS > 0
 ARC_WORK=WORK/EXPERIMENT.get('output','arc-public-baseline')
@@ -32,7 +34,9 @@ assert WHEELHOUSE.is_dir() and ENVS.is_dir()
     'runtime_binary_sha256':sha256(morphz),
     'runner_source_receipt':globals().get('ARC_RUNNER_RECEIPT'),
     'source_sha256':{p.name:sha256(p) for p in SOURCE.iterdir() if p.is_file()},
-    'comparison_scope':'Harness plus visible observation aids; not model training',
+    'comparison_scope':('Runtime-owned Harness plus executable algorithms' if ALGORITHM_TOOLS
+                        else 'Harness plus visible observation aids; not model training'),
+    'semantic_inference_tool_free':ALGORITHM_TOOLS,
     'formal_submission':False
 },indent=2))
 ARC_VENV=PREFIX/'arc-venv'
@@ -135,6 +139,9 @@ def run_game(game,arm):
     workspace=test/'workspace'; workspace.mkdir(exist_ok=True)
     harness_receipt=None
     shutil.copy2(SOURCE/'arc_cli.py',workspace/'arc_cli.py')
+    if ALGORITHM_TOOLS and arm=='discovery':
+        for name in ('arc_solver.py','arc_algorithms.py','arc_observation.py'):
+            shutil.copy2(SOURCE/name,workspace/name)
     port=free_port()
     (workspace/'connection.json').write_text(json.dumps({'port':port}))
     with (test/'engine.log').open('w') as out:
@@ -177,7 +184,7 @@ artifact_dir={json.dumps(str(test/'artifacts'))}
         runtime_env.update(MORPHZ_HOME=str(test/'host'),MORPHZ_STORAGE_SQLITE_PATH=str(test/'runtime.db'),NO_PROXY='127.0.0.1,localhost')
         bind_account(test,workspace,config,runtime_env)
         if arm=='discovery':
-            install=subprocess.run([str(morphz),'harness','install',str(SOURCE/'arc-discovery.hns'),
+            install=subprocess.run([str(morphz),'harness','install',str(SOURCE/HARNESS_FILE),
                 '--cwd',str(workspace),'--config-file',str(config),'--format','json','--log-level','error'],
                 cwd=workspace,env=runtime_env,capture_output=True,text=True,timeout=45)
             (test/'harness-install.json').write_text(install.stdout)
@@ -193,6 +200,8 @@ Do not access game implementation, environment files, another solver, internet, 
         prompt=prompt.replace('600 seconds and 200 game actions',f'{BUDGET_S} seconds and {MAX_ACTIONS} game actions')
         if arm=='discovery':
             prompt=f'''Play the current unfamiliar ARC-AGI-3 game through all levels. You have at most {BUDGET_S} seconds and {MAX_ACTIONS} submitted environment actions, including resets. Follow the installed arc-discovery Harness. The local bridge is already running; use python3 arc_cli.py observe and python3 arc_cli.py step ACTIONn [x y]. Native images remain available as frame.png. Use only observations in this workspace, not engine/source files, network, another solver, or precomputed moves. Discover rules from evidence, revise them on contradiction, and continue until official state WIN or stopped=true. Start now.'''
+            if ALGORITHM_TOOLS:
+                prompt=f'''Play this unfamiliar game using the installed {HARNESS_ID} Runtime-owned Harness. Its fixed Python algorithm nodes perform rule validation and solving; semantic infer nodes only propose typed requests from current visible evidence. The engine allows at most {BUDGET_S} seconds and {MAX_ACTIONS} actions including RESET. Do not read engine/source files, hidden state, another solver, external services or stored moves. Only official levels_completed and WIN establish progress. Execute the bound Harness now.'''
         (test/'prompt.txt').write_text(prompt)
         args=[str(morphz),'exec','--cwd',str(workspace),'--config-file',str(config),'--approval','never','--sandbox','full-access','--reasoning-effort','medium','--log-level','info',prompt]
         if arm=='discovery': args[-1:-1]=['--harness',f'{HARNESS_ID}@{HARNESS_VERSION}']
@@ -234,11 +243,21 @@ Do not access game implementation, environment files, another solver, internet, 
         total_input=sum((r.get('usage') or {}).get('prompt_tokens',0) for r in calls)
         total_output=sum((r.get('usage') or {}).get('completion_tokens',0) for r in calls)
         tools_exposed=any(bool(r['request'].get('tools')) for r in calls)
+        algorithm_path=workspace/'algorithm-audit.jsonl'
+        algorithm_events=[json.loads(line) for line in algorithm_path.read_text().splitlines()
+                          if line.strip()] if algorithm_path.exists() else []
+        algorithm_modules=sum(r.get('event')=='module_started' for r in algorithm_events)
+        algorithm_searches=sum(r.get('event') in ('gf2_search','astar_search') for r in algorithm_events)
+        algorithm_actions=sum(r.get('event')=='engine_action_receipt' for r in algorithm_events)
+        algorithm_execution=ALGORITHM_TOOLS and arm=='discovery'
         successful_requests=sum(r.get('status')==200 and r.get('completed',False) for r in calls)
         invalid_reasons=[]
         if not binding_verified: invalid_reasons.append('harness_binding_missing_or_mismatched')
         if not calls: invalid_reasons.append('no_model_requests')
-        if not tools_exposed: invalid_reasons.append('no_tools_exposed_on_provider_wire')
+        if not tools_exposed and not algorithm_execution:
+            invalid_reasons.append('no_tools_exposed_on_provider_wire')
+        if algorithm_execution and not algorithm_modules:
+            invalid_reasons.append('no_algorithm_module_executed')
         if not successful_requests: invalid_reasons.append('no_completed_http_200_model_request')
         runtime_log=(test/'runtime.log').read_text(errors='replace')
         runtime_protocol_failed='protocol_invalid' in runtime_log
@@ -254,9 +273,13 @@ Do not access game implementation, environment files, another solver, internet, 
             tool_jobs=len(jobs),runtime_version='v0.1.3',reasoning_effort='medium',
             runtime_binary_sha256=sha256(morphz),
             harness=f'{HARNESS_ID}@{HARNESS_VERSION}' if arm=='discovery' else None,
-            harness_source_sha256=sha256(SOURCE/'arc-discovery.hns') if arm=='discovery' else None,
+            harness_source_sha256=sha256(SOURCE/HARNESS_FILE) if arm=='discovery' else None,
             harness_binding_verified=binding_verified if arm=='discovery' else None,
             tools_exposed_on_provider_wire=tools_exposed,
+            semantic_inference_tool_free_expected=algorithm_execution,
+            algorithm_module_calls=algorithm_modules,
+            algorithm_search_calls=algorithm_searches,
+            algorithm_recorded_actions=algorithm_actions,
             completed_http_200_model_requests=successful_requests,
             valid_run=not invalid_reasons,invalid_reasons=invalid_reasons,
             memory_context_tokens=262144,formal_competition_score=False,

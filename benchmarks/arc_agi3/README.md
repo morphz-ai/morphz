@@ -4,6 +4,77 @@ This adapter runs an actual Morphz Runtime against the official ARC-AGI-3
 offline environment. It is an exploratory public-game sample, **not a formal
 competition submission or an official leaderboard score**.
 
+## Executable-algorithm Harness — 2026-10-23
+
+`arc-algorithms@0.3.0` changes executable computation, not just the discovery
+prompt. It runs on the same existing Morphz Runtime. The finite `.hns` program
+owns 24 bounded rounds: read visible evidence and image metadata, infer one typed
+semantic hypothesis, write a JSON request, and execute the reviewed Python
+module. The inference nodes deliberately receive **no model tools**; ordinary
+Runtime `read`/`write`/`exec` calls perform effects. Empty provider tool lists
+are expected in this arm, unlike the earlier tool-admission defect.
+
+Transport limitation verified with the actual local Runtime and mock provider:
+the semantic node receives the complete hexadecimal pixel matrix and image
+attachment metadata, **not native image bytes**. Lexical JSON captures do not
+implicitly forward binary attachments into the child inference. This v0.3.0
+experiment is consequently a matrix-input algorithm comparison, not a test of
+native vision or a visual-input-controlled algorithm ablation. Baseline can
+use ordinary native image-read tools. Any measured difference includes that
+representation/interaction difference, as well as finite orchestration.
+
+Implemented modules in `arc_algorithms.py` and `arc_solver.py`:
+
+- Binary-toggle induction: actually probe each proposed control twice, test
+  restoration and cross-context superposition, solve the measured system by
+  GF(2) Gaussian elimination, and search a bounded nullspace for fewer actions.
+  The four-action validation cycle contains two novel-context transitions;
+  its other two transitions repeat fitting contexts and are not independent
+  holdouts. No global linearity claim follows from these finite checks.
+- Rigid-motion induction: fit an action's translation from an observed moving
+  transition, then reject it if separate observed transitions contradict its
+  movement/collision predictions. A color mask can join multiple objects; it
+  is only a proposed body, not an engine-provided semantic entity.
+- A* over the proposed static occupancy model, accounting for the entire body
+  shape rather than only a point. Every executed move is checked against the
+  next actual observation. Contradictions stop the remaining route; a level
+  change or reset invalidates the old geometry.
+
+These are deliberately bounded hypothesis families, not a universal game-rule
+solver. The model still identifies candidate bodies, controls and goals. A
+pixel target or valid path is not a solved level. `discriminating_action` has a
+unit test but is not wired into this experiment's production selection path.
+
+The predeclared real-model comparison uses `ft09`, `ls20`, `vc33`, with a fresh
+baseline and algorithm attempt for each: seed 0, 600 seconds, 200 submitted
+actions, identical Flash-Next V1 weights, 256K configuration, 8192 output cap,
+medium effort and Linux binary SHA-256
+`5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70`.
+The local mock-provider integration verifies actual Runtime-to-solver execution,
+not game-solving ability. A real result must include engine trajectories and
+separate counts of module calls, actual search calls and submitted actions.
+Merely calling `probe` or rejecting a hypothesis does not prove a search ran.
+
+```sh
+python benchmarks/arc_agi3/build_harness_experiment.py \
+  --runtime /absolute/path/to/verified-linux-x86_64/morphz \
+  --runtime-commit f38245e906814b33fb4f92edd70534b3a233610f \
+  --harness arc-algorithms --output /tmp/morphz-arc-algorithms-deployment
+```
+
+If a newly created private Dataset fails to mount, optional `--base-bundle
+/absolute/path/to/previously-verified-deployment.zip` reuses only its identical
+Runtime binary. The generated Notebook carries the new source overlay inline;
+it checks both the old input and every new file before executing anything.
+The base input's old Harness is never used as the active candidate. Local
+tests cover ZIP and Kaggle-unpacked forms of this staging path.
+
+The allowlisted bundle contains no local account configuration or API token.
+The independent Kaggle credential is used only by the local official CLI, not
+uploaded to the private Dataset or Notebook. The current private experiment is
+[Morphz ARC-AGI-3 executable algorithms 20261023](https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-executable-algorithms-20261023).
+No formal competition prediction is submitted by this workflow.
+
 ## Fixed first-sample protocol
 
 - Public games, selected before observing results: `ls20`, `ft09`, `vc33`.
@@ -52,6 +123,11 @@ artifact's manifest before extracting executables.
 
 1. Select the free RTX PRO 6000 accelerator and confirm the setting has actually
    changed. Turn internet off. Do not run while the editor still says `None`.
+   With the official CLI, do not copy a CPU `docker_image` lock from pulled
+   metadata into a GPU run: a GPU label alone does not prove device access.
+   The launcher checks actual `nvidia-smi` output and 96GB-class memory before
+   installing dependencies; the bootstrap separately checks PyTorch CUDA access.
+   Both A/B arms run in the same actual container, with pinned offline packages.
 2. Execute `flash_next_bootstrap_arc.py`. Wait for `DIRECT_MODEL_SMOKE_PASS` and
    `READY_FOR_MORPHZ_RUNTIME_TEST`. These only prove infrastructure readiness.
 3. Write `arc_bridge.py` and `arc_cli.py` to

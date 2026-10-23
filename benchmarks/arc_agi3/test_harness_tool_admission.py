@@ -19,6 +19,7 @@ import urllib.request
 
 class Provider(BaseHTTPRequestHandler):
     requests = []
+    response_text = "Mock transport receipt; no game was played."
 
     def log_message(self, *_):
         pass
@@ -29,7 +30,7 @@ class Provider(BaseHTTPRequestHandler):
         if request.get("stream"):
             chunks = [
                 {"id": "fixture", "object": "chat.completion.chunk", "choices": [{
-                    "index": 0, "delta": {"role": "assistant", "content": "Mock transport receipt; no game was played."},
+                    "index": 0, "delta": {"role": "assistant", "content": self.response_text},
                     "finish_reason": None}]},
                 {"id": "fixture", "object": "chat.completion.chunk", "choices": [{
                     "index": 0, "delta": {}, "finish_reason": "stop"}],
@@ -39,7 +40,7 @@ class Provider(BaseHTTPRequestHandler):
             mime = "text/event-stream"
         else:
             body = json.dumps({"id": "fixture", "object": "chat.completion", "choices": [{
-                "index": 0, "message": {"role": "assistant", "content": "Mock transport receipt; no game was played."},
+                "index": 0, "message": {"role": "assistant", "content": self.response_text},
                 "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
             mime = "application/json"
         data = body.encode()

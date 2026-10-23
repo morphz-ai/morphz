@@ -32,6 +32,9 @@ class DeploymentTest(unittest.TestCase):
                 self.assertNotIn('connection.json',archive.namelist())
                 self.assertNotIn('runtime.db',archive.namelist())
             notebook=json.loads(Path(result['notebook']).read_text())
+            self.assertTrue(notebook['metadata']['kaggle']['isGpuEnabled'])
+            self.assertFalse(notebook['metadata']['kaggle']['isInternetEnabled'])
+            self.assertIn('ACTUAL_GPU_CHECK',''.join(notebook['cells'][2]['source']))
             expected_version=re.search(r'\(version\s+"([^"]+)"\)',
                 Path(__file__).with_name('arc-discovery.hns').read_text()).group(1)
             self.assertEqual(manifest['harness'],f'arc-discovery@{expected_version}')
@@ -40,6 +43,11 @@ class DeploymentTest(unittest.TestCase):
             for i,cell in enumerate(notebook['cells']):
                 if cell['cell_type']=='code':
                     compile(''.join(cell['source']),f'generated-cell-{i}','exec')
+            script=Path(result['script']).read_text()
+            compile(script,'generated-script','exec')
+            for item in notebook['cells']:
+                if item['cell_type']=='code':
+                    self.assertIn(''.join(item['source']),script)
             self.assertFalse(manifest['formal_submission'])
             self.assertEqual(manifest['paid_services'],[])
 
@@ -49,6 +57,55 @@ class DeploymentTest(unittest.TestCase):
             first=self.fixture(root)
             second=self.fixture(root)
             self.assertEqual(first['bundle_sha256'],second['bundle_sha256'])
+
+    def run_inline_fixture(self,unpacked):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            original=self.fixture(root)
+            base=Path(original['bundle'])
+            result=build(root/'fake-linux-header',root/'overlay','fixture-not-real',
+                         'arc-algorithms',base_bundle=base)
+            inputs=root/'input'; inputs.mkdir()
+            if unpacked:
+                with zipfile.ZipFile(base) as archive: archive.extractall(inputs)
+            else:
+                (inputs/base.name).write_bytes(base.read_bytes())
+            notebook=json.loads(Path(result['notebook']).read_text())
+            source=''.join(notebook['cells'][1]['source'])
+            source=source.replace("'/kaggle/input'",repr(str(inputs)))
+            source=source.replace("'/tmp/morphz-arc-harness-deployment'",repr(str(root/'staged')))
+            with patch('subprocess.run') as execute,patch('builtins.print'):
+                exec(compile(source,'inline-source-fixture','exec'),{})
+                self.assertEqual(execute.call_count,2)
+            self.assertEqual((root/'staged'/'arc_solver.py').read_bytes(),
+                             Path(__file__).with_name('arc_solver.py').read_bytes())
+
+    def test_inline_overlay_reuses_pinned_binary_in_zip(self):
+        self.run_inline_fixture(False)
+
+    def test_inline_overlay_reuses_pinned_binary_in_unpacked_input(self):
+        self.run_inline_fixture(True)
+
+    def test_algorithm_bundle_pins_runtime_owned_harness_and_all_executable_modules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            self.fixture(root)
+            result=build(root/'fake-linux-header',root/'algorithms','fixture-not-real','arc-algorithms')
+            with zipfile.ZipFile(result['bundle']) as archive:
+                manifest=json.loads(archive.read('deployment.json'))
+                self.assertEqual(manifest['harness'],'arc-algorithms@0.3.0')
+                for name in ('arc_solver.py','arc_algorithms.py','arc-algorithms.hns'):
+                    self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(),manifest['files'][name])
+            notebook=json.loads(Path(result['notebook']).read_text())
+            preflight=''.join(notebook['cells'][1]['source'])
+            experiment=''.join(notebook['cells'][3]['source'])
+            self.assertIn("str(DEPLOY/'arc-algorithms.hns')",preflight)
+            self.assertIn("'arms':['baseline','discovery']",experiment)
+            self.assertIn("'algorithm_tools':True",experiment)
+            self.assertIn("'games':['ft09','ls20','vc33']",experiment)
+            for index,value in enumerate(notebook['cells']):
+                if value['cell_type']=='code':
+                    compile(''.join(value['source']),f'algorithm-cell-{index}','exec')
 
     def run_preflight_fixture(self,unpacked,tamper=False):
         with tempfile.TemporaryDirectory() as directory:

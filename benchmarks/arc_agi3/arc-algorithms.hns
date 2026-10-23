@@ -1,0 +1,67 @@
+(manifest
+  (id arc-algorithms)
+  (version "0.3.0")
+  (title "Visible-rule induction with measured algorithm execution")
+  (capabilities (tools read write exec)))
+
+(contract
+  (identity
+    "This is a finite Runtime-owned ARC evaluation program, not another Agent Runtime. Runtime executes each observation, typed semantic proposal, request write and bounded Python algorithm call in order. A model does not implement the solver during play.")
+  (authority
+    "Use only current-workspace visible grids, public engine feedback and recorded actions. No game source, hidden state, other solvers, internet, training, known move sequences or human help. Only engine levels_completed and WIN establish progress.")
+  (algorithms
+    "arc_solver.py supplies measured toggle induction with independent cross-context tests, GF(2) Gaussian elimination and bounded minimum-action nullspace search; discrete motion fitting with held-out collision checks; and A* over the proposed rigid-body occupancy model. These are existing executable modules, not instructions to write a solver. Their assumption rejection and counterexamples are evidence to revise the next proposal.")
+  (semantic-work
+    "The model's narrow job is to propose a semantic interpretation and a typed algorithm request: identify candidate controls/feature cells, a proposed target, or a candidate body color, walkable colors and goal anchor from the visible grid. Do not assume a common color is background or that a geometric component is the player. A goal is a hypothesis until actual engine progress confirms it. Favor a small informative probe over repeated observe-only requests.")
+  (methods
+    "Return a Map<String> with exactly one key request; its String value encodes a JSON object. method is observe, probe, toggle or navigate. probe: actions is an array of {action:ACTIONn} or {action:ACTION6,x:int,y:int}, max_actions<=16. toggle: cells and controls are arrays of zero-based [x,y], colors has exactly two color IDs, target_colors gives one target color per cell, max_actions<=64 and must cover 2*controls+4 validation moves; use at most20 controls. navigate: body_color, walkable_colors, goal_anchor [x,y], optional inclusive bounds [x0,y0,x1,y1], max_actions<=16. Only measured, independently checked action translations may be searched; use probe to obtain them. No arbitrary paths, code, commands or additional request fields are accepted.")
+  (evidence
+    "A search result is a plan in a supplied model, not a game win. Each planned move is checked against actual feedback, and a contradiction halts the remaining plan. A reset/level change invalidates old geometry. Use the last_algorithm_result and observed_motion_candidates to choose the next experiment. If state is GAME_OVER, propose a single RESET probe. If stopped=true or WIN, propose observe without pretending another action is needed.")
+  (transport
+    "Semantic infer nodes have no tools. Return only the declared Map<String> value in the Runtime's exact typed Session IO format, not a commentary, work proposal, shell command or tool call. request contains valid JSON text. Keep proposals concise. Actual effects are performed exclusively by the surrounding Yao program."))
+
+(fn algorithm-round
+  (params (request_file String) (execute_command String))
+  (returns Json)
+  (body
+    (seq
+      (bind evidence (call read (path "solver-context.json")))
+      (bind picture (call read (path "frame.png")))
+      (bind proposal
+        (infer
+          (captures evidence picture)
+          (returns (Map String))
+          "Choose the next bounded algorithm request from the actual visible evidence and prior counterexamples. Use probe to test uncertain rules; use toggle or navigate when their input hypotheses are supported. Pass the solving work to the executable module, not a prose plan. Return a Map<String> whose request field is a JSON-encoded String. No tools are offered to this inference node."))
+      (bind saved
+        (call write (path request_file) (content (get proposal request)) (mode "create")))
+      (call exec (command execute_command)))))
+
+(eval
+  (requires (tools read write exec))
+  (seq
+    (bind initialized (call exec (command "python3 arc_solver.py analyze")))
+    (bind r01 (algorithm-round (request_file "request-01.json") (execute_command "python3 arc_solver.py run --request request-01.json")))
+    (bind r02 (algorithm-round (request_file "request-02.json") (execute_command "python3 arc_solver.py run --request request-02.json")))
+    (bind r03 (algorithm-round (request_file "request-03.json") (execute_command "python3 arc_solver.py run --request request-03.json")))
+    (bind r04 (algorithm-round (request_file "request-04.json") (execute_command "python3 arc_solver.py run --request request-04.json")))
+    (bind r05 (algorithm-round (request_file "request-05.json") (execute_command "python3 arc_solver.py run --request request-05.json")))
+    (bind r06 (algorithm-round (request_file "request-06.json") (execute_command "python3 arc_solver.py run --request request-06.json")))
+    (bind r07 (algorithm-round (request_file "request-07.json") (execute_command "python3 arc_solver.py run --request request-07.json")))
+    (bind r08 (algorithm-round (request_file "request-08.json") (execute_command "python3 arc_solver.py run --request request-08.json")))
+    (bind r09 (algorithm-round (request_file "request-09.json") (execute_command "python3 arc_solver.py run --request request-09.json")))
+    (bind r10 (algorithm-round (request_file "request-10.json") (execute_command "python3 arc_solver.py run --request request-10.json")))
+    (bind r11 (algorithm-round (request_file "request-11.json") (execute_command "python3 arc_solver.py run --request request-11.json")))
+    (bind r12 (algorithm-round (request_file "request-12.json") (execute_command "python3 arc_solver.py run --request request-12.json")))
+    (bind r13 (algorithm-round (request_file "request-13.json") (execute_command "python3 arc_solver.py run --request request-13.json")))
+    (bind r14 (algorithm-round (request_file "request-14.json") (execute_command "python3 arc_solver.py run --request request-14.json")))
+    (bind r15 (algorithm-round (request_file "request-15.json") (execute_command "python3 arc_solver.py run --request request-15.json")))
+    (bind r16 (algorithm-round (request_file "request-16.json") (execute_command "python3 arc_solver.py run --request request-16.json")))
+    (bind r17 (algorithm-round (request_file "request-17.json") (execute_command "python3 arc_solver.py run --request request-17.json")))
+    (bind r18 (algorithm-round (request_file "request-18.json") (execute_command "python3 arc_solver.py run --request request-18.json")))
+    (bind r19 (algorithm-round (request_file "request-19.json") (execute_command "python3 arc_solver.py run --request request-19.json")))
+    (bind r20 (algorithm-round (request_file "request-20.json") (execute_command "python3 arc_solver.py run --request request-20.json")))
+    (bind r21 (algorithm-round (request_file "request-21.json") (execute_command "python3 arc_solver.py run --request request-21.json")))
+    (bind r22 (algorithm-round (request_file "request-22.json") (execute_command "python3 arc_solver.py run --request request-22.json")))
+    (bind r23 (algorithm-round (request_file "request-23.json") (execute_command "python3 arc_solver.py run --request request-23.json")))
+    (bind r24 (algorithm-round (request_file "request-24.json") (execute_command "python3 arc_solver.py run --request request-24.json")))
+    (call read (path "algorithm-result.json"))))
