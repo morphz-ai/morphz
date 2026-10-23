@@ -62,7 +62,7 @@ test("full main and release CI cannot be filtered out by changed paths", () => {
     assert.match(source.split("\njobs:", 1)[0], /^  workflow_call:/m);
   }
   assert.ok(ci.includes("node --test scripts/tests/release-policy.test.cjs"));
-  assert.ok(ci.includes("python3 -B -m unittest discover -s scripts/tests -p test_release_ci.py -v"));
+  assert.ok(ci.includes("python3 -B -m unittest discover -s scripts/tests -p 'test_release_*.py' -v"));
 });
 
 test("publish needs exact-commit complete CI and explicit channel flags", () => {
@@ -75,6 +75,11 @@ test("publish needs exact-commit complete CI and explicit channel flags", () => 
   assert.match(publish, /channel_args=\(--latest="\$RELEASE_MAKE_LATEST"\)/);
   assert.match(publish, /channel_args\+=\(--prerelease\)/);
   assert.match(publish, /"\$\{channel_args\[@\]\}"/);
+  assert.match(publish, /pattern: morphz-\*/);
+  assert.match(publish, /python3 -B scripts\/verify-release-assets\.py dist > "\$RUNNER_TEMP\/release-assets\.txt"/);
+  assert.match(publish, /mapfile -t release_assets < "\$RUNNER_TEMP\/release-assets\.txt"/);
+  assert.match(publish, /gh release create "\$RELEASE_TAG" "\$\{release_assets\[@\]\}"/);
+  assert.doesNotMatch(publish, /dist\/\*|<\s*<\(/);
   assert.match(release, /node scripts\/release-policy\.cjs "\$package_version" "\$RELEASE_TAG"/);
   assert.equal((release.match(/MORPHZ_VERSION="\$\{\{ needs.validate-tag.outputs.tag \}\}"/g) ?? []).length, 2);
 });

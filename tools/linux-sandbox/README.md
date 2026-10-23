@@ -3,7 +3,27 @@
 Implementation under the approved 2026-10-21 service/launcher plan. **Installed
 only in isolated Linux CI, not on user/production machines.**
 
-Latest measured result: [run 39574236288](https://github.com/morphz-ai/morphz/actions/runs/39574236288)
+Current administrator instructions are in [INSTALL.md](INSTALL.md). The
+[0.1.4 RC acceptance record](../../docs/releases/v0.1.4-rc.1-acceptance.md)
+separates current release gates from the development evidence below. Explicit
+upgrade, rollback, drained uninstall and crash recovery are now implemented;
+they are not implicit overwrite or automatic privilege elevation.
+
+The candidate at `8f3e4b04` passed the installed-service and compiler/kernel
+jobs in [run 39952055226](https://github.com/morphz-ai/morphz/actions/runs/39952055226).
+Its installed lifecycle archive records 33/33 assertions, including active-work
+upgrade/rollback, automatic recovery from a failed upgrade, active-uninstall
+refusal and recovery after two real administrator-process interruptions. This
+is isolated Linux CI acceptance, not production deployment. A later candidate
+must still pass its own exact-commit gates before publication.
+
+## Development evidence history
+
+The observations and pending gates in this section describe their named
+historical commits/runs; old test counts and then-pending lifecycle work are
+not the current candidate's status.
+
+Earlier measured result: [run 39574236288](https://github.com/morphz-ai/morphz/actions/runs/39574236288)
 at `fa1f2d0b` passed both jobs, with raw logs checked: four actual Runtime native
 contracts, the unchanged late-file PTY regression, private-PTY/session separation,
 the complete Runtime library (1664 passed, zero failed, 14 default-ignored),
@@ -229,9 +249,11 @@ make this migration pass. The original terminal late-file test stays unchanged.
 a sealed private handoff; distribution Bubblewrap receives a fixed clean
 environment, and the user's environment becomes active only after admission.
 The service checks the full mount table as well as individual approved objects.
-`install.py` requires explicit root invocation and never starts a service or
-changes global sysctl settings. It refuses implicit upgrade/overwrite. Formal
-upgrade/uninstall lifecycle and full Runtime CI still remain acceptance gates.
+The initial `install.py` required explicit root invocation and did not start
+the service or change global sysctl settings. It refused implicit
+upgrade/overwrite. Upgrade/uninstall and full Runtime CI were separate pending
+gates at that stage. The current explicit lifecycle commands may restart the
+service while preserving active work; see `INSTALL.md` for their boundaries.
 
 Full workspace CI uses `stage_runtime_tests.py --workspace` to install an explicit
 seven-image native test inventory, not every executable produced by Cargo.

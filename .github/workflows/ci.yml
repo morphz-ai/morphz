@@ -69,7 +69,7 @@ jobs:
         run: |
           npm ci --prefix dashboard --ignore-scripts
           node --test scripts/tests/release-policy.test.cjs
-          python3 -B -m unittest discover -s scripts/tests -p test_release_ci.py -v
+          python3 -B -m unittest discover -s scripts/tests -p 'test_release_*.py' -v
       - name: Verify deterministic Linux policy and exact installed-test inventory
         run: python3 -B -m unittest discover -s tools/linux-sandbox -p 'test_*.py' -v
       - name: Audit Rust dependency advisories
