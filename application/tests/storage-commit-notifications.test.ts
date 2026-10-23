@@ -1,12 +1,13 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import fs, { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connect, createServer, type Socket } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 import {
   observeSqlChanges,
   postgresChangeSource,
@@ -315,12 +316,142 @@ test("同一 canonical SQLite 的独立 Store 收到提交，重放不失效，c
 });
 
 const postgresUrl = process.env.MORPHZ_TEST_POSTGRES_URL;
+// Only reconnect readiness includes the existing production connection attempt
+// (5s), first backoff (100ms) and a finite scheduling/inspection margin (500ms).
+// Ordinary COMMIT/ROLLBACK/notification assertions retain their original budget.
+const listenerReconnectBudget = 5_000 + 100 + 500;
+type ListenerStage = {
+  ms: number;
+  phase: string;
+  attempt?: number;
+  pid?: number;
+  errorClass?: string;
+  code?: string;
+};
+function listenerWitness(t: TestContext, name: string) {
+  const started = Date.now(),
+    stages: ListenerStage[] = [];
+  const record = (
+    phase: string,
+    fields: Omit<ListenerStage, "ms" | "phase"> = {},
+  ) => {
+    if (stages.length < 40)
+      stages.push({ ms: Date.now() - started, phase, ...fields });
+  };
+  let attempts = 0;
+  const original = Client.prototype.connect;
+  t.mock.method(
+    Client.prototype,
+    "connect",
+    function (this: Client, ...args: unknown[]) {
+      const client = this as Client & {
+        connectionParameters: { application_name?: string };
+        processID: number;
+      };
+      const result = Reflect.apply(original, client, args);
+      if (client.connectionParameters.application_name === name) {
+        const attempt = ++attempts;
+        record("connect-attempt", { attempt });
+        void Promise.resolve(result).then(
+          () => record("connect-completed", { attempt, pid: client.processID }),
+          (error: unknown) => {
+            const value = error as { name?: unknown; code?: unknown };
+            record("connect-rejected", {
+              attempt,
+              errorClass:
+                typeof value?.name === "string" &&
+                /^[A-Za-z0-9_]{1,40}$/.test(value.name)
+                  ? value.name
+                  : "Error",
+              code:
+                typeof value?.code === "string" &&
+                /^[A-Z0-9_]{1,16}$/.test(value.code)
+                  ? value.code
+                  : "none",
+            });
+          },
+        );
+      }
+      return result;
+    },
+  );
+  return {
+    stages,
+    record,
+    report() {
+      t.diagnostic(JSON.stringify({ listenerStages: stages }));
+    },
+  };
+}
+async function listenerProxy(delayStartup: (attempt: number) => number | null) {
+  const origin = new URL(postgresUrl!);
+  const sockets = new Set<Socket>(),
+    timers = new Set<ReturnType<typeof setTimeout>>();
+  let attempts = 0;
+  const server = createServer((downstream) => {
+    const attempt = ++attempts;
+    const upstream = connect({
+      host: origin.hostname,
+      port: Number(origin.port || "5432"),
+    });
+    for (const socket of [downstream, upstream]) {
+      sockets.add(socket);
+      socket.on("error", () => {});
+      socket.on("close", () => sockets.delete(socket));
+    }
+    downstream.on("close", () => upstream.destroy());
+    downstream.on("end", () => upstream.destroy());
+    upstream.on("close", () => downstream.destroy());
+    upstream.pipe(downstream);
+    // Consume, but do not forward, the real startup bytes. Pausing reads would
+    // also hide the peer's FIN and manufacture an unclosable proxy connection.
+    const startup: Buffer[] = [];
+    let startupBytes = 0;
+    const buffer = (chunk: Buffer) => {
+      startupBytes += chunk.length;
+      if (startupBytes > 64 * 1024) {
+        downstream.destroy();
+        upstream.destroy();
+      } else startup.push(chunk);
+    };
+    downstream.on("data", buffer);
+    const delay = delayStartup(attempt);
+    const forward = () => {
+      downstream.removeListener("data", buffer);
+      for (const chunk of startup) upstream.write(chunk);
+      startup.length = 0;
+      downstream.pipe(upstream);
+    };
+    if (delay === 0) forward();
+    else if (delay !== null) {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        forward();
+      }, delay);
+      timers.add(timer);
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = new URL(origin);
+  url.port = String((server.address() as { port: number }).port);
+  return {
+    url: url.href,
+    attempts: () => attempts,
+    sockets: () => sockets.size,
+    async close() {
+      for (const timer of timers) clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
 test(
   "PG 独立 LISTEN 不占 max1 查询池；仅 COMMIT 通知、schema 隔离、断线恢复校验、无健康探活",
   { skip: !postgresUrl },
-  async () => {
+  async (t) => {
     const schema = `notify_${randomUUID().replaceAll("-", "")}`;
     const name = `notify-listener-${randomUUID()}`;
+    const witness = listenerWitness(t, name);
     const pool = new Pool({ connectionString: postgresUrl!, max: 1 });
     const writer = await pool.connect();
     const source = postgresChangeSource(
@@ -338,13 +469,19 @@ test(
         otherHints.push(hint);
       },
     );
-    const listener = async () =>
-      (
+    let lastListener: { pid: number; listening: boolean } | null = null;
+    const listener = async () => {
+      const row = (
         await writer.query<{ pid: number; query: string }>(
           "SELECT pid,query FROM pg_stat_activity WHERE application_name=$1",
           [name],
         )
       ).rows[0];
+      lastListener = row
+        ? { pid: row.pid, listening: row.query.startsWith("LISTEN") }
+        : null;
+      return row;
+    };
     try {
       await writer.query(
         `CREATE SCHEMA "${schema}"; CREATE TABLE "${schema}".items(id INTEGER PRIMARY KEY)`,
@@ -397,11 +534,15 @@ test(
       await pause(40);
       assert.equal(hints.length, 0);
       await writer.query("SELECT pg_terminate_backend($1)", [initial.pid]);
+      witness.record("terminate-requested", { pid: initial.pid });
       await until(async () => {
         const next = await listener();
         return (
           !!next && next.pid !== initial.pid && next.query.startsWith("LISTEN")
         );
+      }, listenerReconnectBudget);
+      witness.record("replacement-listen-observed", {
+        pid: (await listener())!.pid,
       });
       assert.ok(hints.some((hint) => hint.reason === "resync"));
       await pause(20);
@@ -415,12 +556,175 @@ test(
       assert.equal(postgresCommitChannel(schema).includes(schema), false);
       assert.deepEqual(Object.keys(source).sort(), ["driver", "identity"]);
       assert.ok(hints.every((hint) => Object.keys(hint).join() === "reason"));
+    } catch (error) {
+      // Cached stage witness only: failure reporting must not issue another
+      // potentially blocked SQL request or reveal a query/URL/credential.
+      t.diagnostic(JSON.stringify({ lastListener }));
+      witness.report();
+      throw error;
     } finally {
       await subscription.close();
       await other.close();
       await writer.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       writer.release();
       await pool.end();
+    }
+  },
+);
+
+test(
+  "PG permanently blocked startup reaches the real connection deadline, never claims ready, and closes every owned socket and retry",
+  { skip: !postgresUrl, timeout: 15_000 },
+  async (t) => {
+    const name = `notify-blocked-${randomUUID()}`;
+    const schema = `notify_${randomUUID().replaceAll("-", "")}`;
+    const witness = listenerWitness(t, name);
+    const proxy = await listenerProxy(() => null);
+    const subscription = observeSqlChanges(
+      postgresChangeSource(
+        { connectionString: proxy.url, application_name: name },
+        schema,
+      ),
+      () => {},
+    );
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let ready = false;
+    const readyPromise = subscription.ready.then(() => {
+      ready = true;
+    });
+    try {
+      const notReady = new Promise<never>((_, reject) => {
+        deadline = setTimeout(
+          () => reject(Error("bounded reconnect readiness expired")),
+          listenerReconnectBudget,
+        );
+      });
+      await assert.rejects(
+        Promise.race([readyPromise, notReady]),
+        /bounded reconnect readiness expired/,
+      );
+      assert.equal(
+        ready,
+        false,
+        "a failed handshake cannot claim LISTEN readiness",
+      );
+      assert.equal(
+        witness.stages.filter((stage) => stage.phase === "connect-completed")
+          .length,
+        0,
+      );
+      const rejected = witness.stages.find(
+        (stage) => stage.phase === "connect-rejected",
+      );
+      assert.ok(
+        rejected,
+        "the production pg Client's actual 5s connect deadline must fire",
+      );
+      assert.ok(
+        rejected.ms >= 4_500,
+        "this is not an immediate refused endpoint or fabricated rejection",
+      );
+      // Observe the retry in its own phase after the actual connect rejection.
+      // A delayed event loop can process the 5s rejection near the readiness
+      // deadline, before its newly scheduled 100ms backoff has had a turn.
+      await until(() => proxy.attempts() >= 2, 100 + 500);
+      assert.ok(
+        proxy.attempts() >= 2,
+        "the real observer attempts its configured reconnect after failure",
+      );
+      await subscription.close();
+      await subscription.close();
+      await until(() => proxy.sockets() === 0);
+      const closedAttempts = proxy.attempts();
+      await pause(250);
+      assert.equal(
+        proxy.attempts(),
+        closedAttempts,
+        "close cancels a pending reconnect, not only the current socket",
+      );
+    } catch (error) {
+      witness.report();
+      throw error;
+    } finally {
+      clearTimeout(deadline);
+      await subscription.close();
+      await proxy.close();
+    }
+  },
+);
+
+test(
+  "PG reconnect waits for one real legal delayed startup, then receives COMMIT without changing notification deadlines",
+  { skip: !postgresUrl, timeout: 15_000 },
+  async (t) => {
+    const name = `notify-delayed-${randomUUID()}`;
+    const schema = `notify_${randomUUID().replaceAll("-", "")}`;
+    const witness = listenerWitness(t, name);
+    const proxy = await listenerProxy((attempt) => (attempt === 2 ? 3200 : 0));
+    const writer = new Client({ connectionString: postgresUrl! });
+    const hints: SqlChangeHint[] = [];
+    const subscription = observeSqlChanges(
+      postgresChangeSource(
+        { connectionString: proxy.url, application_name: name },
+        schema,
+      ),
+      (hint) => {
+        hints.push(hint);
+      },
+    );
+    try {
+      await writer.connect();
+      const listener = async () =>
+        (
+          await writer.query<{ pid: number; query: string }>(
+            "SELECT pid,query FROM pg_stat_activity WHERE application_name=$1",
+            [name],
+          )
+        ).rows[0];
+      await subscription.ready;
+      const initial = await listener();
+      assert.ok(initial);
+      assert.ok(initial.query.startsWith("LISTEN"));
+      await writer.query("SELECT pg_terminate_backend($1)", [initial.pid]);
+      witness.record("terminate-requested", { pid: initial.pid });
+      await until(async () => {
+        const row = await listener();
+        return (
+          !!row && row.pid !== initial.pid && row.query.startsWith("LISTEN")
+        );
+      }, listenerReconnectBudget);
+      const row = (await listener())!;
+      witness.record("replacement-listen-observed", { pid: row.pid });
+      assert.equal(
+        proxy.attempts(),
+        2,
+        "one reconnect, not a retry-until-green third connection",
+      );
+      assert.equal(
+        witness.stages.filter((stage) => stage.phase === "connect-rejected")
+          .length,
+        0,
+      );
+      await pause(20);
+      hints.length = 0;
+      await writer.query("BEGIN");
+      await writer.query("SELECT pg_notify($1,'')", [
+        postgresCommitChannel(schema),
+      ]);
+      assert.equal(hints.length, 0);
+      await writer.query("COMMIT");
+      await until(() => hints.some((hint) => hint.reason === "commit"));
+      witness.record("commit-notification-observed");
+      await subscription.close();
+      await subscription.close();
+      await until(() => proxy.sockets() === 0);
+    } catch (error) {
+      witness.report();
+      throw error;
+    } finally {
+      await subscription.close();
+      await writer.end();
+      await proxy.close();
     }
   },
 );
