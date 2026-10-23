@@ -21,6 +21,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from PIL import Image
 import test_arc_algorithms as fixtures
 from test_harness_tool_admission import Provider, port
+from arc_model_adapter import prepare_semantic_request
 
 
 @unittest.skipUnless(os.environ.get("MORPHZ_ARC_TEST_RUNTIME"), "requires an explicit real Runtime binary")
@@ -28,6 +29,7 @@ class AlgorithmHarnessRuntime(unittest.TestCase):
     rounds = 1
     expected_last_actions = 12
     expected_total_actions = 12
+    adapted = False
 
     def test_runtime_writes_typed_request_then_executes_the_real_solver(self):
         runtime = Path(os.environ["MORPHZ_ARC_TEST_RUNTIME"]).resolve()
@@ -58,9 +60,14 @@ class AlgorithmHarnessRuntime(unittest.TestCase):
                 shutil.copy2(Path(__file__).with_name(name), workspace / name)
             Image.new("RGB", (3, 2)).save(workspace / "frame.png")
             request = fixtures.AlgorithmTransport.request()
+            adapted = self.adapted
             class SemanticProvider(Provider):
                 requests = []
                 response_text = json.dumps({"request": json.dumps(request)})
+                def prepare_request(self, message):
+                    if adapted:
+                        return prepare_semantic_request(message, workspace / "frame.png")[0]
+                    return message
             provider = ThreadingHTTPServer(("127.0.0.1", 0), SemanticProvider)
             self.addCleanup(provider.server_close)
             self.addCleanup(provider.shutdown)
@@ -139,6 +146,11 @@ workspace_root={json.dumps(str(workspace))}
             self.assertEqual(fixture.status()["levels_completed"], 0)
             self.assertEqual(len(SemanticProvider.requests), self.rounds)
             self.assertFalse(SemanticProvider.requests[0].get("tools"), "Semantic inference must be tool-free")
+            if adapted:
+                for message in SemanticProvider.requests:
+                    self.assertIn('data:image/png;base64,', json.dumps(message))
+                    self.assertFalse(message['chat_template_kwargs']['enable_thinking'])
+                    self.assertEqual(message['response_format']['type'], 'json_schema')
             with sqlite3.connect(root / "runtime.db") as database:
                 jobs = database.execute("SELECT tool_name,status FROM execution_jobs").fetchall()
             self.assertIn(("write", "succeeded"), jobs)
@@ -149,6 +161,10 @@ class AlgorithmHarnessTwoRounds(AlgorithmHarnessRuntime):
     rounds = 2
     expected_last_actions = 10  # Target already reached: validation, no solving moves.
     expected_total_actions = 22
+
+
+class CaptureBoundImageActor(AlgorithmHarnessTwoRounds):
+    adapted = True
 
 
 if __name__ == "__main__":

@@ -6,9 +6,9 @@ competition submission or an official leaderboard score**.
 
 ## Executable-algorithm Harness — 2026-10-23
 
-`arc-algorithms@0.3.0` changes executable computation, not just the discovery
+`arc-algorithms` changes executable computation, not just the discovery
 prompt. It runs on the same existing Morphz Runtime. The finite `.hns` program
-owns 24 bounded rounds: read visible evidence and image metadata, infer one typed
+owns bounded rounds (24 in v0.3.0, 64 in v0.3.1): read visible evidence and image metadata, infer one typed
 semantic hypothesis, write a JSON request, and execute the reviewed Python
 module. The inference nodes deliberately receive **no model tools**; ordinary
 Runtime `read`/`write`/`exec` calls perform effects. Empty provider tool lists
@@ -74,6 +74,67 @@ The independent Kaggle credential is used only by the local official CLI, not
 uploaded to the private Dataset or Notebook. The current private experiment is
 [Morphz ARC-AGI-3 executable algorithms 20261023](https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-executable-algorithms-20261023).
 No formal competition prediction is submitted by this workflow.
+
+### Real v0.3.0 comparison: completed, no demonstrated gain
+
+The six fresh attempts ran on the actual free Kaggle RTX PRO 6000, not local
+fixtures. Original receipts and the subsequent audit are preserved separately
+in [algorithm-results-2026-10-24.json](algorithm-results-2026-10-24.json).
+All six action counts and maximum level counters were checked against the
+downloaded engine trajectories. The private immutable execution is
+[Notebook V5](https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-executable-algorithms-20261023?scriptVersionId=361513730).
+
+| Public game | Baseline best levels / actions / seconds | Algorithm v0.3.0 best levels / actions / seconds | Actual math searches |
+| --- | --- | --- | --- |
+| ft09 | 1/6 · 65 · 600.532 | 0/6 · 1 · 600.509 | 0 |
+| ls20 | 0/7 · 16 · 378.296, provider HTTP 400 | 0/7 · 23 · 600.489 | 0 |
+| vc33 | 0/7 · 126 · 600.551 | 0/7 · 9 · 600.756 | 0 |
+
+Neither arm won a whole game. The baseline's ft09 first level transition was
+at action 45, 515.128 seconds; this is not a whole-game win. The ls20 baseline
+ended early because the provider rejected assistant tool-call arguments as
+invalid JSON. Its original `valid_run=true`/`runtime_returned` is retained for
+provenance, with an explicit audited invalidation, not counted as a normal
+full-budget control. Baseline shell commands also attempted path discovery
+outside their instructed workspace. No game-source content read was established
+by that review, but strict source isolation and a clean anti-cheating control
+are not established.
+
+The candidate executed one, seven and four algorithm-module calls respectively,
+but **no GF(2) or A* search**. ft09 became stuck in 28 completed whitespace-only
+final replies after an output-limit continuation. ls20 incorrectly selected a
+toggle hypothesis without a click action; vc33's proposed toggle model failed
+the measured double-click restoration test. These are transport, method-selection
+and model-assumption failures, not evidence that mathematical search is unable
+to compensate for model limitations.
+
+### v0.3.1 actor-integration follow-up
+
+This is a separately declared two-game integration repair, **not a pure
+algorithm ablation or a same-reasoning-policy A/B**. Same Flash-Next V1 weights,
+Runtime binary, GPU type, 256K context and 8192 output cap are retained. Changes:
+
+- `arc_model_adapter.py` projects only the current PNG already captured by exact
+  SHA-256 into the tool-free semantic request. Other files cannot be substituted.
+  Each actual outgoing provider request records this adaptation receipt.
+- Those narrow actors explicitly disable thinking and use a constrained JSON
+  return. This avoids spending the entire action budget on reasoning-only
+  continuations; it does not reinterpret private reasoning as an answer, or
+  repair Runtime continuation globally.
+- Observations include exact recent actions, their arguments, pixel changes,
+  the previous request and counterexample. Method availability is gated on
+  actual engine controls.
+- `identify_navigate` performs bounded active motion identification, validates
+  independent transitions, then calls the existing A* implementation. Probe
+  and route execution share one action limit; no game-specific moves are stored.
+- The runner rejects repeated empty-stop replies, attachment-projection errors
+  and terminal provider rejection instead of treating exit code zero as success.
+
+Build with `--harness arc-algorithms --profile actor-integration` and the same
+verified `--base-bundle`. The declared sample is ft09 and ls20, candidate only,
+600 seconds / 200 actions each. Scores, actual search counts and transport
+evidence must be inspected after the run; packaging and the 56 local tests
+are not a game result.
 
 ## Fixed first-sample protocol
 

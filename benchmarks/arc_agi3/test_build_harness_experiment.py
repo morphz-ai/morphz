@@ -86,6 +86,19 @@ class DeploymentTest(unittest.TestCase):
     def test_inline_overlay_reuses_pinned_binary_in_unpacked_input(self):
         self.run_inline_fixture(True)
 
+    def test_actor_integration_profile_is_separate_and_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); self.fixture(root)
+            result=build(root/'fake-linux-header',root/'actor','fixture-not-real',
+                         'arc-algorithms',profile='actor-integration')
+            notebook=json.loads(Path(result['notebook']).read_text())
+            code=''.join(notebook['cells'][3]['source'])
+            self.assertIn("'actor_adapter':True",code)
+            self.assertIn("'games':['ft09','ls20']",code)
+            self.assertIn("'arms':['discovery']",code)
+            self.assertIn('not a pure algorithm ablation',''.join(notebook['cells'][0]['source']))
+            compile(code,'actor-profile-fixture','exec')
+
     def test_algorithm_bundle_pins_runtime_owned_harness_and_all_executable_modules(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
@@ -93,7 +106,9 @@ class DeploymentTest(unittest.TestCase):
             result=build(root/'fake-linux-header',root/'algorithms','fixture-not-real','arc-algorithms')
             with zipfile.ZipFile(result['bundle']) as archive:
                 manifest=json.loads(archive.read('deployment.json'))
-                self.assertEqual(manifest['harness'],'arc-algorithms@0.3.0')
+                version=re.search(r'\(version\s+"([^"]+)"\)',
+                    Path(__file__).with_name('arc-algorithms.hns').read_text()).group(1)
+                self.assertEqual(manifest['harness'],f'arc-algorithms@{version}')
                 for name in ('arc_solver.py','arc_algorithms.py','arc-algorithms.hns'):
                     self.assertEqual(hashlib.sha256(archive.read(name)).hexdigest(),manifest['files'][name])
             notebook=json.loads(Path(result['notebook']).read_text())

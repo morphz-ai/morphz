@@ -116,12 +116,38 @@ class BinaryVisibleFixture:
         return self.status()
 
 
+class MotionVisibleFixture(BinaryVisibleFixture):
+    """Synthetic one-control rigid motion, not an ARC environment."""
+    def __init__(self, root, nonlinear=False):
+        self.position = 0
+        super().__init__(root, nonlinear)
+
+    def capture(self, action, data):
+        grid = [[0] * 8]
+        grid[0][self.position] = 1
+        self.tracker.capture(grid, action=action, data=data, actions=self.actions,
+                             levels_completed=0, state="NOT_FINISHED")
+        with (self.root / "trajectory.jsonl").open("a") as stream:
+            stream.write(json.dumps(dict(action=action, data=data, actions=self.actions,
+                levels_completed=0, state="NOT_FINISHED", frame=[grid])) + "\n")
+
+    def status(self):
+        return dict(super().status(), available_actions=["ACTION1"])
+
+    def action(self, payload):
+        assert payload["action"] == "ACTION1"
+        self.position = min(7, self.position + 1)
+        self.actions += 1
+        self.capture(payload["action"], {})
+        return self.status()
+
+
 class AlgorithmTransport(unittest.TestCase):
-    def run_fixture(self, nonlinear=False):
+    def run_fixture(self, nonlinear=False, fixture_type=BinaryVisibleFixture):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        fixture = BinaryVisibleFixture(root, nonlinear)
+        fixture = fixture_type(root, nonlinear)
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *_):
                 pass
@@ -175,6 +201,38 @@ class AlgorithmTransport(unittest.TestCase):
             with self.assertRaises(ValueError):
                 solver.run(request)
         self.assertEqual(fixture.actions, 0)
+
+    def test_causal_feedback_and_available_methods_are_preserved(self):
+        solver, fixture = self.run_fixture()
+        solver.run({'method':'probe','actions':[{'action':'ACTION6','x':0,'y':1}]})
+        facts=solver.analyze()
+        last=facts['recent_action_evidence'][-1]
+        self.assertEqual(last['data'],{'x':0,'y':1})
+        self.assertEqual(last['changed_pixels'],2)
+        self.assertEqual(last['bbox_xyxy'],[0,0,1,0])
+        self.assertIn('toggle',facts['allowed_methods'])
+        self.assertNotIn('identify_navigate',facts['allowed_methods'])
+
+    def test_active_identification_reaches_actual_astar_and_verified_moves(self):
+        solver, fixture=self.run_fixture(fixture_type=MotionVisibleFixture)
+        request={'method':'identify_navigate','body_color':1,'walkable_colors':[0],
+                 'goal_anchor':[4,0],'max_actions':8}
+        result=solver.run(request)
+        self.assertTrue(result['search']['found'])
+        self.assertEqual(fixture.position,4)
+        self.assertEqual(fixture.actions,4)
+        self.assertEqual(fixture.status()['levels_completed'],0)
+        audit=[json.loads(x) for x in (solver.root/'algorithm-audit.jsonl').read_text().splitlines()]
+        self.assertEqual(sum(x['event']=='motion_identification_probe' for x in audit),2)
+        self.assertEqual(sum(x['event']=='astar_search' for x in audit),1)
+
+    def test_active_identification_obeys_one_shared_action_bound(self):
+        solver, fixture=self.run_fixture(fixture_type=MotionVisibleFixture)
+        solver.run({'method':'identify_navigate','body_color':1,'walkable_colors':[0],
+                    'goal_anchor':[6,0],'max_actions':3})
+        self.assertEqual(fixture.actions,3)
+        facts=solver.analyze()
+        self.assertNotIn('toggle',facts['allowed_methods'])
 
 
 if __name__ == "__main__":

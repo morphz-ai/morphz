@@ -24,8 +24,12 @@ class Provider(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def prepare_request(self, request):
+        return request
+
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        request = self.prepare_request(request)
         self.requests.append(request)
         if request.get("stream"):
             chunks = [

@@ -17,7 +17,7 @@ import zipfile
 HERE=Path(__file__).resolve().parent
 REPO=HERE.parents[1]
 SOURCES=('arc_bridge.py','arc_cli.py','arc_observation.py','arc-discovery.hns',
-         'arc-algorithms.hns','arc_algorithms.py','arc_solver.py','test_arc_algorithms.py',
+         'arc-algorithms.hns','arc_algorithms.py','arc_solver.py','arc_model_adapter.py','test_arc_algorithms.py',
          'test_algorithm_harness_runtime.py',
          'arc_runner.py','arc_experiment_report.py','flash_next_bootstrap_arc.py',
          'arc_experiment_diagnostics.py','test_arc_experiment_diagnostics.py',
@@ -35,7 +35,9 @@ def cell(source,kind='code'):
     return result
 
 
-def build(runtime,output,commit,harness='arc-discovery',base_bundle=None):
+def build(runtime,output,commit,harness='arc-discovery',base_bundle=None,profile='paired'):
+    if profile not in ('paired','actor-integration') or profile=='actor-integration' and harness!='arc-algorithms':
+        raise ValueError('Select an explicitly supported experiment profile')
     if harness not in ('arc-discovery','arc-algorithms'):
         raise ValueError('Select an explicitly allowlisted Harness')
     binary=runtime.read_bytes()
@@ -178,7 +180,7 @@ print('HARNESS_DIAGNOSTIC_ARCHIVE_READY',str(WORK),flush=True)
 ARC_EXPERIMENT={'games':['ft09','ls20','vc33'],'arms':['baseline','discovery'],'budget_s':600,'max_actions':200,'harness_id':'arc-algorithms','harness_file':'arc-algorithms.hns','harness_version':HARNESS_VERSION_PIN,'algorithm_tools':True,'output':'arc-algorithms-v030-public-ab'}
 ARC_SOURCE=WORK/ARC_EXPERIMENT['output']/'bridge-source'
 ARC_SOURCE.mkdir(parents=True,exist_ok=True)
-for name in ('arc_bridge.py','arc_cli.py','arc_observation.py','arc-algorithms.hns','arc_algorithms.py','arc_solver.py'):
+for name in ('arc_bridge.py','arc_cli.py','arc_observation.py','arc-algorithms.hns','arc_algorithms.py','arc_solver.py','arc_model_adapter.py'):
     shutil.copy2(DEPLOY/name,ARC_SOURCE/name)
 try:
     ARC_RUNNER_RECEIPT={'sha256':sha256(DEPLOY/'arc_runner.py'),'source':'verified algorithm deployment bundle'}
@@ -199,6 +201,11 @@ finally:
         except subprocess.TimeoutExpired: os.killpg(server.pid,signal.SIGKILL); server.wait()
 print('ALGORITHM_EXPERIMENT_ARCHIVE_READY',str(WORK),flush=True)
 '''.replace('HARNESS_VERSION_PIN',repr(harness_version))
+        if profile=='actor-integration':
+            algorithm_experiment=algorithm_experiment.replace("'games':['ft09','ls20','vc33']", "'games':['ft09','ls20']")
+            algorithm_experiment=algorithm_experiment.replace("'arms':['baseline','discovery']", "'arms':['discovery']")
+            algorithm_experiment=algorithm_experiment.replace("'output':'arc-algorithms-v030-public-ab'", "'actor_adapter':True,'output':'arc-algorithms-v031-actor-integration'")
+            notebook['cells'][0]=cell('# Morphz ARC-AGI-3 actor integration repair\n\nPrivate bounded follow-up, not a pure algorithm ablation. Same Flash-Next V1 and Runtime binary. Semantic actors receive the exact capture-bound PNG and constrained non-thinking JSON generation; native provider adaptation is explicitly recorded. Two public games, candidate only, 600 seconds / 200 actions each. No training, paid APIs or formal submission.\n','markdown')
         notebook['cells'][3]=cell(algorithm_experiment)
     destination=output/'morphz-arc-harness-experiment.ipynb'
     destination.write_text(json.dumps(notebook,ensure_ascii=False,indent=2))
@@ -221,8 +228,9 @@ def main():
                    help='Commit whose clean Rust sources produced this binary; do not guess from --version')
     p.add_argument('--harness',choices=('arc-discovery','arc-algorithms'),default='arc-discovery')
     p.add_argument('--base-bundle',type=Path,help='Reuse the identical binary in a previously verified private input; inline hash-verified sources')
+    p.add_argument('--profile',choices=('paired','actor-integration'),default='paired')
     args=p.parse_args()
-    print(json.dumps(build(args.runtime,args.output,args.runtime_commit,args.harness,args.base_bundle),indent=2))
+    print(json.dumps(build(args.runtime,args.output,args.runtime_commit,args.harness,args.base_bundle,args.profile),indent=2))
 
 
 if __name__=='__main__': main()

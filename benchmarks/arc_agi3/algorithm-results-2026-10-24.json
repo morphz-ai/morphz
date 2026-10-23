@@ -1,0 +1,571 @@
+{
+  "schema": "morphz-arc-executable-algorithms-comparison@1",
+  "status": "complete_with_negative_outcome_and_integration_limitations",
+  "measurement_date": "2026-10-24",
+  "formal_submission": false,
+  "official_score": false,
+  "archive": {
+    "url": "https://www.kaggle.com/code/shafreecksea/morphz-arc-agi-3-executable-algorithms-20261023?scriptVersionId=361513730",
+    "version": 5,
+    "private": true
+  },
+  "protocol": {
+    "games": [
+      "ft09",
+      "ls20",
+      "vc33"
+    ],
+    "arms": [
+      "baseline",
+      "discovery"
+    ],
+    "wall_budget_s": 600,
+    "max_actions": 200,
+    "engine_seed": 0,
+    "model": "Qwen3.8-Flash-Next W4A16 AutoRound V1",
+    "configured_context_tokens": 262144,
+    "max_output_tokens": 8192,
+    "reasoning_effort": "medium",
+    "runtime_commit": "f38245e906814b33fb4f92edd70534b3a233610f",
+    "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+    "harness": "arc-algorithms@0.3.0",
+    "harness_source_sha256": "0a774ae4ff90f175461847a380f08fc3e2a601dd235416fd70b3be82601cce2d",
+    "matrix_input_candidate": true,
+    "native_image_candidate": false
+  },
+  "startup": {
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpu_memory_total_mib": 97887,
+    "driver": "580.178.04",
+    "model_server_ready_s": 1361,
+    "direct_smoke_s": 0.913,
+    "model_server_smoke_passed": true
+  },
+  "results": [
+    {
+      "game": "ft09",
+      "arm": "baseline",
+      "game_id": "ft09-0d8bbf25",
+      "state": "NOT_FINISHED",
+      "levels_completed": 1,
+      "max_levels_completed": 1,
+      "total_levels": 6,
+      "actions": 65,
+      "resets": 0,
+      "available_actions": [
+        "ACTION6"
+      ],
+      "elapsed_s": 600.538,
+      "remaining_s": 0,
+      "stopped": true,
+      "stop_reason": "time_budget",
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 600.532,
+      "runtime_exit_code": -15,
+      "termination": "time_budget",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": false,
+      "model_requests": 29,
+      "image_requests": 3,
+      "prompt_tokens_total": 1653585,
+      "completion_tokens_total": 47399,
+      "tool_jobs": 30,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": null,
+      "harness_source_sha256": null,
+      "harness_binding_verified": null,
+      "tools_exposed_on_provider_wire": true,
+      "semantic_inference_tool_free_expected": false,
+      "algorithm_module_calls": 0,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 0,
+      "completed_http_200_model_requests": 28,
+      "valid_run": true,
+      "invalid_reasons": [],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    },
+    {
+      "game": "ft09",
+      "arm": "discovery",
+      "game_id": "ft09-0d8bbf25",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 6,
+      "actions": 1,
+      "resets": 0,
+      "available_actions": [
+        "ACTION6"
+      ],
+      "elapsed_s": 600.516,
+      "remaining_s": 0,
+      "stopped": true,
+      "stop_reason": "time_budget",
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 600.509,
+      "runtime_exit_code": -15,
+      "termination": "time_budget",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": false,
+      "model_requests": 34,
+      "image_requests": 0,
+      "prompt_tokens_total": 2725789,
+      "completion_tokens_total": 50531,
+      "tool_jobs": 7,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": "arc-algorithms@0.3.0",
+      "harness_source_sha256": "0a774ae4ff90f175461847a380f08fc3e2a601dd235416fd70b3be82601cce2d",
+      "harness_binding_verified": true,
+      "tools_exposed_on_provider_wire": false,
+      "semantic_inference_tool_free_expected": true,
+      "algorithm_module_calls": 1,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 1,
+      "completed_http_200_model_requests": 33,
+      "valid_run": true,
+      "invalid_reasons": [],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    },
+    {
+      "game": "ls20",
+      "arm": "baseline",
+      "game_id": "ls20-9607627b",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 7,
+      "actions": 16,
+      "resets": 0,
+      "available_actions": [
+        "ACTION1",
+        "ACTION2",
+        "ACTION3",
+        "ACTION4"
+      ],
+      "elapsed_s": 378.296,
+      "remaining_s": 221.704,
+      "stopped": false,
+      "stop_reason": null,
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 378.296,
+      "runtime_exit_code": 0,
+      "termination": "runtime_returned",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": false,
+      "model_requests": 25,
+      "image_requests": 3,
+      "prompt_tokens_total": 1336763,
+      "completion_tokens_total": 30251,
+      "tool_jobs": 23,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": null,
+      "harness_source_sha256": null,
+      "harness_binding_verified": null,
+      "tools_exposed_on_provider_wire": true,
+      "semantic_inference_tool_free_expected": false,
+      "algorithm_module_calls": 0,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 0,
+      "completed_http_200_model_requests": 24,
+      "valid_run": true,
+      "invalid_reasons": [],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    },
+    {
+      "game": "ls20",
+      "arm": "discovery",
+      "game_id": "ls20-9607627b",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 7,
+      "actions": 23,
+      "resets": 0,
+      "available_actions": [
+        "ACTION1",
+        "ACTION2",
+        "ACTION3",
+        "ACTION4"
+      ],
+      "elapsed_s": 600.504,
+      "remaining_s": 0,
+      "stopped": true,
+      "stop_reason": "time_budget",
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 600.489,
+      "runtime_exit_code": -15,
+      "termination": "time_budget",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": false,
+      "model_requests": 10,
+      "image_requests": 0,
+      "prompt_tokens_total": 859931,
+      "completion_tokens_total": 47606,
+      "tool_jobs": 31,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": "arc-algorithms@0.3.0",
+      "harness_source_sha256": "0a774ae4ff90f175461847a380f08fc3e2a601dd235416fd70b3be82601cce2d",
+      "harness_binding_verified": true,
+      "tools_exposed_on_provider_wire": false,
+      "semantic_inference_tool_free_expected": true,
+      "algorithm_module_calls": 7,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 23,
+      "completed_http_200_model_requests": 9,
+      "valid_run": true,
+      "invalid_reasons": [],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    },
+    {
+      "game": "vc33",
+      "arm": "baseline",
+      "game_id": "vc33-5430563c",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 7,
+      "actions": 126,
+      "resets": 2,
+      "available_actions": [
+        "ACTION6"
+      ],
+      "elapsed_s": 600.557,
+      "remaining_s": 0,
+      "stopped": true,
+      "stop_reason": "time_budget",
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 600.551,
+      "runtime_exit_code": -15,
+      "termination": "time_budget",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": false,
+      "model_requests": 26,
+      "image_requests": 3,
+      "prompt_tokens_total": 1681441,
+      "completion_tokens_total": 46032,
+      "tool_jobs": 27,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": null,
+      "harness_source_sha256": null,
+      "harness_binding_verified": null,
+      "tools_exposed_on_provider_wire": true,
+      "semantic_inference_tool_free_expected": false,
+      "algorithm_module_calls": 0,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 0,
+      "completed_http_200_model_requests": 25,
+      "valid_run": true,
+      "invalid_reasons": [],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    },
+    {
+      "game": "vc33",
+      "arm": "discovery",
+      "game_id": "vc33-5430563c",
+      "state": "NOT_FINISHED",
+      "levels_completed": 0,
+      "max_levels_completed": 0,
+      "total_levels": 7,
+      "actions": 9,
+      "resets": 0,
+      "available_actions": [
+        "ACTION6"
+      ],
+      "elapsed_s": 600.762,
+      "remaining_s": 0,
+      "stopped": true,
+      "stop_reason": "time_budget",
+      "frame_available": true,
+      "frame_png": "frame.png",
+      "grid_txt": "grid.txt",
+      "frame_json": "frame.json",
+      "wall_s": 600.756,
+      "runtime_exit_code": -15,
+      "termination": "time_budget",
+      "runtime_protocol_failed": false,
+      "runtime_evaluation_failed": false,
+      "model_requests": 9,
+      "image_requests": 0,
+      "prompt_tokens_total": 678303,
+      "completion_tokens_total": 48406,
+      "tool_jobs": 19,
+      "runtime_version": "v0.1.3",
+      "reasoning_effort": "medium",
+      "runtime_binary_sha256": "5d3d69517febf0bf77d9ca92c1a72b7865d093b239739ba93e17695f44b6af70",
+      "harness": "arc-algorithms@0.3.0",
+      "harness_source_sha256": "0a774ae4ff90f175461847a380f08fc3e2a601dd235416fd70b3be82601cce2d",
+      "harness_binding_verified": true,
+      "tools_exposed_on_provider_wire": false,
+      "semantic_inference_tool_free_expected": true,
+      "algorithm_module_calls": 4,
+      "algorithm_search_calls": 0,
+      "algorithm_recorded_actions": 9,
+      "completed_http_200_model_requests": 8,
+      "valid_run": true,
+      "invalid_reasons": [],
+      "memory_context_tokens": 262144,
+      "formal_competition_score": false,
+      "source_access_enforcement": "instruction and tool-log audit; full-access shell is not a sealed source sandbox"
+    }
+  ],
+  "limitations": [
+    "One capped attempt per arm/game; not an official score or statistical estimate.",
+    "Candidate received complete hexadecimal pixels but no native image bytes through lexical JSON captures; baseline had native image tools.",
+    "Candidate changed orchestration and input representation, not only computation.",
+    "ft09 candidate had 28 whitespace-only stop replies and no mathematical searches.",
+    "ls20 baseline ended at 378.296 seconds with provider HTTP 400; see separate audit correction.",
+    "Baseline shell path discovery exceeded instructed workspaces; no sealed anti-cheating sandbox was provided.",
+    "256K configuration is not a completed 256K stress test; reported token/request-second includes prefill/overhead."
+  ],
+  "source_commit": "1629ee03",
+  "audit": [
+    {
+      "run": "ft09-baseline",
+      "trajectory_rows": 66,
+      "actions_match_trajectory": true,
+      "methods": {},
+      "search_calls": 0,
+      "empty_stop_responses": 0,
+      "http_status_counts": {
+        "200": 29
+      },
+      "trajectory_sha256": "1136bc1ae57ddb4758d8fa98165aafe98f318835b261e263e6fd115f5731e48f",
+      "level_transitions": [
+        {
+          "actions": 0,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 0
+        },
+        {
+          "actions": 45,
+          "state": "NOT_FINISHED",
+          "levels_completed": 1,
+          "elapsed_s": 515.128
+        }
+      ],
+      "audited_valid_for_strict_workspace_comparison": false,
+      "note": "Manual review found path discovery outside the instructed workspace. No game-source read established by this review; sealed source isolation is not proven."
+    },
+    {
+      "run": "ft09-discovery",
+      "trajectory_rows": 2,
+      "actions_match_trajectory": true,
+      "methods": {
+        "probe": 1
+      },
+      "search_calls": 0,
+      "empty_stop_responses": 28,
+      "http_status_counts": {
+        "200": 34
+      },
+      "trajectory_sha256": "954d444f13cbeb90306fe9f3c4eb0d69f2bd715fde8320d517b94231f7366dc4",
+      "level_transitions": [
+        {
+          "actions": 0,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 0
+        }
+      ]
+    },
+    {
+      "run": "ls20-baseline",
+      "trajectory_rows": 17,
+      "actions_match_trajectory": true,
+      "methods": {},
+      "search_calls": 0,
+      "empty_stop_responses": 0,
+      "http_status_counts": {
+        "200": 24,
+        "400": 1
+      },
+      "trajectory_sha256": "f2b83ea0a4c2f04c144167e24ac7b1603cf2b2a18ac4d48cb5ba6ac53aa58ea4",
+      "level_transitions": [
+        {
+          "actions": 0,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 0
+        }
+      ],
+      "audited_valid_for_full_budget_comparison": false,
+      "audited_termination": "terminal_provider_request_rejected",
+      "provider_error": "HTTP 400: Assistant tool call function.arguments must be valid JSON.",
+      "note": "Raw valid_run=true and runtime_returned are preserved above but not accepted as normal completion."
+    },
+    {
+      "run": "ls20-discovery",
+      "trajectory_rows": 24,
+      "actions_match_trajectory": true,
+      "methods": {
+        "probe": 6,
+        "toggle": 1
+      },
+      "search_calls": 0,
+      "empty_stop_responses": 0,
+      "http_status_counts": {
+        "200": 10
+      },
+      "trajectory_sha256": "953468d28fd0b3e6056f8fb452bdc9c3312b50e90acdc0d54c7462c4184b73bf",
+      "level_transitions": [
+        {
+          "actions": 0,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 0
+        }
+      ]
+    },
+    {
+      "run": "vc33-baseline",
+      "trajectory_rows": 127,
+      "actions_match_trajectory": true,
+      "methods": {},
+      "search_calls": 0,
+      "empty_stop_responses": 0,
+      "http_status_counts": {
+        "200": 26
+      },
+      "trajectory_sha256": "c08f6c458589d4143e1570d41fe149acd198703bd8d89c341dfc62d6eaaf66d8",
+      "level_transitions": [
+        {
+          "actions": 0,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 0
+        },
+        {
+          "actions": 50,
+          "state": "GAME_OVER",
+          "levels_completed": 0,
+          "elapsed_s": 316.599
+        },
+        {
+          "actions": 51,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 343.702
+        },
+        {
+          "actions": 101,
+          "state": "GAME_OVER",
+          "levels_completed": 0,
+          "elapsed_s": 476.346
+        },
+        {
+          "actions": 102,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 494.717
+        }
+      ],
+      "audited_valid_for_strict_workspace_comparison": false,
+      "note": "Manual review found path discovery outside the instructed workspace. No game-source read established by this review; sealed source isolation is not proven."
+    },
+    {
+      "run": "vc33-discovery",
+      "trajectory_rows": 10,
+      "actions_match_trajectory": true,
+      "methods": {
+        "probe": 3,
+        "toggle": 1
+      },
+      "search_calls": 0,
+      "empty_stop_responses": 0,
+      "http_status_counts": {
+        "200": 9
+      },
+      "trajectory_sha256": "f4a081ae47d7d25313dc54ecdcec66ee6c5d7dd5074e5e17ea7e11d2601e72d2",
+      "level_transitions": [
+        {
+          "actions": 0,
+          "state": "NOT_FINISHED",
+          "levels_completed": 0,
+          "elapsed_s": 0
+        }
+      ]
+    }
+  ],
+  "transport": {
+    "saved_request_records": 133,
+    "http_status_counts": {
+      "200": 132,
+      "400": 1
+    },
+    "request_error_count": 5,
+    "completed_http_200": 127,
+    "image_requests": 9,
+    "stream_finish_reasons": {
+      "tool_calls": 76,
+      "length": 11,
+      "stop": 40
+    },
+    "max_reported_prompt_tokens": 146365,
+    "output_tokens_per_request_second_including_prefill_mean": 73.77374167372942
+  },
+  "gpu": {
+    "samples": 3330,
+    "peak_used_mib": 96513,
+    "total_mib": 97887
+  },
+  "outcome": {
+    "whole_game_wins": {
+      "baseline": 0,
+      "discovery": 0
+    },
+    "baseline_best_levels": [
+      1,
+      0,
+      0
+    ],
+    "algorithm_best_levels": [
+      0,
+      0,
+      0
+    ],
+    "actual_algorithm_searches": 0,
+    "conclusion": "No improvement demonstrated. Algorithms were not exercised beyond hypothesis testing/probes; this does not show algorithmic compensation is impossible."
+  },
+  "artifacts": {
+    "local_directory": "/tmp/morphz-arc-algorithms-v5-output-20261024/morphz-arc3-harness-20261023/arc-algorithms-v030-public-ab",
+    "provider_wire_sha256": "2567600e1e73d0e6952721488a05e8a6df88cc18f98124117e71810a149a8e7a",
+    "model_server_stopped": true,
+    "kaggle_worker_status": "COMPLETE"
+  }
+}

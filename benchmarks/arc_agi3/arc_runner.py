@@ -14,6 +14,10 @@ HARNESS_ID=EXPERIMENT.get('harness_id','arc-discovery')
 HARNESS_VERSION=EXPERIMENT.get('harness_version','0.1.0')
 HARNESS_FILE=EXPERIMENT.get('harness_file',f'{HARNESS_ID}.hns')
 ALGORITHM_TOOLS=bool(EXPERIMENT.get('algorithm_tools',False))
+ACTOR_ADAPTER=bool(EXPERIMENT.get('actor_adapter',False))
+if ACTOR_ADAPTER:
+    sys.path.insert(0,str(DEPLOY))
+    from arc_model_adapter import prepare_semantic_request, response_summary
 assert ARMS and set(ARMS) <= {'baseline','discovery'}
 assert GAMES and BUDGET_S > 0 and MAX_ACTIONS > 0
 ARC_WORK=WORK/EXPERIMENT.get('output','arc-public-baseline')
@@ -37,6 +41,8 @@ assert WHEELHOUSE.is_dir() and ENVS.is_dir()
     'comparison_scope':('Runtime-owned Harness plus executable algorithms' if ALGORITHM_TOOLS
                         else 'Harness plus visible observation aids; not model training'),
     'semantic_inference_tool_free':ALGORITHM_TOOLS,
+    'actor_provider_adapter':('captured-image-structured-nonthinking-actor@1' if ACTOR_ADAPTER else None),
+    'reasoning_policy_note':('Algorithm actors disable model thinking and constrain the declared JSON return; this is NOT a same-reasoning-policy ablation.' if ACTOR_ADAPTER else None),
     'formal_submission':False
 },indent=2))
 ARC_VENV=PREFIX/'arc-venv'
@@ -49,6 +55,7 @@ run([ARC_PYTHON,'-c','import arc_agi,arcengine,PIL,numpy; import importlib.metad
 
 WIRE_LOCK=threading.Lock()
 wire_records=[]
+active_wire_context={}
 def scrub(value):
     if isinstance(value,list): return [scrub(v) for v in value]
     if isinstance(value,dict):
@@ -68,6 +75,19 @@ class WireProxy(BaseHTTPRequestHandler):
         with WIRE_LOCK: wire_records.append(record)
         upstream=http.client.HTTPConnection('127.0.0.1',8000,timeout=240)
         try:
+            context=dict(active_wire_context)
+            if context.get('enabled'):
+                try:
+                    request,receipt=prepare_semantic_request(request,context['workspace']/'frame.png')
+                    payload=json.dumps(request).encode()
+                    record.update(request=scrub(request),images_in_request=payload.count(b'data:image/'),
+                                  actor_adaptation=receipt)
+                except (ValueError,OSError) as exc:
+                    body=json.dumps({'error':'actor_attachment_projection_rejected','detail':str(exc)}).encode()
+                    record.update(status=400,completed=True,adaptation_error=str(exc),response=[body.decode()])
+                    self.send_response(400);self.send_header('Content-Type','application/json')
+                    self.end_headers();self.wfile.write(body)
+                    return
             upstream.request('POST',self.path,payload,{'Content-Type':'application/json'})
             response=upstream.getresponse(); record['status']=response.status
             self.send_response(response.status)
@@ -133,6 +153,7 @@ def bind_account(test,workspace,config,runtime_env):
         except subprocess.TimeoutExpired: child.kill(); child.wait()
 
 def run_game(game,arm):
+    global active_wire_context
     test=ARC_WORK/(f'{game}-{arm}' if EXPERIMENT else game)
     # Reusing an existing DB or trajectory would invalidate a fresh-context comparison.
     test.mkdir(exist_ok=False)
@@ -207,6 +228,7 @@ Do not access game implementation, environment files, another solver, internet, 
         if arm=='discovery': args[-1:-1]=['--harness',f'{HARNESS_ID}@{HARNESS_VERSION}']
         (test/'execution-argv.json').write_text(json.dumps(args,indent=2))
         start=time.monotonic(); start_wire=len(wire_records)
+        active_wire_context={'enabled':ACTOR_ADAPTER and arm=='discovery','workspace':workspace}
         with (test/'runtime.log').open('w') as out:
             child=subprocess.Popen(args,cwd=workspace,env=runtime_env,stdout=out,stderr=subprocess.STDOUT,start_new_session=True)
         print('GAME_STARTED',game,'ARM',arm,'BUDGET',BUDGET_S,'ACTIONS',MAX_ACTIONS,flush=True)
@@ -219,6 +241,13 @@ Do not access game implementation, environment files, another solver, internet, 
                 print('GAME_PROGRESS',game,arm,round(elapsed),json.dumps(last_status),flush=True); last_progress=elapsed
             if last_status['stopped'] or elapsed>=BUDGET_S+5:
                 stop_reason=last_status.get('stop_reason') or 'wall_budget'; break
+            if ACTOR_ADAPTER and arm=='discovery':
+                current_calls=wire_records[start_wire:]
+                empty_stops=sum(response_summary(r)['empty_stop'] for r in current_calls)
+                rejected=sum(bool(r.get('adaptation_error')) for r in current_calls)
+                if empty_stops>=3 or rejected>=3:
+                    stop_reason='provider_empty_reply_livelock' if empty_stops>=3 else 'actor_projection_rejected'
+                    break
             time.sleep(1)
         elapsed=time.monotonic()-start
         if child.poll() is None:
@@ -259,11 +288,21 @@ Do not access game implementation, environment files, another solver, internet, 
         if algorithm_execution and not algorithm_modules:
             invalid_reasons.append('no_algorithm_module_executed')
         if not successful_requests: invalid_reasons.append('no_completed_http_200_model_request')
+        if ACTOR_ADAPTER and algorithm_execution and not any(
+                r.get('completed') and r.get('status')==200 and r.get('actor_adaptation')
+                and r.get('images_in_request',0)>0 for r in calls):
+            invalid_reasons.append('no_completed_capture_bound_native_image_request')
+        terminal_provider_error=(not stop_reason and final['state']!='WIN' and calls
+                                 and (calls[-1].get('status') or 0)>=400)
+        if terminal_provider_error: invalid_reasons.append('terminal_provider_request_rejected')
+        if stop_reason in ('provider_empty_reply_livelock','actor_projection_rejected'):
+            invalid_reasons.append(stop_reason)
         runtime_log=(test/'runtime.log').read_text(errors='replace')
         runtime_protocol_failed='protocol_invalid' in runtime_log
         runtime_evaluation_failed='Thread Activation evaluation failed' in runtime_log
         runtime_end=('runtime_protocol_invalid' if runtime_protocol_failed else
-                     'runtime_evaluation_failed' if runtime_evaluation_failed else 'runtime_returned')
+                     'runtime_evaluation_failed' if runtime_evaluation_failed else
+                     'provider_request_rejected' if terminal_provider_error else 'runtime_returned')
         result=dict(game=game,arm=arm,**final,wall_s=round(elapsed,3),runtime_exit_code=child.returncode,
             termination=stop_reason or ('WIN' if final['state']=='WIN' else runtime_end),
             runtime_protocol_failed=runtime_protocol_failed,
@@ -277,6 +316,9 @@ Do not access game implementation, environment files, another solver, internet, 
             harness_binding_verified=binding_verified if arm=='discovery' else None,
             tools_exposed_on_provider_wire=tools_exposed,
             semantic_inference_tool_free_expected=algorithm_execution,
+            actor_provider_adapter=ACTOR_ADAPTER and algorithm_execution,
+            actor_thinking_enabled=False if ACTOR_ADAPTER and algorithm_execution else None,
+            capture_bound_native_image_requests=sum(bool(r.get('actor_adaptation')) and r.get('images_in_request',0)>0 for r in calls),
             algorithm_module_calls=algorithm_modules,
             algorithm_search_calls=algorithm_searches,
             algorithm_recorded_actions=algorithm_actions,

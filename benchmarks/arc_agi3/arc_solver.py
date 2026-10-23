@@ -16,6 +16,28 @@ from arc_algorithms import (astar_rigid, binary_state, color, colored_cells,
 from arc_observation import components
 
 
+def recent_evidence(rows, limit=8):
+    """Bounded causal feedback, not a semantic summary invented by a model."""
+    evidence = []
+    for before, after in list(zip(rows, rows[1:]))[-limit:]:
+        old, new = before.get("frame"), after.get("frame")
+        if not old or not new or len(old[-1]) != len(new[-1]):
+            continue
+        a, b = old[-1], new[-1]
+        if any(len(x) != len(y) for x, y in zip(a, b)):
+            continue
+        changed = [[x, y, a[y][x], b[y][x]] for y in range(len(a))
+                   for x in range(len(a[y])) if a[y][x] != b[y][x]]
+        evidence.append({"action_index": after.get("actions"), "action": after.get("action"),
+            "data": after.get("data", {}), "state": after.get("state"),
+            "levels_completed": after.get("levels_completed"), "changed_pixels": len(changed),
+            "changed_samples_xy_before_after": changed[:32],
+            "samples_truncated": len(changed) > 32,
+            "bbox_xyxy": [min(p[0] for p in changed), min(p[1] for p in changed),
+                          max(p[0] for p in changed), max(p[1] for p in changed)] if changed else None})
+    return evidence
+
+
 class Solver:
     def __init__(self, root):
         self.root = Path(root).resolve()
@@ -88,20 +110,33 @@ class Solver:
                 "state", "levels_completed", "max_levels_completed", "total_levels", "actions",
                 "available_actions", "remaining_s", "stopped")},
             "epoch": current["observation"]["epoch"],
+            "coordinate_system": {"origin": "top-left", "width": len(grid[0]), "height": len(grid),
+                                  "note": "Use grid coordinates, not the upscaled PNG pixel coordinates"},
             "grid_hex_rows": current["observation"]["grid_hex_rows"],
             "palette_counts": palette, "components": components(grid, limit=100),
+            "recent_action_evidence": recent_evidence(rows),
             "observed_motion_candidates": motion,
             "motion_candidate_warning": "Color may join multiple objects. Unconstrained walkability here is only a motion candidate, not a validated collision model.",
             "methods": {
                 "probe": "Execute explicitly selected legal actions, maximum 16, recording visible effects. ACTION6 needs x,y.",
                 "toggle": "Supply cells, controls, colors[2], target_colors (one per cell). Probe each control twice, validate restoration and cross-context superposition, GF(2)-solve, then check every actual move. Limit 64 submitted actions per request.",
                 "navigate": "Supply body_color, walkable_colors, goal_anchor and optional bounds. Fit action translations from actual trajectory, reject counterexamples, A* search and verify each executed move. Maximum 16 actual actions per request.",
+                "identify_navigate": "Same inputs as navigate. The module actively gathers at most two motion samples per available directional control when necessary, validates fitted motion, then A*-plans and checks execution within one total max_actions bound.",
                 "observe": "No game action; get current evidence and previous algorithm result."},
             "boundary": "Goals, body color, feature cells and walkability are hypotheses, not engine truths. Only engine level transitions/WIN count. No engine/source access.",
         }
+        if "ACTION6" not in current["available_actions"]:
+            facts["methods"].pop("toggle")
+        if not set(current["available_actions"]) & {"ACTION1", "ACTION2", "ACTION3", "ACTION4"}:
+            facts["methods"].pop("navigate")
+            facts["methods"].pop("identify_navigate")
+        facts["allowed_methods"] = sorted(facts["methods"])
         previous = self.root / "algorithm-result.json"
         if previous.exists():
             facts["last_algorithm_result"] = json.loads(previous.read_text())
+        previous_request = self.root / "last-algorithm-request.json"
+        if previous_request.exists():
+            facts["last_algorithm_request"] = json.loads(previous_request.read_text())
         (self.root / "solver-context.json").write_text(json.dumps(facts, ensure_ascii=False, indent=2))
         return facts
 
@@ -206,7 +241,7 @@ class Solver:
                 "target_feature_state_reached": predicted == target,
                 "warning": "Target pixels are a proposed goal; they do not establish engine success"}
 
-    def navigate(self, request, limit):
+    def navigate(self, request, limit, identify=False):
         current = self.observe()
         chosen, walkable = request["body_color"], request["walkable_colors"]
         bounds = request.get("bounds")
@@ -216,6 +251,27 @@ class Solver:
             point(bounds[:2]); point(bounds[2:])
             if bounds[0] > bounds[2] or bounds[1] > bounds[3]:
                 raise ValueError("Invalid bounds ordering")
+        point(request["goal_anchor"], len(self.grid(current)[0]), len(self.grid(current)))
+        initial_level = current["levels_completed"]
+        if identify:
+            if not 1 <= len(colored_cells(self.grid(current), chosen)) <= 256:
+                raise ValueError("Active motion identification needs a visible 1..256 pixel body hypothesis")
+            # A finite system-identification experiment, not another Agent loop.
+            # Fit/validate from actual transitions; no assumed direction mapping.
+            for action in current["available_actions"]:
+                if action not in {"ACTION1", "ACTION2", "ACTION3", "ACTION4"}:
+                    continue
+                for _ in range(2):
+                    model = fit_motion(self.rows(), chosen, walkable, bounds).get(action, {})
+                    if model.get("validated") or model.get("counterexamples"):
+                        break
+                    if self.actions_this_call >= max(0, limit - 1):
+                        break
+                    self.audit({"event": "motion_identification_probe", "action": action,
+                                "previous_model": model, "body_color": chosen})
+                    current = self.act(action, limit)
+                    if current["levels_completed"] != initial_level or current["stopped"] or current["state"] == "GAME_OVER":
+                        raise LevelBoundary(current)
         fitted = fit_motion(self.rows(), chosen, walkable, bounds)
         moves = {action: model["delta"] for action, model in fitted.items() if model["validated"]}
         if not moves:
@@ -227,7 +283,6 @@ class Solver:
                     "body_color": chosen, "goal_anchor": request["goal_anchor"]})
         if not route["found"]:
             return {"method": "navigate", "search": route, "motion_models": fitted}
-        initial_level = current["levels_completed"]
         for action in route["route"][:limit]:
             before = self.observe()
             if before["stopped"] or self.actions_this_call >= limit:
@@ -266,6 +321,8 @@ class Solver:
             return self.toggle(request, limit)
         if method == "navigate":
             return self.navigate(request, limit)
+        if method == "identify_navigate":
+            return self.navigate(request, limit, identify=True)
         raise ValueError("Unknown algorithm method")
 
 
@@ -289,6 +346,8 @@ def main():
             if len(raw) > 50000:
                 raise ValueError("Request exceeds size limit")
             request = json.loads(raw)
+            # Keep the exact prior proposal across the next typed-infer boundary.
+            (solver.root / "last-algorithm-request.json").write_text(json.dumps(request))
             result = solver.run(request)
         except LevelBoundary as boundary:
             result = {"engine_boundary": {k: boundary.status[k] for k in (
