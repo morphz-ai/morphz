@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-24 执行详情丢失主执行的真实等待原因
+
+原应用中，同一项「整书写作与审改」的关联目标显示「等待子任务结果」，
+主执行详情却显示「等待中（未提供具体原因）」。只读核验 Runtime 当前
+Scheduler，确认同一 Session／Context、Objective generation 和主线程的
+required/pending Thread Group 依赖仍有效。根因是详情从独立的有界
+`execution-records` 重建线程，未附等待事实；core 传输 schema 不保留等待
+字段，三个 RuntimeBridge 返回路径还会用裸线程覆盖详情，并非模型没写注解。
+
+现对已授权详情 family 中开放、idle/waiting 且未暂停的线程，共用一次
+同 Context 的有界 Scheduler 读。只有 ID、Session、Context、root、generation、
+revision、phase、lifecycle 和 control state 全部相符，才采用线程自身的
+审批／定时事实。Objective 等待还须核验 parent-less execution primary、
+supervision 身份／代次，以及完整的当前 required/pending dependency IDs；
+普通同目标子线程不继承父目标等待。缺失、重复、过期或不完整的目标证明
+仍为未知；无关历史截断不抹掉已经完整核验的目标。读取错误和撤权继续拒绝，
+不解析描述文字，不加后台轮询、模型调用、持久状态或控制权限。
+
+补齐 core 等待字段并移除三个裸线程覆盖，沿用原详情组件、子任务标题和
+状态布局，不生成审查任务缺失的注解。新增专项先在旧实现下确认等待原因
+丢失：5 项中 3 项失败；修复后正式 PostgreSQL 测试入口的 8 个完整相关
+Node 文件 55/55、零失败／跳过，覆盖不经总览的真实 Host 只读／选中工作
+详情、委派只读透传、调度读取后撤权、代次／范围与状态优先级等边界。
+
+两个完整浏览器文件 `nested-thread-activity`、`execution-ui-details` 25/25，
+零跳过／重试。真实挂载的 Dialog 保留主执行等待、具名子任务执行中／已结束
+的独立状态；已逐张审看完整合成界面的亮色、暗色和 760 px 窄窗，原分组、
+标题层级与尺寸保持，状态没有裁切或挤占操作。构建与类型检查通过。这是
+专项回归和合成视觉验收，不代替同提交完整 CI、原窗口部署或实际任务验收；
+原应用的 Runtime 和正在执行的写作未被本次测试触碰。
+
 ## 2026-10-24 三栏表面测试的悬空草稿断言
 
 main `f5c180a6` 的完整 Web 第二分片为 449 通过、1 失败、8 项既有能力

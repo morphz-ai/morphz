@@ -262,7 +262,22 @@ test("跨 Session delegate 保留父输入与真实子执行，精确只读、�
       if (
         path.startsWith(`/api/contexts/${record.child_context_id}/scheduler?`)
       )
-        return { detail_bounds: bounds, threads: [child] };
+        return {
+          context_id: record.child_context_id,
+          detail_bounds: bounds,
+          threads: [
+            {
+              ...child,
+              schedules: [
+                {
+                  thread_id: child.thread.id,
+                  status: "queued",
+                  not_before: "2099-10-24T02:00:00Z",
+                },
+              ],
+            },
+          ],
+        };
       if (path.startsWith(`/api/contexts/${contextId}/scheduler?`))
         return { detail_bounds: bounds, threads: [parent], objectives: [] };
       throw new Error(`unexpected read ${path}`);
@@ -310,6 +325,19 @@ test("跨 Session delegate 保留父输入与真实子执行，精确只读、�
       [child.thread.id],
     );
     assert.deepEqual((await viewer.snapshot()).approvals, []);
+    child.phase = "idle";
+    const waitingViewer = await f.runtime.platformExecutionRead(
+      scope as any,
+      localAccess,
+      () => {},
+    );
+    const waitingDetail = await waitingViewer.snapshot();
+    assert.deepEqual(
+      waitingDetail.threads?.[0]?.waitKinds,
+      ["timer"],
+      "delegated read-only wrapper must not overwrite the enriched family",
+    );
+    assert.equal(waitingDetail.threads?.[0]?.waitUntil, "2099-10-24T02:00:00Z");
     wrongOwner = true;
     await assert.rejects(
       f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
