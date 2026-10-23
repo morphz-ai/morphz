@@ -8,21 +8,26 @@ $savedEnvironment = @{}
 foreach ($key in @("MORPHZ_VERSION", "MORPHZ_RELEASE_BASE_URL", "MORPHZ_INSTALL_DIR", "MORPHZ_NO_MODIFY_PATH", "Path")) {
   $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, "Process")
 }
-$downloadRequests = [Collections.Generic.List[string]]::new()
-$activeFixture = ""
+$downloadState = [pscustomobject]@{
+  Requests = [Collections.Generic.List[string]]::new()
+  ActiveFixture = ""
+}
 
-function Invoke-WebRequest {
+# The production installer runs in its own script scope. Capture this shared
+# object explicitly rather than resolving script: variables in its caller.
+$downloadTransport = {
   param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile)
   if (-not $Uri.StartsWith("https://fixtures.invalid/release/")) { throw "Unexpected download URL: $Uri" }
-  $script:downloadRequests.Add($Uri)
-  $fixtureFile = Join-Path $script:activeFixture ([Uri]$Uri).Segments[-1]
+  $downloadState.Requests.Add($Uri)
+  $fixtureFile = Join-Path $downloadState.ActiveFixture ([Uri]$Uri).Segments[-1]
   Copy-Item -LiteralPath $fixtureFile -Destination $OutFile
-}
+}.GetNewClosure()
+Set-Item -Path Function:Invoke-WebRequest -Value $downloadTransport
 
 function Invoke-InstallerFixture {
   param([string]$Fixture, [string]$Requested, [string]$Destination, [string]$ExpectedError = "")
-  $script:activeFixture = $Fixture
-  $script:downloadRequests.Clear()
+  $downloadState.ActiveFixture = $Fixture
+  $downloadState.Requests.Clear()
   $env:MORPHZ_VERSION = $Requested
   $env:MORPHZ_RELEASE_BASE_URL = "https://fixtures.invalid/release"
   $env:MORPHZ_INSTALL_DIR = $Destination
@@ -38,6 +43,25 @@ function Invoke-InstallerFixture {
 
 try {
   New-Item -ItemType Directory -Path $testRoot | Out-Null
+  # Reproduce the real CI failure boundary: a separate script invokes the
+  # transport while its script-scoped state is absent. The closure must retain
+  # the test's shared object, without using process-global variables.
+  $scopeFixture = Join-Path $testRoot "scope-fixture"
+  New-Item -ItemType Directory -Path $scopeFixture | Out-Null
+  [IO.File]::WriteAllText((Join-Path $scopeFixture "scope.bin"), "scope fixture")
+  $scopeProbe = Join-Path $testRoot "scope-probe.ps1"
+  [IO.File]::WriteAllText($scopeProbe, @'
+param([string]$Destination)
+$script:downloadState = $null
+Invoke-WebRequest -UseBasicParsing -Uri "https://fixtures.invalid/release/scope.bin" -OutFile $Destination
+'@)
+  $downloadState.ActiveFixture = $scopeFixture
+  $scopeOutput = Join-Path $testRoot "scope-output.bin"
+  & $scopeProbe -Destination $scopeOutput
+  if ($downloadState.Requests.Count -ne 1 -or [IO.File]::ReadAllText($scopeOutput) -ne "scope fixture") {
+    throw "Download transport lost its captured state across a child script scope."
+  }
+
   foreach ($fixture in @(@{Name="stable";Version="0.1.4"}, @{Name="rc";Version="0.1.4-rc.1"})) {
     $fixtureDir = Join-Path $testRoot $fixture.Name
     $bundle = Join-Path $fixtureDir "bundle"
@@ -63,7 +87,7 @@ try {
   Invoke-InstallerFixture $rc "v0.1.4-rc.2" $destination "does not match requested version"
   if ((Get-FileHash (Join-Path $destination "morphz.exe")).Hash -ne $original) { throw "Version mismatch changed the installation." }
   Invoke-InstallerFixture (Join-Path $testRoot "missing") "v0.1.4-rc.1" $destination "Cannot find path"
-  if ($downloadRequests.Count -ne 1) { throw "Unavailable release triggered an unexpected fallback download." }
+  if ($downloadState.Requests.Count -ne 1) { throw "Unavailable release triggered an unexpected fallback download." }
   if ((Get-FileHash (Join-Path $destination "morphz.exe")).Hash -ne $original) { throw "Missing release changed the installation." }
   Invoke-InstallerFixture $rc "v0.1.4-rc.1" $destination
   $actual = & (Join-Path $destination "morphz.exe") --version

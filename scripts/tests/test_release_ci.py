@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -36,6 +37,28 @@ def pages(items):
 
 
 class ReleaseCiTests(unittest.TestCase):
+    def test_local_runtime_path_dependency_locks_match_the_candidate_version(self):
+        expected = tomllib.loads((ROOT / "morphz/Cargo.toml").read_text())["package"]["version"]
+        locks = subprocess.run(["git", "ls-files", "--", "*Cargo.lock"], cwd=ROOT,
+                               check=True, capture_output=True, text=True).stdout.splitlines()
+        checked = []
+        for name in locks:
+            path = ROOT / name
+            manifest = path.with_name("Cargo.toml")
+            data = tomllib.loads(manifest.read_text())
+            direct_paths = [dependency["path"] for section in ("dependencies", "dev-dependencies", "build-dependencies")
+                            for dependency in data.get(section, {}).values()
+                            if isinstance(dependency, dict) and "path" in dependency]
+            if path != ROOT / "Cargo.lock" and not any(
+                    (manifest.parent / value).resolve() == ROOT / "morphz" for value in direct_paths):
+                continue
+            versions = [package["version"] for package in tomllib.loads(path.read_text())["package"]
+                        if package["name"] == "morphz" and "source" not in package]
+            self.assertEqual(versions, [expected], name)
+            checked.append(name)
+        self.assertIn("Cargo.lock", checked)
+        self.assertIn("experiments/response-annotations/Cargo.lock", checked)
+
     def test_exact_repository_commit_branch_push_and_latest_attempt_pass(self):
         current = run()
         self.assertEqual(CI.select_run([{"workflow_runs": [current]}], REPOSITORY, COMMIT, BRANCH), current)
