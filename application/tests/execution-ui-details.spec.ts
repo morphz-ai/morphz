@@ -930,20 +930,21 @@ test("活动顶行的补充和停止使用图标，明暗、窄窗与放大始�
       const css = getComputedStyle(node);
       const glyph = getComputedStyle(node.querySelector("svg")!);
       return {
-        background: css.backgroundColor.match(/[\d.]+/g)!.map(Number),
-        foreground: css.color,
+        background: css.backgroundColor,
+        foreground: css.color.match(/[\d.]+/g)!.map(Number),
+        glyphColor: glyph.color,
         fill: glyph.fill,
         strokeWidth: glyph.strokeWidth,
       };
     });
-    expect(stopPaint.background[0]! - stopPaint.background[1]!).toBeGreaterThan(
-      80,
+    expect(stopPaint.background).toBe("rgba(0, 0, 0, 0)");
+    expect(stopPaint.foreground[0]! - stopPaint.foreground[1]!).toBeGreaterThan(
+      30,
     );
-    expect(stopPaint.background[0]! - stopPaint.background[2]!).toBeGreaterThan(
-      80,
+    expect(stopPaint.foreground[0]! - stopPaint.foreground[2]!).toBeGreaterThan(
+      30,
     );
-    expect(stopPaint.foreground).toBe("rgb(255, 255, 255)");
-    expect(stopPaint.fill).toBe(stopPaint.foreground);
+    expect(stopPaint.fill).toBe(stopPaint.glyphColor);
     expect(stopPaint.strokeWidth).toBe("0px");
     for (const [width, zoom] of [
       [1440, 1],
@@ -1053,7 +1054,7 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
         await status.evaluate((node) => getComputedStyle(node).color),
       );
       await expect(summary).toHaveCSS("background-clip", "text");
-      await expect(summary).toHaveCSS("animation-duration", "2.2s");
+      await expect(summary).toHaveCSS("animation-duration", "1.8s");
       const shine = await summary.evaluate((node) => {
         const css = getComputedStyle(node);
         return {
@@ -1062,24 +1063,46 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
           weight: css.fontWeight,
         };
       });
-      expect(shine.duration).toBe("2.2s");
+      expect(shine.duration).toBe("1.8s");
       expect(shine.image).toContain("linear-gradient");
-      expect(shine.image).toContain(
-        appearance === "light" ? "rgb(0, 123, 140)" : "rgb(255, 255, 255)",
-      );
+      expect(shine.image).toContain("rgb(255, 255, 255)");
       expect(shine.weight).toBe("500");
       for (const width of [1440, 760]) {
         await page.setViewportSize({ width, height: 700 });
         await settleTransitions(page);
+        // Capture the same glyphs without the specular band. Compare actual
+        // luminance gain, not CSS time or a colored pixel that only changes hue.
+        const inlineStyle = await summary.getAttribute("style");
+        await summary.evaluate((node) => {
+          const base =
+            getComputedStyle(node).backgroundImage.match(/rgba?\([^)]+\)/)![0];
+          (node as HTMLElement).style.backgroundImage =
+            `linear-gradient(${base}, ${base})`;
+        });
+        const baseline = await sharp(
+          await summary.screenshot({ animations: "allow" }),
+        )
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        await summary.evaluate((node, style) => {
+          if (style === null) node.removeAttribute("style");
+          else node.setAttribute("style", style);
+        }, inlineStyle);
         const highlights: Array<{ x: number; pixels: number }> = [];
-        for (const time of [550, 1650]) {
+        for (const time of [450, 1350]) {
           await summary.evaluate((node, time) => {
             for (const animation of node.getAnimations()) {
               animation.pause();
               animation.currentTime = time;
             }
           }, time);
-          const frame = await summary.screenshot({ animations: "allow" });
+          const frame = await summary.screenshot({
+            animations: "allow",
+            path: info.outputPath(
+              `white-sweep-${sample}-${appearance}-${width}-${time}.png`,
+            ),
+          });
           await info.attach(
             `painted-sweep-${sample}-${appearance}-${width}-${time}`,
             {
@@ -1091,16 +1114,23 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
             .removeAlpha()
             .raw()
             .toBuffer({ resolveWithObject: true });
+          expect(pixels.width).toBe(baseline.info.width);
+          expect(pixels.height).toBe(baseline.info.height);
+          expect(pixels.channels).toBe(baseline.info.channels);
           let count = 0,
             horizontalSum = 0;
           for (let y = 0; y < pixels.height; y++) {
             for (let x = 0; x < pixels.width; x++) {
               const offset = (y * pixels.width + x) * pixels.channels;
               const [r, g, b] = data.subarray(offset, offset + 3);
+              const [br, bg, bb] = baseline.data.subarray(offset, offset + 3);
               const lit =
-                appearance === "light"
-                  ? g! - r! > 25 && b! - r! > 30 && r! < 100
-                  : r! > 215 && g! > 215 && b! > 215;
+                r! > 225 &&
+                g! > 225 &&
+                b! > 225 &&
+                r! - br! > 45 &&
+                g! - bg! > 45 &&
+                b! - bb! > 45;
               if (lit) {
                 count++;
                 horizontalSum += x;
