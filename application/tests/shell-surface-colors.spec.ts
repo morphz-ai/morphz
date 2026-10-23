@@ -144,7 +144,8 @@ async function preserveBusinessState(page: Page) {
       "Theme, sidebar and accessibility choices do not authorize business writes",
     ).toEqual([]);
     expect(await snapshot()).toEqual(before);
-    expect(await openInput(page)).toHaveValue(draft);
+    // Keep the retrying Locator assertion inside the fixture's lifetime.
+    await expect(await openInput(page)).toHaveValue(draft);
   };
 }
 
