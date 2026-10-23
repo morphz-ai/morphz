@@ -113,6 +113,7 @@ impl EffectiveProviderCatalog {
                         adapter: "protocol-compatible".to_string(),
                         protocol: provider.protocol,
                         base_url: provider.base_url.clone(),
+                        chat_token_limit_parameter: provider.chat_token_limit_parameter,
                         accounts,
                         models: provider.models.clone(),
                         headers: provider.headers.clone(),
@@ -651,6 +652,7 @@ impl RoutedClient {
         let physical = ProviderConfig {
             protocol: provider.protocol,
             base_url: provider.base_url.clone(),
+            chat_token_limit_parameter: provider.chat_token_limit_parameter,
             credential: None,
             models: provider.models.clone(),
             headers: provider.headers.clone(),
@@ -1595,6 +1597,7 @@ impl RoutedClient {
         let physical = ProviderConfig {
             protocol: provider.protocol,
             base_url: provider.base_url.clone(),
+            chat_token_limit_parameter: provider.chat_token_limit_parameter,
             credential: None,
             models: provider.models.clone(),
             headers,

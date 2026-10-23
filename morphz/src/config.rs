@@ -1075,6 +1075,11 @@ pub struct CredentialConfig {
 pub struct ProviderConfig {
     pub protocol: ModelProtocol,
     pub base_url: String,
+    /// Physical OpenAI Chat endpoint dialect, independent of the model name.
+    /// None uses the official endpoint default (DeepSeek: max_tokens; other
+    /// endpoints: max_completion_tokens). Compatible gateways can override it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_token_limit_parameter: Option<ChatTokenLimitParameter>,
     pub credential: Option<String>,
     /// Operator-declared physical capabilities keyed by the exact model name
     /// accepted by this Provider endpoint. Morphz never probes a remote model
@@ -1097,12 +1102,23 @@ pub struct ProviderInstanceConfig {
     pub adapter: String,
     pub protocol: ModelProtocol,
     pub base_url: String,
+    /// Same transport capability as ProviderConfig; never inferred from a
+    /// routed model alias. Ignored by non-Chat protocols.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_token_limit_parameter: Option<ChatTokenLimitParameter>,
     /// Ordered account pool. Dynamic health/cooldown state is Runtime data and
     /// therefore never written back into this static configuration.
     pub accounts: Vec<String>,
     pub models: BTreeMap<String, ProviderModelConfig>,
     pub headers: BTreeMap<String, String>,
     pub env_headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatTokenLimitParameter {
+    MaxTokens,
+    MaxCompletionTokens,
 }
 
 /// Non-secret catalog metadata for one independently schedulable login.

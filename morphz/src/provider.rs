@@ -1,6 +1,6 @@
 use crate::config::{
-    AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, PromptCacheStrategy,
-    ProviderConfig, ProviderModelConfig,
+    AppConfig, ChatTokenLimitParameter, CredentialConfig, CredentialSource, LlmConfig,
+    ModelProtocol, PromptCacheStrategy, ProviderConfig, ProviderModelConfig,
 };
 use crate::llm::{
     model_attachments, model_visible_message_text, provider_continuation, segmented_model_text,
@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 pub mod auth;
+mod chat_token_limit;
 mod claude_oauth;
 pub mod control;
 pub(crate) mod gemini_schema;
@@ -428,6 +429,7 @@ pub(crate) struct ProtocolClient {
     stream_idle_timeout: Duration,
     first_byte_timeout: Duration,
     max_output_tokens: Option<u32>,
+    chat_token_limit_parameter: ChatTokenLimitParameter,
     reasoning_effort: RwLock<Option<ReasoningEffort>>,
     model_profiles: BTreeMap<String, ProviderModelConfig>,
     usage_anchors: Mutex<HashMap<u64, PromptUsageAnchor>>,
@@ -1387,6 +1389,7 @@ impl ProtocolClient {
             stream_idle_timeout: Duration::from_secs(llm.stream_idle_timeout_secs.max(1)),
             first_byte_timeout: Duration::from_secs(llm.first_byte_timeout_secs.max(1)),
             max_output_tokens: llm.max_output_tokens,
+            chat_token_limit_parameter: chat_token_limit::for_provider(provider),
             reasoning_effort: RwLock::new(llm.reasoning_effort),
             model_profiles: provider.models.clone(),
             usage_anchors: Mutex::new(HashMap::new()),
@@ -1717,6 +1720,11 @@ impl ProtocolClient {
     }
 
     fn adapt_request(&self, model: &str, request: Value, tools: &[ToolDefinition]) -> Value {
+        let request = chat_token_limit::adapt(
+            request,
+            self.protocol_for_model(model),
+            self.chat_token_limit_parameter,
+        );
         let request = if self.protocol_for_model(model) == ModelProtocol::GeminiContent {
             let dialect = if self.adapter == "google-antigravity" {
                 gemini_schema::GeminiToolSchemaDialect::Antigravity

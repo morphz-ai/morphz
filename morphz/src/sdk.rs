@@ -1993,6 +1993,7 @@ impl MorphzSdk {
                 adapter: setup.provider_adapter.clone(),
                 protocol: setup.protocol,
                 base_url: setup.base_url.clone(),
+                chat_token_limit_parameter: None,
                 accounts: Vec::new(),
                 models: BTreeMap::new(),
                 headers: BTreeMap::new(),
