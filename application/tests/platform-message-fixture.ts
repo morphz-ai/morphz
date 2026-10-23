@@ -93,6 +93,17 @@ export async function platformMessageFixture(
       );
     } else if (
       request.method === "GET" &&
+      /^\/api\/sessions\/[^/?]+\/io\/stream(?:\?.*)?$/.test(request.url ?? "")
+    ) {
+      // A legitimate subscription does not create a Session. Dispatch is
+      // stopped, so this route has the same absent-Session result as GET above,
+      // not an invented successful SSE stream or an unexpected-request error.
+      response.writeHead(404);
+      response.end(
+        JSON.stringify({ error: "No Runtime session has been executed" }),
+      );
+    } else if (
+      request.method === "GET" &&
       /^\/api\/sessions\/[^/]+\/timeline(?:\?.*)?$/.test(request.url ?? "")
     ) {
       // No model or Runtime message has been executed. The Host's real
@@ -201,6 +212,7 @@ export async function platformMessageFixture(
   };
   return {
     directory,
+    runtimeOrigin: config.url,
     loginToken: identityConfiguration ? loginToken(localAccess) : undefined,
     get identityConfiguration() {
       return structuredClone(identityConfiguration);

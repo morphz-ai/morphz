@@ -20,6 +20,11 @@
 .app .library-collection .artifact-card-open:hover {
   background: transparent;
 }
+/* The preview is read-only decoration. Hydration replaces its DOM subtree;
+ * native press/release must keep targeting the stable enclosing button. */
+.app .library-collection .artifact-card-open .artifact-preview {
+  pointer-events: none;
+}
 .app .library-collection .artifact-card-heading {
   padding-right: 66px;
   min-height: 32px;
