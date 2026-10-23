@@ -1,5 +1,10 @@
 import { expect, type Page } from "@playwright/test";
 import sharp from "sharp";
+import {
+  assertPaintedSweep,
+  paintedSweepTimes,
+  type PaintedSweepFrame,
+} from "./fixtures/painted-sweep.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import {
@@ -1093,13 +1098,18 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
           if (style === null) node.removeAttribute("style");
           else node.setAttribute("style", style);
         }, inlineStyle);
-        const highlights: Array<{ x: number; pixels: number }> = [];
-        for (const time of [450, 1350]) {
-          await summary.evaluate((node, time) => {
-            for (const animation of node.getAnimations()) {
+        const highlights: PaintedSweepFrame[] = [];
+        for (const time of paintedSweepTimes) {
+          await summary.evaluate(async (node, time) => {
+            const animations = node.getAnimations();
+            for (const animation of animations) {
               animation.pause();
               animation.currentTime = time;
             }
+            await Promise.all(animations.map((animation) => animation.ready));
+            await new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            );
           }, time);
           const frame = await summary.screenshot({
             animations: "allow",
@@ -1137,31 +1147,29 @@ test("当前标题使用主题色、进展可读扫光；系统及应用减少�
               }
             }
           }
-          expect(
-            count,
-            "the glint must actually paint visible text pixels",
-          ).toBeGreaterThan(10);
-          expect(
+          highlights.push({
+            time,
+            x: count ? horizontalSum / count : null,
+            pixels: count,
             maximumGain,
-            "the light must not wash the text out to pure white",
-          ).toBeLessThanOrEqual(appearance === "light" ? 115 : 60);
-          highlights.push({ x: horizontalSum / count, pixels: count });
+          });
         }
         const bounds = (await summary.boundingBox())!;
         if (sample === "short") {
           const parent = (await summary.locator("..").boundingBox())!;
           expect(bounds.width).toBeLessThan(parent.width * 0.8);
         }
-        expect(
-          highlights[1]!.x - highlights[0]!.x,
-          "the painted glint must travel through the text, not darken the whole paragraph",
-        ).toBeGreaterThan(bounds.width * 0.3);
         await info.attach(
           `painted-sweep-${sample}-${appearance}-${width}-travel`,
           {
             body: JSON.stringify({ highlights, width: bounds.width }),
             contentType: "application/json",
           },
+        );
+        assertPaintedSweep(
+          highlights,
+          bounds.width,
+          appearance === "light" ? 115 : 60,
         );
         await page.screenshot({
           path: info.outputPath(
