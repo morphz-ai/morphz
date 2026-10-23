@@ -8,6 +8,10 @@ import {
   topbarLabels,
   type TopbarScenario,
 } from "./workspace-topbar-baseline.js";
+import {
+  createTopbarPortalLifecycle,
+  type TopbarPortalName,
+} from "./workspace-topbar-lifecycle.js";
 import "../../apps/web/src/styles.css";
 import "../../apps/web/src/shell/workspace-topbar-base.css";
 import "../../apps/web/src/ui.css";
@@ -18,8 +22,7 @@ import "../../apps/web/src/inspector.css";
 
 const baseline = new URLSearchParams(location.search).has("baseline");
 const events: string[] = [],
-  mounts: Record<string, number> = {},
-  cleanups: Record<string, number> = {},
+  lifecycle = createTopbarPortalLifecycle(),
   remembered = new Map<string, Element>();
 let command: (patch: Partial<TopbarScenario>) => void, current: TopbarScenario;
 let removeHeader: () => void,
@@ -31,14 +34,9 @@ const actions = {
   onOpenProject: () => events.push("project"),
   onToggleCollaboration: () => events.push("collaboration"),
 };
-function PortalTool({ name }: { name: string }) {
+function PortalTool({ name }: { name: TopbarPortalName }) {
   const [value, setValue] = useState("original " + name);
-  useEffect(() => {
-    mounts[name] = (mounts[name] ?? 0) + 1;
-    return () => {
-      cleanups[name] = (cleanups[name] ?? 0) + 1;
-    };
-  }, []);
+  useEffect(() => lifecycle.mount(name), [name]);
   return (
     <div
       className={
@@ -166,12 +164,13 @@ Reflect.set(window, "topbarFixture", {
     return {
       scenario: current,
       events: [...events],
-      mounts: { ...mounts },
-      cleanups: { ...cleanups },
+      ...lifecycle.report(),
       active:
         (document.activeElement as HTMLElement)?.dataset.portalInput ??
         document.activeElement?.id,
-      ready: document.querySelectorAll("[data-portal-input]").length === 3,
+      ready: lifecycle.ready(
+        document.querySelectorAll("[data-portal-input]").length,
+      ),
     };
   },
   clearEvents() {
