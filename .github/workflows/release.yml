@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
@@ -145,7 +145,7 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binaries
         run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
       - name: Package release bundle
@@ -300,7 +300,7 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binaries
         run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
       - name: Package release bundle
@@ -376,7 +376,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binaries and sandbox helpers
         # Explicit bash stops on either Cargo failure; PowerShell's final native
         # exit code alone can hide a failed Runtime build behind successful helpers.

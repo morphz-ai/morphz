@@ -47,7 +47,7 @@ jobs:
           toolchain: 1.97.1
           components: clippy, rustfmt
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Verify dependency audit refusal boundaries
         run: bash scripts/test_audit_rust_dependencies.sh
       - name: Verify cache retention and real Cargo lock boundaries
@@ -117,7 +117,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Compile the whole workspace and install exact sandbox test images
         run: |
           test ! -e "$MORPHZ_TEST_HOST_NETNS"
@@ -180,7 +180,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Run PostgreSQL conformance tests
         run: cargo test -p morphz --test runtime_store_conformance -- --nocapture
       - name: Verify typed interrupt delivery on SQLite and PostgreSQL
@@ -204,7 +204,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Verify native sandbox boundary
         run: cargo test -p morphz sandbox::tests -- --nocapture
       - name: Verify stable Session IO on macOS
@@ -269,7 +269,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Install actual Runtime tests and native policy service
         run: |
           test ! -e "$MORPHZ_TEST_HOST_NETNS"
@@ -321,7 +321,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build Morphz-branded Windows sandbox helpers
         shell: pwsh
         run: |
@@ -446,7 +446,7 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binary
         run: cargo build --release --workspace
 
