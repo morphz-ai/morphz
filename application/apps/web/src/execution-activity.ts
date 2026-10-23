@@ -74,6 +74,32 @@ const sameActivityDomain = (a: ActivityThread, b: ActivityThread) =>
   a.conversationId === b.conversationId &&
   ((!a.contextId && !b.contextId) || a.contextId === b.contextId);
 
+function activityParent(
+  thread: ActivityThread,
+  threads: readonly ActivityThread[],
+) {
+  if (thread.parentThreadId)
+    return threads.find(
+      (parent) =>
+        parent.id === thread.parentThreadId &&
+        sameActivityDomain(thread, parent),
+    );
+  const link = thread.delegation;
+  return (
+    link &&
+    threads.find(
+      (parent) =>
+        parent.id === link.parentThreadId &&
+        parent.sessionId === link.parentSessionId &&
+        parent.contextId === link.parentContextId &&
+        parent.projectId === thread.projectId &&
+        parent.conversationId === thread.conversationId &&
+        !!parent.inputId &&
+        parent.inputId === thread.inputId,
+    )
+  );
+}
+
 export function executionActivityDescendants(
   thread: ActivityThread,
   threads: readonly ActivityThread[],
@@ -85,9 +111,7 @@ export function executionActivityDescendants(
     for (const child of threads) {
       if (
         found.has(child.id) ||
-        !child.parentThreadId ||
-        !found.has(child.parentThreadId) ||
-        !sameActivityDomain(thread, child)
+        !found.has(activityParent(child, threads)?.id ?? "")
       )
         continue;
       found.add(child.id);
@@ -99,19 +123,19 @@ export function executionActivityDescendants(
   );
 }
 
-/** Hide only children of an actually loaded, authorized same-domain parent.
- * Bounded history may omit a parent; its child remains discoverable on its own. */
+/** Hide only children of a loaded same-domain parent or a verified delegation
+ * edge. Bounded history may omit a parent; its child remains discoverable. */
 export function executionActivityRoots(
   threads: readonly ActivityThread[],
 ): ActivityThread[] {
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
   return threads.filter((thread) => {
     const visited = new Set([thread.id]);
     let current = thread;
-    while (current.parentThreadId) {
-      const parent = byId.get(current.parentThreadId);
-      if (!parent || !sameActivityDomain(thread, parent))
-        return current.id === thread.id;
+    for (
+      let parent = activityParent(current, threads);
+      parent;
+      parent = activityParent(current, threads)
+    ) {
       if (visited.has(parent.id)) return true;
       visited.add(parent.id);
       current = parent;
@@ -223,6 +247,19 @@ export function executionActivityScope(
   thread: ActivityThread,
   state: Workspace,
 ): ExecutionReadScope {
+  if (thread.delegation) {
+    if (!thread.contextId)
+      throw new Error("子任务的读取范围缺失，请刷新后查看。");
+    return {
+      runtime: {
+        sessionId: thread.sessionId,
+        contextId: thread.contextId,
+        delegation: thread.delegation,
+      },
+      threadId: thread.id,
+      artifactId: null,
+    };
+  }
   if (thread.projectId === null || thread.conversationId === null) {
     if (!thread.contextId) throw new Error("执行范围缺失，请刷新后查看。");
     return {

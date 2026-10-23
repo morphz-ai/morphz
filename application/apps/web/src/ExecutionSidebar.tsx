@@ -484,6 +484,27 @@ export function ExecutionSidebar({
           {!scope.threadId && branches.length > 0 && (
             <section aria-label="执行分支">{branches.map(row)}</section>
           )}
+          {scope.threadId &&
+            activityThreads.some(
+              (t) => t.delegation?.parentThreadId === scope.threadId,
+            ) && (
+              <section aria-label="委派子任务">
+                {executionActivityRoots(
+                  activityThreads.filter(
+                    (t) => t.delegation?.parentThreadId === scope.threadId,
+                  ),
+                ).map(row)}
+              </section>
+            )}
+          {runtime.activity?.delegationsAvailable === false && (
+            <p className="muted" role="status">
+              子任务状态暂不可用，请刷新后核对。
+            </p>
+          )}
+          {runtime.activity?.delegationsAvailable &&
+            runtime.activity.delegationsTruncated && (
+              <p className="muted">当前仅显示已核验的部分子任务。</p>
+            )}
           <ExecutionProgress
             messages={messages}
             running={threadStatus?.kind === "running"}

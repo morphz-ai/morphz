@@ -12,11 +12,29 @@ export const executionScopeSchema = z
   })
   .strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
+/** Immutable Runtime delegation edge. Display association is not permission
+ * to control either Session; the Host revalidates this fact on every read. */
+export const delegationLinkSchema = z
+  .object({
+    id,
+    requestEventId: id,
+    parentSessionId: id,
+    parentContextId: id,
+    parentThreadId: id,
+  })
+  .strict();
+export type DelegationLink = z.infer<typeof delegationLinkSchema>;
 /** An execution reference authorizes no mutation or project access. The Host
  * verifies ownership against Runtime facts on every read, not this request. */
 export const runtimeExecutionReadScopeSchema = z
   .object({
-    runtime: z.object({ sessionId: id, contextId: id }).strict(),
+    runtime: z
+      .object({
+        sessionId: id,
+        contextId: id,
+        delegation: delegationLinkSchema.optional(),
+      })
+      .strict(),
     threadId: id,
     artifactId: z.null(),
     projectId: z.undefined().optional(),

@@ -119,6 +119,15 @@ export function responseWaitingPresentation(
   if (active?.tool?.status === "pending") return waiting("工具调用等待执行…");
   if (model) return modelPresentation();
   if (recovery) return recoveryPresentation();
+  if (activity?.available) {
+    const owned = activity.threads.filter(
+      (t) => t.inputId === delivery.inputId && t.lifecycle === "open",
+    );
+    if (owned.some((t) => t.delegation && t.phase === "running"))
+      return waiting("正在执行子任务…");
+    if (owned.some((t) => t.delegation || t.waitKinds?.includes("delegation")))
+      return waiting("等待子任务结果…");
+  }
   return waiting("等待回复…");
 }
 

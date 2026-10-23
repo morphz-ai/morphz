@@ -126,13 +126,20 @@ test("原生提醒无Platform事项也投影实际时间、等待状态及确切
     const calls: Array<[string, string | undefined]> = [];
     x.internal.request = async (path, method) => {
       calls.push([path, method]);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return x.snapshot();
     };
     await x.internal.refreshActivity();
     const activity = x.read();
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
     assert.ok(
-      calls.every(([path, method]) => path.includes("/scheduler?") && !method),
+      calls.every(
+        ([path, method]) =>
+          (path.includes("/scheduler?") ||
+            path.startsWith("/api/delegations?")) &&
+          !method,
+      ),
     );
     assert.equal(activity.schedulesAvailable, true);
     assert.equal(activity.schedulesTruncated, false);
@@ -428,6 +435,8 @@ test("明确刷新才重读Runtime inventory；日常导航不增加poll，刷�
     const calls: Array<[string, string | undefined]> = [];
     x.internal.request = async (path, method) => {
       calls.push([path, method]);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return x.snapshot();
     };
     const before = JSON.stringify(x.internal.state.deliveries);
@@ -436,10 +445,15 @@ test("明确刷新才重读Runtime inventory；日常导航不增加poll，刷�
     const fresh = await x.f
       .session()
       .platformRuntimeNavigation({ refreshActivity: true });
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
     assert.equal(fresh.runtime.activity?.schedules?.length, 1);
     assert.ok(
-      calls.every(([path, method]) => path.includes("/scheduler?") && !method),
+      calls.every(
+        ([path, method]) =>
+          (path.includes("/scheduler?") ||
+            path.startsWith("/api/delegations?")) &&
+          !method,
+      ),
     );
     assert.equal(JSON.stringify(x.internal.state.deliveries), before);
     await Promise.all(
@@ -447,7 +461,7 @@ test("明确刷新才重读Runtime inventory；日常导航不增加poll，刷�
     );
     assert.equal(
       calls.length,
-      4,
+      8,
       "in-flight explicit reads must share one snapshot pass",
     );
     await assert.rejects(
@@ -456,7 +470,7 @@ test("明确刷新才重读Runtime inventory；日常导航不增加poll，刷�
         sessionId: "caller-chosen",
       }),
     );
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 8);
   } finally {
     await x.f.close();
   }
@@ -480,6 +494,8 @@ test("runtime.navigation HTTP映射及真实GET支持strict只读刷新，scope/
     const calls: string[] = [];
     x.internal.request = async (path) => {
       calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return x.snapshot();
     };
     const client = new HttpApplicationClient(`http://127.0.0.1:${port}`);
@@ -487,24 +503,24 @@ test("runtime.navigation HTTP映射及真实GET支持strict只读刷新，scope/
       refreshActivity: true,
     })) as { runtime: { activity: ExecutionActivity } };
     assert.equal(response.runtime.activity.schedules?.length, 1);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
     const denied = await fetch(
       `http://127.0.0.1:${port}/api/platform/runtime-navigation?refreshActivity=true&sessionId=caller-chosen`,
     );
     assert.equal(denied.status, 400);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
     const invalid = await fetch(
       `http://127.0.0.1:${port}/api/platform/runtime-navigation?refreshActivity=maybe`,
     );
     assert.equal(invalid.status, 400);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
     await assert.rejects(
       client.call("runtime.navigation", {
         projectId: x.f.projectId,
         refreshActivity: true,
       }),
     );
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 4);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await x.f.close();

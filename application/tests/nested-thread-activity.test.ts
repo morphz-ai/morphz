@@ -10,12 +10,86 @@ import {
   executionActivityRoots,
   executionActivityDescendants,
   executionActivityGroupStatus,
+  executionActivityScope,
   type ActivityThread,
 } from "../apps/web/src/execution-activity.js";
 import { executionThreadGroups } from "../apps/web/src/execution-thread-groups.js";
 import { jobSchema } from "../packages/core/src/execution.js";
+import { initialWorkspace } from "../packages/core/src/model.js";
 
 const stamp = "2026-10-03T00:00:00Z";
+
+test("只有已核验的 delegation 边可以跨 Session/Context 归组，子执行保持独立只读入口", () => {
+  const parent: ActivityThread = {
+    id: "parent",
+    sessionId: "p-session",
+    contextId: "p-context",
+    inputId: "input",
+    projectId: "project",
+    conversationId: "conversation",
+    rootId: "root",
+    kind: "execution",
+    title: "主工作",
+    phase: "waiting",
+    lifecycle: "open",
+    revision: 1,
+    updatedAt: stamp,
+  };
+  const child: ActivityThread = {
+    ...parent,
+    id: "child",
+    rootId: "child-root",
+    sessionId: "child-session",
+    contextId: "child-context",
+    phase: "running",
+    parentThreadId: null,
+    delegation: {
+      id: "d",
+      requestEventId: "req",
+      parentSessionId: parent.sessionId,
+      parentContextId: parent.contextId!,
+      parentThreadId: parent.id,
+    },
+  };
+  assert.deepEqual(
+    executionActivityRoots([parent, child]).map((t) => t.id),
+    [parent.id],
+  );
+  assert.deepEqual(
+    executionActivityDescendants(parent, [parent, child]).map((t) => t.id),
+    [child.id],
+  );
+  assert.equal(
+    executionActivityGroupStatus(parent, [parent, child], true).kind,
+    "running",
+  );
+  assert.deepEqual(executionActivityScope(child, initialWorkspace()), {
+    runtime: {
+      sessionId: child.sessionId,
+      contextId: child.contextId,
+      delegation: child.delegation,
+    },
+    threadId: child.id,
+    artifactId: null,
+  });
+  for (const altered of [
+    { ...child, delegation: undefined },
+    { ...child, inputId: "other-input" },
+    { ...child, projectId: "other-project" },
+    {
+      ...child,
+      delegation: { ...child.delegation!, parentContextId: "other-context" },
+    },
+    {
+      ...child,
+      delegation: { ...child.delegation!, parentSessionId: "other-session" },
+    },
+  ])
+    assert.equal(
+      executionActivityDescendants(parent, [parent, altered]).length,
+      0,
+    );
+});
 const binding = {
   sessionId: "TEST-session",
   contextId: "TEST-context",

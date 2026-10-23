@@ -7,7 +7,7 @@ import {
   evaluationSourceSchema,
 } from "./evaluation-result.js";
 import { providerRecoverySchema } from "./provider-recovery.js";
-import { executionAttentionSchema } from "./execution.js";
+import { executionAttentionSchema, delegationLinkSchema } from "./execution.js";
 import { continuationSchema } from "./continuation.js";
 export const artifactOutputSchema = z.object({
   commandId: z.string(),
@@ -51,6 +51,10 @@ export const activitySchema = z.object({
   objectivesTruncated: z.boolean().optional(),
   schedulesAvailable: z.boolean().optional(),
   schedulesTruncated: z.boolean().optional(),
+  /** Cross-Context delegation visibility has its own read bounds; it does not
+   * redefine the registered Platform-Session openWorkComplete domain. */
+  delegationsAvailable: z.boolean().optional(),
+  delegationsTruncated: z.boolean().optional(),
   schedules: z.array(runtimeScheduleSchema).optional(),
   objectives: z
     .array(
@@ -102,6 +106,7 @@ export const activitySchema = z.object({
       controlState: z.string().optional(),
       createdAt: z.string().optional(),
       parentThreadId: z.string().nullable().optional(),
+      delegation: delegationLinkSchema.optional(),
       objectiveId: z.string().optional(),
       outcome: z
         .object({

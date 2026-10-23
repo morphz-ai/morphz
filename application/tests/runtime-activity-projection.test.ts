@@ -149,12 +149,218 @@ async function fixture() {
   return { f, internal, delivery, thread, bounds, objective, contextId };
 }
 
+test("跨 Session delegate 保留父输入与真实子执行，精确只读、撤权和篡改不扩大权限", async () => {
+  const { f, internal, delivery, thread, bounds, contextId } = await fixture();
+  const source = internal as unknown as {
+    authorizePlatformRead: (...args: any[]) => Promise<any>;
+  };
+  const authorize = source.authorizePlatformRead;
+  let revoked = false;
+  try {
+    const principal = "TEST-runtime-initiator";
+    const record = {
+      id: "TEST-delegation",
+      parent_context_id: contextId,
+      parent_session_id: delivery.sessionId,
+      child_context_id: "TEST-child-context",
+      child_session_id: "TEST-child-session",
+      initiating_principal_id: principal,
+      task: "TEST 验证子任务真实回执",
+      status: "running",
+      created_at: now,
+      updated_at: now,
+    };
+    const event = {
+      id: "TEST-delegate-request",
+      actor: "Runtime",
+      type: "agent_call",
+      topic: "chat/delegate",
+      timestamp: now,
+      sequence: 4,
+      payload: {
+        delegation_id: record.id,
+        parent_context_id: contextId,
+        context_id: contextId,
+        parent_session_id: delivery.sessionId,
+        session_id: delivery.sessionId,
+        child_context_id: record.child_context_id,
+        child_session_id: record.child_session_id,
+        principal_id: principal,
+        thread_id: "TEST-parent",
+        root_turn_id: delivery.rootId,
+      },
+    };
+    const root = {
+      id: delivery.rootId,
+      actor: "Human",
+      type: "session_message",
+      topic: "chat/user_message",
+      timestamp: now,
+      sequence: 1,
+      payload: {
+        session_id: delivery.sessionId,
+        client_message_id: delivery.inputId,
+        root_turn_id: delivery.rootId,
+        session_io: {
+          request: {
+            ...delivery.request,
+            client_metadata: data(delivery.request.client_metadata),
+            message: {
+              ...delivery.request.message,
+              content: {
+                encoding: "json",
+                value: data(delivery.request.message.content.value),
+              },
+            },
+          },
+        },
+      },
+    };
+    const parent = thread("TEST-parent");
+    parent.phase = "waiting";
+    const child = thread("TEST-child", "open", "TEST-child-root");
+    Object.assign(child.thread, {
+      context_id: record.child_context_id,
+      session_id: record.child_session_id,
+      initiating_principal_id: principal,
+    });
+    const writes: string[] = [];
+    let wrongOwner = false;
+    internal.request = async (path, method = "GET") => {
+      if (method !== "GET") writes.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [record], has_more: false };
+      if (path === `/api/delegations/${record.id}`) return record;
+      if (path.startsWith(`/api/contexts/${contextId}/events?`))
+        return {
+          context_id: contextId,
+          events: [event],
+          scan_exhaustive: true,
+        };
+      if (path.endsWith(`/events/${event.id}`)) return { event };
+      if (path.endsWith(`/events/${delivery.rootId}`)) return { event: root };
+      if (path.includes("/execution-records?"))
+        return {
+          session_id: record.child_session_id,
+          context_id: record.child_context_id,
+          selected_thread_id: child.thread.id,
+          source_root_id: child.thread.root_turn_id,
+          limit: 100,
+          has_more_jobs: false,
+          threads_truncated: false,
+          jobs: [],
+          threads: [
+            {
+              ...child.thread,
+              parent_thread_id: null,
+              phase: child.phase,
+              intent: child.intent,
+              initiating_principal_id: wrongOwner ? "foreign" : principal,
+            },
+          ],
+        };
+      if (
+        path.startsWith(`/api/contexts/${record.child_context_id}/scheduler?`)
+      )
+        return { detail_bounds: bounds, threads: [child] };
+      if (path.startsWith(`/api/contexts/${contextId}/scheduler?`))
+        return { detail_bounds: bounds, threads: [parent], objectives: [] };
+      throw new Error(`unexpected read ${path}`);
+    };
+    source.authorizePlatformRead = (...args) => {
+      if (revoked) throw new Error("TEST 撤权");
+      return authorize(...args);
+    };
+    const sessionsBefore = Object.keys(internal.state.sessions);
+    await internal.refreshActivity();
+    const activity = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    assert.equal(activity.delegationsAvailable, true);
+    const projected = activity.threads.find((t) => t.id === child.thread.id)!;
+    assert.ok(projected);
+    assert.equal(projected.inputId, delivery.inputId);
+    assert.equal(projected.sessionId, record.child_session_id);
+    assert.equal(projected.contextId, record.child_context_id);
+    assert.equal(projected.continuation, undefined);
+    assert.ok(
+      activity.threads
+        .find((t) => t.id === parent.thread.id)
+        ?.waitKinds?.includes("delegation"),
+    );
+    assert.deepEqual(
+      Object.keys(internal.state.sessions),
+      sessionsBefore,
+      "reading a delegate never registers or claims a child Session",
+    );
+    assert.equal(
+      f.runtime.platformNavigationSnapshot(localAccess, []).runtime.activity!
+        .threads.length,
+      0,
+    );
+    const scope = executionActivityScope(projected, initialWorkspace());
+    assert.ok("runtime" in scope);
+    const viewer = await f.runtime.platformExecutionRead(
+      scope as any,
+      localAccess,
+      () => {},
+    );
+    assert.deepEqual(
+      (await viewer.snapshot()).threads?.map((t) => t.id),
+      [child.thread.id],
+    );
+    assert.deepEqual((await viewer.snapshot()).approvals, []);
+    wrongOwner = true;
+    await assert.rejects(
+      f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
+      /身份/,
+    );
+    wrongOwner = false;
+    event.payload.child_context_id = "unrelated-context";
+    await assert.rejects(
+      f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
+      /委派/,
+    );
+    event.payload.child_context_id = record.child_context_id;
+    revoked = true;
+    await assert.rejects(viewer.snapshot(), /撤权/);
+    revoked = false;
+    for (const status of ["completed", "failed", "cancelled"]) {
+      record.status = status;
+      child.thread.lifecycle = status;
+      child.phase = "idle";
+      await internal.refreshActivity();
+      const next = f.runtime.platformNavigationSnapshot(localAccess, [
+        f.projectId,
+      ]).runtime.activity!;
+      assert.equal(
+        next.threads.find((t) => t.id === child.thread.id)?.lifecycle,
+        status,
+      );
+      assert.ok(
+        !next.threads
+          .find((t) => t.id === parent.thread.id)
+          ?.waitKinds?.includes("delegation"),
+      );
+    }
+    assert.deepEqual(
+      writes,
+      [],
+      "activity, details and all rejection paths remain read-only",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("活动由真实线程投影，保留终态事实、原intent、目标和运行线程", async () => {
   const { f, internal, delivery, thread, bounds, objective } = await fixture();
   try {
     const calls: string[] = [];
     internal.request = async (path) => {
       calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return {
         detail_bounds: bounds,
         threads: path.includes("include_terminal=true")
@@ -167,7 +373,14 @@ test("活动由真实线程投影，保留终态事实、原intent、目标和�
     const activity = f.runtime.platformNavigationSnapshot(localAccess, [
       f.projectId,
     ]).runtime.activity!;
-    assert.equal(calls.length, 2);
+    assert.equal(
+      calls.filter((path) => path.includes("/scheduler?")).length,
+      2,
+    );
+    assert.equal(
+      calls.filter((path) => path.startsWith("/api/delegations?")).length,
+      2,
+    );
     assert.equal(activity.truncated, false);
     assert.equal(activity.objectivesTruncated, false);
     assert.deepEqual(
@@ -373,6 +586,8 @@ test("线程自己的定时和审批原因透传到活动，不被父目标的�
     const calls: string[] = [];
     internal.request = async (path) => {
       calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return {
         detail_bounds: bounds,
         threads: [timer, approval],
@@ -383,7 +598,19 @@ test("线程自己的定时和审批原因透传到活动，不被父目标的�
     const activity = f.runtime.platformNavigationSnapshot(localAccess, [
       f.projectId,
     ]).runtime.activity!;
-    assert.equal(calls.length, 2);
+    assert.equal(
+      calls.filter((path) => path.includes("/scheduler?")).length,
+      2,
+    );
+    assert.equal(
+      calls.filter((path) => path.startsWith("/api/delegations?")).length,
+      2,
+    );
+    assert.equal(
+      calls.length,
+      4,
+      "timer/approval state adds no per-Thread reads beyond the bounded Context inventories",
+    );
     assert.deepEqual(activity.threads[0]!.waitKinds, ["timer"]);
     assert.equal(activity.threads[0]!.waitUntil, "2026-10-23T01:00:00Z");
     assert.deepEqual(activity.threads[1]!.waitKinds, ["permission"]);

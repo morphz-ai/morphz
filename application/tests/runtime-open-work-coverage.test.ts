@@ -213,6 +213,8 @@ test("满200条终态历史和丢失旧来源不阻止证明当前开放工作�
     let schedulerReads = 0;
     let rootReads = 0;
     internal.request = async (path) => {
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       if (path.includes("/events/")) {
         rootReads++;
         throw new Error("旧来源不存在");
@@ -247,6 +249,8 @@ test("先核验开放线程和目标来源，200条历史不抢占原16次来源
     const roots: string[] = [];
     let schedulerReads = 0;
     internal.request = async (path) => {
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       if (path.includes("/events/")) {
         const rootId = path.split("/").at(-1)!;
         roots.push(rootId);
@@ -417,6 +421,8 @@ test("scheduled root不是Event时使用Runtime确认的原输入，保留运行
     let eventReads = 0;
     let schedulerReads = 0;
     internal.request = async (path) => {
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       if (path.includes("/events/")) {
         eventReads++;
         throw new Error("合成运行root没有Event，真实原始输入已在Host中");
@@ -670,6 +676,8 @@ test("自主目标使用Runtime创建来源，创建线程不在历史页也照�
     const calls: string[] = [];
     internal.request = async (path) => {
       calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       assert.ok(
         !path.includes("/events/"),
         "真实输入已在授权投递中，不再错误地把控制事件当输入查询",
@@ -687,7 +695,14 @@ test("自主目标使用Runtime创建来源，创建线程不在历史页也照�
       delivery.platformSource.projectId,
     );
     assert.deepEqual(activity.objectives[0]!.threadIds, []);
-    assert.equal(calls.length, 2);
+    assert.equal(
+      calls.filter((path) => path.includes("/scheduler?")).length,
+      2,
+    );
+    assert.equal(
+      calls.filter((path) => path.startsWith("/api/delegations?")).length,
+      2,
+    );
     assert.deepEqual(
       f.runtime.platformNavigationSnapshot(localAccess, []).runtime.activity
         ?.objectives,
@@ -782,6 +797,8 @@ test("同一运行root的冲突来源与A→B→A持久来源环均有界拒绝"
       let eventReads = 0;
       let schedulerReads = 0;
       internal.request = async (path) => {
+        if (path.startsWith("/api/delegations?"))
+          return { delegations: [], has_more: false };
         if (path.includes("/events/")) {
           eventReads++;
           throw new Error("冲突与环不应产生无界来源读取");

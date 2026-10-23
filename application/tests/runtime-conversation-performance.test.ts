@@ -518,21 +518,33 @@ function timelineBridge(
     sessionId: string,
   ) => TimelineFixtureEntry[],
 ) {
-  const bridge = new RuntimeBridge(store, {
-    url: "http://127.0.0.1:1",
-    namespace: "timeline-performance-test",
-    token: "test",
-  });
+  const bridge = new RuntimeBridge(
+    store,
+    {
+      url: "http://127.0.0.1:1",
+      namespace: "timeline-performance-test",
+      token: "test",
+    },
+    undefined,
+    true,
+    { request: async () => new Response("{}", { status: 404 }) },
+  );
   bridge.bindPlatformReadAuthority(async () => ({
     personalDefault: false,
     projectIds: ["project"],
   }));
   let fetches = 0;
   let largestResponse = 0;
+  let publicationReads = 0;
   const request = bridge as unknown as {
     request: (path: string) => Promise<unknown>;
   };
+  const exactRequest = request.request.bind(bridge);
   request.request = async (path) => {
+    if (path.includes("/events/model_public_output_")) {
+      publicationReads++;
+      return exactRequest(path); // Genuine non-streamed progress has no snapshot.
+    }
     assert.ok(path.startsWith("/api/sessions/") && path.includes("/timeline?"));
     fetches++;
     const url = new URL(path, "http://localhost");
@@ -570,7 +582,7 @@ function timelineBridge(
   };
   return {
     bridge,
-    metrics: () => ({ fetches, largestResponse }),
+    metrics: () => ({ fetches, largestResponse, publicationReads }),
   };
 }
 
@@ -745,7 +757,7 @@ test("持久进度恢复真实分支身份，公共契约不剥掉threadId且未
   const store = new WorkspaceStore(":memory:");
   const stamp = "2026-10-09T00:00:00.000Z";
   let hasThreadIdentity = true;
-  const { bridge } = timelineBridge(store, (value, sessionId) => {
+  const { bridge, metrics } = timelineBridge(store, (value, sessionId) => {
     const entries = timelinePair(
       value,
       sessionId,
@@ -787,6 +799,11 @@ test("持久进度恢复真实分支身份，公共契约不剥掉threadId且未
     );
     assert.equal(oldHistory.runtime.messages[0]!.threadId, undefined);
     assert.equal(oldHistory.runtime.messages[0]!.text, "原始进度");
+    assert.equal(
+      metrics().publicationReads,
+      2,
+      "each non-streamed progress uses one bounded 404 point lookup",
+    );
   } finally {
     store.close();
   }
@@ -836,6 +853,11 @@ test("持久恢复状态来自精确 Runtime 事件，保留真实时间；普�
       undefined,
     );
     assert.equal(metrics().fetches, 1);
+    assert.equal(
+      metrics().publicationReads,
+      1,
+      "provider recovery does not read a model-publication snapshot",
+    );
   } finally {
     store.close();
   }

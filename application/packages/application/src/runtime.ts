@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { threadWaitProjection } from "./thread-wait-projection.js";
+import {
+  delegationRecordSchema,
+  delegationRequestLink,
+  requireDelegationLink,
+  type DelegationRecord,
+} from "./delegation-read.js";
 import { messageSourceSummary } from "../../core/src/message-source.js";
 import { objectiveControlSchema } from "../../core/src/objective-control.js";
 import {
@@ -124,6 +130,7 @@ import {
   type ExecutionReadScope,
   type ExecutionSnapshot,
   type ExecutionAttention,
+  type DelegationLink,
 } from "../../../packages/core/src/execution.js";
 import {
   type ConversationRuntime,
@@ -2918,6 +2925,8 @@ export class RuntimeBridge {
     access: AccessContext,
     active: () => void,
   ) {
+    if (scope.runtime.delegation)
+      return this.platformDelegatedExecutionRead(scope, access, active);
     const owner = this.teamIdentity
       ? this.principalId(access.principalId)
       : access.principalId;
@@ -3071,6 +3080,188 @@ export class RuntimeBridge {
         await recheck();
         const value = await viewer.result(scope, jobId);
         await recheck();
+        return value;
+      },
+    };
+  }
+
+  /** Cross-Session delegate reads follow the original durable request. The
+   * child is never registered as a new Platform conversation or write scope. */
+  private async delegationSource(
+    reference: DelegationLink,
+    access: AccessContext,
+    facts?: { record: DelegationRecord; event: RuntimeEvent },
+  ) {
+    const record =
+      facts?.record ??
+      delegationRecordSchema.parse(
+        await this.request(
+          `/api/delegations/${encodeURIComponent(reference.id)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+          "json",
+          true,
+        ),
+      );
+    const binding = this.state.sessions[record.parent_session_id];
+    if (
+      !binding?.platform ||
+      this.contextId(binding.projectId) !== record.parent_context_id
+    )
+      throw new DomainError("forbidden", "子任务不属于已登记的工作对话。");
+    const event =
+      facts?.event ??
+      z
+        .object({ event: eventSchema })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(record.parent_session_id)}/events/${encodeURIComponent(reference.requestEventId)}`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+            "json",
+            true,
+          ),
+        ).event;
+    const link = requireDelegationLink(record, event, reference);
+    let root: RuntimeEvent | null = z
+      .object({ event: eventSchema })
+      .parse(
+        await this.request(
+          `/api/sessions/${encodeURIComponent(record.parent_session_id)}/events/${encodeURIComponent(link.rootId)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+          "json",
+          true,
+        ),
+      ).event;
+    if (!root || !payloadString(root, "client_message_id")) {
+      root = z
+        .object({ input_event: eventSchema.nullable() })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(record.parent_session_id)}/turns/${encodeURIComponent(link.rootId)}/source`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+            "json",
+            true,
+          ),
+        ).input_event;
+    }
+    const inputId = root && payloadString(root, "client_message_id");
+    const source =
+      root && inputId
+        ? platformSourceFromRuntimeRoot(
+            root,
+            record.parent_session_id,
+            inputId,
+            (id) => (this.teamIdentity ? this.principalId(id) : null),
+          )
+        : null;
+    if (
+      !source ||
+      !inputId ||
+      source.sharedDefault !== binding.sharedDefault ||
+      this.contextId(source.projectId) !== record.parent_context_id ||
+      this.objectSessionId(
+        source.projectId,
+        source.conversationId,
+        source.sharedDefault,
+      ) !== record.parent_session_id
+    )
+      throw new DomainError("forbidden", "子任务缺少可核验的原始输入。");
+    return { record, link, source, inputId };
+  }
+
+  private async platformDelegatedExecutionRead(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const reference = scope.runtime.delegation!;
+    const verify = async () => {
+      active();
+      const proof = await this.delegationSource(reference, access);
+      if (
+        proof.record.child_session_id !== scope.runtime.sessionId ||
+        proof.record.child_context_id !== scope.runtime.contextId ||
+        !this.authorizePlatformRead
+      )
+        throw new DomainError("forbidden", "子任务的读取范围不匹配。");
+      const parentScope = {
+        projectId: proof.source.projectId,
+        conversationId: proof.source.conversationId,
+      };
+      const grant = await this.authorizePlatformRead(parentScope, access);
+      if (
+        !this.platformSourceReadable(proof.source, parentScope, access, grant)
+      )
+        throw new DomainError("forbidden", "原始工作的读取权限已变化。");
+      active();
+      return proof;
+    };
+    const proof = await verify();
+    const request = async (path: string, method?: string, body?: unknown) => {
+      active();
+      if ((method && method !== "GET") || body !== undefined)
+        throw new DomainError("forbidden", "子任务入口仅允许读取记录。");
+      return this.request(
+        path,
+        "GET",
+        undefined,
+        access,
+        undefined,
+        "json",
+        true,
+      );
+    };
+    const records = await readExecutionRecords(request, {
+      sessionId: scope.runtime.sessionId,
+      contextId: scope.runtime.contextId,
+      threadId: scope.threadId,
+      includeDescendants: true,
+    });
+    if (
+      records.threads.some(
+        (t) =>
+          t.initiating_principal_id !== proof.record.initiating_principal_id,
+      )
+    )
+      throw new DomainError("forbidden", "子任务的所属身份不匹配。");
+    const viewer = new ExecutionControls(request, () => ({
+      sessionId: scope.runtime.sessionId,
+      contextId: scope.runtime.contextId,
+      threadId: scope.threadId,
+      rootId: records.threads[0]!.root_turn_id,
+      records,
+      additionalRoot: async (rootId, threadId) =>
+        records.threads.some(
+          (t) => t.id === threadId && t.root_turn_id === rootId,
+        ),
+    }));
+    await verify();
+    return {
+      snapshot: async () => {
+        await verify();
+        const value = await viewer.snapshot(scope, false);
+        await verify();
+        return {
+          ...value,
+          approvals: [],
+          threads: records.threads.map(executionRecordThread),
+        };
+      },
+      result: async (jobId: string) => {
+        await verify();
+        const value = await viewer.result(scope, jobId);
+        await verify();
         return value;
       },
     };
@@ -4244,6 +4435,32 @@ export class RuntimeBridge {
     return { createdAt, text };
   }
 
+  /** A progress Event may finish seconds after its words first appeared.
+   * Use the same authenticated publication as live rendering; its timestamp
+   * must not change when a stream becomes immutable or another Host reads it.
+   * Provider-recovery notices and non-streamed progress keep their own time. */
+  private async platformProgressCreatedAt(
+    sessionId: string,
+    inputRootId: string,
+    event: RuntimeEvent,
+    access: AccessContext,
+  ): Promise<string> {
+    if (event.topic !== "chat/progress" || providerRecoveryFromEvent(event))
+      return event.timestamp;
+    const attemptId =
+      payloadString(event, "publication_key") ??
+      payloadString(event, "model_attempt_id") ??
+      payloadString(event, "attempt_id");
+    if (!attemptId) return event.timestamp;
+    const output = await this.platformPublicOutput(
+      sessionId,
+      inputRootId,
+      attemptId,
+      access,
+    );
+    return output?.createdAt ?? event.timestamp;
+  }
+
   /** Resolve the stable publication at Runtime's exact timeline key. Its
    * authenticated input may differ from a Goal's synthetic execution root. */
   private async platformPublicationEvent(
@@ -4418,7 +4635,14 @@ export class RuntimeBridge {
           !published
         )
           return null;
-        createdAt = publication?.createdAt ?? event.timestamp;
+        createdAt =
+          publication?.createdAt ??
+          (await this.platformProgressCreatedAt(
+            sessionId,
+            root.id,
+            event,
+            access,
+          ));
         text = published;
       }
     }
@@ -4969,7 +5193,7 @@ export class RuntimeBridge {
     );
     const limit = Math.min(Math.max(page.limit ?? 100, 1), 100);
     const accepted: HistoryEntry[] = [];
-    const pageFailureSources = new Map<string, RuntimeEvent>();
+    const pageMessageSources = new Map<string, SessionTimelineItem>();
     let before = page.before
       ? {
           visible_at_micros: historyTimeMicros(page.before.createdAt),
@@ -5026,11 +5250,8 @@ export class RuntimeBridge {
         );
         if (mapped) {
           accepted.push(mapped);
-          if (
-            mapped.kind === "message" &&
-            mapped.value.failure?.phase === "terminal"
-          )
-            pageFailureSources.set(mapped.id, item.event);
+          if (mapped.kind === "message")
+            pageMessageSources.set(mapped.id, item);
         }
         if (accepted.length > limit) break;
       }
@@ -5110,9 +5331,26 @@ export class RuntimeBridge {
     // or forward model captures. Historical Events and message text stay intact.
     await Promise.all(
       pageItems.map(async (item) => {
+        if (item.kind !== "message") return;
+        const timeline = pageMessageSources.get(item.id);
+        if (
+          timeline?.event.topic === "chat/progress" &&
+          timeline.input_event &&
+          !providerRecoveryFromEvent(timeline.event)
+        ) {
+          // Only the displayed message time changes. HistoryEntry.createdAt
+          // stays Runtime's SQL ordering key, so pagination neither skips nor
+          // repeats rows when first-visible and persisted times differ.
+          item.value.createdAt = await this.platformProgressCreatedAt(
+            sessionId,
+            timeline.input_event.id,
+            timeline.event,
+            access,
+          );
+        }
         if (item.kind !== "message" || item.value.failure?.phase !== "terminal")
           return;
-        const source = pageFailureSources.get(item.id);
+        const source = timeline?.event;
         const attempt = item.value.failure.attemptId;
         const root = source?.payload.root_turn_id;
         if (
@@ -6305,6 +6543,7 @@ export class RuntimeBridge {
           });
         }
       }
+      await this.appendDelegatedActivity(activity, sources);
       activity.schedulesAvailable = snapshots.every(
         ({ active }) => active.schedules !== undefined,
       );
@@ -6312,6 +6551,7 @@ export class RuntimeBridge {
       this.activitySources = sources;
       for (const thread of activity.threads)
         if (
+          !thread.delegation &&
           thread.projectId !== null &&
           thread.conversationId !== null &&
           thread.inputId !== null
@@ -6333,6 +6573,197 @@ export class RuntimeBridge {
       };
     }
     this.notifyWorkspaceChanges();
+  }
+
+  private async appendDelegatedActivity(
+    activity: z.infer<typeof activitySchema>,
+    sources: Map<string, PlatformInputSource>,
+  ) {
+    activity.delegationsAvailable = true;
+    activity.delegationsTruncated = false;
+    const childView = z.object({
+      detail_bounds: z.object({ has_more_threads: z.boolean() }).optional(),
+      threads: z
+        .array(
+          z.object({
+            phase: z.string(),
+            intent: z.string().nullish(),
+            execution_model: executionModelSchema.nullish(),
+            response_annotations: z.unknown().optional(),
+            thread: z.object({
+              id: z.string(),
+              kind: z.string(),
+              session_id: z.string(),
+              context_id: z.string(),
+              root_turn_id: z.string(),
+              initiating_principal_id: z.string().nullable(),
+              generation: z.number().optional(),
+              executor_kind: z.string().optional(),
+              lifecycle: z.string(),
+              control_state: z.string(),
+              revision: z.number(),
+              created_at: z.string(),
+              updated_at: z.string(),
+              supervision: z
+                .object({ parent_thread_id: z.string().nullish() })
+                .optional(),
+            }),
+          }),
+        )
+        .max(64),
+    });
+    let remaining = 16;
+    // Each query is bounded and related to an already registered Context.
+    // Active inventory wins over bounded terminal history; no global scan.
+    for (const contextId of new Set(
+      this.activeSessions().map((s) => this.contextId(s.projectId)),
+    )) {
+      try {
+        const records = new Map<string, DelegationRecord>();
+        for (const terminal of [true, false]) {
+          const page = z
+            .object({
+              delegations: z.array(delegationRecordSchema).max(64),
+              has_more: z.boolean(),
+            })
+            .parse(
+              await this.request(
+                `/api/delegations?${new URLSearchParams({
+                  context_id: contextId,
+                  include_terminal: String(terminal),
+                  limit: "64",
+                })}`,
+              ),
+            );
+          activity.delegationsTruncated ||= page.has_more;
+          for (const record of page.delegations)
+            if (
+              record.parent_context_id === contextId &&
+              this.state.sessions[record.parent_session_id]?.platform
+            )
+              records.set(record.id, record);
+        }
+        if (!records.size) continue;
+        const requests = z
+          .object({
+            context_id: z.literal(contextId),
+            events: z.array(eventSchema).max(200),
+            scan_exhaustive: z.boolean(),
+          })
+          .parse(
+            await this.request(
+              `/api/contexts/${encodeURIComponent(contextId)}/events?topic=chat%2Fdelegate&limit=200`,
+            ),
+          );
+        for (const record of [...records.values()].sort(
+          (a, b) =>
+            Number(["queued", "running"].includes(b.status)) -
+            Number(["queued", "running"].includes(a.status)),
+        )) {
+          const event = requests.events.find((e) =>
+            delegationRequestLink(record, e),
+          );
+          if (!event) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
+          const link = delegationRequestLink(record, event)!;
+          const parent = activity.threads.find(
+            (t) =>
+              t.id === link.parentThreadId &&
+              t.sessionId === record.parent_session_id &&
+              t.contextId === record.parent_context_id &&
+              t.rootId === link.rootId,
+          );
+          if (!parent) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
+          if (remaining-- <= 0) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
+          const proof = await this.delegationSource(link, this.actor(), {
+            record,
+            event,
+          });
+          if (
+            proof.inputId !== parent.inputId ||
+            proof.source.projectId !== parent.projectId ||
+            proof.source.conversationId !== parent.conversationId
+          )
+            continue;
+          const { rootId: _rootId, ...reference } = link;
+          if (
+            ["queued", "running"].includes(record.status) &&
+            parent.lifecycle === "open"
+          )
+            parent.waitKinds = [
+              ...new Set([...(parent.waitKinds ?? []), "delegation"]),
+            ];
+          const views = await Promise.all(
+            [true, false].map(async (terminal) =>
+              childView.parse(
+                await this.request(
+                  `/api/contexts/${encodeURIComponent(record.child_context_id)}/scheduler?include_terminal=${terminal}&limit=64`,
+                ),
+              ),
+            ),
+          );
+          activity.delegationsTruncated ||= views.some(
+            (v) => v.detail_bounds?.has_more_threads ?? v.threads.length >= 64,
+          );
+          const children = new Map(
+            views.flatMap((v) => v.threads).map((v) => [v.thread.id, v]),
+          );
+          for (const value of children.values()) {
+            const t = value.thread;
+            if (
+              t.session_id !== record.child_session_id ||
+              t.context_id !== record.child_context_id ||
+              t.initiating_principal_id !== record.initiating_principal_id ||
+              t.kind !== "execution"
+            )
+              continue;
+            sources.set(proof.inputId, proof.source);
+            activity.threads.push({
+              id: t.id,
+              kind: t.kind,
+              sessionId: t.session_id,
+              contextId: t.context_id,
+              rootId: t.root_turn_id,
+              inputId: proof.inputId,
+              projectId: proof.source.projectId,
+              conversationId: proof.source.conversationId,
+              initiatingPrincipalId: t.initiating_principal_id,
+              title:
+                t.executor_kind === "plan_infer"
+                  ? ""
+                  : value.intent?.trim() || record.task,
+              ...(value.execution_model
+                ? { executionModel: value.execution_model }
+                : {}),
+              ...(activityAnnotationFields(value.response_annotations, t) ??
+                {}),
+              phase: value.phase,
+              lifecycle: t.lifecycle,
+              controlState: t.control_state,
+              parentThreadId: t.supervision?.parent_thread_id,
+              delegation: reference,
+              revision: t.revision,
+              createdAt: t.created_at,
+              updatedAt: t.updated_at,
+            });
+          }
+        }
+      } catch {
+        activity.delegationsAvailable = false;
+        activity.delegationsTruncated = true;
+      }
+    }
+    // Registered Platform inventory and cross-Context delegation reads have
+    // distinct bounds. Never silently redefine openWorkComplete's existing
+    // domain; clients use the explicit delegation availability/bounds above.
   }
   private async refreshAttention() {
     try {
