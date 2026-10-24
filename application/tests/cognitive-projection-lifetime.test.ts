@@ -86,3 +86,27 @@ test("cognitive growth cannot erase or reorder the historical projection lifetim
     ),
   );
 });
+
+test("the first-history readiness scope retires synchronously with the exact protected projection", () => {
+  const clear = "setDisplayedHistoryScope(null);";
+  for (const replacement of [
+    "",
+    "setDisplayedHistoryScope(retainedScope);",
+    "void Promise.resolve().then(() => setDisplayedHistoryScope(null));",
+  ])
+    assert.throws(() =>
+      verifyClientProjectionLifetime(
+        workspace(cognitiveProjectionClear.replace(clear, replacement)),
+      ),
+    );
+  assert.throws(() =>
+    verifyClientProjectionLifetime(
+      workspace(
+        cognitiveProjectionClear.replace(
+          "setHistoryError(null);\n    " + clear,
+          clear + "\n    setHistoryError(null);",
+        ),
+      ),
+    ),
+  );
+});
