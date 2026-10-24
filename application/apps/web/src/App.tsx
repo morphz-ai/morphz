@@ -3265,7 +3265,9 @@ function WorkspaceApp({
                       ) : undefined
                     }
                     hasEarlierHistory={
-                      !loadingConversationHistory && !!client.olderHistoryCursor
+                      !selectedDraft &&
+                      !loadingConversationHistory &&
+                      !!client.olderHistoryCursor
                     }
                     onLoadEarlierHistory={client.loadEarlierHistory}
                     onOpenQuote={(quote) => void openTextQuote(quote)}
