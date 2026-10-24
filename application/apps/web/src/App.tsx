@@ -948,8 +948,11 @@ function WorkspaceApp({
       ids: new Set(client.boot!.localSavedInputIds),
     };
   const loadingConversationHistory =
-    client.displayedHistoryScope?.projectId !== conversationProjectId ||
-    client.displayedHistoryScope.conversationId !== conversationId;
+    // An unsent conversation draft deliberately has no server history scope.
+    // Its retained local inputs are the draft itself, not a stale history head.
+    !selectedDraft &&
+    (client.displayedHistoryScope?.projectId !== conversationProjectId ||
+      client.displayedHistoryScope.conversationId !== conversationId);
   for (const input of inputs)
     if (client.boot!.localInputSubmissions[input.id]?.state === "sending")
       openingSavedInputs.current.ids.delete(input.id);
