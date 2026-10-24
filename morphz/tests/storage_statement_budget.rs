@@ -20,7 +20,8 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 use temp_sqlite::TempSqliteDb;
 use tracing::Instrument;
@@ -51,6 +52,56 @@ fn p95(samples: &mut [Duration]) -> Duration {
 struct SqlStatementCounter {
     statements: Arc<AtomicUsize>,
     pool_acquires: Arc<AtomicUsize>,
+    warmup_workers: Arc<Mutex<HashSet<ThreadId>>>,
+    query_diagnostics: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Default)]
+struct QuerySummary(String);
+
+impl tracing::field::Visit for QuerySummary {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "summary" {
+            self.0 = format!("{value:?}");
+        }
+    }
+}
+
+async fn warm_snapshot_pool(
+    store: &SqliteStore,
+    context_id: &str,
+    session_id: &str,
+    max_connections: usize,
+    workers: &Mutex<HashSet<ThreadId>>,
+) {
+    workers.lock().unwrap().clear();
+    let request = ContextRuntimeDirectoryRequest {
+        context_id: context_id.to_string(),
+        active_session_id: session_id.to_string(),
+        active_after: chrono::Utc::now() - chrono::Duration::hours(24),
+        max_full_sessions: 50,
+        max_metadata_sessions: 50,
+        known_context_state_revision: None,
+        session_filter: ContextRuntimeSessionFilter::default(),
+    };
+    // On this current-thread runtime, poll every read before pool-return tasks
+    // can run. Each read holds its connection until its snapshot completes;
+    // unconstrained prevents a cooperative-budget yield during that first poll.
+    // A single Context build does not guarantee even its next build is warm:
+    // SQLx returns dropped pool connections asynchronously and may grow instead.
+    let snapshots = tokio::task::unconstrained(futures_util::future::join_all(
+        (0..max_connections).map(|_| store.read_context_runtime_directory_snapshot(&request)),
+    ))
+    .instrument(tracing::info_span!("sqlite_statement_budget_pool_warmup"))
+    .await;
+    for snapshot in snapshots {
+        assert!(snapshot.unwrap().is_some());
+    }
+    assert_eq!(
+        workers.lock().unwrap().len(),
+        max_connections,
+        "steady-state fixture must exercise every configured physical SQLite worker before measuring"
+    );
 }
 
 impl<S> Layer<S> for SqlStatementCounter
@@ -63,17 +114,35 @@ where
         // the measured operation's propagated tracing span; wall-clock counter
         // resets can otherwise charge unrelated pool work to the next query on
         // a slower runner.
-        let belongs_to_measurement = context.event_scope(event).is_some_and(|scope| {
-            scope
-                .from_root()
-                .any(|span| span.metadata().name() == "sqlite_statement_budget_measurement")
-        });
-        if !belongs_to_measurement {
-            return;
+        let mut measurement = None;
+        let mut warming = false;
+        if let Some(scope) = context.event_scope(event) {
+            for span in scope.from_root() {
+                match span.metadata().name() {
+                    "sqlite_statement_budget_measurement" => measurement = Some(span.id()),
+                    "sqlite_statement_budget_pool_warmup" => warming = true,
+                    _ => {}
+                }
+            }
         }
+        if warming && event.metadata().target() == "sqlx::query" {
+            self.warmup_workers
+                .lock()
+                .unwrap()
+                .insert(std::thread::current().id());
+        }
+        let Some(measurement) = measurement else {
+            return;
+        };
         match event.metadata().target() {
             "sqlx::query" => {
                 self.statements.fetch_add(1, Ordering::Relaxed);
+                let mut summary = QuerySummary::default();
+                event.record(&mut summary);
+                self.query_diagnostics
+                    .lock()
+                    .unwrap()
+                    .push(format!("{measurement:?}: {}", summary.0));
             }
             "sqlx::pool::acquire" => {
                 self.pool_acquires.fetch_add(1, Ordering::Relaxed);
@@ -104,22 +173,76 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         .unwrap();
     let statements = Arc::new(AtomicUsize::new(0));
     let pool_acquires = Arc::new(AtomicUsize::new(0));
+    let warmup_workers = Arc::new(Mutex::new(HashSet::new()));
+    let query_diagnostics = Arc::new(Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::registry().with(
         SqlStatementCounter {
             statements: Arc::clone(&statements),
             pool_acquires: Arc::clone(&pool_acquires),
+            warmup_workers: Arc::clone(&warmup_workers),
+            query_diagnostics: Arc::clone(&query_diagnostics),
         }
         .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-            metadata.name() == "sqlite_statement_budget_measurement"
-                || matches!(metadata.target(), "sqlx::query" | "sqlx::pool::acquire")
+            matches!(
+                metadata.name(),
+                "sqlite_statement_budget_measurement" | "sqlite_statement_budget_pool_warmup"
+            ) || matches!(metadata.target(), "sqlx::query" | "sqlx::pool::acquire")
         })),
     );
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
+    let previous_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |information| {
+        eprintln!(
+            "measured SQLite queries by operation span: {:#?}",
+            query_diagnostics.lock().unwrap()
+        );
+        previous_panic_hook(information);
+    }));
+
     runtime.block_on(async {
+        // A controlled cold connection must count its real PRAGMA setup as
+        // well as SELECT. Never hide initialization (or arbitrary PRAGMAs) in
+        // the counter, and never fix a cold-pool failure by raising a hot budget.
+        use sqlx::ConnectOptions;
+        let cold_database = TempSqliteDb::new().unwrap();
+        let cold_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .acquire_time_level(log::LevelFilter::Trace)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(cold_database.path())
+                    .create_if_missing(true)
+                    .log_statements(log::LevelFilter::Trace),
+            )
+            .await
+            .unwrap();
+        let mut held_connection = cold_pool.acquire().await.unwrap();
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        let value: i64 = measure_sql(sqlx::query_scalar("SELECT 7").fetch_one(&cold_pool))
+            .await
+            .unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(statements.load(Ordering::Relaxed), 2,
+            "a forced cold connection has one physical initialization batch plus its SELECT");
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+        held_connection.return_to_pool().await;
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        let value: i64 = measure_sql(sqlx::query_scalar("SELECT 7").fetch_one(&cold_pool))
+            .await
+            .unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(statements.load(Ordering::Relaxed), 1,
+            "the same operation on an already initialized connection has exactly one SELECT");
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 1);
+        cold_pool.close().await;
+
         let database = TempSqliteDb::new().unwrap();
+        let storage_config = morphz::config::SqliteStorageConfig::default();
         let store = Arc::new(
-            SqliteStore::new(database.path().to_str().unwrap())
+            SqliteStore::new_with_config(database.path().to_str().unwrap(), &storage_config)
                 .await
                 .unwrap(),
         );
@@ -160,6 +283,13 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             .await
             .unwrap();
 
+        warm_snapshot_pool(
+            &store,
+            "statement-budget-context",
+            "statement-budget-session",
+            storage_config.max_connections as usize,
+            &warmup_workers,
+        ).await;
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         let snapshot = measure_sql(store.read_context_runtime_directory_snapshot(
@@ -236,6 +366,13 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
                 .await
                 .unwrap();
 
+            warm_snapshot_pool(
+                &context_db_store,
+                "context-db-statement-budget-context",
+                "context-db-statement-budget-session",
+                storage_config.max_connections as usize,
+                &warmup_workers,
+            ).await;
             statements.store(0, Ordering::Relaxed);
             pool_acquires.store(0, Ordering::Relaxed);
             let context_db_snapshot = measure_sql(
@@ -698,9 +835,8 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
             .await
             .unwrap()
             .unwrap();
-        // Warm the third concurrent read connection used only by Activation
-        // Contexts. SQLx connection initialization is a cold-pool concern,
-        // while this gate intentionally measures steady semantic commands.
+        // Warm the Activation-specific compiler state. Physical connections
+        // were already verified warm before any statement-budget measurement.
         engine
             .build_context_encoding_for_activation(
                 "statement-budget-context",
