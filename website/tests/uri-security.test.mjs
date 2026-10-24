@@ -19,11 +19,13 @@ test("URI parsing case-folds percent-encoded uppercase hosts", () => {
   }
 });
 
-test("every locked fast-uri branch clears the host-normalization advisory", async () => {
+test("every locked fast-uri branch clears scheme, host and path-normalization advisories", async () => {
   const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
   const dependencies = Object.entries(lock.packages).filter(([path]) => path === "node_modules/fast-uri" || path.endsWith("/node_modules/fast-uri"));
   assert.ok(dependencies.length > 0);
-  const floors = new Map([[2, [4, 7]], [3, [1, 8]], [4, [1, 5]]]);
+  // GHSA-w74x-v6f9-j3xg, GHSA-xhq7-xmqj-769h, GHSA-wjr9-j795-jxcr,
+  // GHSA-333x-w4r6-6crp, in addition to GHSA-hrr3-gc8f-f4qj.
+  const floors = new Map([[2, [4, 8]], [3, [1, 9]], [4, [2, 3]]]);
   for (const [path, dependency] of dependencies) {
     assert.match(dependency.version, /^\d+\.\d+\.\d+$/);
     const [major, minor, patch] = dependency.version.split(".").map(Number);
