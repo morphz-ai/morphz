@@ -27,7 +27,15 @@ test("无 Runtime 时保存到当前客户端，刷新后仍是未发送消息",
   );
 });
 
-test("项目新对话的首条输入本机保存后可重新打开", async ({ page }) => {
+test("项目新对话的首条输入本机保存后可重新打开", async ({ page }, testInfo) => {
+  const submittedMessages: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/platform/messages"
+    )
+      submittedMessages.push(request.url());
+  });
   await page.goto("/");
   const title = `本机未发送对话-${crypto.randomUUID().slice(0, 8)}`;
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
@@ -42,6 +50,23 @@ test("项目新对话的首条输入本机保存后可重新打开", async ({ pa
   await expect(page.locator(".human-message")).toContainText(
     "项目新对话的本机首条消息",
   );
+  const savedId = await page
+    .locator(".human-message")
+    .getAttribute("data-input-id");
+  expect(savedId).not.toBeNull();
+  const savedInput = () =>
+    page.evaluate((id) => {
+      const key = Object.keys(localStorage).find((entry) =>
+        entry.endsWith(":saved-input:" + id),
+      );
+      return key ? localStorage.getItem(key) : null;
+    }, savedId);
+  const original = await savedInput();
+  expect(original).not.toBeNull();
+  await page.screenshot({
+    path: testInfo.outputPath("local-draft-saved.png"),
+    fullPage: true,
+  });
   const projects = (await (
     await page.request.get("/api/platform/projects?limit=100")
   ).json()) as Array<{ id: string; title: string }>;
@@ -59,6 +84,19 @@ test("项目新对话的首条输入本机保存后可重新打开", async ({ pa
   await expect(page.locator(".human-message")).toContainText(
     "项目新对话的本机首条消息",
   );
+  await expect(page.locator(".human-message")).toHaveCount(1);
+  await expect(page.locator(".human-message")).toHaveAttribute(
+    "data-input-id",
+    savedId!,
+  );
+  await expect(page.locator(".human-message")).toContainText("已保存 · 未发送");
+  await expect(page.getByText("正在读取对话…", { exact: true })).toHaveCount(0);
+  expect(await savedInput()).toBe(original);
+  expect(submittedMessages).toEqual([]);
+  await page.screenshot({
+    path: testInfo.outputPath("local-draft-restored.png"),
+    fullPage: true,
+  });
 });
 
 test("连接恢复后发送本机消息沿用原 ID，且不误走服务端重试", async ({
