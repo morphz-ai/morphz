@@ -223,3 +223,90 @@ for (const success of [true, false])
       await page.unrouteAll({ behavior: "wait" });
     }
   });
+
+test("未发送草稿不借用上一会话的更早消息游标", async ({ page }) => {
+  await page.goto("/");
+  const source = await conversationClient(page);
+  const spaces = await source.ensurePersonalSpaces();
+  const title = `TEST 草稿游标隔离 ${randomUUID().slice(0, 8)}`;
+  await source.createProject(
+    title,
+    randomUUID(),
+    `draft_cursor_${randomUUID().replaceAll("-", "")}`,
+  );
+  // Synthetic authorized history, not a model execution from the stopped
+  // fixture Runtime. Only the previous real conversation has an older page.
+  const historyInput = {
+    id: randomUUID(),
+    projectId: spaces.dialogueId,
+    conversationId: spaces.dialogueId,
+    author: {
+      principalId: source.boot.principalId,
+      actantId: source.boot.actantId,
+    },
+    targetActantId: "morphz-agent",
+    body: "TEST 提供更早游标的既有会话消息",
+    createdAt: "2026-10-23T00:00:00.000Z",
+  };
+  const earlierReads: string[] = [];
+  const sends: string[] = [];
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history(?:\?.*)?$/,
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.has("beforeId")) earlierReads.push(url.href);
+      const response = await route.fetch();
+      const body = await response.json();
+      const previousConversation = url.pathname.endsWith(
+        `/conversations/${spaces.dialogueId}/history`,
+      );
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          inputs: previousConversation
+            ? [historyInput, ...body.inputs]
+            : body.inputs,
+          nextCursor: previousConversation
+            ? { createdAt: historyInput.createdAt, id: historyInput.id }
+            : body.nextCursor,
+        },
+      });
+    },
+  );
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/platform/messages"
+    )
+      sends.push(request.url());
+  });
+  await page.reload();
+  const dialogue = page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true });
+  await dialogue.click();
+  await expect(
+    page.getByText("TEST 提供更早游标的既有会话消息", { exact: true }),
+  ).toBeVisible();
+  const earlier = page.getByRole("button", {
+    name: "查看更早消息",
+    exact: true,
+  });
+  await expect(earlier).toBeVisible();
+  await page
+    .getByRole("group", { name: `${title}的会话`, exact: true })
+    .getByRole("button", { name: `新建项目对话：${title}`, exact: true })
+    .click();
+  const editor = await openInput(page);
+  await expect(earlier).toHaveCount(0);
+  await expect(page.getByText("正在读取对话…", { exact: true })).toHaveCount(0);
+  await editor.fill("TEST 只保留本机的草稿");
+  await page.reload();
+  await expect(await openInput(page)).toHaveValue("TEST 只保留本机的草稿");
+  await expect(earlier).toHaveCount(0);
+  await dialogue.click();
+  await expect(earlier).toBeVisible();
+  expect(earlierReads).toEqual([]);
+  expect(sends).toEqual([]);
+});
