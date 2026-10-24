@@ -934,6 +934,30 @@ function WorkspaceApp({
     state?.inputs.filter((i) =>
       inConversation(state!, conversationId, i, sharedDefault),
     ) ?? [];
+  const historyScopeKey = JSON.stringify([
+    conversationProjectId,
+    conversationId,
+  ]);
+  const openingSavedInputs = useRef({
+    scope: historyScopeKey,
+    ids: new Set(client.boot!.localSavedInputIds),
+  });
+  if (openingSavedInputs.current.scope !== historyScopeKey)
+    openingSavedInputs.current = {
+      scope: historyScopeKey,
+      ids: new Set(client.boot!.localSavedInputIds),
+    };
+  const loadingConversationHistory =
+    client.displayedHistoryScope?.projectId !== conversationProjectId ||
+    client.displayedHistoryScope.conversationId !== conversationId;
+  for (const input of inputs)
+    if (client.boot!.localInputSubmissions[input.id]?.state === "sending")
+      openingSavedInputs.current.ids.delete(input.id);
+  // Restored failures are not a latest-history head. Wait for this exact
+  // scope's first coherent read, without delaying newly staged live inputs.
+  const displayedInputs = loadingConversationHistory
+    ? inputs.filter((input) => !openingSavedInputs.current.ids.has(input.id))
+    : inputs;
   const stream = useConversationStream(
     conversationProjectId,
     conversationId,
@@ -3179,7 +3203,33 @@ function WorkspaceApp({
                     : undefined
                 }
               >
-                {conversationVisible && (
+                {conversationVisible &&
+                loadingConversationHistory &&
+                !displayedInputs.length &&
+                !replies.length ? (
+                  <section
+                    className="conversation"
+                    aria-label="当前对话"
+                    aria-busy="true"
+                  >
+                    {client.error ? (
+                      <ConversationHistoryNotice
+                        error={{
+                          projectId: conversationProjectId,
+                          conversationId,
+                          message: client.error,
+                        }}
+                        projectId={conversationProjectId}
+                        conversationId={conversationId}
+                        onRetry={() => void client.refresh()}
+                      />
+                    ) : (
+                      <div className="conversation-empty" role="status">
+                        <p>正在读取对话…</p>
+                      </div>
+                    )}
+                  </section>
+                ) : conversationVisible ? (
                   <Conversation
                     searchProjectId={project.id}
                     notice={
@@ -3211,7 +3261,9 @@ function WorkspaceApp({
                         />
                       ) : undefined
                     }
-                    hasEarlierHistory={!!client.olderHistoryCursor}
+                    hasEarlierHistory={
+                      !loadingConversationHistory && !!client.olderHistoryCursor
+                    }
                     onLoadEarlierHistory={client.loadEarlierHistory}
                     onOpenQuote={(quote) => void openTextQuote(quote)}
                     quoteReveal={
@@ -3235,7 +3287,7 @@ function WorkspaceApp({
                     focusedArtifactId={conversationFocus.artifactId}
                     focusedCognitiveObject={conversationFocus.cognitiveObject}
                     key={conversationId}
-                    inputs={inputs}
+                    inputs={displayedInputs}
                     messages={replies}
                     streamConnected={stream.connected}
                     seenReplies={seenReplies}
@@ -3289,7 +3341,7 @@ function WorkspaceApp({
                       );
                     }}
                   />
-                )}
+                ) : null}
                 <div className="composer-dock">
                   {projectStatus(project) === "active" &&
                     !selectedConversation?.archivedAt && (

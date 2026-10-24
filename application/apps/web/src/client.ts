@@ -88,6 +88,7 @@ import {
 import {
   createConversationHistory,
   type ConversationHistory,
+  type HistoryScope,
 } from "./data/conversation-history.js";
 import { contentVisits } from "./recent-content.js";
 import type { CognitiveAppCatalogSnapshot } from "./cognitive-app-client.js";
@@ -787,6 +788,8 @@ export function useWorkspace() {
       conversationId: string;
       message: string;
     } | null>(null),
+    [displayedHistoryScope, setDisplayedHistoryScope] =
+      useState<HistoryScope | null>(null),
     [authenticationRequired, setAuthenticationRequired] = useState(false);
   // Session metadata owns invalidation listening, never protected content or
   // permission. Clearing a private projection must not lose the hint that
@@ -839,6 +842,14 @@ export function useWorkspace() {
     },
   });
   const conversationHistory = history.current;
+  function publishHistoryScope(scope: HistoryScope | null) {
+    setDisplayedHistoryScope((previous) =>
+      previous?.projectId === scope?.projectId &&
+      previous?.conversationId === scope?.conversationId
+        ? previous
+        : scope,
+    );
+  }
   const contentReads = createContentReads({
     platform,
     current,
@@ -951,6 +962,7 @@ export function useWorkspace() {
     snapshotText.current = "";
     setBoot(null);
     setHistoryError(null);
+    setDisplayedHistoryScope(null);
     setContentCatalog([]);
     setContentCounts([]);
     setCognitiveAppCatalog({ versions: [], connections: [] });
@@ -1328,10 +1340,13 @@ export function useWorkspace() {
                 `${applicationStoragePrefix}${value.centerId}:${value.principalId}:desktop:last-window`,
                 draftOwner,
               );
+            publishHistoryScope(resolvedScope);
             setBoot(value);
           }
-        } else
+        } else {
           navigationCacheKey.current = historyUnavailable ? "" : navigationKey;
+          publishHistoryScope(resolvedScope);
+        }
         setHistoryError(
           historyUnavailable && resolvedScope
             ? { ...resolvedScope, message: runtime.error! }
@@ -1788,6 +1803,7 @@ export function useWorkspace() {
       ),
     authenticationRequired,
     historyError,
+    displayedHistoryScope,
     login,
     logout,
     speechStatus,
