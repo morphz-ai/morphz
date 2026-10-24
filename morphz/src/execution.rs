@@ -396,6 +396,7 @@ pub fn startup_recovery_plan(
             .lease_expires_at
             .is_some_and(|expires_at| expires_at > now)
         && !(coordination == WorkerCoordinationMode::SharedHostLeases
+            && has_runtime_monitoring_owner(job)
             && runtime_claimant_is_definitely_dead(job.claimed_by.as_deref()))
     {
         return RestartPlan {
@@ -428,7 +429,11 @@ fn recovery_plan(
                 reason: "Runtime worker is absent or its lease expired; the original Job is safe to requeue under its persisted retry policy".to_string(),
             },
             RestartAction::MarkLost { .. } => RestartAction::MarkLost {
-                reason: "Runtime worker is absent or its lease expired; the external outcome is unknown and automatic replay is forbidden under the persisted cancellation/retry policy".to_string(),
+                reason: if job.tool_name == "exec/background" {
+                    "Background Runtime monitoring owner is absent or its lease expired; the physical process may still exist, but output delivery and terminal outcome are unknown. Inspect the existing process before issuing another Action; automatic replay is forbidden under the persisted cancellation/retry policy".to_string()
+                } else {
+                    "Runtime worker is absent or its lease expired; the external outcome is unknown and automatic replay is forbidden under the persisted cancellation/retry policy".to_string()
+                },
             },
         };
         return plan;
@@ -746,8 +751,10 @@ where
 
     /// Startup may have preserved a future lease owned by a peer which later
     /// exits. Do not leave its callers waiting forever. This only selects
-    /// ordinary Runtime-owned Jobs, never detached processes/Edge owners, and
-    /// uses the same durable receipt and revision fences as startup recovery.
+    /// Runtime monitoring owners, including detached local background Jobs,
+    /// never Edge owners. Losing a monitor does not prove that its process
+    /// exited: preserve retry safety and publish uncertainty, not a replay or
+    /// physical termination. Receipts use the same revision fences as startup.
     pub async fn reconcile_abandoned_runtime_jobs<E: EventStore + ?Sized>(
         &self,
         coordination: WorkerCoordinationMode,
@@ -764,9 +771,7 @@ where
             .await?
             .into_iter()
             .filter(|job| {
-                job.claimed_by
-                    .as_deref()
-                    .is_some_and(|owner| owner.starts_with("runtime:"))
+                has_runtime_monitoring_owner(job)
                     && (job.lease_expires_at.is_none_or(|expires| expires <= now)
                         || (coordination == WorkerCoordinationMode::SharedHostLeases
                             && runtime_claimant_is_definitely_dead(job.claimed_by.as_deref())))
@@ -1028,7 +1033,11 @@ pub(crate) fn local_process_tree_exists(process_id: i32) -> Result<bool, String>
 /// Unknown identities, PID reuse, other Runtime instances in this process,
 /// access-denied and inspection failures must all retain the lease fence.
 pub(crate) fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
-    let Some(raw) = claimed_by.and_then(|owner| owner.strip_prefix("runtime:")) else {
+    let Some(raw) = claimed_by.and_then(|owner| {
+        owner
+            .strip_prefix("runtime:")
+            .or_else(|| owner.strip_prefix("background-runtime:"))
+    }) else {
         return false;
     };
     let Ok(pid) = raw.split(':').next().unwrap_or(raw).parse::<i32>() else {
@@ -1037,6 +1046,19 @@ pub(crate) fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> b
     pid > 0
         && pid != i32::try_from(std::process::id()).unwrap_or(-1)
         && matches!(local_process_id_exists(pid), Ok(false))
+}
+
+fn has_runtime_monitoring_owner(job: &ExecutionJobRecord) -> bool {
+    job.claimed_by.as_deref().is_some_and(|owner| {
+        owner.starts_with("runtime:")
+            || (owner.starts_with("background-runtime:")
+                && job.tool_name == "exec/background"
+                && job
+                    .request
+                    .get("owner_kind")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("edge_worker"))
+    })
 }
 
 /// Inspect an ordinary local process owner such as a Runtime claimant.

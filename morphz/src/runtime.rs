@@ -3125,6 +3125,19 @@ impl MorphzRuntime {
                             || !report.requeue_receipts.is_empty()
                             || !report.lost_receipts.is_empty() =>
                     {
+                        // Local detached monitors can disappear independently
+                        // of their still-live processes. Their fenced uncertain
+                        // results need the same durable delivery recovery as
+                        // expired Edge background results below.
+                        background_outbox_recovery_needed |= report
+                            .recovered_receipts
+                            .iter()
+                            .chain(report.lost_receipts.iter())
+                            .any(|receipt| {
+                                receipt
+                                    .applied_job()
+                                    .is_some_and(|job| job.tool_name == "exec/background")
+                            });
                         tracing::info!(
                             recovered = report.recovered_receipts.len(),
                             requeued = report.requeue_receipts.len(),
