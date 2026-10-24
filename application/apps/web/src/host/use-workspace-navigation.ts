@@ -710,7 +710,11 @@ export function createWorkspaceNavigationCommands<
       const script = client.boot?.scriptLibrary.find(
         (item) => item.id === id || item.contentId === id,
       );
-      if (script) return openScriptLocation({ productionId: script.id });
+      if (script) {
+        if (revision !== undefined)
+          throw new Error("剧本版本请从剧本的历史记录打开，未跳转到当前版。");
+        return openScriptLocation({ productionId: script.id });
+      }
       const generation = owner.beginIntent();
       const loadedArtifact = workspace?.artifacts.find(
         (item) => item.id === id,
@@ -722,8 +726,11 @@ export function createWorkspaceNavigationCommands<
       if (
         catalogEntry?.appId === "morphz.script-studio" &&
         catalogEntry.kind === "script"
-      )
+      ) {
+        if (revision !== undefined)
+          throw new Error("剧本版本请从剧本的历史记录打开，未跳转到当前版。");
         return openScriptLocation({ productionId: catalogEntry.appObjectId });
+      }
       const a = loadedArtifact ?? (await client.resolveArtifact(id));
       if (!continuation.isActive() || !owner.isCurrent(generation)) return;
       if (!a) {

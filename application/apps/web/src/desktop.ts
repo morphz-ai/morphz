@@ -99,6 +99,7 @@ declare global {
         onChange(callback: (state: DesktopAppearanceState) => void): () => void;
       };
       openExternal?(url: string): Promise<void>;
+      openLocalFile?(path: string): Promise<{ action: "opened" | "revealed" }>;
       directories?: {
         choose(
           projectId: string,

@@ -561,13 +561,30 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
       factory.body,
       "content opening belongs to the existing factory",
     );
-    const mapped = candidate
+    let mapped = candidate
       .getText()
       .replaceAll("owner.setExplicitWebsiteIntent", "setWebsiteIntent")
       .replace(/\bcontinuation\b/g, "origin")
       .replace(/\bowner\b/g, "navigation")
       .replace(/\bworkspace\b/g, "state")
       .replace(/\bonNotice\b/g, "setNotice");
+    if (name === "openUser") {
+      // Exact artifact revision links must not silently open the current
+      // whole-script production. Require both finite guards, then prove the
+      // rest still matches the immutable original navigation algorithm.
+      mapped = uniqueReplace(
+        mapped,
+        'if (script) {\n        if (revision !== undefined)\n          throw new Error("剧本版本请从剧本的历史记录打开，未跳转到当前版。");\n        return openScriptLocation({ productionId: script.id });\n      }',
+        "if (script) return openScriptLocation({ productionId: script.id });",
+        "required loaded script revision guard",
+      );
+      mapped = uniqueReplace(
+        mapped,
+        ') {\n        if (revision !== undefined)\n          throw new Error("剧本版本请从剧本的历史记录打开，未跳转到当前版。");\n        return openScriptLocation({ productionId: catalogEntry.appObjectId });\n      }',
+        ")\n        return openScriptLocation({ productionId: catalogEntry.appObjectId });",
+        "required catalog script revision guard",
+      );
+    }
     same(
       fn(parse({ Mapped: mapped }).get("Mapped")!, name),
       original,

@@ -462,6 +462,32 @@ test("factory construction performs zero reads, writes, lifecycle transitions or
   assert.deepEqual(f.patches, []);
 });
 
+test("whole script links reject unsupported exact versions instead of opening the current production", async () => {
+  for (const cached of [true, false]) {
+    const f = fixture();
+    if (!cached) {
+      f.client.boot!.scriptLibrary = [];
+      f.client.contentCatalog = [
+        {
+          id: "script-content-A",
+          appId: "morphz.script-studio",
+          kind: "script",
+          appObjectId: "production-A",
+        },
+      ] as Options["client"]["contentCatalog"];
+    }
+    await f.commands().openUser("script-content-A", 2);
+    assert.match(f.notices[0]!, /历史记录打开，未跳转到当前版/);
+    assert.equal(f.patches.length, 0);
+    assert.equal(
+      f.events.some(
+        (event) => event[0] === "execute" || event[0] === "resolve-script",
+      ),
+      false,
+    );
+  }
+});
+
 test("object open keeps exact launch/reference patch and returns the epoch after prefer invalidation", async () => {
   const f = fixture({
     applications: { old: "kept" },

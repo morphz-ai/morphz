@@ -1858,6 +1858,12 @@ body:has(dialog[open]) .cognitive-application-frame {
   outline-offset: 3px;
   border-radius: 2px;
 }
+.app .markdown-link-error {
+  display: block;
+  color: var(--danger);
+  font-size: var(--ui-detail-body-font-size);
+  overflow-wrap: anywhere;
+}
 .reply-content img,
 .document-body img {
   display: block;

@@ -349,9 +349,10 @@ function registerCurrentWorkspaceCounterfactuals() {
   test("reject legal changes to each different timing, source, notice and await contract", () => {
     const cases = [
       [
-        "if (script) return openScriptLocation({ productionId: script.id });",
-        "if (script) return await openScriptLocation({ productionId: script.id });",
+        "return openScriptLocation({ productionId: script.id });",
+        "return await openScriptLocation({ productionId: script.id });",
         "openUser",
+        /required loaded script revision guard/,
       ],
       [
         "(!loadedArtifact ? await client.resolveCatalogContent(id) : null)",
@@ -404,15 +405,15 @@ function registerCurrentWorkspaceCounterfactuals() {
         "openReading",
       ],
     ] as const;
-    for (const [from, to, name] of cases) {
+    for (const [from, to, name, rule] of cases) {
       const counterfactual = openingChanged(from, to);
       assert.throws(
         () => expandWorkspaceContentOpeningConsumption(app, counterfactual),
         {
           name: "AssertionError",
-          message: new RegExp(
-            "complete original content-opening algorithm " + name,
-          ),
+          message:
+            rule ??
+            new RegExp("complete original content-opening algorithm " + name),
         },
       );
     }

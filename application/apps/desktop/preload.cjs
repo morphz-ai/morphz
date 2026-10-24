@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld(
       },
     }),
     openExternal: (url) => ipcRenderer.invoke("open-external", url),
+    openLocalFile: (path) => ipcRenderer.invoke("open-local-file", path),
     capture: Object.freeze({
       select: (options) => ipcRenderer.invoke("capture:select", options),
       cancel: () => ipcRenderer.invoke("capture:cancel"),

@@ -41,6 +41,7 @@ const { registerApplicationBridge } = require("./application-bridge.cjs");
 const { createDesktopRuntimeRequest } = require("./runtime-network.cjs");
 const { createScriptExportSaver } = require("./script-export.cjs");
 const { createMessageImageOutput } = require("./message-images.cjs");
+const { createLocalFileOpener } = require("./local-file-links.cjs");
 const { registerDesktopShutdown } = require("./shutdown.cjs");
 const { prepareNativeQuitGuard } = require("./native-quit-guard.cjs");
 const {
@@ -473,6 +474,14 @@ else {
           return browser[name](...args);
         });
       }
+      ipcMain.handle(
+        "open-local-file",
+        createLocalFileOpener({
+          requireMain,
+          shell,
+          isLocal: () => !!host && connection?.mode === "local",
+        }),
+      );
       ipcMain.handle("open-external", async (event, value) => {
         requireMain(event);
         if (typeof value !== "string" || value.length > 8192)
