@@ -15,6 +15,7 @@ import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } 
 import { canSteerThread, threadAssignment } from '../app/steering'
 import { copyTextToClipboard } from '../utils/clipboard'
 import { currentQuestion } from '../app/userInput'
+import { observeSupplementAttention } from '../components/supplement-attention'
 
 function modelAttemptActivationId(event: ThreadDetailResponse['model_attempt_events'][number]) {
   return typeof event.payload.activation_id === 'string' ? event.payload.activation_id : ''
@@ -297,7 +298,7 @@ export function ThreadCausalCard({
         </section>
         <div className="causal-thread-actions">
           <button type="button" title={thread.id} onClick={() => { void copyTextToClipboard(thread.id).catch(() => window.prompt(t('steering.copyId'), thread.id)) }}>{t('steering.copyId')}</button>
-          {onSteer && canSteerThread(snapshot) && <button type="button" className={currentQuestion(snapshot) ? 'needs-input' : undefined} onClick={() => currentQuestion(snapshot) && onReplyQuestion ? onReplyQuestion(snapshot) : onSteer(snapshot)}><MessageSquarePlus size={13}/>{t('steering.supplement')}</button>}
+          {onSteer && canSteerThread(snapshot) && <button type="button" className={currentQuestion(snapshot) ? 'needs-input' : undefined} ref={currentQuestion(snapshot) ? observeSupplementAttention : undefined} onClick={() => currentQuestion(snapshot) && onReplyQuestion ? onReplyQuestion(snapshot) : onSteer(snapshot)}><MessageSquarePlus size={13}/>{t('steering.supplement')}</button>}
           {onInspect && <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>}
           {onSupervisorFilter && thread.supervision.supervisor_id && (
             <button

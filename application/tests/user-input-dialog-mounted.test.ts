@@ -295,6 +295,96 @@ test(
         );
         assert.equal(previewGeometry.buttonText, "");
         assert.equal(previewGeometry.buttonName, "补充");
+        const attention = preview.locator("button");
+        await expect(attention).toHaveAttribute("data-attention-motion", "on");
+        const light = await attention.evaluate((button) => {
+          const glow = getComputedStyle(button, "::before");
+          const ring = getComputedStyle(button, "::after");
+          return {
+            glow: glow.animationName,
+            ring: ring.animationName,
+            play: ring.animationPlayState,
+            mask: ring.maskImage,
+            top: ring.top,
+            opacity: getComputedStyle(button.querySelector("svg")!).opacity,
+          };
+        });
+        assert.equal(light.glow, "supplement-breathe");
+        assert.equal(light.ring, "supplement-orbit");
+        assert.equal(light.play, "running");
+        assert.notEqual(light.mask, "none");
+        assert.equal(light.top, "0px", "a perimeter light, not a corner dot");
+        assert.equal(light.opacity, "1", "the action icon never fades out");
+        const motionCaptures = process.env.MORPHZ_QUESTION_UI_CAPTURE_DIR;
+        if (motionCaptures) {
+          mkdirSync(motionCaptures, { recursive: true });
+          for (const mode of ["light", "dark"]) {
+            await page
+              .locator(".app, .page-shell")
+              .evaluate((element, mode) => {
+                element.setAttribute("data-color-mode", mode);
+                element.setAttribute("data-appearance", mode);
+                document.documentElement.setAttribute("data-color-mode", mode);
+                document.documentElement.setAttribute("data-appearance", mode);
+              }, mode);
+            for (const time of [0, 1800]) {
+              await attention.evaluate((button, time) => {
+                for (const animation of button.getAnimations({
+                  subtree: true,
+                })) {
+                  animation.pause();
+                  animation.currentTime = time;
+                }
+              }, time);
+              await page.screenshot({
+                path: join(
+                  motionCaptures,
+                  `${surface}-attention-${mode}-${time}.png`,
+                ),
+                fullPage: true,
+              });
+            }
+          }
+          await page.locator(".app, .page-shell").evaluate((element) => {
+            element.setAttribute("data-color-mode", "light");
+            element.setAttribute("data-appearance", "light");
+            document.documentElement.setAttribute("data-color-mode", "light");
+            document.documentElement.setAttribute("data-appearance", "light");
+          });
+          await attention.evaluate((button) => {
+            for (const animation of button.getAnimations({ subtree: true }))
+              animation.play();
+          });
+        }
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        assert.equal(
+          await attention.evaluate(
+            (button) => getComputedStyle(button, "::after").animationName,
+          ),
+          "none",
+        );
+        assert.notEqual(
+          await attention.evaluate(
+            (button) => getComputedStyle(button, "::after").backgroundImage,
+          ),
+          "none",
+          "reduced motion retains a static, legible pending state",
+        );
+        await page.emulateMedia({ reducedMotion: "no-preference" });
+        await preview.evaluate((element) => {
+          (element as HTMLElement).style.display = "none";
+        });
+        await expect(attention).toHaveAttribute("data-attention-motion", "off");
+        assert.equal(
+          await attention.evaluate(
+            (button) => getComputedStyle(button, "::after").animationPlayState,
+          ),
+          "paused",
+        );
+        await preview.evaluate((element) => {
+          (element as HTMLElement).style.removeProperty("display");
+        });
+        await expect(attention).toHaveAttribute("data-attention-motion", "on");
         const captureDirectory = process.env.MORPHZ_QUESTION_UI_CAPTURE_DIR;
         const capture = async (name: string) => {
           if (!captureDirectory) return;

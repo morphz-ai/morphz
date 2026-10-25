@@ -1,5 +1,6 @@
 import { MessageSquarePlus } from 'lucide-react'
 import type { TFunction } from 'i18next'
+import { observeSupplementAttention } from '../components/supplement-attention'
 
 /** One affordance for the activity dock, objective board and attention cards. */
 export function ObjectiveSteeringButton({ objective, onClick, disabled = false, replyAccepted = false, t }: {
@@ -16,6 +17,7 @@ export function ObjectiveSteeringButton({ objective, onClick, disabled = false, 
   const hint = t(awaitingReply ? 'steering.objectiveReplyHint' : 'steering.objectiveInputHint')
   return <button
     className={`objective-steering-button${awaitingReply ? ' is-waiting needs-input' : ''}`}
+    ref={awaitingReply ? observeSupplementAttention : undefined}
     type="button"
     title={`${hint}\n${objective.id}`}
     disabled={disabled}

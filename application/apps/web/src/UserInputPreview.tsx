@@ -1,6 +1,7 @@
 import { MessageSquarePlus } from "lucide-react";
 import type { ActivityThread } from "./execution-activity.js";
 import "./user-input-dialog.css";
+import { observeSupplementAttention } from "./supplement-attention.js";
 
 export function UserInputPreview({
   thread,
@@ -21,6 +22,7 @@ export function UserInputPreview({
       aria-label="待答问题"
     >
       <button
+        ref={observeSupplementAttention}
         className="icon-button user-input-reply needs-input"
         type="button"
         disabled={disabled}

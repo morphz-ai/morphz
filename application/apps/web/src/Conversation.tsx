@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { observeSupplementAttention } from "./supplement-attention.js";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { RuntimeMessageError } from "./RuntimeMessageError.js";
 import { presentRuntimeErrors } from "./runtime-error-presentation.js";
@@ -1314,6 +1315,13 @@ export function Conversation({
                                   <button
                                     type="button"
                                     className={`message-execution-link message-supplement${targets.some((target) => !!target.userInputRequest) ? " needs-input" : ""}`}
+                                    ref={
+                                      targets.some(
+                                        (target) => !!target.userInputRequest,
+                                      )
+                                        ? observeSupplementAttention
+                                        : undefined
+                                    }
                                     aria-label={
                                       targets.length === 1
                                         ? "补充要求"

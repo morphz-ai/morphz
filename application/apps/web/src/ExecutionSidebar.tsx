@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { observeSupplementAttention } from "./supplement-attention.js";
 import {
   ArrowLeft,
   ChevronRight,
@@ -174,6 +175,7 @@ export function ExecutionSidebar({
     <Tooltip label="补充要求">
       <button
         className={`icon-button execution-supplement${thread?.userInputRequest ? " needs-input" : ""}`}
+        ref={thread?.userInputRequest ? observeSupplementAttention : undefined}
         aria-label="补充"
         disabled={
           !client.online || !runtime.connected || !runtime.activity?.available

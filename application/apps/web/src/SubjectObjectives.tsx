@@ -27,6 +27,7 @@ import { Tooltip } from "./ui/Tooltip.js";
 import { SubjectObjectiveDialog } from "./SubjectObjectiveDialog.js";
 import type { ActivityThread } from "./execution-activity.js";
 import type { QuestionObjective } from "./UserInputDialogHost.js";
+import { observeSupplementAttention } from "./supplement-attention.js";
 
 function ObjectiveHeading({
   title,
@@ -195,6 +196,7 @@ export function SubjectObjectives({
                 <button
                   type="button"
                   className="icon-button needs-input"
+                  ref={observeSupplementAttention}
                   data-size="icon-xs"
                   aria-label="补充目标"
                   disabled={!goalFresh || goal.status !== "active"}

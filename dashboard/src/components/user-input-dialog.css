@@ -50,16 +50,92 @@
 .composer-question :is(button, summary, input):focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
 .user-input-preview, .runtime-question-preview { display: inline-flex; align-items: center; justify-content: flex-end; margin: 0; }
 .user-input-reply, .runtime-question-reply { display: inline-grid; place-items: center; width: 28px; height: 28px; min-height: 28px; padding: 0; border: 0; border-radius: 6px; color: var(--accent-strong); background: transparent; }
-.needs-input { position: relative; color: var(--accent-strong); }
-.needs-input::after { content: ''; position: absolute; top: 3px; right: 3px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; pointer-events: none; }
-.needs-input > svg { animation: supplement-needs-input 2.4s ease-in-out 3; }
-@keyframes supplement-needs-input { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+/* The existing supplement action owns attention; no badge or new control.
+   Keep all light inside a small local footprint and never fade the icon. */
+@property --supplement-orbit {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+button.needs-input {
+  position: relative;
+  isolation: isolate;
+  overflow: visible;
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-strong) 8%, transparent);
+}
+button.needs-input > svg {
+  position: relative;
+  color: var(--accent-strong);
+}
+button.needs-input::before,
+button.needs-input::after {
+  content: "";
+  position: absolute;
+  border-radius: inherit;
+  pointer-events: none;
+  animation-play-state: paused;
+}
+button.needs-input::before {
+  z-index: -1;
+  inset: -6px;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--accent-strong) 30%, transparent), transparent 72%);
+  filter: blur(4px);
+  opacity: .4;
+  transform: scale(.92);
+  animation: supplement-breathe 3.6s ease-in-out infinite paused;
+}
+button.needs-input::after {
+  inset: 0;
+  padding: 1.25px;
+  background: conic-gradient(from var(--supplement-orbit),
+    transparent 0turn, color-mix(in srgb, var(--accent-strong) 18%, transparent) .13turn,
+    var(--accent-strong) .24turn, transparent .36turn,
+    transparent .52turn, color-mix(in srgb, var(--accent-strong) 40%, transparent) .72turn,
+    transparent .88turn);
+  mask: linear-gradient(#fff 0 0) content-box exclude, linear-gradient(#fff 0 0);
+  opacity: .8;
+  animation: supplement-orbit 5.2s linear infinite paused;
+}
+button.needs-input[data-attention-motion="on"]:not(:disabled)::before,
+button.needs-input[data-attention-motion="on"]:not(:disabled)::after {
+  animation-play-state: running;
+}
+button.needs-input:hover:not(:disabled) {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-strong) 14%, transparent);
+}
+button.needs-input:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 3px;
+}
+button.objective-steering-button.is-waiting.needs-input > svg { color: var(--accent-strong); }
+@keyframes supplement-breathe {
+  0%, 100% { opacity: .4; transform: scale(.92); }
+  50% { opacity: .85; transform: scale(1.08); }
+}
+@keyframes supplement-orbit {
+  to { --supplement-orbit: 360deg; }
+}
+@media (prefers-reduced-motion: reduce) {
+  button.needs-input::before, button.needs-input::after {
+    animation: none;
+    transform: none;
+  }
+}
+[data-motion="reduce"] button.needs-input::before,
+[data-motion="reduce"] button.needs-input::after {
+  animation: none;
+  transform: none;
+}
+@media (forced-colors: active) {
+  button.needs-input { outline: 1px solid Highlight; }
+  button.needs-input::before, button.needs-input::after { display: none; }
+}
 .execution-activity-entry:has(> .user-input-preview) { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; column-gap: 4px; }
 .execution-activity-entry:has(> .user-input-preview) > .execution-activity-row { min-width: 0; }
 .execution-activity-entry > .user-input-preview { margin-right: 8px; }
 .runtime-question-recovery { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
-@media (prefers-reduced-motion: reduce) { .needs-input > svg { animation: none; } }
-[data-motion=reduce] .needs-input > svg { animation: none; }
 @media (pointer: coarse) {
   .user-input-choice, .runtime-question-choice { min-height: 44px; }
   .user-input-reply, .runtime-question-reply, .composer-question header button { min-width: 44px; min-height: 44px; }

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { observeSupplementAttention } from "./supplement-attention.js";
 import {
   ArrowLeft,
   ChevronRight,
@@ -355,6 +356,11 @@ export function SubjectObjectiveDialog({
               >
                 <button
                   className={`icon-button${goal.pendingUserInput ? " needs-input" : ""}`}
+                  ref={
+                    goal.pendingUserInput
+                      ? observeSupplementAttention
+                      : undefined
+                  }
                   aria-label="补充目标"
                   disabled={supplementDisabled}
                   onClick={() => void supplement()}
