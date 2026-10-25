@@ -1803,14 +1803,31 @@ fn configured_dashboard_base_path() -> Result<String, std::io::Error> {
 }
 
 fn dashboard_index_html(base_path: &str) -> String {
+    // Keep the embedded filenames stable, but never reuse the browser URL for
+    // changed bytes. A pre-update stylesheet can otherwise outlive its HTML
+    // and leave newly shipped controls completely unstyled.
+    static ASSET_URLS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    let (script_url, style_url) = ASSET_URLS.get_or_init(|| {
+        (
+            dashboard_asset_url("app.js", DASHBOARD_APP_JS),
+            dashboard_asset_url("app.css", DASHBOARD_APP_CSS),
+        )
+    });
     let index =
         std::str::from_utf8(DASHBOARD_INDEX).expect("embedded Dashboard index must be valid UTF-8");
+    let index = index
+        .replace("./assets/app.js", script_url)
+        .replace("./assets/app.css", style_url);
     let replacement = format!("<base href=\"{base_path}\">");
     if index.contains("<base href=\"/\">") {
         index.replacen("<base href=\"/\">", &replacement, 1)
     } else {
         index.replacen("<base href=\"/\" />", &replacement, 1)
     }
+}
+
+fn dashboard_asset_url(name: &str, bytes: &[u8]) -> String {
+    format!("./assets/{name}?v={:x}", Sha256::digest(bytes))
 }
 
 async fn handle_dashboard_index() -> Response {
@@ -12285,6 +12302,20 @@ mod tests {
         assert!(std::str::from_utf8(DASHBOARD_FAVICON)
             .unwrap()
             .contains("<svg"));
+    }
+
+    #[test]
+    fn dashboard_asset_urls_follow_bytes_and_preserve_deployment_prefix() {
+        let first = dashboard_asset_url("app.css", b"first stylesheet");
+        assert_eq!(first, dashboard_asset_url("app.css", b"first stylesheet"));
+        assert_ne!(first, dashboard_asset_url("app.css", b"changed stylesheet"));
+        assert_ne!(first, dashboard_asset_url("app.js", b"first stylesheet"));
+        let index = dashboard_index_html("/console/");
+        assert!(index.contains("<base href=\"/console/\">"));
+        assert!(index.contains(&dashboard_asset_url("app.css", DASHBOARD_APP_CSS)));
+        assert!(index.contains(&dashboard_asset_url("app.js", DASHBOARD_APP_JS)));
+        assert!(!index.contains("href=\"./assets/app.css\""));
+        assert!(!index.contains("src=\"./assets/app.js\""));
     }
 
     #[test]

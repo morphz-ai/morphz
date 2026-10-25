@@ -8,6 +8,7 @@ use crate::approval::{
 mod execution_model;
 mod execution_records;
 mod execution_workspace;
+mod user_input;
 pub use execution_workspace::{ExecutionWorkspaceFile, ExecutionWorkspaceRead};
 mod response_annotation_projection;
 mod session_approval;
@@ -9317,6 +9318,7 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                user_input_request: None,
                 execution_model: None,
                 source: thread_sources.get(&thread.id).cloned(),
                 response_annotations: None,
@@ -9351,6 +9353,8 @@ impl MorphzRuntime {
         self.attach_execution_models(context_id, &mut threads)
             .await?;
         self.attach_response_annotations(context_id, &mut threads)
+            .await?;
+        self.attach_user_input_requests(context_id, &mut threads)
             .await?;
         orphan_activations.extend(activations_by_thread.into_values().flatten());
         orphan_signals.extend(pending_signals_by_thread.into_values().flatten());
@@ -9839,6 +9843,67 @@ impl MorphzRuntime {
             }),
         )?;
 
+        let objective_question_edges = self
+            .inner
+            .store
+            .list_active_objective_user_input_dependencies(
+                &objectives
+                    .iter()
+                    .map(|objective| objective.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let accepted_question_objectives = objective_question_edges
+            .iter()
+            .filter(|edge| {
+                edge.metadata
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(crate::user_input::TOOL_NAME)
+                    && edge
+                        .metadata
+                        .get("request_event_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(edge.dependency_id.as_str())
+                    && edge
+                        .metadata
+                        .get("accepted_answer_event_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
+            })
+            .map(|edge| edge.owner_id.clone())
+            .collect::<HashSet<_>>();
+        let question_edges = self
+            .inner
+            .store
+            .list_pending_user_input_dependencies(
+                &open_threads
+                    .iter()
+                    .map(|thread| thread.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let question_threads = open_threads
+            .iter()
+            .filter(|thread| {
+                question_edges.iter().any(|edge| {
+                    edge.owner_id == thread.id
+                        && edge.owner_generation == thread.generation
+                        && edge
+                            .metadata
+                            .get("source")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(crate::user_input::TOOL_NAME)
+                        && user_input::question_reply_allowed(
+                            thread,
+                            &edge.metadata,
+                            &edge.dependency_id,
+                            &objective_question_edges,
+                        )
+                })
+            })
+            .map(|thread| thread.id.clone())
+            .collect::<HashSet<_>>();
         let displayed_session_ids = sessions
             .iter()
             .map(|session| session.id.clone())
@@ -9945,9 +10010,12 @@ impl MorphzRuntime {
             if objective.status == ObjectiveStatus::Blocked
                 || matches!(
                     objective.wait_condition.as_ref(),
-                    Some(ObjectiveWaitCondition::UserInput { .. })
-                        | Some(ObjectiveWaitCondition::Permission { .. })
+                    Some(ObjectiveWaitCondition::Permission { .. })
                 )
+                || (matches!(
+                    objective.wait_condition.as_ref(),
+                    Some(ObjectiveWaitCondition::UserInput { .. })
+                ) && !accepted_question_objectives.contains(&objective.id))
             {
                 let attention_sessions = attention_sessions_by_context
                     .entry(objective.context_id.clone())
@@ -9973,6 +10041,17 @@ impl MorphzRuntime {
                     .cmp(&left.updated_at)
                     .then_with(|| left.id.cmp(&right.id))
             });
+        }
+        for threads in threads_by_session.values() {
+            for thread in threads
+                .iter()
+                .filter(|thread| question_threads.contains(&thread.id))
+            {
+                attention_sessions_by_context
+                    .entry(thread.context_id.clone())
+                    .or_default()
+                    .insert(thread.session_id.clone());
+            }
         }
 
         let delegation_by_child_context = delegations
@@ -10046,6 +10125,15 @@ impl MorphzRuntime {
                         &thread_by_root,
                     );
                     for thread in &mut projected.threads {
+                        if question_threads.contains(&thread.id)
+                            && !matches!(
+                                thread.state,
+                                RuntimeSessionState::Running | RuntimeSessionState::NeedsAttention
+                            )
+                        {
+                            thread.phase = ThreadPhase::Waiting;
+                            thread.state = RuntimeSessionState::WaitingUser;
+                        }
                         thread.intent = overview_intents.get(&thread.id).cloned().or_else(|| {
                             objectives
                                 .iter()
@@ -10062,6 +10150,37 @@ impl MorphzRuntime {
                             .iter()
                             .find(|thread| thread.id == current.id)
                             .and_then(|thread| thread.intent.clone());
+                    }
+                    for objective in &mut projected.objectives {
+                        if accepted_question_objectives.contains(&objective.id)
+                            && matches!(
+                                objective.wait_condition,
+                                Some(ObjectiveWaitCondition::UserInput { .. })
+                            )
+                        {
+                            objective.state = RuntimeSessionState::Waiting;
+                        }
+                    }
+                    projected.state = runtime_overview_effective_session_state(
+                        &projected.objectives,
+                        &projected.threads,
+                        &projected.execution_jobs,
+                        projected.pending_dialogue_turns,
+                    );
+                    projected.attention_required = matches!(
+                        projected.state,
+                        RuntimeSessionState::NeedsAttention | RuntimeSessionState::WaitingUser
+                    );
+                    if projected
+                        .threads
+                        .iter()
+                        .any(|thread| question_threads.contains(&thread.id))
+                    {
+                        projected.current_thread = projected
+                            .threads
+                            .iter()
+                            .max_by_key(|thread| thread.state.priority())
+                            .cloned();
                     }
                     projected
                 })
@@ -10761,6 +10880,7 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                user_input_request: None,
                 execution_model: None,
                 source: self
                     .scheduler_thread_sources(context_id, std::slice::from_ref(&thread))
@@ -10794,6 +10914,8 @@ impl MorphzRuntime {
         self.attach_execution_models(context_id, std::slice::from_mut(&mut detail.snapshot))
             .await?;
         self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot))
+            .await?;
+        self.attach_user_input_requests(context_id, std::slice::from_mut(&mut detail.snapshot))
             .await?;
         Ok(Some(detail))
     }

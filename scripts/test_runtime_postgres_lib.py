@@ -37,6 +37,7 @@ INTEGRATION_CASES = (
     ("plan_owner_cancellation", "postgres_plan_owner_cancellation_matches_sqlite"),
     ("thread_input_source", "postgres_exact_thread_origins_survive_cold_reopen_and_reject_foreign_or_ambiguous_proof"),
     ("thread_input_source", "postgres_execution_records_are_bounded_filtered_before_limit_and_read_only"),
+    ("user_input_requests", "postgres_question_reply_and_lifecycle_contract"),
 )
 SUMMARY = re.compile(
     r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;",

@@ -14,6 +14,7 @@ import type {
 import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } from '../app/presentation'
 import { canSteerThread, threadAssignment } from '../app/steering'
 import { copyTextToClipboard } from '../utils/clipboard'
+import { UserInputPreview } from '../components/UserInputPreview'
 
 function modelAttemptActivationId(event: ThreadDetailResponse['model_attempt_events'][number]) {
   return typeof event.payload.activation_id === 'string' ? event.payload.activation_id : ''
@@ -216,6 +217,7 @@ export function ThreadCausalCard({
   onSchedule,
   onThreadControl,
   onSteer,
+  onReplyQuestion,
   selectedSupervisorId,
   onSupervisorFilter,
   onInspect,
@@ -232,6 +234,7 @@ export function ThreadCausalCard({
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
   onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
   onSteer?: (snapshot: SchedulerThreadSnapshot) => void
+  onReplyQuestion?: (snapshot: SchedulerThreadSnapshot) => void
   selectedSupervisorId?: string
   onSupervisorFilter?: (supervisorId: string) => void
   onInspect?: (threadId: string) => void
@@ -281,6 +284,7 @@ export function ThreadCausalCard({
         <ChevronDown size={14} />
       </summary>
       <div className="causal-thread-body">
+        <UserInputPreview snapshot={snapshot} onReply={onReplyQuestion} />
         <section className="thread-supervision-panel">
           <div><span>{t('work.causal.lifetime')}</span><strong>{t(`work.causal.lifetimeValues.${thread.supervision.lifetime}`)}</strong></div>
           <div><span>{t('work.causal.supervisor')}</span><strong>{t(`work.causal.supervisorValues.${thread.supervision.supervisor_kind}`)}{thread.supervision.supervisor_id ? ` · ${shortId(thread.supervision.supervisor_id, 24)}` : ''}</strong></div>

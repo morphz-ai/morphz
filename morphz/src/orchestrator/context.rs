@@ -9172,9 +9172,9 @@ fn render_evaluation_directive(
     let terminal = if internal_infer {
         "return the declared typed value to the parent Plan; the parent deterministically resumes its continuation or forwards a tail return without a second model rewrite"
     } else if objective_bound {
-        "a reply using the active response encoding or no_reply ends only this Objective Evaluation slice, never the durable Objective. Before claiming completion, call objective_update(status=completed) with authoritative evidence; for a definite wait, persist the exact wait condition"
+        "a reply using the active response encoding or no_reply ends only this Objective Evaluation slice, never the durable Objective. Before claiming completion, call objective_update(status=completed) with authoritative evidence. If this work needs the initiating person's answer and request_user_input is advertised, call that control alone with the actual question and optional choices; it persists the exact Human wait. For other definite waits, persist the exact wait condition"
     } else {
-        "every DialogueTurn input batch must produce one coherent reply using the active response encoding and enabled annotation contract, to the current Session covering all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"
+        "every DialogueTurn input batch must produce one coherent reply using the active response encoding and enabled annotation contract, to the current Session covering all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly, or the advertised request_user_input control durably suspends this exact work for a necessary Human answer"
     };
     // Keep objective-binding's long-standing scalar shape for prompt/VM
     // compatibility. The exact lease identity is a separate adjacent fact.
@@ -10611,6 +10611,17 @@ fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
                 pair("kind", atom("objective")),
                 pair("objective-id", atom(objective_id)),
                 pair("generation", atom(generation.to_string())),
+            ],
+            crate::steering::InputDestination::UserInput {
+                request_id,
+                thread_id,
+                generation,
+                ..
+            } => vec![
+                pair("kind", atom("user_input")),
+                pair("thread-id", atom(thread_id)),
+                pair("generation", atom(generation.to_string())),
+                pair("reply-to-request-id", atom(request_id)),
             ],
         };
         if let crate::steering::InputDestination::Objective {

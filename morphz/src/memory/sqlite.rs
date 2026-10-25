@@ -95,6 +95,7 @@ mod harness_retention;
 mod objective_approval_wait;
 mod plan_execution;
 mod terminal;
+mod user_input;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -12412,6 +12413,13 @@ impl ActivationStore for SqliteStore {
             return Ok(None);
         }
 
+        if user_input::signal_blocked_in_transaction(&mut tx, &thread, &stored_signal.event_id)
+            .await?
+        {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
         // A directed Objective input is not a competing Evaluation. Keep its
         // immutable Signal pending until the current owner reaches a safe
         // boundary, including when approval suspension has retired its lease.
@@ -12886,6 +12894,29 @@ impl ActivationStore for SqliteStore {
                  AND signals.thread_generation = thread.generation
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies q
+                   WHERE q.owner_kind='thread' AND q.owner_id=thread.id AND q.owner_generation=thread.generation
+                     AND q.dependency_kind='user_input' AND q.status='pending' AND q.required=1
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies q JOIN scheduler_dependencies g
+                     ON g.dependency_id=q.dependency_id AND g.dependency_kind='user_input' AND g.owner_kind='objective'
+                   JOIN objectives o ON o.id=g.owner_id AND o.generation=g.owner_generation
+                   WHERE q.owner_kind='thread' AND q.owner_id=thread.id AND q.owner_generation=thread.generation
+                     AND q.dependency_kind='user_input' AND q.status='satisfied' AND g.status='pending'
+                     AND json_extract(g.metadata_json,'$.accepted_answer_event_id')=q.satisfied_by_event_id
+                     AND (signals.event_id<>q.satisfied_by_event_id OR o.active_evaluation_id IS NOT NULL OR EXISTS(SELECT 1 FROM scheduler_dependencies other_wait WHERE other_wait.owner_kind=g.owner_kind AND other_wait.owner_id=g.owner_id AND other_wait.owner_generation=g.owner_generation AND other_wait.required=1 AND other_wait.status='pending' AND other_wait.id<>g.id))
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies g
+                   WHERE thread.kind='execution' AND thread.supervisor_kind='objective'
+                     AND thread.origin_evaluation_id IS NULL AND thread.parent_thread_id IS NULL
+                     AND g.owner_kind='objective' AND g.owner_id=thread.supervisor_id AND g.owner_generation=thread.supervision_generation
+                     AND g.dependency_kind='user_input' AND g.status='pending' AND g.required=1
+                     AND json_extract(g.metadata_json,'$.source')='request_user_input'
+                     AND (COALESCE(json_extract(g.metadata_json,'$.accepted_answer_event_id'),'')<>signals.event_id OR COALESCE(json_extract(g.metadata_json,'$.thread_id'),'')<>thread.id)
+                 )
                  AND NOT EXISTS (
                    SELECT 1 FROM objectives o
                    WHERE signals.kind = 'chat/steering'
@@ -14112,6 +14143,9 @@ impl ActivationStore for SqliteStore {
             .get("disposition")
             .and_then(JsonValue::as_str)
             .unwrap_or("deliver");
+        if disposition == crate::user_input::DISPOSITION {
+            return self.commit_user_input_request(activation_id, event).await;
+        }
         let root_turn_id = event
             .payload
             .get("root_turn_id")
@@ -16832,6 +16866,7 @@ impl ThreadStore for SqliteStore {
             .bind(i64::try_from(current.generation)?)
             .execute(&mut *tx)
             .await?;
+            user_input::cancel_thread_question_barriers(&mut tx, &current, &now).await?;
             let evidence_refs = vec![result_event.id.clone()];
             let unresolved_failures = vec![reason.to_string()];
             let check_results = serde_json::json!({
@@ -17436,6 +17471,42 @@ impl SchedulerDependencyStore for SqliteStore {
         }
         query.push(") ORDER BY created_at, id");
         let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(scheduler_dependency_from_row).collect()
+    }
+
+    async fn list_pending_user_input_dependencies(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<Sqlite>::new("SELECT q.* FROM scheduler_dependencies q JOIN threads t ON t.id=q.owner_id AND t.generation=q.owner_generation WHERE q.owner_kind='thread' AND q.dependency_kind='user_input' AND q.status='pending' AND q.required=1 AND t.status='open' AND q.owner_id IN (");
+        {
+            let mut values = query.separated(",");
+            for id in thread_ids {
+                values.push_bind(id);
+            }
+        }
+        query.push(") ORDER BY q.owner_id,q.id");
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(scheduler_dependency_from_row)
+            .collect()
+    }
+
+    async fn list_active_objective_user_input_dependencies(
+        &self,
+        objective_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if objective_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query("SELECT q.* FROM scheduler_dependencies q JOIN objectives o ON o.id=q.owner_id AND o.generation=q.owner_generation WHERE q.owner_kind='objective' AND q.dependency_kind='user_input' AND q.status='pending' AND q.required=1 AND o.status='active' AND q.owner_id IN (SELECT value FROM json_each(?)) ORDER BY q.owner_id,q.id")
+            .bind(serde_json::to_string(objective_ids)?).fetch_all(&self.pool).await?;
         rows.iter().map(scheduler_dependency_from_row).collect()
     }
 
@@ -19461,6 +19532,7 @@ impl DeliveryIngressStore for SqliteStore {
             }
             let input_destination = crate::steering::destination(event)?;
             let mut directed = event.clone();
+            let mut prepared_user_input = None;
             let directed_thread = if let Some(destination) = input_destination.as_ref() {
                 use crate::steering::InputDestination;
                 let objective = match destination {
@@ -19509,8 +19581,10 @@ impl DeliveryIngressStore for SqliteStore {
                     )
                     .await?
                 } else {
-                    let InputDestination::Thread { thread_id, .. } = destination else {
-                        unreachable!()
+                    let thread_id = match destination {
+                        InputDestination::Thread { thread_id, .. }
+                        | InputDestination::UserInput { thread_id, .. } => thread_id,
+                        _ => unreachable!(),
                     };
                     let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
                         .bind(thread_id)
@@ -19519,14 +19593,46 @@ impl DeliveryIngressStore for SqliteStore {
                         .ok_or("Input destination Thread does not exist")?;
                     thread_from_row(&row)?
                 };
-                crate::steering::route(&mut directed, destination, &thread, objective.as_ref())?;
-                if let Some(request_id) = directed
-                    .payload
-                    .get("reply_to_request_id")
-                    .and_then(JsonValue::as_str)
-                {
+                if let Some(reply) = destination.user_input_reply() {
+                    prepared_user_input = Some(
+                        user_input::prepare_reply_in_transaction(
+                            &mut tx,
+                            &mut directed,
+                            &reply,
+                            &thread,
+                        )
+                        .await?,
+                    );
+                } else {
+                    if let InputDestination::Objective {
+                        reply_to_request_id: Some(request_id),
+                        ..
+                    } = destination
+                    {
+                        if sqlx::query_scalar::<_, i64>("SELECT 1 FROM events WHERE id=? AND context_id=? AND topic='runtime/user_input_requested'")
+                            .bind(request_id).bind(&thread.context_id).fetch_optional(&mut *tx).await?.is_some() {
+                            return Err(crate::steering::conflict("Saved questions require a structured answer to the exact asking Thread"));
+                        }
+                    }
+                    crate::steering::route(
+                        &mut directed,
+                        destination,
+                        &thread,
+                        objective.as_ref(),
+                    )?;
+                }
+                if let (Some(objective_id), Some(request_id)) = (
+                    directed
+                        .payload
+                        .get("objective_id")
+                        .and_then(JsonValue::as_str),
+                    directed
+                        .payload
+                        .get("reply_to_request_id")
+                        .and_then(JsonValue::as_str),
+                ) {
                     let duplicate = sqlx::query_scalar::<_, i64>("SELECT 1 FROM events WHERE json_extract(payload, '$.objective_id') = ? AND json_extract(payload, '$.reply_to_request_id') = ? LIMIT 1")
-                        .bind(directed.payload["objective_id"].as_str()).bind(request_id)
+                        .bind(objective_id).bind(request_id)
                         .fetch_optional(&mut *tx).await?.is_some();
                     if duplicate {
                         return Err(crate::steering::conflict(
@@ -19603,6 +19709,9 @@ impl DeliveryIngressStore for SqliteStore {
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             let sequence = append_event_in_transaction(&mut tx, &claimed_event).await?;
+            if let Some(prepared) = prepared_user_input {
+                user_input::commit_reply_in_transaction(&mut tx, &claimed_event, prepared).await?;
+            }
             if let Some(thread) = directed_thread {
                 append_direct_thread_signal_in_transaction(&mut tx, &claimed_event, &thread.id)
                     .await?;
@@ -21496,7 +21605,19 @@ impl ObjectiveStore for SqliteStore {
                 .execute(&mut *tx)
                 .await?;
             }
-            if wait_changed {
+            if wait_changed
+                && !(status == ObjectiveStatus::Active
+                    && !resume_new_generation
+                    && user_input::has_pending_question(&mut tx, id, current.generation).await?)
+                && !(status == ObjectiveStatus::Active
+                    && user_input::is_consumed_reply_in_transaction(
+                        &mut tx,
+                        id,
+                        current.generation,
+                        cause_event_id,
+                    )
+                    .await?)
+            {
                 cancel_objective_wait_dependencies_in_transaction(
                     &mut tx,
                     id,
@@ -21504,6 +21625,12 @@ impl ObjectiveStore for SqliteStore {
                     &now,
                 )
                 .await?;
+                // Pause keeps the saved question readable but unanswerable.
+                // Replacing or resuming a lifetime never retargets that form.
+                if status != ObjectiveStatus::Paused {
+                    user_input::cancel_objective_questions(&mut tx, id, current.generation, &now)
+                        .await?;
+                }
             }
             if wait_changed && status == ObjectiveStatus::Active {
                 if let Some(wait) = wait_condition.as_ref() {

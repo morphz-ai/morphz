@@ -83,6 +83,10 @@ import {
 import { quoteSource, revealTextQuote } from "./text-quote-dom.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
+import {
+  UserInputDialogHost,
+  type UserInputDialogHandle,
+} from "./UserInputDialogHost.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
 import { subjectLogoState } from "./subject-sidebar-model.js";
 import { SubjectLogo } from "./SubjectLogo.js";
@@ -422,6 +426,7 @@ function WorkspaceApp({
   host: NavigationHost;
   origin: NavigationOrigin;
 }) {
+  const questionDialogs = useRef<UserInputDialogHandle>(null);
   const profile = useProfile(client);
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = host.storage;
@@ -3300,6 +3305,7 @@ function WorkspaceApp({
                     positions={exchangePositions.current}
                     revealInputId={revealedInputs[conversationId] ?? null}
                     onInspect={inspectExecution}
+                    onReply={(thread) => questionDialogs.current?.open(thread)}
                     onSupplement={
                       client.boot!.capabilities.directedInput
                         ? supplement
@@ -4228,6 +4234,7 @@ function WorkspaceApp({
                   onResize={resizeInspector}
                   onClose={closeInspector}
                   onSelect={subjectInspector.selectExecution}
+                  onReply={(thread) => questionDialogs.current?.open(thread)}
                   onSupplement={
                     client.boot!.capabilities.directedInput
                       ? supplement
@@ -4247,6 +4254,12 @@ function WorkspaceApp({
                           : undefined
                       }
                       onSelect={subjectInspector.selectExecution}
+                      onReply={(thread) =>
+                        questionDialogs.current?.open(thread)
+                      }
+                      onReplyObjective={(goal, threads) =>
+                        questionDialogs.current?.openObjective(goal, threads)
+                      }
                       onSupplement={
                         client.boot!.capabilities.directedInput
                           ? supplement
@@ -4403,6 +4416,7 @@ function WorkspaceApp({
             onInsert={inputTools.transcriptInserted}
           />
         )}
+      <UserInputDialogHost client={client} ref={questionDialogs} />
       {capture && (
         <CaptureDialog
           client={client}

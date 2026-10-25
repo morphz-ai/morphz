@@ -1,4 +1,28 @@
 {
+  "userInput": {
+    "legacy": "旧记录没有保存具体问题。请根据原任务填写回复，不会转交给其他线程。",
+    "resuming": "正在恢复原线程",
+    "view": "查看问题",
+    "more": "另有 {{count}} 个问题",
+    "title": "问题",
+    "source": "来自",
+    "close": "关闭，稍后回复",
+    "reply": "回答问题",
+    "extra": "补充说明，或直接填写答案",
+    "answer": "你的回复",
+    "clear": "取消选择",
+    "send": "发送",
+    "sending": "发送中",
+    "recheck": "核对投递",
+    "reading": "正在确认待答问题…",
+    "pendingReceipt": "回复待核对",
+    "receiptRetained": "答案和本次投递已保留。核对投递会重试原请求，不会另发一条回复。",
+    "permissionLost": "当前无权回复此任务，草稿已保留。恢复访问权限后，请关闭并重新打开核对。",
+    "stale": "问题已不再待答，或当前状态尚未确认。输入已保留。",
+    "tooLong": "回复过长，请缩短后发送。",
+    "invalid": "请为每个问题选择选项或填写答案。",
+    "unknown": "投递结果尚未确认。核对时保留原请求，不会另发一条回复。"
+  },
   "steering": {
     "threadCounts": "{{activations}} 次激活 · {{jobs}} 个执行作业（并非线程数量）",
     "menu": "选择工作对象或引用会话",
@@ -307,10 +331,22 @@
     "advanced": "高级协议配置",
     "protocol": "协议",
     "protocols": {
-      "openai-responses": { "name": "OpenAI Responses", "hint": "Responses API 与兼容服务" },
-      "openai-chat": { "name": "OpenAI Chat", "hint": "Chat Completions 与兼容服务" },
-      "anthropic-messages": { "name": "Anthropic Messages", "hint": "Claude 原生 Messages API" },
-      "gemini-content": { "name": "Gemini Content", "hint": "Gemini 原生 generateContent API" }
+      "openai-responses": {
+        "name": "OpenAI Responses",
+        "hint": "Responses API 与兼容服务"
+      },
+      "openai-chat": {
+        "name": "OpenAI Chat",
+        "hint": "Chat Completions 与兼容服务"
+      },
+      "anthropic-messages": {
+        "name": "Anthropic Messages",
+        "hint": "Claude 原生 Messages API"
+      },
+      "gemini-content": {
+        "name": "Gemini Content",
+        "hint": "Gemini 原生 generateContent API"
+      }
     },
     "adapter": "适配器",
     "setupRestart": "保存后重启运行时，新路由即可参与后续模型请求。",

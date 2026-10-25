@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Target, ChevronDown, ChevronRight, Eye } from "lucide-react";
+import { Target, ChevronDown, ChevronRight, Eye, Reply } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
@@ -19,6 +19,9 @@ import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { PersistentDetails } from "./PersistentDetails.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import { SubjectObjectiveDialog } from "./SubjectObjectiveDialog.js";
+import { UserInputPreview } from "./UserInputPreview.js";
+import type { ActivityThread } from "./execution-activity.js";
+import type { QuestionObjective } from "./UserInputDialogHost.js";
 
 function ObjectiveHeading({
   title,
@@ -68,11 +71,18 @@ export function SubjectObjectives({
   scope,
   onSelect,
   onSupplement,
+  onReply,
+  onReplyObjective,
 }: {
   client: WorkspaceClient;
   scope?: ExecutionReadScope;
   onSelect(scope: ExecutionReadScope): void;
   onSupplement?: (target: InputContinuation) => void;
+  onReply?: (thread: ActivityThread) => void;
+  onReplyObjective?: (
+    goal: QuestionObjective,
+    threads: ActivityThread[],
+  ) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
@@ -187,6 +197,43 @@ export function SubjectObjectives({
             </>
           }
         />
+        {threads
+          .filter((thread) => !!thread.userInputRequest)
+          .map((thread) => (
+            <UserInputPreview
+              key={thread.id}
+              thread={thread}
+              onReply={onReply}
+              disabled={
+                !client.online ||
+                !executionActivityThreadAvailable(thread, runtime)
+              }
+            />
+          ))}
+        {goal.pendingUserInput &&
+          !threads.some(
+            (thread) =>
+              thread.userInputRequest?.request_id ===
+              goal.pendingUserInput?.requestId,
+          ) && (
+            <div className="user-input-preview">
+              <p>
+                {goal.pendingUserInput.kind === "legacy"
+                  ? "旧记录没有保存具体问题。"
+                  : "有待答问题"}
+              </p>
+              {onReplyObjective && (
+                <button
+                  type="button"
+                  disabled={!goalFresh || goal.status !== "active"}
+                  onClick={() => onReplyObjective(goal, threads)}
+                >
+                  <Reply size={15} aria-hidden="true" />
+                  回复
+                </button>
+              )}
+            </div>
+          )}
         {open && (
           <div className="subject-objective-detail">
             <p role="status">
@@ -306,6 +353,8 @@ export function SubjectObjectives({
                       goal.threadIds.includes(thread.id),
                   )}
                   onSelect={onSelect}
+                  onReply={onReply}
+                  onReplyObjective={onReplyObjective}
                   onSupplement={
                     onSupplement
                       ? async (target) => {

@@ -97,6 +97,9 @@ import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/
 import { buildOptimisticMessageRequest, mergeConversationTimeline, reconcileOptimisticMessages } from './app/optimisticMessages'
 import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
 import { SteeringTarget } from './pages/SteeringTarget'
+import { currentQuestion, questionAnswerAccepted } from './app/userInput'
+import { UserInputDialogHost, type UserInputDialogHandle } from './components/UserInputDialogHost'
+import { UserInputPreview } from './components/UserInputPreview'
 import { ObjectiveSteeringButton } from './pages/ObjectiveSteeringButton'
 import {
   clearSessionDraft,
@@ -1740,6 +1743,8 @@ export const ExecutionToolCalls = memo(function ExecutionToolCalls({
 })
 
 export function DialogueActivityDock({
+  onReplyQuestion,
+  acceptedQuestionObjectiveIds,
   onSteerThread,
   onSteerObjective,
   open,
@@ -1783,6 +1788,8 @@ export function DialogueActivityDock({
   onThreadControl,
   onOpenDelegationContext,
 }: {
+  onReplyQuestion?: (snapshot: SchedulerThreadSnapshot) => void
+  acceptedQuestionObjectiveIds?: ReadonlySet<string>
   onSteerThread: (snapshot: SchedulerThreadSnapshot) => void
   onSteerObjective: (objective: ObjectiveRecord) => void
   open: boolean
@@ -1975,7 +1982,7 @@ export function DialogueActivityDock({
                     <strong title={objective.stated_objective}>{objective.stated_objective}</strong>
                     <div className="objective-card-footer">
                       <code className="dialogue-objective-id" title={objective.id}>{shortId(objective.id)}</code>
-                      <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} onClick={() => onSteerObjective(objective)} />
+                      <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} replyAccepted={acceptedQuestionObjectiveIds?.has(objective.id)} onClick={() => onSteerObjective(objective)} />
                     </div>
                     {expanded && (
                       <div className="objective-card-details">
@@ -2059,6 +2066,7 @@ export function DialogueActivityDock({
                           <span>{effective.activations.length}<small>A</small></span>
                           <span>{jobs.length}<small>J</small></span>
                         </span>
+                        <UserInputPreview snapshot={effective} onReply={onReplyQuestion} />
                         {effective.thread.lifecycle === 'open' && (
                           <div className="dialogue-thread-card-actions">
                             {canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.intervene')} onClick={() => onSteerThread(effective)}><MessageSquare size={12} /></button>}
@@ -3541,6 +3549,7 @@ export default function App() {
   const cognitiveCoordinationNetworkRef = useRef<HTMLDivElement>(null)
   const cognitiveCoordinationPopoverRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
+  const userInputDialogRef = useRef<UserInputDialogHandle>(null)
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
   const executionTargetCatalogRequestRef = useRef('')
@@ -5713,9 +5722,13 @@ export default function App() {
     [toolTimeline],
   )
   const activeObjectives = objectives.filter(item => !objectiveIsTerminal(item.status))
+  const acceptedQuestionObjectiveIds = new Set(schedulerSnapshot?.objectives.filter(value =>
+    questionAnswerAccepted(value.objective.id, value.objective.generation, value.dependencies)).map(value => value.objective.id) ?? [])
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
-  const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input')
+  const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input' && !acceptedQuestionObjectiveIds.has(item.id))
+  const waitingQuestionThreads = schedulerThreads.filter(snapshot => currentQuestion(snapshot)
+    && !waitingUserObjectives.some(objective => objective.wait_condition?.request_id === snapshot.user_input_request?.request_id))
   const acknowledgedAttentionKeys = useMemo(
     () => new Set(
       attentionAcknowledgements
@@ -5947,6 +5960,7 @@ export default function App() {
     + failedSchedulerJobs.length
     + failedDeliveries.length
     + waitingUserObjectives.length
+    + waitingQuestionThreads.length
   // The header action is Runtime-wide. Its badge must use the same bounded,
   // authoritative projection as the global Overview instead of recomputing
   // the currently selected Context's Scheduler attention.
@@ -6010,7 +6024,7 @@ export default function App() {
   const composerBlockedObjectives = composerObjectives.filter(item => item.status === 'blocked')
   const composerPausedObjectives = composerObjectives.filter(item => item.status === 'paused')
   const composerWaitingUserObjectives = composerRunningObjectives
-    .filter(item => item.wait_condition?.kind === 'user_input')
+    .filter(item => item.wait_condition?.kind === 'user_input' && !acceptedQuestionObjectiveIds.has(item.id))
   const composerSchedules = composerThreads
     .flatMap(item => item.schedules)
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
@@ -6724,6 +6738,26 @@ export default function App() {
   }
   const steerObjective = (objective: ObjectiveRecord) => {
     if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
+    const requestId = objective.wait_condition?.kind === 'user_input' ? objective.wait_condition.request_id : undefined
+    const asking = typeof requestId === 'string' ? schedulerThreads.find(snapshot => currentQuestion(snapshot)?.request_id === requestId
+      && snapshot.thread.context_id === objective.context_id) : undefined
+    if (asking) { userInputDialogRef.current?.open(asking); return }
+    if (objective.wait_condition?.kind === 'user_input') {
+      if (acceptedQuestionObjectiveIds.has(objective.id)) return
+      const owner = schedulerSnapshot?.objectives.find(value => value.objective.id === objective.id && value.objective.generation === objective.generation)
+      const edge = owner?.dependencies.find(edge => edge.dependency_kind === 'user_input' && edge.status === 'pending'
+        && (edge.metadata as Record<string, unknown> | null)?.source === 'request_user_input')
+      if (edge) {
+        const data = edge.metadata as Record<string, unknown>
+        if (typeof data.thread_id !== 'string') { setError(t('userInput.stale')); return }
+        void DASHBOARD_API.get<ThreadDetailResponse>(`/api/contexts/${encodeURIComponent(objective.context_id)}/threads/${encodeURIComponent(data.thread_id)}`)
+          .then(detail => {
+            if (principalScopeRef.current || currentQuestion(detail.snapshot)?.request_id !== requestId) { setError(t('userInput.stale')); return }
+            userInputDialogRef.current?.open(detail.snapshot)
+          }).catch(error => setError(error instanceof Error ? error.message : String(error)))
+      } else userInputDialogRef.current?.openLegacy(objective)
+      return
+    }
     setSelectionRequest({ destination: objectiveReplyDestination(objective), label: objective.stated_objective, sessionId: objective.coordinator_session_id })
     navigate(dashboardPath('dialogue', objective.context_id, objective.coordinator_session_id))
   }
@@ -7607,8 +7641,29 @@ export default function App() {
     setEventHistoryBeforeSequence(previous)
   }
 
+  const openDelegationContext = async (delegation: DelegationRecord) => {
+    let childSession = sessions.find(session => session.id === delegation.child_session_id)
+    let childContext = contexts.find(context => context.id === delegation.child_context_id)
+    if (!childSession && !childContext) {
+      const catalog = await loadCatalog()
+      childSession = catalog?.sessions.find(session => session.id === delegation.child_session_id)
+      childContext = catalog?.contexts.find(context => context.id === delegation.child_context_id)
+    }
+    if (childSession) {
+      chooseSession(childSession)
+      return
+    }
+    if (childContext) {
+      activateContext(childContext)
+      return
+    }
+    setError(t('errors.delegationContextUnavailable'))
+  }
+
   const renderDialogueActivityDock = () => (
     <DialogueActivityDock
+      onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
+      acceptedQuestionObjectiveIds={acceptedQuestionObjectiveIds}
       onSteerThread={steerThread}
       onSteerObjective={steerObjective}
       open={dialogueActivityOpen}
@@ -7653,26 +7708,7 @@ export default function App() {
       onEditObjective={objective => void editObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
       onThreadControl={(thread, action) => void controlThread(thread, action)}
-      onOpenDelegationContext={delegation => {
-        void (async () => {
-          let childSession = sessions.find(session => session.id === delegation.child_session_id)
-          let childContext = contexts.find(context => context.id === delegation.child_context_id)
-          if (!childSession && !childContext) {
-            const catalog = await loadCatalog()
-            childSession = catalog?.sessions.find(session => session.id === delegation.child_session_id)
-            childContext = catalog?.contexts.find(context => context.id === delegation.child_context_id)
-          }
-          if (childSession) {
-            chooseSession(childSession)
-            return
-          }
-          if (childContext) {
-            activateContext(childContext)
-            return
-          }
-          setError(t('errors.delegationContextUnavailable'))
-        })()
-      }}
+      onOpenDelegationContext={delegation => void openDelegationContext(delegation)}
     />
   )
 
@@ -8932,6 +8968,7 @@ export default function App() {
                   {threadDetail?.snapshot.thread.id === route.threadId ? (
                     <ThreadCausalCard
                       onSteer={steerThread}
+                      onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
                       snapshot={threadDetail.snapshot}
                       modelAttemptEvents={threadDetail.model_attempt_events}
                       liveModelAttempts={threadDetailLiveAttempts}
@@ -8969,13 +9006,20 @@ export default function App() {
                 <section className="attention-board">
                   <header><span>{t('work.attention.title').toUpperCase()}</span><b>{attentionCount}</b><small>{t('work.attention.subtitle')}</small></header>
                   <div className="attention-list">
+                    {waitingQuestionThreads.map(snapshot => <article className="attention-card user-input" key={snapshot.user_input_request!.request_id}>
+                      <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(snapshot.thread.updated_at, t)}</time></div>
+                      <h2>{threadAssignment(snapshot) ?? snapshot.thread.id}</h2>
+                      <UserInputPreview snapshot={snapshot} onReply={snapshot => userInputDialogRef.current?.open(snapshot)} />
+                    </article>)}
                     {waitingUserObjectives.map(objective => {
                       return <article className="attention-card user-input" key={`waiting-user-${objective.id}`}>
                         <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(objective.updated_at, t)}</time></div>
                         <h2>{objective.stated_objective}</h2>
+                        {schedulerThreads.find(snapshot => currentQuestion(snapshot)?.request_id === objective.wait_condition?.request_id)
+                          ?.user_input_request?.questions.map(question => <p key={question.id}>{question.question}</p>)}
                         {objective.status_reason && <p>{objective.status_reason}</p>}
                         <div className="attention-actions">
-                          <ObjectiveSteeringButton objective={objective} t={t} onClick={() => steerObjective(objective)} />
+                          <ObjectiveSteeringButton objective={objective} t={t} replyAccepted={acceptedQuestionObjectiveIds.has(objective.id)} onClick={() => steerObjective(objective)} />
                         </div>
                       </article>
                     })}
@@ -9075,8 +9119,8 @@ export default function App() {
                         </header>
                         <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
                         <div className="objective-work-input">
-                          <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} onClick={() => steerObjective(objective)} />
-                          {objective.wait_condition?.kind === 'user_input' && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
+                          <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} replyAccepted={acceptedQuestionObjectiveIds.has(objective.id)} onClick={() => steerObjective(objective)} />
+                          {objective.wait_condition?.kind === 'user_input' && !acceptedQuestionObjectiveIds.has(objective.id) && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
                         </div>
                         {expanded && (
                           <div className="objective-work-details">
@@ -9214,6 +9258,7 @@ export default function App() {
                       {snapshots.map(snapshot => (
                         <ThreadCausalCard
                           onSteer={steerThread}
+                          onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
                           key={snapshot.thread.id}
                           snapshot={snapshot}
                           t={t}
@@ -10059,6 +10104,9 @@ export default function App() {
         />
       )}
       {appDialog && <AppDialog key={appDialog.id} request={appDialog} onResolve={resolveAppDialog} />}
+      <UserInputDialogHost key={`${activePrincipalId ?? ''}:${observingForeignPrincipal}`} ref={userInputDialogRef}
+        principalId={activePrincipalId ?? ''} readOnly={observingForeignPrincipal || !activePrincipalId}
+        onAccepted={() => { if (selectedSessionId && selectedContextId) void loadSession(selectedSessionId, selectedContextId) }} />
     </main>
   )
 }

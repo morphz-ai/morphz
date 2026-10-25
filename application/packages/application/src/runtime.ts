@@ -94,8 +94,17 @@ import {
 } from "./continuation.js";
 import {
   continuationSchema,
+  isDirectedContinuation,
   type InputContinuation,
 } from "../../core/src/continuation.js";
+import {
+  pendingUserInputRequestSchema,
+  userInputAnswerText,
+} from "../../core/src/user-input.js";
+import {
+  userInputTargetReadSchema,
+  userInputTargetSchema,
+} from "../../core/src/user-input-target.js";
 import {
   modelOptionSchema,
   reasoningEffortSchema,
@@ -6161,6 +6170,8 @@ export class RuntimeBridge {
                     owner_id: z.string(),
                     owner_generation: z.number(),
                     dependency_kind: z.string(),
+                    dependency_id: z.string().optional(),
+                    metadata: z.record(z.string(), z.unknown()).optional(),
                     required: z.boolean(),
                     status: z.string(),
                   }),
@@ -6178,6 +6189,13 @@ export class RuntimeBridge {
                 generation: z.number().int().positive().optional(),
                 status_reason: z.string().nullable(),
                 parent_objective_id: z.string().nullable(),
+                wait_condition: z
+                  .object({
+                    kind: z.string(),
+                    session_id: z.string().optional(),
+                    request_id: z.string().nullish(),
+                  })
+                  .nullish(),
                 updated_at: z.string(),
               }),
             }),
@@ -6187,6 +6205,7 @@ export class RuntimeBridge {
           z.object({
             source: runtimeSchedulerSourceSchema,
             response_annotations: z.unknown().optional(),
+            user_input_request: pendingUserInputRequestSchema.nullish(),
             execution_model: executionModelSchema.nullish(),
             intent: z.string().nullable().optional(),
             phase: z.string(),
@@ -6606,6 +6625,9 @@ export class RuntimeBridge {
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
             ...threadWaitProjection(value),
+            ...(value.user_input_request
+              ? { userInputRequest: value.user_input_request }
+              : {}),
             lifecycle: t.lifecycle,
             controlState: t.control_state,
             createdAt: t.created_at,
@@ -6661,6 +6683,46 @@ export class RuntimeBridge {
           }
           sources.set(route.inputId, route.source);
           const waitKinds = objectiveWaitKinds(value);
+          const questionEdges = value.dependencies?.filter(
+            (edge) =>
+              edge.owner_kind === "objective" &&
+              edge.owner_id === objective.id &&
+              edge.owner_generation === objective.generation &&
+              edge.dependency_kind === "user_input" &&
+              edge.required &&
+              edge.status === "pending" &&
+              value.readiness.dependency_ids?.includes(edge.id) &&
+              !edge.metadata?.accepted_answer_event_id,
+          );
+          const questionEdge =
+            questionEdges?.length === 1 ? questionEdges[0] : undefined;
+          const savedQuestion =
+            questionEdge?.metadata?.source === "request_user_input" &&
+            questionEdge.metadata.request_event_id ===
+              questionEdge.dependency_id &&
+            typeof questionEdge.metadata.thread_id === "string" &&
+            typeof questionEdge.metadata.thread_generation === "number";
+          const pendingUserInput =
+            questionEdge &&
+            objective.generation &&
+            (savedQuestion || objective.wait_condition?.kind === "user_input")
+              ? {
+                  requestId: savedQuestion
+                    ? questionEdge.dependency_id!
+                    : (objective.wait_condition?.request_id ??
+                      `legacy:${objective.id}:${objective.generation}:${objective.revision}`),
+                  kind: savedQuestion
+                    ? ("question" as const)
+                    : ("legacy" as const),
+                  ...(savedQuestion
+                    ? {
+                        threadId: questionEdge.metadata!.thread_id as string,
+                        threadGeneration: questionEdge.metadata!
+                          .thread_generation as number,
+                      }
+                    : {}),
+                }
+              : undefined;
           for (const thread of activity.threads)
             if (
               primaryObjectives.get(thread.id)?.id === objective.id &&
@@ -6686,6 +6748,7 @@ export class RuntimeBridge {
             controlAllowed: false,
             statusReason: objective.status_reason,
             readiness: value.readiness.state,
+            ...(pendingUserInput ? { pendingUserInput } : {}),
             ...(waitKinds === undefined ? {} : { waitKinds }),
             parentId: objective.parent_objective_id,
             threadIds: activity.threads
@@ -7247,8 +7310,21 @@ export class RuntimeBridge {
     projectId: string,
     conversationId: string,
   ) {
-    if (target.mode !== "supplement")
+    if (!isDirectedContinuation(target))
       throw new DomainError("invalid", "此入口只接受运行中的工作补充。");
+    const original = await this.platformContinuationOrigin(
+      target,
+      projectId,
+      conversationId,
+    );
+    await this.validateContinuationThread(target, original, projectId);
+    return original;
+  }
+  private async platformContinuationOrigin(
+    target: InputContinuation,
+    projectId: string,
+    conversationId: string,
+  ) {
     const actor = this.actor();
     const original = this.state.deliveries.find(
       (delivery) =>
@@ -7273,13 +7349,61 @@ export class RuntimeBridge {
     const route = await authorize({ ...source, phase: "dispatch" });
     if (route.sharedDefault !== source.sharedDefault)
       throw new DomainError("conflict", "原对话归属已变化，未发送补充。");
-    await this.validateContinuationThread(target, original, source.projectId);
     return original;
+  }
+  async readPlatformUserInputTarget(raw: unknown) {
+    const read = userInputTargetReadSchema.parse(raw);
+    const original = await this.platformContinuationOrigin(
+      read.continuation,
+      read.projectId,
+      read.conversationId,
+    );
+    const proof = await this.validateContinuationThread(
+      read.legacy
+        ? {
+            ...read.continuation,
+            mode: "reply",
+            reply: { kind: "legacy", requestId: read.requestId },
+          }
+        : read.continuation,
+      original,
+      read.projectId,
+      read.legacy ? undefined : read.requestId,
+    );
+    if (!read.legacy && !proof.request)
+      throw new DomainError("conflict", "这个问题已不再待答。");
+    if (read.legacy && proof.request)
+      throw new DomainError(
+        "conflict",
+        "此任务已保存具体问题，请打开该问题后回复。",
+      );
+    await this.platformContinuationOrigin(
+      read.continuation,
+      read.projectId,
+      read.conversationId,
+    );
+    const source = original.platformSource!;
+    return userInputTargetSchema.parse({
+      title: source.body?.slice(0, 120) ?? "原工作",
+      ...(read.legacy
+        ? { legacyRequestId: read.requestId }
+        : { request: proof.request }),
+      continuation: proof.continuation,
+      source: {
+        inputId: original.inputId,
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+        targetActantId: source.targetActantId,
+        artifactId: source.artifactId ?? null,
+        artifactRevision: source.artifactRevision ?? null,
+      },
+    });
   }
   private async validateContinuationThread(
     target: InputContinuation,
     delivery: StoredDelivery,
     projectId: string,
+    readQuestionId?: string,
   ) {
     if (!this.supportsDirectedInput)
       throw new DomainError(
@@ -7300,6 +7424,7 @@ export class RuntimeBridge {
       .object({
         snapshot: z.object({
           source: runtimeSchedulerSourceSchema.optional(),
+          user_input_request: pendingUserInputRequestSchema.nullish(),
           thread: z
             .object({
               id: z.string(),
@@ -7323,6 +7448,17 @@ export class RuntimeBridge {
       snapshot.source?.root_turn_id === delivery.rootId &&
       snapshot.source.session_id === delivery.sessionId &&
       snapshot.source.context_id === this.contextId(projectId);
+    const questionId =
+      readQuestionId ??
+      (target.reply?.kind === "question" ? target.reply.requestId : undefined);
+    const questionRoot =
+      !!questionId &&
+      snapshot.user_input_request?.request_id === questionId &&
+      snapshot.user_input_request?.thread_id === thread.id &&
+      snapshot.user_input_request.thread_generation === target.generation &&
+      snapshot.source?.root_turn_id === delivery.rootId &&
+      snapshot.source.session_id === delivery.sessionId &&
+      snapshot.source.context_id === this.contextId(projectId);
     const expectedPrincipal = this.teamIdentity
       ? this.principalId(this.actor().principalId)
       : this.state.sessions[delivery.sessionId]?.runtimePrincipalId;
@@ -7330,7 +7466,7 @@ export class RuntimeBridge {
       thread.id !== target.threadId ||
       thread.session_id !== delivery.sessionId ||
       thread.context_id !== this.contextId(projectId) ||
-      (!originalRoot && !objectiveRoot) ||
+      (!originalRoot && !objectiveRoot && !questionRoot) ||
       !expectedPrincipal ||
       thread.initiating_principal_id !== expectedPrincipal
     )
@@ -7338,10 +7474,67 @@ export class RuntimeBridge {
     if (!current) throw new ContinuationConflict("closed");
     if (
       current.generation !== target.generation ||
-      current.objective?.id !== target.objective?.id ||
-      current.objective?.generation !== target.objective?.generation
+      (!questionId && current.objective?.id !== target.objective?.id) ||
+      (!questionId &&
+        current.objective?.generation !== target.objective?.generation)
     )
       throw new ContinuationConflict("changed");
+    if (questionId) {
+      const question = snapshot.user_input_request;
+      if (
+        !question ||
+        question.request_id !== questionId ||
+        question.thread_id !== thread.id ||
+        question.thread_generation !== current.generation ||
+        question.session_id !== delivery.sessionId ||
+        question.context_id !== thread.context_id ||
+        (target.reply?.kind === "question" &&
+          !userInputAnswerText(question.questions, target.reply.answers))
+      )
+        throw new DomainError(
+          "conflict",
+          "这个问题已回答、替换或失效。答案已保留，请核对当前问题。",
+        );
+    } else if (target.reply?.kind === "legacy") {
+      if (!target.objective) throw new ContinuationConflict("changed");
+      const raw = z
+        .object({
+          objective: z.object({
+            id: z.string(),
+            generation: z.number(),
+            revision: z.number(),
+            status: z.string(),
+            wait_condition: z
+              .object({
+                kind: z.string(),
+                session_id: z.string().optional(),
+                request_id: z.string().nullish(),
+              })
+              .nullish(),
+          }),
+        })
+        .parse(
+          await this.request(
+            `/api/objectives/${encodeURIComponent(target.objective.id)}`,
+          ),
+        ).objective;
+      const requestId =
+        raw.wait_condition?.request_id ??
+        `legacy:${raw.id}:${raw.generation}:${raw.revision}`;
+      if (
+        raw.id !== target.objective.id ||
+        raw.generation !== target.objective.generation ||
+        raw.status !== "active" ||
+        raw.wait_condition?.kind !== "user_input" ||
+        raw.wait_condition.session_id !== delivery.sessionId ||
+        requestId !== target.reply.requestId
+      )
+        throw new DomainError(
+          "conflict",
+          "这项旧任务的待答状态已变化，回复未发送。",
+        );
+    }
+    return { continuation: current, request: snapshot.user_input_request };
   }
   async confirmSupplement(inputId: string) {
     const initial = this.state.deliveries.find((d) => d.inputId === inputId);
@@ -7429,7 +7622,7 @@ export class RuntimeBridge {
       !coherentCognitiveAppInput(input) ||
       !coherentCognitiveAppApplicationInput(input) ||
       (input.continuation &&
-        (input.continuation.mode !== "supplement" ||
+        (!isDirectedContinuation(input.continuation) ||
           !!newConversation ||
           !!input.application ||
           !!input.browser ||
@@ -7593,7 +7786,7 @@ export class RuntimeBridge {
     // Authorization and uploads can await another admission of this command;
     // the first durable envelope still wins that race.
     previous ??= this.state.deliveries.find((d) => d.inputId === input.id);
-    if (previous && !input.model && input.continuation?.mode !== "supplement")
+    if (previous && !input.model && !isDirectedContinuation(input.continuation))
       // A retry belongs to its admitted request. Missing aliases stay missing
       // on retained requests, even when today's Runtime default has changed.
       model = z
@@ -7780,7 +7973,7 @@ export class RuntimeBridge {
       ...(initialEvaluation
         ? { initialSessionEvaluation: initialEvaluation }
         : {}),
-      ...(input.continuation?.mode === "supplement"
+      ...(isDirectedContinuation(input.continuation)
         ? { supplement: "pending" as const }
         : {}),
       ...(resourceUploads.length ? { resourceUploads } : {}),
@@ -8812,7 +9005,7 @@ export class RuntimeBridge {
                 this.teamIdentity ? author : undefined,
               ),
             );
-          if (delivery.platformSource.continuation?.mode === "supplement") {
+          if (isDirectedContinuation(delivery.platformSource.continuation)) {
             // This receipt identifies the steering event, NOT a new execution root.
             delivery.acceptedEventId = receipt.event_id;
             delivery.supplement = "delivered";

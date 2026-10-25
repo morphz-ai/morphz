@@ -1,4 +1,28 @@
 {
+  "userInput": {
+    "legacy": "This older record did not save the question. Reply using the original task context; your answer stays with that work.",
+    "resuming": "Resuming the original Thread",
+    "view": "View question",
+    "more": "{{count}} more question(s)",
+    "title": "Question",
+    "source": "From",
+    "close": "Close and answer later",
+    "reply": "Reply",
+    "extra": "Add details, or write your answer",
+    "answer": "Your answer",
+    "clear": "Clear selection",
+    "send": "Send",
+    "sending": "Sending",
+    "recheck": "Check delivery",
+    "reading": "Checking the pending question…",
+    "pendingReceipt": "Reply awaiting confirmation",
+    "receiptRetained": "Your answers and this delivery are retained. Check delivery retries the same request, not another reply.",
+    "permissionLost": "You cannot reply to this task with your current access. Your draft is retained. Once access is restored, close and reopen to check again.",
+    "stale": "This question is no longer pending, or its state is unconfirmed. Your input is retained.",
+    "tooLong": "Shorten your reply before sending.",
+    "invalid": "Choose an option or write an answer for every question.",
+    "unknown": "Delivery is unconfirmed. Checking reuses the original request; it does not create another reply."
+  },
   "steering": {
     "threadCounts": "{{activations}} Activations · {{jobs}} Execution Jobs (not a thread count)",
     "menu": "Choose work to steer or a Session to reference",
@@ -307,10 +331,22 @@
     "advanced": "Advanced protocol settings",
     "protocol": "Protocol",
     "protocols": {
-      "openai-responses": { "name": "OpenAI Responses", "hint": "Responses API and compatible services" },
-      "openai-chat": { "name": "OpenAI Chat", "hint": "Chat Completions and compatible services" },
-      "anthropic-messages": { "name": "Anthropic Messages", "hint": "Native Claude Messages API" },
-      "gemini-content": { "name": "Gemini Content", "hint": "Native Gemini generateContent API" }
+      "openai-responses": {
+        "name": "OpenAI Responses",
+        "hint": "Responses API and compatible services"
+      },
+      "openai-chat": {
+        "name": "OpenAI Chat",
+        "hint": "Chat Completions and compatible services"
+      },
+      "anthropic-messages": {
+        "name": "Anthropic Messages",
+        "hint": "Native Claude Messages API"
+      },
+      "gemini-content": {
+        "name": "Gemini Content",
+        "hint": "Native Gemini generateContent API"
+      }
     },
     "adapter": "Adapter",
     "setupRestart": "Restart the Runtime after saving so the new route can handle model requests.",

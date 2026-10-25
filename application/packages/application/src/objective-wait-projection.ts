@@ -9,6 +9,8 @@ export function objectiveWaitKinds(value: {
     owner_id: string;
     owner_generation: number;
     dependency_kind: string;
+    dependency_id?: string;
+    metadata?: Record<string, unknown>;
     required: boolean;
     status: string;
   }[];
@@ -26,5 +28,17 @@ export function objectiveWaitKinds(value: {
       edge.status === "pending",
   );
   if (new Set(current.map((edge) => edge.id)).size !== ids.size) return [];
-  return [...new Set(current.map((edge) => edge.dependency_kind))];
+  return [
+    ...new Set(
+      current.map((edge) =>
+        edge.dependency_kind === "user_input" &&
+        edge.metadata?.source === "request_user_input" &&
+        edge.metadata.request_event_id === edge.dependency_id &&
+        typeof edge.metadata.accepted_answer_event_id === "string" &&
+        !!edge.metadata.accepted_answer_event_id
+          ? "user_input_delivery"
+          : edge.dependency_kind,
+      ),
+    ),
+  ];
 }

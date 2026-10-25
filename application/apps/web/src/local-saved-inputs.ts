@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { applicationStoragePrefix } from "../../../packages/core/src/application-names.js";
+import { isDirectedContinuation } from "../../../packages/core/src/continuation.js";
 import {
   operationSchema,
   type Operation,
@@ -12,10 +13,9 @@ type InputOperation = Extract<Operation, { type: "record-input" }>;
 export function newInputOperation(operation: InputOperation): InputOperation {
   return {
     ...operation,
-    dispatchMode:
-      operation.continuation?.mode === "supplement"
-        ? "parallel"
-        : (operation.dispatchMode ?? "interrupt"),
+    dispatchMode: isDirectedContinuation(operation.continuation)
+      ? "parallel"
+      : (operation.dispatchMode ?? "interrupt"),
   };
 }
 
@@ -24,10 +24,9 @@ export function newInputOperation(operation: InputOperation): InputOperation {
 export function savedInputOperation(operation: InputOperation): InputOperation {
   return {
     ...operation,
-    dispatchMode:
-      operation.continuation?.mode === "supplement"
-        ? "parallel"
-        : (operation.dispatchMode ?? "parallel"),
+    dispatchMode: isDirectedContinuation(operation.continuation)
+      ? "parallel"
+      : (operation.dispatchMode ?? "parallel"),
   };
 }
 
@@ -40,8 +39,8 @@ export function matchSavedInputOperation(
   saved: InputOperation,
 ): InputOperation {
   const parsed = operationSchema.parse(
-    candidate.continuation?.mode === "supplement" &&
-      saved.continuation?.mode === "supplement" &&
+    isDirectedContinuation(candidate.continuation) &&
+      isDirectedContinuation(saved.continuation) &&
       candidate.dispatchMode === undefined &&
       saved.dispatchMode === "parallel"
       ? { ...candidate, dispatchMode: saved.dispatchMode }

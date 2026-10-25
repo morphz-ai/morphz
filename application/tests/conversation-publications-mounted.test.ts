@@ -21,6 +21,8 @@ import {initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';
 import {disconnectedRuntime} from '/@fs/${resolve("packages/core/src/conversation.ts")}';
 const scope={projectId:'first-project',conversationId:'first-project'},attempt='TEST-ping-attempt';
 const input={...scope,id:'TEST-ping-input',body:'TEST ping',createdAt:'2026-10-05T03:38:42.184955Z',author:{principalId:'human',actantId:'human'},targetActantId:'morphz-agent'};
+const localFailures=[{...input,id:'TEST-old-local-failure',body:'TEST old local failure',createdAt:'2026-10-01T00:00:00Z'},
+ {...input,id:'TEST-current-local-failure',body:'TEST current local failure',createdAt:'2026-10-05T03:39:00Z'}];
 const base={...scope,id:'',inputId:input.id,rootId:'TEST-ping-root',artifactId:null,publicationKey:attempt,kind:'reply',text:'pong，我在。',createdAt:'2026-10-05T03:38:56.380581Z'};
 const partial={...base,id:'stream:'+attempt,sequence:6888,incomplete:true,truncated:false};
 const final={...base,id:'publication:'+attempt,sequence:6892};
@@ -28,10 +30,11 @@ const older={...base,id:'older-independent',publicationKey:undefined,inputId:'ol
 const page=messages=>({inputs:[input],scriptOutputs:[],nextCursor:null,runtime:{...disconnectedRuntime,configured:true,connected:true,messages}});
 function Fixture(){
  const cache=useRef({scope,version:'v1',value:page([older,partial])}),positions=useRef(new Map());
- const [history,setHistory]=useState(cache.current.value),[live,setLive]=useState([]),[generation,setGeneration]=useState(0),[connected,setConnected]=useState(true);
- const workspace=initialWorkspace(input.createdAt);workspace.inputs=[input];
+ const [history,setHistory]=useState(cache.current.value),[live,setLive]=useState([]),[generation,setGeneration]=useState(0),[connected,setConnected]=useState(true),[oldestLoaded,setOldestLoaded]=useState('2026-10-04T00:00:00Z');
+ const workspace=initialWorkspace(input.createdAt);workspace.inputs=[...localFailures,input];
  const messages=conversationMessages(workspace,scope.conversationId,history.runtime,live,false);
- const client={online:true,contentCatalog:[],contentVersionTitle:()=>null,approvalSubmitted:()=>false,boot:{workspace,runtime:history.runtime,actantId:'human',outputs:[],scriptOutputs:[],localSavedInputIds:[],localInputSubmissions:{}},cancelInput:()=>{throw Error('no control request');},loadHistoryUntil:()=>{throw Error('no source request');}};
+ const client={online:true,contentCatalog:[],contentVersionTitle:()=>null,approvalSubmitted:()=>false,olderHistoryCursor:oldestLoaded?{createdAt:oldestLoaded,id:'history-boundary'}:null,
+ boot:{workspace,runtime:history.runtime,actantId:'human',outputs:[],scriptOutputs:[],localSavedInputIds:localFailures.map(row=>row.id),localInputSubmissions:Object.fromEntries(localFailures.map(row=>[row.id,{state:'failed',error:'TEST retained send failure'}]))},cancelInput:()=>{throw Error('no control request');},loadHistoryUntil:()=>{throw Error('no source request');}};
  window.publicationFixture={async run(action){
   if(action==='progress'||action==='progress-refresh'){
    const progress={...final,id:'progress:'+attempt,kind:'progress'};
@@ -48,13 +51,15 @@ function Fixture(){
    cache.current={scope,version,value};
    flushSync(()=>{setHistory(value);setLive([prefix,terminal]);});
   }else flushSync(()=>{
+   if(action==='older-window')setOldestLoaded('2026-10-01T00:00:00Z');
+   else if(action==='latest-window')setOldestLoaded('2026-10-04T00:00:00Z');
    if(action==='disconnect'){setConnected(false);setLive([{...partial,streaming:false}]);}
    else if(action==='reconnect'){setConnected(true);setLive([{...partial,streaming:true}]);}
    else if(action==='remount')setGeneration(value=>value+1);
    else if(action==='independent')setLive([{...partial,id:'stream:another-attempt',publicationKey:'another-attempt',inputId:'other-input',rootId:'other-root',streaming:false}]);
   });
  },report(){return {history:history.runtime.messages.map(message=>message.id),rendered:messages.map(message=>message.id),connected};}};
- return <Conversation key={generation} inputs={[input]} state={workspace} runtime={history.runtime} messages={messages} streamConnected={connected} seenReplies={{}} onRead={()=>{}} conversationId={scope.conversationId} onRetry={()=>{throw Error('no retry');}} client={client} onOpen={()=>{throw Error('no navigation');}} onInspect={()=>{throw Error('no inspector mutation');}} positions={positions.current} revealInputId={null}/>;
+ return <Conversation key={generation} inputs={workspace.inputs} state={workspace} runtime={history.runtime} messages={messages} streamConnected={connected} seenReplies={{}} onRead={()=>{}} conversationId={scope.conversationId} onRetry={()=>{throw Error('no retry');}} client={client} onOpen={()=>{throw Error('no navigation');}} onInspect={()=>{throw Error('no inspector mutation');}} positions={positions.current} revealInputId={null}/>;
 }
 createRoot(document.getElementById('root')).render(<StrictMode><Fixture/></StrictMode>);
 `;
@@ -171,6 +176,44 @@ test(
         connected: boolean;
       }>;
     };
+    const oldFailure = page.locator(
+      '[data-message-id="TEST-old-local-failure"]',
+    );
+    const currentFailure = page.locator(
+      '[data-message-id="TEST-current-local-failure"]',
+    );
+    assert.equal(
+      await oldFailure.count(),
+      0,
+      "old local failures do not bypass the latest page",
+    );
+    assert.equal(
+      await currentFailure.count(),
+      1,
+      "a recent failed send remains immediately visible",
+    );
+    await run("older-window");
+    assert.equal(
+      await oldFailure.count(),
+      1,
+      "paging back reveals the same retained failure",
+    );
+    assert.deepEqual(
+      await page
+        .locator(".conversation-message")
+        .evaluateAll((rows) =>
+          rows.map((row) => row.getAttribute("data-message-id")),
+        ),
+      [
+        "TEST-old-local-failure",
+        "older-independent",
+        "TEST-ping-input",
+        "stream:TEST-ping-attempt",
+        "TEST-current-local-failure",
+      ],
+    );
+    await run("latest-window");
+    assert.equal(await oldFailure.count(), 0);
     for (const action of [
       "finish",
       "disconnect",
@@ -186,6 +229,16 @@ test(
       assert.deepEqual(report.rendered, report.history);
       assert.equal(await prefix.count(), 0, action);
       assert.equal(await terminal.count(), 1, action);
+      assert.equal(
+        await oldFailure.count(),
+        0,
+        action + " does not resurrect old local failures",
+      );
+      assert.equal(
+        await currentFailure.count(),
+        1,
+        action + " preserves the recent failure",
+      );
       assert.equal(
         await page.getByText("pong，我在。", { exact: true }).count(),
         1,

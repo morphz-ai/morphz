@@ -11,6 +11,7 @@ import {
   Play,
   Trash2,
   X,
+  Reply,
 } from "lucide-react";
 import type { ExecutionActivity } from "../../../packages/core/src/conversation.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
@@ -29,6 +30,8 @@ import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { objectiveDetailStatus } from "./subject-sidebar-model.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import { useModal } from "./useModal.js";
+import { UserInputPreview } from "./UserInputPreview.js";
+import type { QuestionObjective } from "./UserInputDialogHost.js";
 
 type Goal = NonNullable<ExecutionActivity["objectives"]>[number];
 type Thread = ExecutionActivity["threads"][number];
@@ -43,6 +46,8 @@ export function SubjectObjectiveDialog({
   onClose,
   onSelect,
   onSupplement,
+  onReply,
+  onReplyObjective,
 }: {
   goal: Goal;
   threads: Thread[];
@@ -53,6 +58,8 @@ export function SubjectObjectiveDialog({
   onClose(): void;
   onSelect(scope: ExecutionReadScope): void;
   onSupplement?: (target: InputContinuation) => Promise<void>;
+  onReply?: (thread: Thread) => void;
+  onReplyObjective?: (goal: QuestionObjective, threads: Thread[]) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     body = useRef<HTMLDivElement>(null),
@@ -442,6 +449,52 @@ export function SubjectObjectiveDialog({
           aria-label="完整目标"
           tabIndex={0}
         >
+          {threads
+            .filter((thread) => !!thread.userInputRequest)
+            .map((thread) => (
+              <UserInputPreview
+                key={thread.id}
+                thread={thread}
+                disabled={!fresh || !client.online}
+                onReply={
+                  onReply
+                    ? (value) => {
+                        onClose();
+                        requestAnimationFrame(() => onReply(value));
+                      }
+                    : undefined
+                }
+              />
+            ))}
+          {goal.pendingUserInput &&
+            !threads.some(
+              (thread) =>
+                thread.userInputRequest?.request_id ===
+                goal.pendingUserInput?.requestId,
+            ) && (
+              <div className="user-input-preview">
+                <p>
+                  {goal.pendingUserInput.kind === "legacy"
+                    ? "旧记录没有保存具体问题。"
+                    : "有待答问题"}
+                </p>
+                {onReplyObjective && (
+                  <button
+                    type="button"
+                    disabled={!fresh || goal.status !== "active"}
+                    onClick={() => {
+                      onClose();
+                      requestAnimationFrame(() =>
+                        onReplyObjective(goal, threads),
+                      );
+                    }}
+                  >
+                    <Reply size={15} />
+                    回复
+                  </button>
+                )}
+              </div>
+            )}
           {goal.title
             .split(/(\r?\n+)/)
             .map((part, index) =>

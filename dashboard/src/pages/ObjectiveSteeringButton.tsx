@@ -2,13 +2,15 @@ import { MessageSquarePlus, Reply } from 'lucide-react'
 import type { TFunction } from 'i18next'
 
 /** One affordance for the activity dock, objective board and attention cards. */
-export function ObjectiveSteeringButton({ objective, onClick, disabled = false, t }: {
+export function ObjectiveSteeringButton({ objective, onClick, disabled = false, replyAccepted = false, t }: {
   objective: { id: string; status: string; wait_condition?: { kind: string } }
   onClick: () => void
   disabled?: boolean
+  replyAccepted?: boolean
   t: TFunction
 }) {
   if (objective.status !== 'active') return null
+  if (replyAccepted) return <span className="objective-wait-user">{t('userInput.resuming')}</span>
   const awaitingReply = objective.wait_condition?.kind === 'user_input'
   const label = t(awaitingReply ? 'steering.reply' : 'steering.supplement')
   const hint = t(awaitingReply ? 'steering.objectiveReplyHint' : 'steering.objectiveInputHint')

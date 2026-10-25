@@ -79,6 +79,7 @@ import {
 } from "../../core/src/speech-stream.js";
 import { SpeechStreams } from "./speech-stream.js";
 import { ContinuationConflict, SupplementUnconfirmed } from "./continuation.js";
+import { isDirectedContinuation } from "../../core/src/continuation.js";
 import { PlatformStorageError } from "../../platform/src/store.js";
 import type { BrowserBookmarkService } from "./browser-bookmark-service.js";
 import type { HumanPlatformAuthority } from "./human-platform-authority.js";
@@ -2134,7 +2135,7 @@ export class ApplicationSession {
       );
     if (
       op.continuation &&
-      (op.continuation.mode !== "supplement" ||
+      (!isDirectedContinuation(op.continuation) ||
         !!op.newConversation ||
         !!op.application ||
         !!op.browser ||
@@ -2577,7 +2578,7 @@ export class ApplicationSession {
         runtime.releasePlatformInput(entityId),
       );
     }
-    if (op.continuation?.mode === "supplement")
+    if (isDirectedContinuation(op.continuation))
       await runtime.as(this.access, () => runtime.confirmSupplement(entityId));
     this.active();
     return { commandId: command.commandId, entityId };
@@ -3135,6 +3136,17 @@ export class ApplicationSession {
         this.active(),
       )
     ).open(commandId);
+  }
+  async readUserInputTarget(raw: unknown) {
+    this.active();
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("追问尚未接入 Platform。");
+    const runtime = this.runtime();
+    const value = await runtime.as(this.access, () =>
+      runtime.readPlatformUserInputTarget(raw),
+    );
+    this.active();
+    return value;
   }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
@@ -4174,6 +4186,8 @@ export function invokeApplication(
       return session.readingOcr(params);
     case "execution.snapshot":
       return session.executionSnapshot(params);
+    case "user-input.read":
+      return session.readUserInputTarget(params);
     case "terminal.catalog":
       return session.terminalCatalog(params);
     case "terminal.read":

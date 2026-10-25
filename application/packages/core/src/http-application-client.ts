@@ -822,6 +822,10 @@ export class HttpApplicationClient {
       case "execution.snapshot":
         path = "/api/executions?" + query(executionReadQuery(params));
         break;
+      case "user-input.read":
+        path = "/api/user-input/read";
+        post(params);
+        break;
       case "terminal.catalog":
         path = "/api/terminals?" + query(fields(params));
         break;

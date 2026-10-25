@@ -1,3 +1,5 @@
+import type { PendingUserInputRequest } from "../../core/src/user-input.js";
+
 /** Thread-local Scheduler facts, independent of source attribution and its
  * supervising Objective's own dependencies. Never parse intent/diagnostics. */
 export function threadWaitProjection(value: {
@@ -6,7 +8,9 @@ export function threadWaitProjection(value: {
     session_id: string;
     context_id: string;
     lifecycle: string;
+    generation?: unknown;
   };
+  user_input_request?: PendingUserInputRequest | null;
   phase: string;
   schedules?: {
     thread_id: string;
@@ -25,6 +29,16 @@ export function threadWaitProjection(value: {
     }[];
   }[];
 }) {
+  const question = value.user_input_request;
+  if (
+    question &&
+    value.thread.lifecycle === "open" &&
+    question.thread_id === value.thread.id &&
+    question.thread_generation === value.thread.generation &&
+    question.session_id === value.thread.session_id &&
+    question.context_id === value.thread.context_id
+  )
+    return { waitKinds: ["user_input"] };
   if (
     value.thread.lifecycle !== "open" ||
     !["waiting", "idle"].includes(value.phase)

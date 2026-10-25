@@ -25,6 +25,32 @@ export type ConversationFocus = {
 export type ReplyReceipt = { keys: string[]; version: string };
 export type ReadReplies = Record<string, string>;
 
+/** Device-only failures have no server history row, but still belong to the
+ * same loaded time window. Retain their bytes/retry identity in the outbox;
+ * reveal them when upward paging reaches that time, not on every latest page.
+ * In-flight/accepted overlays stay until authoritative same-ID confirmation. */
+export function windowedConversationInputs(
+  inputs: Workspace["inputs"],
+  localIds: readonly string[],
+  submissions: Readonly<
+    Record<string, { state: "sending" | "accepted" | "failed" }>
+  >,
+  oldestLoadedAt?: string,
+) {
+  if (!oldestLoadedAt || !localIds.length) return inputs;
+  const local = new Set(localIds);
+  const boundary = Date.parse(oldestLoadedAt);
+  return inputs.filter((input) => {
+    const state = submissions[input.id]?.state;
+    return (
+      !local.has(input.id) ||
+      state === "sending" ||
+      state === "accepted" ||
+      Date.parse(input.createdAt) >= boundary
+    );
+  });
+}
+
 /** The badge and the opened history must describe the same scope. */
 export function focusedInputs(
   inputs: Workspace["inputs"],

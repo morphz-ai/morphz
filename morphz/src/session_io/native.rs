@@ -247,7 +247,7 @@ impl Binding {
             MessageEncoding::CallerJson => "When complete, return exactly the original caller JSON business value in the native message, matching caller.body_value_schema/declared type. No body/annotations wrapper, Markdown fences or text outside the value. When work is pending use native calls, not a premature typed result.",
         };
         let annotations = if self.caller.annotations_enabled {
-            "For actual work you MUST supply applicable display annotations in the SAME native call's _morphz field: intent describes that work call; execution.title names the actual task at its start, progress describes truthful current work. no_reply is a control, not a work step: its advertised _morphz may carry applicable execution title/progress but never creates a work intent or a reply. Write display annotations in the user's language. observations may explain only exact refs supplied by Runtime for this Execution. Missing or invalid metadata is tolerated by Runtime, not an instruction to omit it. Ordinary no-work conversation needs no annotations. Never add work or another model request solely for metadata."
+            "For actual work you MUST supply applicable display annotations in the SAME native call's _morphz field: intent describes that work call; execution.title names the actual task at its start, progress describes truthful current work. no_reply and request_user_input are controls, not work steps: their advertised _morphz may carry applicable execution title/progress but never creates a work intent or a reply. request_user_input supplies the actual question and choices in its business parameters, never in display metadata. Write display annotations in the user's language. observations may explain only exact refs supplied by Runtime for this Execution. Missing or invalid metadata is tolerated by Runtime, not an instruction to omit it. Ordinary no-work conversation needs no annotations. Never add work or another model request solely for metadata."
         } else {
             "Annotations are disabled: omit _morphz and do not generate display metadata. The tool definitions remain identical; Runtime ignores unexpected metadata without weakening business validation."
         };
@@ -356,9 +356,11 @@ pub fn decode(raw: &Response, binding: &Binding, attempt: &str) -> IoResult<Resp
         // create a call. Association always uses this actual native call.
         fields.remove("calls");
         if let Some(intent) = fields.remove("intent") {
-            if call.func_name == "no_reply" {
-                diagnostics
-                    .push("no_reply display intent ignored: a control is not a work step".into());
+            if call.func_name == "no_reply" || call.func_name == crate::user_input::TOOL_NAME {
+                diagnostics.push(format!(
+                    "{} display intent ignored: a control is not a work step",
+                    call.func_name
+                ));
             } else {
                 fields.insert(
                     "calls".into(),

@@ -3508,6 +3508,20 @@ impl ObjectiveSupervisor {
             let Some(objective) = self.store.get_objective(objective_id).await? else {
                 return Ok(RoutedObjectiveEventDisposition::Suppressed);
             };
+            if crate::steering::destination(event)?
+                .is_some_and(|destination| destination.user_input_reply().is_some())
+            {
+                return self
+                    .prepare_question_reply(
+                        event,
+                        activation_id,
+                        &objective,
+                        reply_guard
+                            .as_ref()
+                            .ok_or("Question reply must hold the Objective scheduling lane")?,
+                    )
+                    .await;
+            }
             let expected_root = crate::memory::objective_primary_execution_root_id(
                 &objective.id,
                 objective.generation,
@@ -3872,6 +3886,215 @@ impl ObjectiveSupervisor {
             }
             Some(event)
         }))
+    }
+
+    /// The store already retired this Evaluation atomically with its question.
+    /// Only remove the matching process-local binding/timer, never a successor.
+    pub async fn user_input_outcome(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
+        let Some(id) = event
+            .payload
+            .get("objective_id")
+            .and_then(JsonValue::as_str)
+        else {
+            return Ok(());
+        };
+        let Some(evaluation) = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(JsonValue::as_str)
+        else {
+            return Ok(());
+        };
+        let guard = self.lock_schedule(id).await;
+        if let Some(current) = self.store.get_objective(id).await? {
+            if current.active_evaluation_id.is_none() {
+                self.cancel_lease_timer(id).await?;
+            }
+        }
+        self.evaluations.unbind(id, evaluation);
+        drop(guard);
+        Ok(())
+    }
+
+    /// A creation-prelude can ask a question before the usual primary Thread
+    /// exists. Its reply still belongs to that same asking Thread. Prove the
+    /// immutable request and both dependency edges instead of trusting a client
+    /// marker or redirecting it to the Objective's primary root.
+    async fn prepare_question_reply(
+        self: &Arc<Self>,
+        event: &Event,
+        activation_id: &str,
+        objective: &ObjectiveRecord,
+        guard: &tokio::sync::OwnedMutexGuard<()>,
+    ) -> Result<RoutedObjectiveEventDisposition, DynError> {
+        let suppressed = RoutedObjectiveEventDisposition::Suppressed;
+        let Some(reply) = crate::steering::destination(event)?
+            .and_then(|destination| destination.user_input_reply())
+        else {
+            return Ok(suppressed);
+        };
+        let request = self
+            .audit_store
+            .query(QueryFilter {
+                event_id: Some(reply.request_id.clone()),
+                context_id: Some(objective.context_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|request| request.id == reply.request_id);
+        let Some(request) = request else {
+            return Ok(suppressed);
+        };
+        let Some(thread_store) = self.thread_store.as_ref() else {
+            return Err("Question admission requires ThreadStore".into());
+        };
+        let Some(thread) = thread_store.get_thread(&reply.thread_id).await? else {
+            return Ok(suppressed);
+        };
+        let pending = crate::user_input::PendingUserInputRequest::from_event(&request)?;
+        let mut checked = event.clone();
+        if !pending.owns_thread(&thread)
+            || crate::user_input::route_reply(&mut checked, &reply, &request, &thread).is_err()
+            || objective.status != ObjectiveStatus::Active
+            || request
+                .payload
+                .get("objective_id")
+                .and_then(JsonValue::as_str)
+                != Some(objective.id.as_str())
+            || request
+                .payload
+                .get("objective_generation")
+                .and_then(JsonValue::as_u64)
+                != Some(objective.generation)
+            || thread.root_turn_id
+                != event
+                    .payload
+                    .get("root_turn_id")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or_default()
+            || thread.agent_id != objective.agent_id
+            || thread.context_id != objective.context_id
+            || thread.session_id != objective.coordinator_session_id
+            || thread.initiating_principal_id != objective.initiating_principal_id
+        {
+            return Ok(suppressed);
+        }
+        let Some(store) = self.scheduler_dependencies.as_ref() else {
+            return Err("Question admission requires dependency store".into());
+        };
+        let thread_edge = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                owner_id: Some(thread.id.clone()),
+                dependency_kind: Some(crate::scheduler::SchedulerDependencyKind::UserInput),
+                dependency_id: Some(request.id.clone()),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|edge| {
+                edge.owner_generation == thread.generation
+                    && edge.status == SchedulerDependencyStatus::Satisfied
+                    && edge.satisfied_by_event_id.as_deref() == Some(event.id.as_str())
+                    && edge
+                        .metadata
+                        .get("request_event_id")
+                        .and_then(JsonValue::as_str)
+                        == Some(request.id.as_str())
+            });
+        if thread_edge.is_none() {
+            return Ok(suppressed);
+        }
+        let goal_edge = self
+            .current_scheduler_dependencies(objective)
+            .await?
+            .unwrap_or_default()
+            .into_iter()
+            .find(|edge| {
+                edge.dependency_kind == crate::scheduler::SchedulerDependencyKind::UserInput
+                    && edge.dependency_id == request.id
+                    && edge.status == SchedulerDependencyStatus::Pending
+                    && edge.metadata.get("source").and_then(JsonValue::as_str)
+                        == Some(crate::user_input::TOOL_NAME)
+                    && edge
+                        .metadata
+                        .get("accepted_answer_event_id")
+                        .and_then(JsonValue::as_str)
+                        == Some(event.id.as_str())
+            });
+        let Some(goal_edge) = goal_edge else {
+            return Ok(suppressed);
+        };
+        if objective.active_evaluation_id.is_none() {
+            self.cancel_lease_timer(&objective.id).await?;
+            if let Some(old) = request
+                .payload
+                .get("objective_evaluation_id")
+                .and_then(JsonValue::as_str)
+            {
+                self.evaluations.unbind(&objective.id, old);
+            }
+        }
+        let Some(claimed) = self
+            .claim_routed_evaluation_locked(
+                guard,
+                objective,
+                &event.id,
+                Some(activation_id),
+                false,
+                Some(&goal_edge.id),
+            )
+            .await?
+        else {
+            return Ok(suppressed);
+        };
+        let wait = crate::user_input::question_wait(&thread, &request.id);
+        if !self
+            .satisfy_wait_dependency(&claimed, &wait, &event.id)
+            .await?
+        {
+            self.yield_to_directed_input(activation_id).await?;
+            return Ok(suppressed);
+        }
+        let mutation = self
+            .transition_objective(
+                &claimed,
+                ObjectiveStatus::Active,
+                None,
+                Some("The exact structured question received its Human answer"),
+                &event.id,
+                "ObjectiveSupervisor",
+            )
+            .await?;
+        let ObjectiveMutation::Updated(woken) = mutation else {
+            self.yield_to_directed_input(activation_id).await?;
+            return Ok(suppressed);
+        };
+        let evaluation_id = claimed
+            .active_evaluation_id
+            .as_deref()
+            .ok_or("Question reply claim has no Evaluation")?;
+        if let Some(mut binding) = self.evaluations.by_objective.get_mut(&woken.id) {
+            if binding.evaluation_id == evaluation_id {
+                binding.revision = woken.revision;
+                binding.pending_dependency_id = None;
+            }
+        }
+        if let Some(mut binding) = self
+            .evaluations
+            .by_activation
+            .get_mut(canonical_activation_id(activation_id))
+        {
+            if binding.evaluation_id == evaluation_id {
+                binding.revision = woken.revision;
+                binding.pending_dependency_id = None;
+            }
+        }
+        self.publish_state_event("evaluation_started", &woken, Some(&event.id))
+            .await?;
+        Ok(RoutedObjectiveEventDisposition::Admitted)
     }
 
     pub async fn terminal_outcome(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {

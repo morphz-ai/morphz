@@ -1,7 +1,10 @@
 import type { Workspace } from "../../../packages/core/src/model.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { readingInputSchema } from "../../core/src/reader.js";
-import { inputDestination } from "../../core/src/continuation.js";
+import {
+  inputDestination,
+  isDirectedContinuation,
+} from "../../core/src/continuation.js";
 import { quotedInputText } from "../../core/src/text-quotes.js";
 import {
   parseCognitiveAppObjectLocator,
@@ -443,7 +446,33 @@ export const terminalSessionInputFormat = {
     },
   },
 };
+/** A new immutable input format. Existing version 4 supplements and their
+ * queued fingerprints retain their original schema and semantics. */
+export const questionReplyInputFormat = {
+  ...continuationInputFormat,
+  version: "15",
+  schema: {
+    ...continuationInputFormat.schema,
+    properties: {
+      ...continuationInputFormat.schema.properties,
+      continuation: {
+        ...continuationInputFormat.schema.properties.continuation,
+        properties: {
+          ...continuationInputFormat.schema.properties.continuation.properties,
+          mode: { type: "string", enum: ["reply"] },
+          request_id: { type: "string" },
+        },
+        required: ["mode", "input_id", "thread_id", "generation", "request_id"],
+      },
+    },
+  },
+  contract:
+    directoryInputFormat.contract +
+    " continuation.mode=reply is the Human's answer to one exact saved Runtime question. request_id and the authenticated input_destination bind that question and its original asking Thread; they are not a new request or permission grant. text preserves selected saved labels and the Human's actual free text. Continue in that same Thread, without sending the answer through another Agent to choose a recipient. Only explicit submission answers; closing or selecting in the client does not. Runtime's native tool receipt supplies the exact structured choices. Never invent a Human answer or replay completed physical actions.",
+};
+
 export const workInputFormats = [
+  questionReplyInputFormat,
   terminalSessionInputFormat,
   terminalInputFormat,
   cognitiveApplicationObjectInputFormat,
@@ -507,6 +536,9 @@ export function workInputData(
             input_id: input.continuation.inputId,
             thread_id: input.continuation.threadId,
             generation: input.continuation.generation,
+            ...(input.continuation.reply
+              ? { request_id: input.continuation.reply.requestId }
+              : {}),
             ...(input.continuation.mode === "follow-up" && original
               ? {
                   original_request: quotedInputText(
@@ -563,13 +595,15 @@ export function workInputRequest(
                     : readingPositionInputFormat.version
                   : input.scriptGeneration
                     ? "5"
-                    : input.continuation
-                      ? "4"
-                      : input.directories?.length
-                        ? "3"
-                        : input.localFile
-                          ? localFileInputFormat.version
-                          : workInputFormat.version,
+                    : input.continuation?.mode === "reply"
+                      ? questionReplyInputFormat.version
+                      : input.continuation
+                        ? "4"
+                        : input.directories?.length
+                          ? "3"
+                          : input.localFile
+                            ? localFileInputFormat.version
+                            : workInputFormat.version,
       },
       content: { encoding: "json", value: workInputData(input, original) },
     },
@@ -579,13 +613,12 @@ export function workInputRequest(
       // Dashboard's ordinary message ingress. A new ordinary input explicitly
       // interrupts only Runtime's pre-execution dialogue lane; exact directed
       // supplements retain their original-work route instead.
-      dispatch_mode:
-        input.continuation?.mode === "supplement"
-          ? "parallel"
-          : (input.dispatchMode ?? "interrupt"),
-      ...(input.continuation?.mode === "supplement"
+      dispatch_mode: isDirectedContinuation(input.continuation)
+        ? "parallel"
+        : (input.dispatchMode ?? "interrupt"),
+      ...(isDirectedContinuation(input.continuation)
         ? {
-            input_destination: inputDestination(input.continuation),
+            input_destination: inputDestination(input.continuation!),
             model_alias: undefined,
             reasoning_effort: undefined,
             harness: undefined,

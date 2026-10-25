@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { executionModelSchema } from "./inference.js";
 import { id } from "./model.js";
+import { pendingUserInputRequestSchema } from "./user-input.js";
 export const executionScopeSchema = z
   .object({
     projectId: id,
@@ -107,6 +108,8 @@ export const executionThreadSchema = z.object({
   /** Current, exact Runtime scheduler facts; absent means unknown. */
   waitKinds: z.array(z.string()).optional(),
   waitUntil: z.string().optional(),
+  /** Exact pending Runtime question, not text inferred from progress. */
+  userInputRequest: pendingUserInputRequestSchema.optional(),
   revision: z.number(),
   createdAt: z.string().optional(),
   updatedAt: z.string(),

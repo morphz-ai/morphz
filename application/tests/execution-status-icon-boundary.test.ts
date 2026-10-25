@@ -222,6 +222,12 @@ const templates = parse({
   SidebarOriginalRowFacts: `
     const status = executionActivityGroupStatus(t, activityThreads, activityAvailable);
     const summary = executionActivitySummary(t, activityAvailable);`,
+  SidebarQuestionRow:
+    "const preview = <UserInputPreview thread={t} onReply={onReply} disabled={!client.online || !executionActivityThreadAvailable(t, runtime)} />;",
+  SidebarQuestionDetail:
+    "const preview = <>{thread && (<UserInputPreview thread={thread} onReply={onReply} disabled={!client.online || !executionActivityThreadAvailable(thread, runtime)} />)}</>;",
+  SidebarQuestionEntry:
+    'const entry = <div key={t.id} className="execution-activity-entry" />;',
   // User-approved 5ddfb935/aae741c7 visibility-only motion. Exclude only these
   // exact calls AND their original local bindings from the old lifecycle
   // digest. Keep every historical digest unchanged; inspect the React owner
@@ -376,6 +382,109 @@ function imported(parsed: Parsed, path: string, name: string) {
   assert.notEqual(symbol, undefined);
   return symbol;
 }
+
+/** Verify only the two new independent question seams, then restore the exact
+ * former row for the immutable glyph/freshness/lifecycle checks. This does not
+ * capture a new current hash or erase arbitrary JSX, callbacks or reads. */
+function withoutReviewedQuestions(parsed: Parsed): string {
+  const previewOwner = imported(
+    parsed,
+    "./UserInputPreview.js",
+    "UserInputPreview",
+  );
+  const availabilityOwner = imported(
+    parsed,
+    "./execution-activity.js",
+    "executionActivityThreadAvailable",
+  );
+  const previews = parsed.nodes
+    .filter(isJsxSelfClosingElement)
+    .filter((node) => node.tagName.getText() === "UserInputPreview");
+  assert.equal(previews.length, 2);
+  const reviewed = ["SidebarQuestionRow", "SidebarQuestionDetail"].map((name) =>
+    templates.get(name)!.nodes.find(isJsxSelfClosingElement)!,
+  );
+  const row = previews.find(
+    (node) =>
+      JSON.stringify(syntax(node.attributes)) ===
+      JSON.stringify(syntax(reviewed[0]!.attributes)),
+  );
+  const detail = previews.find(
+    (node) =>
+      JSON.stringify(syntax(node.attributes)) ===
+      JSON.stringify(syntax(reviewed[1]!.attributes)),
+  );
+  assert.ok(
+    row && detail && row !== detail,
+    "both exact question scopes and disabled guards are required",
+  );
+  for (const preview of previews) {
+    assert.equal(parsed.symbols.get(preview.tagName), previewOwner);
+    const calls: Node[] = [];
+    walk(preview, (node) => {
+      if (isCallExpression(node)) calls.push(node);
+    });
+    assert.equal(calls.length, 1);
+    assert.ok(isCallExpression(calls[0]!));
+    assert.equal(parsed.symbols.get(calls[0].expression), availabilityOwner);
+  }
+  assert.ok(isJsxElement(row.parent));
+  const wrapper = row.parent;
+  const expectedWrapper = templates
+    .get("SidebarQuestionEntry")!
+    .nodes.find(isJsxSelfClosingElement)!;
+  assert.equal(wrapper.openingElement.tagName.getText(), "div");
+  assert.deepEqual(
+    syntax(wrapper.openingElement.attributes),
+    syntax(expectedWrapper.attributes),
+  );
+  const children = wrapper.children.filter(
+    (node) => syntax(node) !== undefined,
+  );
+  assert.equal(children.length, 2);
+  const button = children[0];
+  assert.ok(button && isJsxElement(button));
+  assert.equal(button.openingElement.tagName.getText(), "button");
+  assert.equal(children[1], row);
+  assert.equal(
+    button.openingElement.attributes.properties.some(
+      (node) => isJsxAttribute(node) && node.name.getText() === "key",
+    ),
+    false,
+  );
+  const className = attribute(button.openingElement, "className")!;
+  assert.equal(className.initializer?.getText(), '"execution-activity-row"');
+  const key = attribute(wrapper.openingElement, "key")!;
+  const restoredButton = button
+    .getText()
+    .replace(className.getText(), `${className.getText()} ${key.getText()}`)
+    // Undo just the one new wrapper's indentation. JSX text keeps trailing
+    // indentation in this finite serializer, although React renders it alike.
+    .replace(/^ {2}/gm, "");
+  let detailExpression: Node = detail;
+  while (detailExpression.parent && !isJsxExpression(detailExpression))
+    detailExpression = detailExpression.parent;
+  assert.ok(isJsxExpression(detailExpression));
+  assert.deepEqual(
+    syntax(detailExpression),
+    syntax(
+      templates.get("SidebarQuestionDetail")!.nodes.find(isJsxExpression)!,
+    ),
+  );
+  let source = parsed.source.getText();
+  for (const [before, after] of [
+    [wrapper.getText(), restoredButton],
+    [detailExpression.getText(), ""],
+  ]) {
+    assert.equal(
+      source.split(before!).length,
+      2,
+      "reviewed source span must be unique",
+    );
+    source = source.replace(before!, after!);
+  }
+  return source;
+}
 function inspect(sources: Sources) {
   const failures: string[] = [],
     parsed = parse(sources);
@@ -387,6 +496,14 @@ function inspect(sources: Sources) {
       failures.push(name);
     }
   }
+  rule("Sidebar-exact-independent-question-previews", () => {
+    parsed.set(
+      "Sidebar",
+      parse({ Sidebar: withoutReviewedQuestions(parsed.get("Sidebar")!) }).get(
+        "Sidebar",
+      )!,
+    );
+  });
   const icon = parsed.get("Icon")!;
   rule("pure-original-glyph-owner", () => {
     // Tiny module contract includes the export, readonly props, allowed imports,
@@ -600,6 +717,44 @@ test("finite AST contract tolerates formatting, not a line-count/source-substrin
     ),
   };
   assert.deepEqual(inspect(formatted), []);
+});
+test("question previews have exact independent owner, target, callback and freshness seams", () => {
+  const preview = parse({ Sidebar: source.Sidebar })
+    .get("Sidebar")!
+    .nodes.filter(isJsxSelfClosingElement)
+    .find((node) => node.tagName.getText() === "UserInputPreview")!;
+  assert.ok(preview);
+  for (const [before, after] of [
+    ['from "./UserInputPreview.js"', 'from "./UntrustedQuestion.js"'],
+    [
+      preview.getText(),
+      preview.getText().replace("thread={t}", "thread={thread}"),
+    ],
+    [
+      preview.getText(),
+      preview
+        .getText()
+        .replace("onReply={onReply}", "onReply={() => onReply?.(thread!)}"),
+    ],
+    [
+      preview.getText(),
+      preview
+        .getText()
+        .replace("!executionActivityThreadAvailable(t, runtime)", "false"),
+    ],
+    [
+      'className="execution-activity-entry"',
+      'className="execution-activity-entry" onClick={() => onClose()}',
+    ],
+  ]) {
+    assert.notEqual(before, after);
+    assert.ok(
+      inspect({
+        ...source,
+        Sidebar: source.Sidebar.replace(before!, after!),
+      }).includes("Sidebar-exact-independent-question-previews"),
+    );
+  }
 });
 test("bounded counterfactuals fail their named contract without claiming arbitrary JS/UI proof", () => {
   function reject(

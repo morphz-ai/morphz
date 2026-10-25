@@ -25,6 +25,8 @@ import {
   type MessageActionProps,
 } from "./message-action-presentation.js";
 import { ResponseWaiting } from "./ResponseWaiting.js";
+import { UserInputPreview } from "./UserInputPreview.js";
+import type { ActivityThread } from "./execution-activity.js";
 import { ConversationSearch } from "./ConversationSearch.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
@@ -46,6 +48,7 @@ import {
   hasUnreadReplies,
   focusedInputs,
   projectConversationReadScope,
+  windowedConversationInputs,
   replyReceipts,
   type ReadReplies,
   type ReplyReceipt,
@@ -88,7 +91,10 @@ import { liveToolPresentation } from "./execution-presentation.js";
 import { inputExecutionActivityPresentation } from "./execution-activity.js";
 import { inputExecutionRecordStatus } from "./message-execution-record.js";
 import { MessageActivityLink } from "./MessageActivityLink.js";
-import type { InputContinuation } from "../../../packages/core/src/continuation.js";
+import {
+  isDirectedContinuation,
+  type InputContinuation,
+} from "../../../packages/core/src/continuation.js";
 import type { CognitiveAppObjectLocator } from "../../../packages/core/src/cognitive-app-object-locator.js";
 import { cognitiveWorkSurfaceKey } from "./host/work-surface.js";
 
@@ -120,6 +126,7 @@ export function Conversation({
   revealInputId,
   onInspect,
   onSupplement,
+  onReply,
   focusedArtifactId,
   focusedApplicationId,
   focusedCognitiveObject,
@@ -173,6 +180,7 @@ export function Conversation({
   revealInputId: string | null;
   onInspect?: (inputId: string) => void;
   onSupplement?: (target: InputContinuation) => void;
+  onReply?: (thread: ActivityThread) => void;
 }) {
   const [allHistory, setAllHistory] = useState(true);
   const resending = useRef(new Set<string>());
@@ -265,7 +273,15 @@ export function Conversation({
       messageArray: "filter-always",
     },
   });
-  const { inputs } = readScope;
+  // Window only device-local display rows after the existing authorized focus
+  // projection. The viewport and quote/reveal ports retain the original input
+  // capture rather than receiving a substituted source of authority.
+  const inputs = windowedConversationInputs(
+    readScope.inputs,
+    client.boot?.localSavedInputIds ?? [],
+    client.boot?.localInputSubmissions ?? {},
+    client.olderHistoryCursor?.createdAt,
+  );
   const inputById = new Map(inputs.map((input) => [input.id, input]));
   const stateInputById = new Map(
     state.inputs.map((input) => [input.id, input]),
@@ -860,7 +876,7 @@ export function Conversation({
                 : [];
               const targets =
                 item &&
-                item.continuation?.mode !== "supplement" &&
+                !isDirectedContinuation(item.continuation) &&
                 runtime.activity?.available &&
                 runtime.connected &&
                 client.online
@@ -872,12 +888,14 @@ export function Conversation({
                         t.continuation,
                     )
                   : [];
+              const directedLabel =
+                item?.continuation?.mode === "reply" ? "回复" : "补充";
               const status = delivery?.supplement
                 ? {
-                    pending: "补充待送达",
-                    delivered: "补充已送达",
-                    rejected: "补充未送达",
-                    unknown: "补充送达待确认",
+                    pending: `${directedLabel}待送达`,
+                    delivered: `${directedLabel}已送达`,
+                    rejected: `${directedLabel}未送达`,
+                    unknown: `${directedLabel}送达待确认`,
                   }[delivery.supplement]
                 : submission
                   ? ""
@@ -975,9 +993,11 @@ export function Conversation({
                         className="message-source"
                         onClick={() => onInspect?.(item.continuation!.inputId)}
                       >
-                        {item.continuation.mode === "supplement"
-                          ? "补充给："
-                          : "接着处理："}
+                        {item.continuation.mode === "reply"
+                          ? "回复给："
+                          : item.continuation.mode === "supplement"
+                            ? "补充给："
+                            : "接着处理："}
                         {stateInputById
                           .get(item.continuation!.inputId)
                           ?.body.slice(0, 50) || "原工作"}
@@ -1408,13 +1428,37 @@ export function Conversation({
                       }
                     />
                   ))}
-                  {item && waiting && (
-                    <ResponseWaiting
-                      inputId={item.id}
-                      createdAt={item.createdAt}
-                      {...waiting}
-                    />
-                  )}
+                  {item &&
+                    runtime.activity?.threads
+                      .filter(
+                        (thread) =>
+                          thread.inputId === item.id &&
+                          !!thread.userInputRequest,
+                      )
+                      .map((thread) => (
+                        <UserInputPreview
+                          key={thread.userInputRequest!.request_id}
+                          thread={thread}
+                          onReply={onReply}
+                          disabled={
+                            !client.online ||
+                            !runtime.connected ||
+                            !runtime.activity?.available
+                          }
+                        />
+                      ))}
+                  {item &&
+                    waiting &&
+                    !runtime.activity?.threads.some(
+                      (thread) =>
+                        thread.inputId === item.id && !!thread.userInputRequest,
+                    ) && (
+                      <ResponseWaiting
+                        inputId={item.id}
+                        createdAt={item.createdAt}
+                        {...waiting}
+                      />
+                    )}
                   {reply && continuingResponses.has(id) && (
                     <ResponseWaiting
                       {...continuingResponses.get(id)!}

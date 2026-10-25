@@ -34,6 +34,7 @@ import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ExecutionProgress } from "./ExecutionProgress.js";
 import { Tooltip } from "./ui/Tooltip.js";
+import { UserInputPreview } from "./UserInputPreview.js";
 import {
   executionModelLabel,
   executionModelDescription,
@@ -47,6 +48,7 @@ export function ExecutionSidebar({
   onClose,
   onSelect,
   onSupplement,
+  onReply,
   onOpen,
   onOpenScript,
   viewOptions,
@@ -62,6 +64,7 @@ export function ExecutionSidebar({
   onClose: () => void;
   onSelect: (scope: ExecutionReadScope) => void;
   onSupplement?: (target: InputContinuation) => void;
+  onReply?: (thread: ActivityThread) => void;
   onOpen: (id: string, revision?: number) => void;
   onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
@@ -308,76 +311,84 @@ export function ExecutionSidebar({
       .filter(Boolean)
       .join(" · ");
     return (
-      <button
-        className="execution-activity-row"
-        key={t.id}
-        data-thread-id={t.id}
-        data-root-id={t.rootId}
-        aria-label={[
-          t.title || "执行事项",
-          status.label,
-          summary,
-          origin,
-          executionActivityClock(t),
-          model,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-        onClick={() => onSelect(executionActivityScope(t, state))}
-      >
-        <span
-          className="execution-activity-icon"
-          data-status={status.kind}
-          title={status.label}
+      <div key={t.id} className="execution-activity-entry">
+        <button
+          className="execution-activity-row"
+          data-thread-id={t.id}
+          data-root-id={t.rootId}
+          aria-label={[
+            t.title || "执行事项",
+            status.label,
+            summary,
+            origin,
+            executionActivityClock(t),
+            model,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          onClick={() => onSelect(executionActivityScope(t, state))}
         >
-          <ExecutionStatusIcon kind={status.kind} size={19} />
-        </span>
-        <span className="execution-activity-body">
-          <strong title={t.title}>{t.title || "执行事项"}</strong>
-          {summary && (
-            <span className="execution-activity-summary" title={summary}>
-              {summary}
-            </span>
-          )}
-          <span className="execution-activity-meta" title={metadata}>
-            <time
-              dateTime={
-                t.outcome?.terminalKind === t.lifecycle
-                  ? t.outcome.createdAt
-                  : t.updatedAt
-              }
-            >
-              {executionActivityClock(t)}
-            </time>
-            {t.executionModel && (
-              <>
-                {" · "}
-                <span
-                  className="execution-model-meta"
-                  title={executionModelDescription(t.executionModel)}
-                >
-                  {model}
-                </span>
-              </>
-            )}
-            {origin && (
-              <>
-                {" · "}
-                <span className="execution-activity-project" title={origin}>
-                  {origin}
-                </span>
-              </>
-            )}
-            {children.length > 0 && (
-              <>
-                {" · "}
-                {children.length} 个子任务
-              </>
-            )}
+          <span
+            className="execution-activity-icon"
+            data-status={status.kind}
+            title={status.label}
+          >
+            <ExecutionStatusIcon kind={status.kind} size={19} />
           </span>
-        </span>
-        <ChevronRight size={14} aria-hidden="true" />
-      </button>
+          <span className="execution-activity-body">
+            <strong title={t.title}>{t.title || "执行事项"}</strong>
+            {summary && (
+              <span className="execution-activity-summary" title={summary}>
+                {summary}
+              </span>
+            )}
+            <span className="execution-activity-meta" title={metadata}>
+              <time
+                dateTime={
+                  t.outcome?.terminalKind === t.lifecycle
+                    ? t.outcome.createdAt
+                    : t.updatedAt
+                }
+              >
+                {executionActivityClock(t)}
+              </time>
+              {t.executionModel && (
+                <>
+                  {" · "}
+                  <span
+                    className="execution-model-meta"
+                    title={executionModelDescription(t.executionModel)}
+                  >
+                    {model}
+                  </span>
+                </>
+              )}
+              {origin && (
+                <>
+                  {" · "}
+                  <span className="execution-activity-project" title={origin}>
+                    {origin}
+                  </span>
+                </>
+              )}
+              {children.length > 0 && (
+                <>
+                  {" · "}
+                  {children.length} 个子任务
+                </>
+              )}
+            </span>
+          </span>
+          <ChevronRight size={14} aria-hidden="true" />
+        </button>
+        <UserInputPreview
+          thread={t}
+          onReply={onReply}
+          disabled={
+            !client.online || !executionActivityThreadAvailable(t, runtime)
+          }
+        />
+      </div>
     );
   };
   const content = (
@@ -481,6 +492,16 @@ export function ExecutionSidebar({
               <p className="execution-origin-title" title={thread?.title}>
                 {thread?.title ?? "执行分支"}
               </p>
+              {thread && (
+                <UserInputPreview
+                  thread={thread}
+                  onReply={onReply}
+                  disabled={
+                    !client.online ||
+                    !executionActivityThreadAvailable(thread, runtime)
+                  }
+                />
+              )}
               {threadSummary && (
                 <p
                   ref={summaryRef}

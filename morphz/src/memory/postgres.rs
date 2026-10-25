@@ -80,6 +80,7 @@ mod target;
 mod terminal;
 mod thread;
 mod thread_group;
+mod user_input;
 
 pub struct PostgresStore {
     pool: PgPool,
@@ -7499,9 +7500,25 @@ impl ObjectiveStore for PostgresStore {
                 .execute(&mut *tx)
                 .await?;
             }
-            if wait_changed {
+            if wait_changed
+                && !(status == ObjectiveStatus::Active
+                    && !resume_new_generation
+                    && user_input::has_pending_question(&mut tx, id, current.generation).await?)
+                && !(status == ObjectiveStatus::Active
+                    && user_input::is_consumed_reply_in_tx(
+                        &mut tx,
+                        id,
+                        current.generation,
+                        cause_event_id,
+                    )
+                    .await?)
+            {
                 cancel_objective_wait_dependencies_in_tx(&mut tx, id, current.generation, &now)
                     .await?;
+                if status != ObjectiveStatus::Paused {
+                    user_input::cancel_objective_questions(&mut tx, id, current.generation, &now)
+                        .await?;
+                }
             }
             if wait_changed && status == ObjectiveStatus::Active {
                 if let Some(wait) = wait_condition.as_ref() {

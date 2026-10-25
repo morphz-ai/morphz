@@ -1,0 +1,283 @@
+.user-input-dialog {
+  --ui-dialog-width: 512px;
+  padding: var(--ui-space-4);
+  overflow: hidden;
+}
+.user-input-dialog > form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(var(--modal-max-height, 90dvh) - 2 * var(--ui-space-4));
+  gap: var(--ui-space-2);
+  margin: 0;
+}
+.user-input-dialog header {
+  display: flex;
+  align-items: center;
+  min-height: var(--ui-dialog-heading-height);
+  gap: var(--ui-space-2);
+}
+.app .user-input-dialog > form > header {
+  margin: 0;
+}
+.user-input-dialog header h2 {
+  margin: 0;
+  font-size: var(--ui-dialog-heading-size);
+}
+.user-input-dialog header > :last-child {
+  margin-left: auto;
+}
+.user-input-dialog-body {
+  overflow: auto;
+  min-height: 0;
+  padding: 2px;
+}
+.user-input-task {
+  color: var(--muted);
+  margin: 0 0 var(--ui-space-4);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.user-input-dialog-body > details.user-input-task {
+  margin: var(--ui-space-2) 0 0;
+  font-size: 11px;
+}
+.user-input-task > summary,
+.user-input-source-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+.user-input-task > summary::after,
+.user-input-source-disclosure > summary::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(-45deg);
+}
+.user-input-task[open] > summary::after,
+.user-input-source-disclosure[open] > summary::after {
+  transform: rotate(45deg);
+}
+.user-input-task > summary::-webkit-details-marker,
+.user-input-source-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.user-input-task > summary > span:first-child,
+.user-input-source-disclosure > summary > span:first-child {
+  flex: none;
+}
+.user-input-task > summary > span:last-child,
+.user-input-source-disclosure > summary > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-input-task > p,
+.user-input-source-disclosure > p {
+  margin: var(--ui-space-2) 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.user-input-dialog fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.user-input-dialog fieldset + fieldset {
+  margin-top: var(--ui-space-6);
+}
+.user-input-dialog legend {
+  padding: 0;
+  margin-bottom: var(--ui-space-2);
+  font-size: var(--ui-detail-body-font-size);
+  line-height: var(--ui-detail-body-line-height);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.user-input-choices {
+  display: grid;
+  gap: var(--ui-space-1);
+  margin-bottom: var(--ui-space-2);
+}
+.user-input-choice {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: var(--ui-space-2);
+  min-height: 40px;
+  padding: 6px var(--ui-space-2);
+  border: 0;
+  border-radius: var(--ui-radius-control);
+  cursor: pointer;
+  font-size: var(--ui-detail-body-font-size);
+  line-height: var(--ui-detail-body-line-height);
+}
+.user-input-choice:hover {
+  background: var(--soft);
+}
+.user-input-choice[data-selected] {
+  background: color-mix(in srgb, var(--accent) 10%, var(--paper));
+}
+.user-input-choice-number {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--ui-radius-control);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  text-align: center;
+}
+.user-input-choice-copy {
+  display: grid;
+  gap: var(--ui-space-1);
+  overflow-wrap: anywhere;
+}
+.user-input-choice-copy small {
+  color: var(--muted);
+}
+.user-input-choice input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent-strong);
+}
+.user-input-choice:focus-within {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -2px;
+}
+.user-input-dialog fieldset:disabled .user-input-choice {
+  cursor: default;
+}
+.user-input-text-label {
+  display: block;
+  color: var(--muted);
+  margin-bottom: var(--ui-space-1);
+  font-size: 12px;
+}
+.user-input-text-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-2);
+}
+.user-input-text-heading .user-input-clear {
+  height: auto;
+  min-height: 24px;
+  padding: 2px 4px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--muted);
+}
+.user-input-dialog textarea {
+  width: 100%;
+  min-height: 48px;
+  max-height: 180px;
+  resize: vertical;
+  font-size: var(--ui-detail-body-font-size);
+  line-height: var(--ui-detail-body-line-height);
+}
+.app .user-input-dialog textarea:focus {
+  outline-width: 1px;
+  outline-offset: -1px;
+}
+.user-input-dialog footer {
+  display: flex;
+  align-items: center;
+  gap: var(--ui-space-3);
+}
+.app .user-input-dialog > form > footer {
+  margin: 0;
+  padding: 0;
+}
+.user-input-feedback {
+  flex: 1;
+  min-width: 0;
+}
+.user-input-feedback p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.user-input-feedback [role="alert"] {
+  color: var(--danger);
+}
+.user-input-dialog footer > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-space-2);
+  flex: none;
+}
+.user-input-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 4px 0;
+}
+.execution-activity-entry:has(> .user-input-preview) {
+  position: relative;
+}
+.execution-activity-entry:has(> .user-input-preview) > .execution-activity-row {
+  padding-bottom: 42px;
+}
+.execution-activity-entry > .user-input-preview {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  margin: 0;
+}
+.execution-activity-entry:has(> .user-input-preview):hover
+  > .execution-activity-row {
+  background: var(--hover);
+}
+.app .user-input-preview > .user-input-reply {
+  min-height: 28px;
+  padding: 5px 8px;
+  gap: 4px;
+  border: 1px solid var(--line);
+  color: var(--accent-strong);
+  background: transparent;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.app .user-input-preview > .user-input-reply:hover:not(:disabled) {
+  background: var(--hover);
+}
+.execution-origin > .user-input-preview {
+  margin: var(--ui-space-3) 0;
+}
+@media (pointer: coarse) {
+  .user-input-choice {
+    min-height: 44px;
+  }
+  .app .user-input-preview > .user-input-reply,
+  .user-input-task > summary {
+    min-height: 44px;
+  }
+  .execution-activity-entry:has(> .user-input-preview)
+    > .execution-activity-row {
+    padding-bottom: 58px;
+  }
+  .user-input-dialog textarea {
+    font-size: 16px;
+  }
+  .user-input-dialog footer > button {
+    min-height: 44px;
+  }
+}

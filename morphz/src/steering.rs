@@ -31,6 +31,31 @@ pub enum InputDestination {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_to_request_id: Option<String>,
     },
+    UserInput {
+        request_id: String,
+        thread_id: String,
+        generation: u64,
+        answers: Vec<crate::user_input::UserInputAnswer>,
+    },
+}
+
+impl InputDestination {
+    pub fn user_input_reply(&self) -> Option<crate::user_input::UserInputReply> {
+        match self {
+            Self::UserInput {
+                request_id,
+                thread_id,
+                generation,
+                answers,
+            } => Some(crate::user_input::UserInputReply {
+                request_id: request_id.clone(),
+                thread_id: thread_id.clone(),
+                generation: *generation,
+                answers: answers.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 pub fn destination(event: &Event) -> Result<Option<InputDestination>, serde_json::Error> {
@@ -118,6 +143,11 @@ pub fn route(
         return Err(conflict("Input destination is not an active, open work Thread; explicitly resume or start follow-up work"));
     }
     match destination {
+        InputDestination::UserInput { .. } => {
+            return Err(
+                "Structured Human answers require the atomic question-reply boundary".into(),
+            );
+        }
         InputDestination::Thread {
             thread_id,
             generation,
@@ -259,6 +289,9 @@ impl crate::tool::Tool for SteerTool {
         let args: serde_json::Value = serde_json::from_str(arguments)?;
         let destination: InputDestination =
             serde_json::from_value(args["input_destination"].clone())?;
+        if matches!(destination, InputDestination::UserInput { .. }) {
+            return Err("steer cannot fabricate a structured Human answer; only authenticated Human input may answer a question".into());
+        }
         let route = CURRENT_CAUSAL_ROUTE
             .try_with(Clone::clone)?
             .ok_or("steer requires a durable Dialogue route")?;
