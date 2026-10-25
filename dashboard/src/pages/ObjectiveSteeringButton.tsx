@@ -1,4 +1,4 @@
-import { MessageSquarePlus, Reply } from 'lucide-react'
+import { MessageSquarePlus } from 'lucide-react'
 import type { TFunction } from 'i18next'
 
 /** One affordance for the activity dock, objective board and attention cards. */
@@ -12,16 +12,16 @@ export function ObjectiveSteeringButton({ objective, onClick, disabled = false, 
   if (objective.status !== 'active') return null
   if (replyAccepted) return <span className="objective-wait-user">{t('userInput.resuming')}</span>
   const awaitingReply = objective.wait_condition?.kind === 'user_input'
-  const label = t(awaitingReply ? 'steering.reply' : 'steering.supplement')
+  const label = t('steering.supplement')
   const hint = t(awaitingReply ? 'steering.objectiveReplyHint' : 'steering.objectiveInputHint')
   return <button
-    className={`objective-steering-button${awaitingReply ? ' is-waiting' : ''}`}
+    className={`objective-steering-button${awaitingReply ? ' is-waiting needs-input' : ''}`}
     type="button"
     title={`${hint}\n${objective.id}`}
     disabled={disabled}
     onClick={onClick}
   >
-    {awaitingReply ? <Reply size={11} aria-hidden="true" /> : <MessageSquarePlus size={11} aria-hidden="true" />}
+    <MessageSquarePlus size={11} aria-hidden="true" />
     <span>{label}</span>
   </button>
 }

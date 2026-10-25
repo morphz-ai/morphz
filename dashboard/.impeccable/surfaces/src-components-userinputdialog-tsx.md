@@ -1,5 +1,21 @@
 # Runtime question replies
 
+## Current direction, superseding the archived contract below
+
+Mode: Operate refinement; seed none. Reuse the existing Supplement icon and the current
+composer. No added answer button, inline activity question or dialog. A static pending dot
+and three quiet pulses mark the same action; reduced motion retains the static state. The
+original task line, full questions, native choices, free text and one explicit Send live inside
+the input frame. Ordinary drafts remain mounted and unchanged. Closing exits without answering;
+request, authorization and immutable command checks stay unchanged. Use existing themes,
+system type and focus tokens; 48dvh/420px body bounds preserve exit/Send in compact windows.
+No new identity, global token rewrite or raster asset.
+
+Current contract and evidence: [composer direction](../../../application/docs/design/2026-10-25-user-input-composer-direction.md).
+Earlier modal TEST A/B receipts and dimensions do not validate this new interaction.
+
+## Archived earlier direction and evidence
+
 Mode: Operate. Extend the incumbent Dashboard activity and modal UI, not its identity.
 
 THESIS: the original activity card shows a visible “回答问题” button, with no embedded or

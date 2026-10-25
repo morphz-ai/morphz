@@ -37,6 +37,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   MessageSquare,
+  MessageSquarePlus,
   Maximize2,
   Minimize2,
   Monitor,
@@ -2067,10 +2068,11 @@ export function DialogueActivityDock({
                           <span>{effective.activations.length}<small>A</small></span>
                           <span>{jobs.length}<small>J</small></span>
                         </span>
-                        <UserInputPreview snapshot={effective} onReply={onReplyQuestion} />
                         {effective.thread.lifecycle === 'open' && (
                           <div className="dialogue-thread-card-actions">
-                            {canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.intervene')} onClick={() => onSteerThread(effective)}><MessageSquare size={12} /></button>}
+                            {currentQuestion(effective)
+                              ? <UserInputPreview snapshot={effective} onReply={onReplyQuestion} />
+                              : canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.supplement')} onClick={() => onSteerThread(effective)}><MessageSquarePlus size={12} /></button>}
                             {effective.thread.control_state === 'paused' ? (
                               <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
                             ) : (
@@ -2821,6 +2823,7 @@ export const Composer = memo(function Composer({
   sessionCandidates,
   currentAgentId,
   currentContextId,
+  questionContainerRef,
 }: {
   directedCandidates: InputSelection[]
   selectionRequest: InputSelection | null
@@ -2849,6 +2852,7 @@ export const Composer = memo(function Composer({
   sessionCandidates: SessionReferenceCandidate[]
   currentAgentId: string
   currentContextId: string
+  questionContainerRef?: (node: HTMLDivElement | null) => void
 }) {
   const [initialDraft] = useState(() => readSessionDraft(
     dashboardDraftStorage(),
@@ -3090,6 +3094,7 @@ export const Composer = memo(function Composer({
 
   return (
     <div
+      id="dashboard-composer"
       className={`composer ${draggingFiles ? 'dragging-files' : ''} ${readOnly ? 'read-only' : ''} ${inputSelection ? 'has-steering' : ''}`}
       onDragEnter={event => {
         if (event.dataTransfer.types.includes('Files')) {
@@ -3109,6 +3114,7 @@ export const Composer = memo(function Composer({
         void addFiles(event.dataTransfer.files)
       }}
     >
+      <div className="question-composer-slot" ref={questionContainerRef} />
       {inputSelection && <SteeringTarget selection={inputSelection} onClear={() => { setInputSelection(undefined); setDraftClientMessageId(createDraftClientMessageId()) }} />}
       <span className="composer-prompt">›</span>
       <div className="composer-input-area">
@@ -3551,6 +3557,7 @@ export default function App() {
   const cognitiveCoordinationPopoverRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const userInputDialogRef = useRef<UserInputDialogHandle>(null)
+  const [questionComposerSlot, setQuestionComposerSlot] = useState<HTMLDivElement | null>(null)
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
   const executionTargetCatalogRequestRef = useRef('')
@@ -6768,6 +6775,8 @@ export default function App() {
 
   const steerThread = (snapshot: SchedulerThreadSnapshot) => {
     if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
+    if (currentQuestion(snapshot)) { userInputDialogRef.current?.open(snapshot); return }
+    userInputDialogRef.current?.close()
     setSelectionRequest({ destination: threadDestination(snapshot), label: `${shortId(snapshot.thread.id)} · ${threadAssignment(snapshot) ?? t('steering.intentUnknown')}`, sessionId: snapshot.thread.session_id })
     navigate(dashboardPath('dialogue', snapshot.thread.context_id, snapshot.thread.session_id))
   }
@@ -9050,8 +9059,6 @@ export default function App() {
                       return <article className="attention-card user-input" key={`waiting-user-${objective.id}`}>
                         <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(objective.updated_at, t)}</time></div>
                         <h2>{objective.stated_objective}</h2>
-                        {schedulerThreads.find(snapshot => currentQuestion(snapshot)?.request_id === objective.wait_condition?.request_id)
-                          ?.user_input_request?.questions.map(question => <p key={question.id}>{question.question}</p>)}
                         {objective.status_reason && <p>{objective.status_reason}</p>}
                         <div className="attention-actions">
                           <ObjectiveSteeringButton objective={objective} t={t} replyAccepted={acceptedQuestionObjectiveIds.has(objective.id)} onClick={() => steerObjective(objective)} />
@@ -10067,6 +10074,7 @@ export default function App() {
             </div>
           </div>
           <Composer
+            questionContainerRef={setQuestionComposerSlot}
             selectionRequest={selectionRequest}
             onSelectionRequestHandled={consumeSelectionRequest}
             directedCandidates={[
@@ -10140,6 +10148,8 @@ export default function App() {
       )}
       {appDialog && <AppDialog key={appDialog.id} request={appDialog} onResolve={resolveAppDialog} />}
       <UserInputDialogHost key={`${activePrincipalId ?? ''}:${observingForeignPrincipal}`} ref={userInputDialogRef}
+        container={questionComposerSlot} onEngage={() => setView('dialogue')}
+        onRelease={() => requestAnimationFrame(() => composerInputRef.current?.focus({preventScroll:true}))}
         principalId={activePrincipalId ?? ''} readOnly={observingForeignPrincipal || !activePrincipalId}
         onAccepted={() => { if (selectedSessionId && selectedContextId) void loadSession(selectedSessionId, selectedContextId) }} />
     </main>

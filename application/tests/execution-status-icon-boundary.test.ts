@@ -383,7 +383,7 @@ function imported(parsed: Parsed, path: string, name: string) {
   return symbol;
 }
 
-/** Verify only the two new independent question seams, then restore the exact
+/** Verify the one question supplement seam, then restore the exact
  * former row for the immutable glyph/freshness/lifecycle checks. This does not
  * capture a new current hash or erase arbitrary JSX, callbacks or reads. */
 function withoutReviewedQuestions(parsed: Parsed): string {
@@ -400,8 +400,12 @@ function withoutReviewedQuestions(parsed: Parsed): string {
   const previews = parsed.nodes
     .filter(isJsxSelfClosingElement)
     .filter((node) => node.tagName.getText() === "UserInputPreview");
-  assert.equal(previews.length, 2);
-  const reviewed = ["SidebarQuestionRow", "SidebarQuestionDetail"].map((name) =>
+  assert.equal(
+    previews.length,
+    1,
+    "the detail reuses its existing supplement action, never a second answer button",
+  );
+  const reviewed = ["SidebarQuestionRow"].map((name) =>
     templates.get(name)!.nodes.find(isJsxSelfClosingElement)!,
   );
   const row = previews.find(
@@ -409,15 +413,7 @@ function withoutReviewedQuestions(parsed: Parsed): string {
       JSON.stringify(syntax(node.attributes)) ===
       JSON.stringify(syntax(reviewed[0]!.attributes)),
   );
-  const detail = previews.find(
-    (node) =>
-      JSON.stringify(syntax(node.attributes)) ===
-      JSON.stringify(syntax(reviewed[1]!.attributes)),
-  );
-  assert.ok(
-    row && detail && row !== detail,
-    "both exact question scopes and disabled guards are required",
-  );
+  assert.ok(row, "the exact question owner and disabled guards are required");
   for (const preview of previews) {
     assert.equal(parsed.symbols.get(preview.tagName), previewOwner);
     const calls: Node[] = [];
@@ -461,21 +457,8 @@ function withoutReviewedQuestions(parsed: Parsed): string {
     // Undo just the one new wrapper's indentation. JSX text keeps trailing
     // indentation in this finite serializer, although React renders it alike.
     .replace(/^ {2}/gm, "");
-  let detailExpression: Node = detail;
-  while (detailExpression.parent && !isJsxExpression(detailExpression))
-    detailExpression = detailExpression.parent;
-  assert.ok(isJsxExpression(detailExpression));
-  assert.deepEqual(
-    syntax(detailExpression),
-    syntax(
-      templates.get("SidebarQuestionDetail")!.nodes.find(isJsxExpression)!,
-    ),
-  );
   let source = parsed.source.getText();
-  for (const [before, after] of [
-    [wrapper.getText(), restoredButton],
-    [detailExpression.getText(), ""],
-  ]) {
+  for (const [before, after] of [[wrapper.getText(), restoredButton]]) {
     assert.equal(
       source.split(before!).length,
       2,

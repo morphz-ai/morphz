@@ -9,6 +9,8 @@ import {
   localFileLink,
   literalResourceLink,
   resourceLinkError,
+  relativeFileLink,
+  resolveWorkspaceFileLink,
 } from "../apps/web/src/resource-links.js";
 
 const styles = registerHooks({
@@ -31,6 +33,42 @@ function render(children: string) {
     }),
   );
 }
+
+test("relative Markdown files retain link semantics and resolve only beneath an explicit execution workspace", () => {
+  const source = "artifacts/24frames-wechat-header-fix-20261025.jpg";
+  const html = render(`[打开修复版预览二维码](${source})`);
+  assert.match(html, /markdown-file-link/);
+  assert.match(html, /<button[^>]*>打开修复版预览二维码<\/button>/);
+  assert.equal(relativeFileLink(source), source);
+  assert.equal(
+    resolveWorkspaceFileLink(source, "/tmp/TEST workspace"),
+    "/tmp/TEST workspace/" + source,
+  );
+  assert.equal(
+    resolveWorkspaceFileLink(
+      "./artifacts/中文%20预览%2520.jpg",
+      "/tmp/TEST workspace",
+    ),
+    "/tmp/TEST workspace/artifacts/中文 预览%20.jpg",
+  );
+  for (const value of [
+    "../secret.jpg",
+    "artifacts/../../secret.jpg",
+    "artifacts/%2e%2e/secret.jpg",
+    "//remote/a.jpg",
+    "javascript:alert.jpg",
+    "data:image/test.jpg",
+    "artifacts/a.jpg?token=secret",
+    "artifacts/a.jpg#x",
+    "artifacts/%2fsecret.jpg",
+    "artifacts/a\\b.jpg",
+    "a\0.jpg",
+    "artifacts/%00a.jpg",
+    "artifacts/no-extension",
+  ])
+    assert.equal(relativeFileLink(value), null, value);
+  assert.equal(resolveWorkspaceFileLink(source, "relative-root"), null);
+});
 
 test("native link errors retain the actionable cause without IPC implementation details", () => {
   assert.equal(

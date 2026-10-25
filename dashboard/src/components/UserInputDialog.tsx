@@ -1,5 +1,5 @@
-import { useId, useRef } from "react";
-import { LoaderCircle, MessageCircleQuestion, Send, X } from "lucide-react";
+import { useEffect, useId, useRef } from "react";
+import { LoaderCircle, MessageSquarePlus, Send, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   userInputAnswerText,
@@ -7,7 +7,6 @@ import {
   type UserInputAnswer,
 } from "../../../sdk/typescript/src/user-input.ts";
 import "./user-input-dialog.css";
-import { useQuestionDialog } from "./useQuestionDialog";
 
 export function UserInputDialog({
   title,
@@ -35,11 +34,15 @@ export function UserInputDialog({
   onClose(): void;
 }) {
   const { t } = useTranslation();
-  const dialog = useRef<HTMLDialogElement>(null);
-  const titleId = useId(),
-    taskId = useId(),
-    feedbackId = useId();
-  useQuestionDialog(dialog);
+  const panel = useRef<HTMLElement>(null);
+  const titleId = useId(), feedbackId = useId();
+  const focused = useRef(false);
+  useEffect(() => {
+    if (busy || !available || focused.current) return;
+    focused.current = true;
+    if (!panel.current?.contains(document.activeElement))
+      panel.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+  }, [available, busy]);
   const text = userInputAnswerText(request.questions, answers);
   const canSend =
     !busy && (frozen || (available && text !== null && text.length <= 30000));
@@ -52,13 +55,18 @@ export function UserInputDialog({
     );
   }
   return (
-    <dialog
-      ref={dialog}
-      className="runtime-question-dialog"
-      aria-labelledby={titleId}
+    <section
+      ref={panel}
+      className="composer-question runtime-question-composer"
+      aria-label={t("userInput.title")}
       aria-busy={busy}
-      closedby="any"
-      onClose={onClose}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") { event.preventDefault(); onClose(); }
+        else if (event.target instanceof HTMLTextAreaElement && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+          event.preventDefault();
+          if (canSend) onSubmit();
+        }
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -67,13 +75,13 @@ export function UserInputDialog({
         }}
       >
         <header>
-          <MessageCircleQuestion size={18} aria-hidden="true" />
-          <h2 id={titleId}>{t("userInput.title")}</h2>
+          <MessageSquarePlus size={16} aria-hidden="true" />
+          <span className="runtime-question-target" tabIndex={0} title={title}>{t("steering.supplement")} · {title}</span>
           <button
             type="button"
             aria-label={t("userInput.close")}
             title={t("userInput.close")}
-            onClick={() => dialog.current?.close()}
+            onClick={onClose}
           >
             <X size={18} />
           </button>
@@ -164,13 +172,6 @@ export function UserInputDialog({
               </fieldset>
             );
           })}
-          <details className="runtime-question-task">
-            <summary id={taskId} title={title}>
-              <span>{t("userInput.source")}</span>
-              <span>{title}</span>
-            </summary>
-            <p>{title}</p>
-          </details>
         </div>
         <footer>
           <div id={feedbackId} aria-live="polite">
@@ -209,6 +210,6 @@ export function UserInputDialog({
           </button>
         </footer>
       </form>
-    </dialog>
+    </section>
   );
 }

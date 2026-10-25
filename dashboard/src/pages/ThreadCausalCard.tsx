@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, GitBranch, KeyRound, Layers3, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
+import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, GitBranch, KeyRound, Layers3, LoaderCircle, MessageSquarePlus, Pause, Play, Radio, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
 import type {
@@ -14,7 +14,7 @@ import type {
 import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } from '../app/presentation'
 import { canSteerThread, threadAssignment } from '../app/steering'
 import { copyTextToClipboard } from '../utils/clipboard'
-import { UserInputPreview } from '../components/UserInputPreview'
+import { currentQuestion } from '../app/userInput'
 
 function modelAttemptActivationId(event: ThreadDetailResponse['model_attempt_events'][number]) {
   return typeof event.payload.activation_id === 'string' ? event.payload.activation_id : ''
@@ -284,7 +284,6 @@ export function ThreadCausalCard({
         <ChevronDown size={14} />
       </summary>
       <div className="causal-thread-body">
-        <UserInputPreview snapshot={snapshot} onReply={onReplyQuestion} />
         <section className="thread-supervision-panel">
           <div><span>{t('work.causal.lifetime')}</span><strong>{t(`work.causal.lifetimeValues.${thread.supervision.lifetime}`)}</strong></div>
           <div><span>{t('work.causal.supervisor')}</span><strong>{t(`work.causal.supervisorValues.${thread.supervision.supervisor_kind}`)}{thread.supervision.supervisor_id ? ` · ${shortId(thread.supervision.supervisor_id, 24)}` : ''}</strong></div>
@@ -298,7 +297,7 @@ export function ThreadCausalCard({
         </section>
         <div className="causal-thread-actions">
           <button type="button" title={thread.id} onClick={() => { void copyTextToClipboard(thread.id).catch(() => window.prompt(t('steering.copyId'), thread.id)) }}>{t('steering.copyId')}</button>
-          {onSteer && canSteerThread(snapshot) && <button type="button" onClick={() => onSteer(snapshot)}>{t('steering.intervene')}</button>}
+          {onSteer && canSteerThread(snapshot) && <button type="button" className={currentQuestion(snapshot) ? 'needs-input' : undefined} onClick={() => currentQuestion(snapshot) && onReplyQuestion ? onReplyQuestion(snapshot) : onSteer(snapshot)}><MessageSquarePlus size={13}/>{t('steering.supplement')}</button>}
           {onInspect && <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>}
           {onSupervisorFilter && thread.supervision.supervisor_id && (
             <button

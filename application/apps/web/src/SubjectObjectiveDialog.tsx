@@ -11,7 +11,6 @@ import {
   Play,
   Trash2,
   X,
-  Reply,
 } from "lucide-react";
 import type { ExecutionActivity } from "../../../packages/core/src/conversation.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
@@ -30,7 +29,6 @@ import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { objectiveDetailStatus } from "./subject-sidebar-model.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import { useModal } from "./useModal.js";
-import { UserInputPreview } from "./UserInputPreview.js";
 import type { QuestionObjective } from "./UserInputDialogHost.js";
 
 type Goal = NonNullable<ExecutionActivity["objectives"]>[number];
@@ -46,7 +44,6 @@ export function SubjectObjectiveDialog({
   onClose,
   onSelect,
   onSupplement,
-  onReply,
   onReplyObjective,
 }: {
   goal: Goal;
@@ -181,7 +178,10 @@ export function SubjectObjectiveDialog({
   });
   const target = targets.length === 1 ? targets[0] : undefined;
   const supplementDisabled =
-    disabled || goal.status !== "active" || !target || !onSupplement;
+    disabled ||
+    goal.status !== "active" ||
+    (!(goal.pendingUserInput && onReplyObjective) &&
+      (!target || !onSupplement));
   const unavailable =
     !fresh || !client.online
       ? "连接恢复后可操作"
@@ -259,6 +259,11 @@ export function SubjectObjectiveDialog({
     }
   }
   async function supplement() {
+    if (!supplementDisabled && goal.pendingUserInput && onReplyObjective) {
+      onClose();
+      requestAnimationFrame(() => onReplyObjective(goal, threads));
+      return;
+    }
     if (pending.current || supplementDisabled || !target || !onSupplement)
       return;
     pending.current = true;
@@ -349,7 +354,7 @@ export function SubjectObjectiveDialog({
                 }
               >
                 <button
-                  className="icon-button"
+                  className={`icon-button${goal.pendingUserInput ? " needs-input" : ""}`}
                   aria-label="补充目标"
                   disabled={supplementDisabled}
                   onClick={() => void supplement()}
@@ -449,52 +454,6 @@ export function SubjectObjectiveDialog({
           aria-label="完整目标"
           tabIndex={0}
         >
-          {threads
-            .filter((thread) => !!thread.userInputRequest)
-            .map((thread) => (
-              <UserInputPreview
-                key={thread.id}
-                thread={thread}
-                disabled={!fresh || !client.online}
-                onReply={
-                  onReply
-                    ? (value) => {
-                        onClose();
-                        requestAnimationFrame(() => onReply(value));
-                      }
-                    : undefined
-                }
-              />
-            ))}
-          {goal.pendingUserInput &&
-            !threads.some(
-              (thread) =>
-                thread.userInputRequest?.request_id ===
-                goal.pendingUserInput?.requestId,
-            ) && (
-              <div className="user-input-preview">
-                <p>
-                  {goal.pendingUserInput.kind === "legacy"
-                    ? "旧记录没有保存具体问题。"
-                    : "有待答问题"}
-                </p>
-                {onReplyObjective && (
-                  <button
-                    type="button"
-                    disabled={!fresh || goal.status !== "active"}
-                    onClick={() => {
-                      onClose();
-                      requestAnimationFrame(() =>
-                        onReplyObjective(goal, threads),
-                      );
-                    }}
-                  >
-                    <Reply size={15} />
-                    回复
-                  </button>
-                )}
-              </div>
-            )}
           {goal.title
             .split(/(\r?\n+)/)
             .map((part, index) =>

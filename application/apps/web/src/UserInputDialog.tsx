@@ -1,11 +1,10 @@
-import { useId, useRef } from "react";
-import { LoaderCircle, MessageCircleQuestion, Send, X } from "lucide-react";
+import { useEffect, useId, useRef } from "react";
+import { LoaderCircle, MessageSquarePlus, Send, X } from "lucide-react";
 import type {
   PendingUserInputRequest,
   UserInputAnswer,
 } from "../../../packages/core/src/user-input.js";
 import { userInputAnswerText } from "../../../packages/core/src/user-input.js";
-import { useModal } from "./useModal.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import "./user-input-dialog.css";
 
@@ -38,12 +37,17 @@ export function UserInputDialog({
   onSubmit,
   onClose,
 }: UserInputDialogProps) {
-  const dialog = useRef<HTMLDialogElement>(null),
+  const panel = useRef<HTMLElement>(null),
     body = useRef<HTMLDivElement>(null);
   const titleId = useId(),
-    taskId = useId(),
     statusId = useId();
-  useModal(dialog, body);
+  const focused = useRef(false);
+  useEffect(() => {
+    if (busy || !available || focused.current) return;
+    focused.current = true;
+    if (!panel.current?.contains(document.activeElement))
+      panel.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+  }, [available, busy]);
   const answerText = userInputAnswerText(request.questions, answers);
   const canSend =
     !busy &&
@@ -58,13 +62,26 @@ export function UserInputDialog({
     );
   }
   return (
-    <dialog
-      ref={dialog}
-      className="create-dialog user-input-dialog"
-      aria-labelledby={titleId}
+    <section
+      ref={panel}
+      className="composer-question user-input-composer"
+      aria-label="补充问题"
       aria-busy={busy}
-      closedby="any"
-      onClose={onClose}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onClose();
+        } else if (
+          event.target instanceof HTMLTextAreaElement &&
+          event.key === "Enter" &&
+          !event.shiftKey &&
+          !event.nativeEvent.isComposing &&
+          event.nativeEvent.keyCode !== 229
+        ) {
+          event.preventDefault();
+          if (canSend) onSubmit();
+        }
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -73,20 +90,26 @@ export function UserInputDialog({
         }}
       >
         <header>
-          <MessageCircleQuestion size={18} aria-hidden="true" />
-          <h2 id={titleId}>问题</h2>
+          <MessageSquarePlus size={16} aria-hidden="true" />
+          <span
+            className="user-input-composer-target"
+            tabIndex={0}
+            title={title}
+          >
+            补充给：{title}
+          </span>
           <Tooltip label="关闭，稍后回复">
             <button
               type="button"
               className="icon-button"
               aria-label="关闭，稍后回复"
-              onClick={() => dialog.current?.close()}
+              onClick={onClose}
             >
               <X size={18} aria-hidden="true" />
             </button>
           </Tooltip>
         </header>
-        <div className="user-input-dialog-body" ref={body} tabIndex={-1}>
+        <div className="user-input-composer-body" ref={body}>
           {request.questions.map((question, index) => {
             const options = question.options ?? [];
             const answer = answers.find(
@@ -176,13 +199,6 @@ export function UserInputDialog({
               </fieldset>
             );
           })}
-          <details className="user-input-task">
-            <summary id={taskId} title={title}>
-              <span>来自</span>
-              <span>{title}</span>
-            </summary>
-            <p>{title}</p>
-          </details>
         </div>
         <footer>
           <div id={statusId} className="user-input-feedback" aria-live="polite">
@@ -211,6 +227,6 @@ export function UserInputDialog({
           </button>
         </footer>
       </form>
-    </dialog>
+    </section>
   );
 }

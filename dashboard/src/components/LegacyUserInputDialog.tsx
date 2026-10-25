@@ -1,8 +1,7 @@
-import { useId, useRef } from "react";
-import { LoaderCircle, MessageCircleQuestion, Send, X } from "lucide-react";
+import { useId } from "react";
+import { LoaderCircle, MessageSquarePlus, Send, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import "./user-input-dialog.css";
-import { useQuestionDialog } from "./useQuestionDialog";
 
 export function LegacyUserInputDialog({
   title,
@@ -25,20 +24,21 @@ export function LegacyUserInputDialog({
   onSubmit(): void;
   onClose(): void;
 }) {
-  const { t } = useTranslation(),
-    dialog = useRef<HTMLDialogElement>(null);
-  const titleId = useId(),
-    inputId = useId();
-  useQuestionDialog(dialog);
+  const { t } = useTranslation();
+  const inputId = useId();
   const canSend = !busy && (frozen || (available && !!body.trim()));
   return (
-    <dialog
-      ref={dialog}
-      className="runtime-question-dialog"
-      closedby="any"
-      aria-labelledby={titleId}
-      onClose={onClose}
+    <section
+      className="composer-question runtime-question-composer"
+      aria-label={t("userInput.title")}
       aria-busy={busy}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") { event.preventDefault(); onClose(); }
+        else if (event.target instanceof HTMLTextAreaElement && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+          event.preventDefault();
+          if (canSend) onSubmit();
+        }
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -47,19 +47,18 @@ export function LegacyUserInputDialog({
         }}
       >
         <header>
-          <MessageCircleQuestion size={18} />
-          <h2 id={titleId}>{t("userInput.title")}</h2>
+          <MessageSquarePlus size={16} aria-hidden="true" />
+          <span className="runtime-question-target" title={title}>{t("steering.supplement")} · {title}</span>
           <button
             type="button"
             title={t("userInput.close")}
             aria-label={t("userInput.close")}
-            onClick={() => dialog.current?.close()}
+            onClick={onClose}
           >
             <X size={18} />
           </button>
         </header>
         <div className="runtime-question-body">
-          <p className="runtime-question-task">{title}</p>
           <p>{t("userInput.legacy")}</p>
           <label className="runtime-question-text-label" htmlFor={inputId}>
             {t("userInput.answer")}
@@ -98,6 +97,6 @@ export function LegacyUserInputDialog({
           </button>
         </footer>
       </form>
-    </dialog>
+    </section>
   );
 }

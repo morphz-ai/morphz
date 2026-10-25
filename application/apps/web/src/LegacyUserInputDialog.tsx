@@ -1,6 +1,5 @@
 import { useId, useRef } from "react";
-import { MessageCircleQuestion, Send, X, LoaderCircle } from "lucide-react";
-import { useModal } from "./useModal.js";
+import { MessageSquarePlus, Send, X, LoaderCircle } from "lucide-react";
 import "./user-input-dialog.css";
 
 /** Legacy waits did not save a question body. Say so instead of constructing
@@ -30,19 +29,29 @@ export function LegacyUserInputDialog({
   onSubmit(): void;
   onClose(): void;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null),
-    body = useRef<HTMLDivElement>(null);
-  const titleId = useId(),
-    inputId = useId();
-  useModal(dialog, body);
+  const body = useRef<HTMLDivElement>(null);
+  const inputId = useId();
   return (
-    <dialog
-      ref={dialog}
-      className="create-dialog user-input-dialog"
-      aria-labelledby={titleId}
-      closedby="any"
-      onClose={onClose}
+    <section
+      className="composer-question user-input-composer"
+      aria-label="补充问题"
       aria-busy={reading || busy}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onClose();
+        } else if (
+          event.target instanceof HTMLTextAreaElement &&
+          event.key === "Enter" &&
+          !event.shiftKey &&
+          !event.nativeEvent.isComposing &&
+          event.nativeEvent.keyCode !== 229
+        ) {
+          event.preventDefault();
+          if (!reading && !busy && (frozen || (available && value.trim())))
+            onSubmit();
+        }
+      }}
     >
       <form
         onSubmit={(event) => {
@@ -52,19 +61,20 @@ export function LegacyUserInputDialog({
         }}
       >
         <header>
-          <MessageCircleQuestion size={18} aria-hidden="true" />
-          <h2 id={titleId}>问题</h2>
+          <MessageSquarePlus size={16} aria-hidden="true" />
+          <span className="user-input-composer-target" title={title}>
+            补充给：{title}
+          </span>
           <button
             type="button"
             className="icon-button"
             aria-label="关闭，稍后回复"
-            onClick={() => dialog.current?.close()}
+            onClick={onClose}
           >
             <X size={18} />
           </button>
         </header>
-        <div className="user-input-dialog-body" ref={body} tabIndex={-1}>
-          <p className="user-input-task">{title}</p>
+        <div className="user-input-composer-body" ref={body}>
           <p>
             {reading
               ? "正在确认待答问题…"
@@ -108,6 +118,6 @@ export function LegacyUserInputDialog({
           </button>
         </footer>
       </form>
-    </dialog>
+    </section>
   );
 }

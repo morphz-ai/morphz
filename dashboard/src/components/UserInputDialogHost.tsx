@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { MessageCircleQuestion } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { UserInputAnswer } from "../../../sdk/typescript/src/user-input.ts";
@@ -56,6 +57,7 @@ type LegacyDraft = LegacyQuestionForm & {
 export type UserInputDialogHandle = {
   open(snapshot: SchedulerThreadSnapshot): void;
   openLegacy(objective: LegacyObjective): void;
+  close(): void;
 };
 function browserStorage(): Storage | undefined {
   try {
@@ -73,8 +75,11 @@ export const UserInputDialogHost = forwardRef<
     principalId: string;
     readOnly: boolean;
     onAccepted(): void;
+    container: HTMLElement | null;
+    onEngage?(): void;
+    onRelease?(): void;
   }
->(function UserInputDialogHost({ principalId, readOnly, onAccepted }, ref) {
+>(function UserInputDialogHost({ principalId, readOnly, onAccepted, container, onEngage, onRelease }, ref) {
   const { t } = useTranslation();
   const scope = `${CORE_HTTP_URL}:${principalId}`;
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
@@ -129,6 +134,12 @@ export const UserInputDialogHost = forwardRef<
     activeKeyRef.current = null;
     setActiveKey(null);
   }
+  function dismiss() {
+    close();
+    legacyKeyRef.current = null;
+    setLegacyKey(null);
+    onRelease?.();
+  }
   function updateLegacy(key: string, patch: Partial<LegacyDraft>) {
     if (!mounted.current || !legacyRef.current[key]) return;
     const next = {
@@ -169,9 +180,15 @@ export const UserInputDialogHost = forwardRef<
     );
   }
   useImperativeHandle(ref, () => ({
+    close() {
+      close();
+      legacyKeyRef.current = null;
+      setLegacyKey(null);
+    },
     open(snapshot) {
       const request = currentQuestion(snapshot);
       if (!request) return;
+      onEngage?.();
       const key = questionKey(request);
       legacyKeyRef.current = null;
       setLegacyKey(null);
@@ -228,6 +245,7 @@ export const UserInputDialogHost = forwardRef<
     },
     openLegacy(objective) {
       if (readOnly || objective.wait_condition?.kind !== "user_input") return;
+      onEngage?.();
       const requestId =
         typeof objective.wait_condition.request_id === "string"
           ? objective.wait_condition.request_id
@@ -323,7 +341,7 @@ export const UserInputDialogHost = forwardRef<
       delete next[key];
       draftsRef.current = next;
       setDrafts(next);
-      if (activeKeyRef.current === key) close();
+      if (activeKeyRef.current === key) { close(); onRelease?.(); }
       onAccepted();
     } catch (error) {
       if (!mounted.current) return;
@@ -398,6 +416,7 @@ export const UserInputDialogHost = forwardRef<
       if (legacyKeyRef.current === key) {
         legacyKeyRef.current = null;
         setLegacyKey(null);
+        onRelease?.();
       }
       onAccepted();
     } catch (error) {
@@ -419,7 +438,8 @@ export const UserInputDialogHost = forwardRef<
   const unresolved = Object.entries(drafts).filter(
     ([, draft]) => draft.command && !draft.busy,
   );
-  return (
+  if (!container) return null;
+  return createPortal((
     <>
       {(!!unresolved.length ||
         Object.values(legacyDrafts).some((draft) => draft.command)) &&
@@ -433,6 +453,7 @@ export const UserInputDialogHost = forwardRef<
                 key={key}
                 title={draft.title}
                 onClick={() => {
+                  onEngage?.();
                   activeKeyRef.current = key;
                   setActiveKey(key);
                 }}
@@ -449,6 +470,7 @@ export const UserInputDialogHost = forwardRef<
                   key={key}
                   title={draft.title}
                   onClick={() => {
+                    onEngage?.();
                     legacyKeyRef.current = key;
                     setLegacyKey(key);
                   }}
@@ -478,7 +500,7 @@ export const UserInputDialogHost = forwardRef<
           }
           onChange={(answers) => change(activeKey!, answers)}
           onSubmit={() => void submit(activeKey!)}
-          onClose={close}
+          onClose={dismiss}
         />
       )}
       {activeLegacy && (
@@ -500,12 +522,9 @@ export const UserInputDialogHost = forwardRef<
             );
           }}
           onSubmit={() => void submitLegacy(legacyKey!)}
-          onClose={() => {
-            legacyKeyRef.current = null;
-            setLegacyKey(null);
-          }}
+          onClose={dismiss}
         />
       )}
     </>
-  );
+  ), container);
 });

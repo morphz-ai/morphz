@@ -1,4 +1,4 @@
-import { Reply } from "lucide-react";
+import { MessageSquarePlus } from "lucide-react";
 import type { ActivityThread } from "./execution-activity.js";
 import "./user-input-dialog.css";
 
@@ -13,10 +13,6 @@ export function UserInputPreview({
 }) {
   const request = thread.userInputRequest;
   if (!request || !onReply || !thread.continuation) return null;
-  const action =
-    thread.controlState === "paused" || request.reply_allowed === false
-      ? "查看问题"
-      : "回答问题";
   return (
     <div
       className="user-input-preview"
@@ -24,18 +20,17 @@ export function UserInputPreview({
       role="group"
       aria-label="待答问题"
     >
-        <button
-          className="user-input-reply"
-          type="button"
-          disabled={disabled}
-          title={action}
-          aria-label={action}
-          aria-haspopup="dialog"
-          onClick={() => onReply(thread)}
-        >
-          <Reply size={16} aria-hidden="true" />
-          {action}
-        </button>
+      <button
+        className="icon-button user-input-reply needs-input"
+        type="button"
+        disabled={disabled}
+        title="补充 · 有待答问题"
+        aria-label="补充"
+        aria-controls="global-composer"
+        onClick={() => onReply(thread)}
+      >
+        <MessageSquarePlus size={16} aria-hidden="true" />
+      </button>
     </div>
   );
 }

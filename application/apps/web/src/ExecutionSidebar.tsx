@@ -173,7 +173,7 @@ export function ExecutionSidebar({
   const supplementAction = supplementTarget && onSupplement && (
     <Tooltip label="补充要求">
       <button
-        className="icon-button execution-supplement"
+        className={`icon-button execution-supplement${thread?.userInputRequest ? " needs-input" : ""}`}
         aria-label="补充"
         disabled={
           !client.online || !runtime.connected || !runtime.activity?.available
@@ -492,16 +492,6 @@ export function ExecutionSidebar({
               <p className="execution-origin-title" title={thread?.title}>
                 {thread?.title ?? "执行分支"}
               </p>
-              {thread && (
-                <UserInputPreview
-                  thread={thread}
-                  onReply={onReply}
-                  disabled={
-                    !client.online ||
-                    !executionActivityThreadAvailable(thread, runtime)
-                  }
-                />
-              )}
               {threadSummary && (
                 <p
                   ref={summaryRef}

@@ -16,9 +16,16 @@ import { omitRepeatedDocumentTitle } from "./document-presentation.js";
 import {
   contentLink,
   localFileLink,
+  relativeFileLink,
+  resolveWorkspaceFileLink,
   contentReferenceLinks,
   resourceLinkError,
 } from "./resource-links.js";
+import { applicationCall } from "./application-transport.js";
+import {
+  sessionPermissionsSnapshotSchema,
+  type SessionPermissionsRead,
+} from "../../../packages/core/src/session-permissions.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import type { PlatformContent } from "./platform-client.js";
 import {
@@ -32,6 +39,7 @@ const MarkdownScope = createContext<{
   catalog?: readonly PlatformContent[];
   onOpen: (id: string, revision?: number) => void;
   copyable: boolean;
+  resourceScope?: SessionPermissionsRead;
 } | null>(null);
 const markdownComponents = {
   pre: function MarkdownPre({ children }: { children?: ReactNode }) {
@@ -144,29 +152,34 @@ function Link({
   href = "",
   children,
   onOpen,
+  resourceScope,
 }: {
   href?: string;
   children: ReactNode;
   state: Workspace;
   catalog?: readonly PlatformContent[];
   onOpen: (id: string, revision?: number) => void;
+  resourceScope?: SessionPermissionsRead;
 }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const target = contentLink(href);
   const path = localFileLink(href);
-  if (target || path)
+  const relative = relativeFileLink(href);
+  if (target || path || relative)
     return (
       <>
         <button
           type="button"
-          className={`inline-object-link${path ? " markdown-file-link" : ""}`}
+          className={`inline-object-link${path || relative ? " markdown-file-link" : ""}`}
           aria-busy={busy || undefined}
           disabled={busy}
           title={
             target
               ? `打开内容${target.revision ? ` · v${target.revision}` : ""}`
-              : `在本机打开：${path}`
+              : relative
+                ? `在原会话的当前执行工作目录中打开：${relative}`
+                : `在本机打开：${path}`
           }
           onClick={async () => {
             if (busy) return;
@@ -179,7 +192,39 @@ function Link({
                   throw new Error("本地文件请在本机桌面应用中打开。");
                 if (!window.morphzDesktop.openLocalFile)
                   throw new Error("桌面组件需要重新启动后才能打开本地文件。");
-                const result = await window.morphzDesktop.openLocalFile(path!);
+                let localPath = path;
+                if (relative) {
+                  if (!resourceScope)
+                    throw new Error(
+                      "此相对文件链接缺少原会话的执行来源，无法安全定位。",
+                    );
+                  const permissions = sessionPermissionsSnapshotSchema.parse(
+                    await applicationCall(
+                      "session-permissions.read",
+                      resourceScope,
+                    ),
+                  );
+                  if (
+                    permissions.scope.projectId !== resourceScope.projectId ||
+                    permissions.scope.conversationId !==
+                      resourceScope.conversationId ||
+                    !permissions.workspace.ready ||
+                    permissions.workspace.targetId !== "target-default" ||
+                    !permissions.workspace.workspaceRoot
+                  )
+                    throw new Error(
+                      "原会话未连接可确认的本机执行节点，不能把远端或未知目录当作本机打开。",
+                    );
+                  localPath = resolveWorkspaceFileLink(
+                    relative,
+                    permissions.workspace.workspaceRoot,
+                  );
+                  if (!localPath)
+                    throw new Error("相对文件地址无效，文件未打开。");
+                }
+                const result = await window.morphzDesktop.openLocalFile(
+                  localPath!,
+                );
                 if (result.action === "revealed")
                   setError(
                     "此类型可能启动程序，已在文件管理器中定位，请自行确认后打开。",
@@ -299,6 +344,7 @@ export function SafeMarkdown({
   documentTitle,
   streaming = false,
   copyable = true,
+  resourceScope,
 }: {
   children: string;
   state: Workspace;
@@ -307,9 +353,12 @@ export function SafeMarkdown({
   documentTitle?: string;
   streaming?: boolean;
   copyable?: boolean;
+  resourceScope?: SessionPermissionsRead;
 }) {
   return (
-    <MarkdownScope.Provider value={{ state, catalog, onOpen, copyable }}>
+    <MarkdownScope.Provider
+      value={{ state, catalog, onOpen, copyable, resourceScope }}
+    >
       <MarkdownBody documentTitle={documentTitle} streaming={streaming}>
         {children}
       </MarkdownBody>
@@ -358,7 +407,7 @@ const MarkdownBody = memo(function MarkdownBody({
         webURL(url) ||
         objectLink(url) ||
         /^\/api\/assets\/[a-zA-Z0-9_-]+$/.test(url) ||
-        (key === "href" && localFileLink(url))
+        (key === "href" && (localFileLink(url) || relativeFileLink(url)))
           ? url
           : ""
       }

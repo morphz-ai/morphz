@@ -27,7 +27,7 @@
     "threadCounts": "{{activations}} Activations · {{jobs}} Execution Jobs (not a thread count)",
     "menu": "Choose work to steer or a Session to reference",
     "intervene": "Steer thread",
-    "supplement": "Steer objective",
+    "supplement": "Supplement",
     "objectiveInputHint": "Send additional instructions to this objective without directly editing its definition.",
     "objectiveReplyHint": "Answer the question this objective is waiting for.",
     "reply": "Answer this question",

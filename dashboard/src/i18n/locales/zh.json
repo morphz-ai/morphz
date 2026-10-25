@@ -27,7 +27,7 @@
     "threadCounts": "{{activations}} 次激活 · {{jobs}} 个执行作业（并非线程数量）",
     "menu": "选择工作对象或引用会话",
     "intervene": "干预线程",
-    "supplement": "干预目标",
+    "supplement": "补充",
     "objectiveInputHint": "向此目标发送补充要求，不直接修改目标定义。",
     "objectiveReplyHint": "回答此目标正在等待的问题。",
     "reply": "回答此问题",

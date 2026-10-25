@@ -25,7 +25,6 @@ import {
   type MessageActionProps,
 } from "./message-action-presentation.js";
 import { ResponseWaiting } from "./ResponseWaiting.js";
-import { UserInputPreview } from "./UserInputPreview.js";
 import type { ActivityThread } from "./execution-activity.js";
 import { ConversationSearch } from "./ConversationSearch.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
@@ -126,7 +125,6 @@ export function Conversation({
   revealInputId,
   onInspect,
   onSupplement,
-  onReply,
   focusedArtifactId,
   focusedApplicationId,
   focusedCognitiveObject,
@@ -1166,6 +1164,10 @@ export function Conversation({
                             streaming={!!(streamConnected && reply.streaming)}
                             renderText={(text) => (
                               <SafeMarkdown
+                                resourceScope={{
+                                  projectId: reply!.projectId,
+                                  conversationId: reply!.conversationId,
+                                }}
                                 state={state}
                                 catalog={client.contentCatalog}
                                 onOpen={onOpen}
@@ -1184,6 +1186,10 @@ export function Conversation({
                         ) : (
                           <>
                             <SafeMarkdown
+                              resourceScope={{
+                                projectId: reply!.projectId,
+                                conversationId: reply!.conversationId,
+                              }}
                               state={state}
                               catalog={client.contentCatalog}
                               onOpen={onOpen}
@@ -1307,7 +1313,7 @@ export function Conversation({
                                 >
                                   <button
                                     type="button"
-                                    className="message-execution-link message-supplement"
+                                    className={`message-execution-link message-supplement${targets.some((target) => !!target.userInputRequest) ? " needs-input" : ""}`}
                                     aria-label={
                                       targets.length === 1
                                         ? "补充要求"
@@ -1428,25 +1434,6 @@ export function Conversation({
                       }
                     />
                   ))}
-                  {item &&
-                    runtime.activity?.threads
-                      .filter(
-                        (thread) =>
-                          thread.inputId === item.id &&
-                          !!thread.userInputRequest,
-                      )
-                      .map((thread) => (
-                        <UserInputPreview
-                          key={thread.userInputRequest!.request_id}
-                          thread={thread}
-                          onReply={onReply}
-                          disabled={
-                            !client.online ||
-                            !runtime.connected ||
-                            !runtime.activity?.available
-                          }
-                        />
-                      ))}
                   {item &&
                     waiting &&
                     !runtime.activity?.threads.some(

@@ -1,5 +1,10 @@
 # User input request interaction
 
+> Historical direction, superseded by the user's later instruction to reuse the existing
+> Supplement action and answer inside the composer, with no additional button or modal.
+> Current contract: [composer direction](2026-10-25-user-input-composer-direction.md).
+> The dated review below describes the previous implementation, not current acceptance.
+
 Scope: an Operate extension of the existing activity and native-modal surfaces. The user
 confirmed explicit questions, optional numbered choices, always-available free text, deliberate
 submission, and dismissing without answering. No new visual identity or global system rewrite.

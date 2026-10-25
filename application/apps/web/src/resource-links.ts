@@ -92,6 +92,50 @@ export function localFileLink(value: string): string | null {
   }
 }
 
+/** Explicit relative file destinations remain links. Resolution needs a live,
+ * authorized execution workspace at the Human click, never the UI URL/cwd. */
+export function relativeFileLink(value: string): string | null {
+  if (
+    !value ||
+    value.length > 4096 ||
+    /^[\/\\]|^[A-Za-z][A-Za-z\d+.-]*:/.test(value) ||
+    /[?#\\\u0000-\u001f\u007f]/.test(value) ||
+    /%2f|%5c/i.test(value)
+  )
+    return null;
+  try {
+    const decoded = decodeURIComponent(value);
+    const parts = decoded.replace(/^\.\//, "").split("/");
+    if (
+      /[\u0000-\u001f\u007f\\]/.test(decoded) ||
+      parts.some((part) => !part || part === "." || part === "..") ||
+      !/\.[A-Za-z0-9]{1,12}$/.test(parts.at(-1)!)
+    )
+      return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveWorkspaceFileLink(
+  value: string,
+  root: string,
+): string | null {
+  const relative = relativeFileLink(value);
+  const base = literalResourceLink(root.replace(/\/+$/, "") + "/");
+  if (!relative || !base) return null;
+  try {
+    const resolved = localFileLink(new URL(relative, base).href);
+    const basePath = localFileLink(base);
+    return resolved && basePath && resolved.startsWith(basePath)
+      ? resolved
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Inline code is literal, so encode once before passing through URL policy. */
 export function literalResourceLink(value: string): string | null {
   if (contentId.test(value)) return `morphz://content/${value}`;

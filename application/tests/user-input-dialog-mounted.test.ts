@@ -98,7 +98,8 @@ const client={online:true,boot:{centerId:'TEST-center',principalId:'TEST-person'
  },async refresh(){refresh();}};
 function Fixture(){
  const [,render]=useState(0);refresh=()=>render(n=>n+1);
- const host=useRef(null);
+ const host=useRef(null);const [composerSlot,setComposerSlot]=useState(null);
+ const release=()=>requestAnimationFrame(()=>document.querySelector('#main-draft')?.focus());
  window.questionFixture={api,report:()=>({commands,accepted:accepted.size,draft:document.querySelector('#main-draft').value}),
   loseReceipt:()=>{failNext=true;},revoke:()=>{forbidden=true;},
   replace:()=>{threads[1].userInputRequest={...question(2),request_id:'question-2-replaced'};refresh();},
@@ -107,7 +108,7 @@ function Fixture(){
    {id:'custom',question:'补充你的验收条件'}]};refresh();}};
  return <div className={desktop?'app':'page-shell'} data-color-mode="light" data-accent="cyan" style={{height:'100vh',width:'100%',display:'block'}}>
   <div className="workspace" style={{height:'100%',display:'block'}}><main className="primary-panel" style={{height:'100%',padding:24,overflow:'auto',color:desktop?'var(--ink)':'var(--text)'}}>
-   <h1 style={{fontSize:18}}>TEST 待答工作</h1><textarea id="main-draft" aria-label="主输入" defaultValue="保留主输入草稿"/>
+   <h1 style={{fontSize:18}}>TEST 待答工作</h1>
    <aside aria-label="TEST 活动" style={{width:380,maxWidth:'100%',marginLeft:'auto',marginTop:24}}>
    <h2 style={{fontSize:12,fontWeight:500,color:'var(--muted)'}}>进行中</h2>
    {threads.map(thread=><section key={thread.id} data-thread={thread.id} className={desktop?'execution-activity-entry':'dialogue-thread-card'}>
@@ -117,7 +118,8 @@ function Fixture(){
    </section>)}
    </aside>
    <button onClick={()=>desktop?host.current.openObjective(legacyGoal,[oldThread]):host.current.openLegacy(legacyGoal)}>TEST 旧任务回复</button>
-   {desktop?<UserInputDialogHost ref={host} client={client}/>:<UserInputDialogHost ref={host} principalId="TEST-person" readOnly={false} onAccepted={refresh}/>}
+   <div className="composer" id={desktop?'global-composer':'dashboard-composer'} style={{position:'fixed',left:24,bottom:24,width:'calc(100% - 48px)',maxWidth:740}}><div ref={setComposerSlot} className="question-composer-slot"/><div className={desktop?'composer-writing':'composer-input-area'}><textarea id="main-draft" aria-label="主输入" defaultValue="保留主输入草稿"/></div><div className={desktop?'composer-actions composer-action-bar':'composer-actions'}><button type="button" disabled>主输入发送</button></div></div>
+   {desktop?<UserInputDialogHost ref={host} client={client} container={composerSlot} onRelease={release}/>:<UserInputDialogHost ref={host} principalId="TEST-person" readOnly={false} container={composerSlot} onRelease={release} onAccepted={refresh}/>}
   </main></div>
  </div>;
 }
@@ -126,7 +128,7 @@ createRoot(document.getElementById('root')).render(<Fixture/>);
 }
 
 test(
-  "Desktop and Dashboard question dialogs retain independent forms, preserve the composer, and retry one exact command",
+  "Desktop and Dashboard supplement buttons answer inside the original composer, retain independent drafts, and retry one exact command",
   { timeout: 180_000 },
   async () => {
     const executable = process.env.MORPHZ_TEST_BROWSER_EXECUTABLE;
@@ -273,38 +275,33 @@ test(
             buttonName: button.getAttribute("aria-label"),
           };
         });
-        assert.equal(
-          previewGeometry.display,
-          "flex",
-          "positioned/grid action blockifies inline-flex within the real card layout",
+        assert.ok(
+          ["inline-flex", "flex"].includes(previewGeometry.display),
+          "the supplement is an inline action, never an expanded question block",
         );
         assert.equal(previewGeometry.background, "rgba(0, 0, 0, 0)");
         assert.equal(
           previewGeometry.inlineQuestion,
           false,
-          "question stays in its dialog, never an indented inline preview",
-        );
-        assert.equal(
-          previewGeometry.fontSize,
-          surface === "desktop" ? "12px" : "11px",
+          "question is absent from the activity card",
         );
         assert.ok(
-          previewGeometry.buttonWidth >= 60 &&
-            previewGeometry.buttonWidth < 120,
+          previewGeometry.buttonWidth >= 28 &&
+            previewGeometry.buttonWidth <= 33,
         );
         assert.ok(
           previewGeometry.buttonHeight >= 28 &&
             previewGeometry.buttonHeight < 33,
         );
-        assert.equal(previewGeometry.buttonText, "回答问题");
-        assert.equal(previewGeometry.buttonName, "回答问题");
+        assert.equal(previewGeometry.buttonText, "");
+        assert.equal(previewGeometry.buttonName, "补充");
         const captureDirectory = process.env.MORPHZ_QUESTION_UI_CAPTURE_DIR;
         const capture = async (name: string) => {
           if (!captureDirectory) return;
           mkdirSync(captureDirectory, { recursive: true });
           await page.waitForFunction(() => {
             const dialog =
-              document.querySelector<HTMLDialogElement>("dialog[open]");
+              document.querySelector<HTMLElement>(".composer-question");
             return (
               dialog &&
               dialog.getAttribute("aria-busy") !== "true" &&
@@ -338,21 +335,34 @@ test(
         }
         const first = page
             .locator('[data-thread="thread-1"]')
-            .getByRole("button", { name: "回答问题", exact: true }),
+            .getByRole("button", { name: "补充", exact: true }),
           second = page
             .locator('[data-thread="thread-2"]')
-            .getByRole("button", { name: "回答问题", exact: true });
+            .getByRole("button", { name: "补充", exact: true });
         await page.getByLabel("主输入").fill("主输入：不要修改我");
         await first.click();
-        let dialog = page.getByRole("dialog");
-        await dialog.getByRole("radio", { name: /启用预览/ }).waitFor();
-        const source = dialog.locator(
-          surface === "desktop" ? ".user-input-task" : ".runtime-question-task",
+        let dialog = page.locator(".composer-question");
+        assert.equal(await page.locator("dialog[open]").count(), 0);
+        assert.equal(await page.getByLabel("主输入").isVisible(), false);
+        assert.equal(
+          await page
+            .getByRole("button", { name: "主输入发送", includeHidden: true })
+            .isVisible(),
+          false,
         );
         assert.equal(
-          await source.getAttribute("open"),
-          null,
-          "long original source is initially subordinate",
+          await dialog.evaluate((el) => !!el.closest(".composer")),
+          true,
+        );
+        await dialog.getByRole("radio", { name: /启用预览/ }).waitFor();
+        const source = dialog.locator(
+          surface === "desktop"
+            ? ".user-input-composer-target"
+            : ".runtime-question-target",
+        );
+        assert.ok(
+          (await source.getAttribute("title"))!.includes("长任务来源"),
+          "full original source remains available without a duplicate source row",
         );
         assert.ok(
           (await source.evaluate(
@@ -366,7 +376,7 @@ test(
             .querySelector("legend")!
             .getBoundingClientRect();
           const source = element
-            .querySelector("details")!
+            .querySelector("header")!
             .getBoundingClientRect();
           const choice = element
             .querySelector("label:has(input[type=radio])")!
@@ -380,28 +390,23 @@ test(
           };
         });
         assert.ok(
-          proportions.width <= 512,
-          "a short question uses the compact panel, not a wide settings form",
+          proportions.width <= 740,
+          "the question uses the existing input width, not an overlay",
         );
         assert.ok(
           proportions.height <= 360,
           "short answer panel does not inherit oversized header/footer spacing",
         );
         assert.ok(
-          proportions.questionTop < proportions.sourceTop,
-          "the question precedes its subordinate source disclosure",
+          proportions.questionTop > proportions.sourceTop,
+          "the original supplement target is a compact input header, not a separate task card",
         );
         assert.ok(
-          proportions.choiceHeight >= 40 && proportions.choiceHeight <= 41,
+          proportions.choiceHeight >= 36 && proportions.choiceHeight <= 41,
           "pointer choices keep a compact, legible row",
         );
-        await source.locator("summary").press("Enter");
-        assert.equal(
-          await source.locator("p").isVisible(),
-          true,
-          "keyboard can inspect the full original source",
-        );
-        await source.locator("summary").press("Enter");
+        await source.focus();
+        await expect(source).toBeFocused();
         assert.equal(
           await dialog
             .getByRole("button", { name: "发送", exact: true })
@@ -444,7 +449,8 @@ test(
                     send: [send.color, send.backgroundColor] as const,
                     clear: [
                       clear.color,
-                      getComputedStyle(element).backgroundColor,
+                      getComputedStyle(element.closest(".composer")!)
+                        .backgroundColor,
                     ] as const,
                   };
                 });
@@ -486,37 +492,25 @@ test(
             .commands.length,
           0,
         );
-        for (let index = 0; index < 9; index++) {
-          await page.keyboard.press("Tab");
-          const focus = await dialog.evaluate((element) => ({
-            inside: element.contains(document.activeElement),
-            active: document.activeElement?.outerHTML,
-          }));
-          assert.equal(
-            focus.inside,
-            true,
-            surface + " native modality traps keyboard focus: " + focus.active,
-          );
-        }
-        // The revised compact tab order can end on the close button's shared
-        // Tooltip. Its first Escape belongs to that hint, not the dialog.
-        // Test native modal dismissal from the answer field, with no child
-        // popover open, rather than relying on an incidental ninth tab target.
+        await page.getByRole("button", { name: "TEST 旧任务回复" }).focus();
+        assert.equal(
+          await page
+            .getByRole("button", { name: "TEST 旧任务回复" })
+            .evaluate((el) => el === document.activeElement),
+          true,
+          "background remains keyboard reachable; no modal focus trap",
+        );
         await dialog.getByRole("textbox").focus();
         await page.keyboard.press("Escape");
         await dialog.waitFor({ state: "detached" });
-        assert.equal(
-          await first.evaluate((element) => element === document.activeElement),
-          true,
-          surface + " restores the invoking control",
-        );
+        await expect(page.getByLabel("主输入")).toBeFocused();
         await second.click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         await dialog.getByRole("radio", { name: /保持关闭/ }).check();
         await dialog.getByRole("textbox").fill("第二项独立草稿");
         await page.keyboard.press("Escape");
         await first.click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         assert.equal(
           await dialog.getByRole("radio", { name: /启用预览/ }).isChecked(),
           true,
@@ -559,27 +553,27 @@ test(
         assert.equal(report.commands[0].input_destination.kind, "user_input");
         assert.equal(report.draft, "主输入：不要修改我");
         await second.click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         assert.equal(
           await dialog.getByRole("textbox").inputValue(),
           "第二项独立草稿",
         );
         await page.keyboard.press("Escape");
         await page.getByRole("button", { name: "TEST 旧任务回复" }).click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         await dialog.getByText(/旧记录没有保存具体问题/).waitFor();
         await capture("legacy-question");
         await dialog.getByRole("textbox").fill("旧任务的明确回复");
         await page.keyboard.press("Escape");
         await page.getByRole("button", { name: "TEST 旧任务回复" }).click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         assert.equal(
           await dialog.getByRole("textbox").inputValue(),
           "旧任务的明确回复",
         );
         await page.keyboard.press("Escape");
         await second.click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         await page.evaluate(() => (window as any).questionFixture.replace());
         const send = dialog.getByRole("button", { name: "发送", exact: true });
         if (surface === "desktop") await expect(send).toBeDisabled();
@@ -598,7 +592,7 @@ test(
         await page.keyboard.press("Escape");
         await page.evaluate(() => (window as any).questionFixture.batch());
         await first.click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         await dialog.getByRole("radio", { name: /启用预览/ }).check();
         await dialog.getByRole("checkbox", { name: /第一项/ }).check();
         await dialog.getByRole("checkbox", { name: /第二项/ }).check();
@@ -631,7 +625,7 @@ test(
         );
         assert.equal(report.draft, "主输入：不要修改我");
         await page.getByRole("button", { name: "TEST 旧任务回复" }).click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         await dialog.getByRole("button", { name: "发送", exact: true }).click();
         await dialog.waitFor({ state: "detached" });
         report = await page.evaluate(() =>
@@ -646,7 +640,7 @@ test(
         });
         await page.evaluate(() => (window as any).questionFixture.revoke());
         await second.click();
-        dialog = page.getByRole("dialog");
+        dialog = page.locator(".composer-question");
         await dialog
           .getByRole("alert")
           .filter({ hasText: "TEST permission revoked" })

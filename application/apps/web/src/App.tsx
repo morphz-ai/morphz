@@ -427,6 +427,8 @@ function WorkspaceApp({
   origin: NavigationOrigin;
 }) {
   const questionDialogs = useRef<UserInputDialogHandle>(null);
+  const [questionComposerSlot, setQuestionComposerSlot] =
+    useState<HTMLDivElement | null>(null);
   const profile = useProfile(client);
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = host.storage;
@@ -2415,6 +2417,24 @@ function WorkspaceApp({
     client.boot!.workspace.actants.find((actor) => actor.kind === "agent")
       ?.name ??
     "Morphz";
+  function openQuestion(thread: Parameters<UserInputDialogHandle["open"]>[0]) {
+    showInput();
+    questionDialogs.current?.open(thread);
+  }
+  async function supplementOrReply(target: Parameters<typeof supplement>[0]) {
+    const asking = client.boot!.runtime.activity?.threads.find(
+      (thread) =>
+        thread.id === target.threadId &&
+        thread.continuation?.generation === target.generation &&
+        !!thread.userInputRequest,
+    );
+    if (asking) {
+      openQuestion(asking);
+      return;
+    }
+    questionDialogs.current?.close();
+    await supplement(target);
+  }
   // Both expanded and collapsed entries use the same admission and command.
   // A comment is already input; revealing the textarea is not a prerequisite.
   const sendLabel = draft.continuation
@@ -3305,10 +3325,10 @@ function WorkspaceApp({
                     positions={exchangePositions.current}
                     revealInputId={revealedInputs[conversationId] ?? null}
                     onInspect={inspectExecution}
-                    onReply={(thread) => questionDialogs.current?.open(thread)}
+                    onReply={openQuestion}
                     onSupplement={
                       client.boot!.capabilities.directedInput
-                        ? supplement
+                        ? supplementOrReply
                         : undefined
                     }
                     state={state}
@@ -3429,6 +3449,10 @@ function WorkspaceApp({
                       id="global-composer"
                       aria-label="AI 输入"
                     >
+                      <div
+                        className="question-composer-slot"
+                        ref={setQuestionComposerSlot}
+                      />
                       <div
                         className="composer-attachment-slot"
                         ref={setAttachmentSlot}
@@ -4234,10 +4258,10 @@ function WorkspaceApp({
                   onResize={resizeInspector}
                   onClose={closeInspector}
                   onSelect={subjectInspector.selectExecution}
-                  onReply={(thread) => questionDialogs.current?.open(thread)}
+                  onReply={openQuestion}
                   onSupplement={
                     client.boot!.capabilities.directedInput
-                      ? supplement
+                      ? supplementOrReply
                       : undefined
                   }
                   onOpen={openUser}
@@ -4254,15 +4278,14 @@ function WorkspaceApp({
                           : undefined
                       }
                       onSelect={subjectInspector.selectExecution}
-                      onReply={(thread) =>
-                        questionDialogs.current?.open(thread)
-                      }
-                      onReplyObjective={(goal, threads) =>
-                        questionDialogs.current?.openObjective(goal, threads)
-                      }
+                      onReply={openQuestion}
+                      onReplyObjective={(goal, threads) => {
+                        showInput();
+                        questionDialogs.current?.openObjective(goal, threads);
+                      }}
                       onSupplement={
                         client.boot!.capabilities.directedInput
-                          ? supplement
+                          ? supplementOrReply
                           : undefined
                       }
                     />
@@ -4416,7 +4439,17 @@ function WorkspaceApp({
             onInsert={inputTools.transcriptInserted}
           />
         )}
-      <UserInputDialogHost client={client} ref={questionDialogs} />
+      <UserInputDialogHost
+        client={client}
+        ref={questionDialogs}
+        container={questionComposerSlot}
+        onEngage={showInput}
+        onRelease={() =>
+          requestAnimationFrame(() =>
+            input.current?.focus({ preventScroll: true }),
+          )
+        }
+      />
       {capture && (
         <CaptureDialog
           client={client}

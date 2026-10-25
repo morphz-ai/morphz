@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import type { Operation } from "../../../packages/core/src/model.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import type {
@@ -68,19 +69,30 @@ type Draft = {
 export type UserInputDialogHandle = {
   open(thread: ActivityThread): void;
   openObjective(goal: QuestionObjective, threads: ActivityThread[]): void;
+  close(): void;
 };
 
 /** Only form drafts live here. Runtime owns the questions and acceptance.
  * Submitted immutable operations use the existing durable input outbox. */
 export const UserInputDialogHost = forwardRef<
   UserInputDialogHandle,
-  { client: WorkspaceClient }
->(function UserInputDialogHost({ client }, ref) {
+  {
+    client: WorkspaceClient;
+    container: HTMLElement | null;
+    onEngage?(): void;
+    onRelease?(): void;
+  }
+>(function UserInputDialogHost(
+  { client, container, onEngage, onRelease },
+  ref,
+) {
   const [active, setActive] = useState<{
     identity: string;
     key: string;
     origin: Origin;
   } | null>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const draftsRef = useRef(drafts);
   const boot = client.boot!;
@@ -107,6 +119,7 @@ export const UserInputDialogHost = forwardRef<
       origin.requestId,
     ].join(":");
     setActive({ identity, key, origin });
+    onEngage?.();
     const previous = draftsRef.current;
     const next = {
       ...previous,
@@ -176,6 +189,9 @@ export const UserInputDialogHost = forwardRef<
       });
   }
   useImperativeHandle(ref, () => ({
+    close() {
+      setActive(null);
+    },
     open(thread) {
       const question = thread.userInputRequest;
       if (
@@ -242,7 +258,12 @@ export const UserInputDialogHost = forwardRef<
       );
     },
   }));
-  if (!active || active.identity !== identity || !drafts[active.key])
+  if (
+    !active ||
+    active.identity !== identity ||
+    !drafts[active.key] ||
+    !container
+  )
     return null;
   const { key, origin } = active;
   const draft = drafts[key]!;
@@ -329,6 +350,7 @@ export const UserInputDialogHost = forwardRef<
       draftsRef.current = next;
       setDrafts(next);
       setActive((value) => (value?.key === key ? null : value));
+      if (activeRef.current?.key === key) onRelease?.();
       void client.refresh({ refreshActivity: true });
     } catch (error) {
       if (currentIdentity.current === identity) {
@@ -354,43 +376,50 @@ export const UserInputDialogHost = forwardRef<
       }
     }
   }
-  return origin.kind === "question" && question ? (
-    <UserInputDialog
-      key={key}
-      title={origin.title || draft.target?.title || "原工作"}
-      request={question}
-      answers={draft.answers}
-      available={!!available}
-      busy={!!draft.busy || !!draft.reading}
-      frozen={!!draft.command}
-      error={draft.error}
-      status={
-        draft.reading
-          ? "正在读取问题…"
-          : question.reply_allowed === false
-            ? "当前工作不可回复，恢复任务并刷新后再试。"
-            : currentThread?.controlState === "paused"
-              ? "任务已暂停，恢复任务后可以回复。"
-              : undefined
-      }
-      onChange={(answers) => update(key, { answers })}
-      onSubmit={() => void submit()}
-      onClose={() => setActive(null)}
-    />
-  ) : (
-    <LegacyUserInputDialog
-      key={key}
-      title={origin.title}
-      value={draft.legacyBody ?? ""}
-      legacy={origin.kind === "legacy"}
-      available={!!available}
-      reading={!!draft.reading}
-      busy={!!draft.busy}
-      frozen={!!draft.command}
-      error={draft.error}
-      onChange={(legacyBody) => update(key, { legacyBody })}
-      onSubmit={() => void submit()}
-      onClose={() => setActive(null)}
-    />
+  function close() {
+    setActive(null);
+    onRelease?.();
+  }
+  return createPortal(
+    origin.kind === "question" && question ? (
+      <UserInputDialog
+        key={key}
+        title={origin.title || draft.target?.title || "原工作"}
+        request={question}
+        answers={draft.answers}
+        available={!!available}
+        busy={!!draft.busy || !!draft.reading}
+        frozen={!!draft.command}
+        error={draft.error}
+        status={
+          draft.reading
+            ? "正在读取问题…"
+            : question.reply_allowed === false
+              ? "当前工作不可回复，恢复任务并刷新后再试。"
+              : currentThread?.controlState === "paused"
+                ? "任务已暂停，恢复任务后可以回复。"
+                : undefined
+        }
+        onChange={(answers) => update(key, { answers })}
+        onSubmit={() => void submit()}
+        onClose={close}
+      />
+    ) : (
+      <LegacyUserInputDialog
+        key={key}
+        title={origin.title}
+        value={draft.legacyBody ?? ""}
+        legacy={origin.kind === "legacy"}
+        available={!!available}
+        reading={!!draft.reading}
+        busy={!!draft.busy}
+        frozen={!!draft.command}
+        error={draft.error}
+        onChange={(legacyBody) => update(key, { legacyBody })}
+        onSubmit={() => void submit()}
+        onClose={close}
+      />
+    ),
+    container,
   );
 });

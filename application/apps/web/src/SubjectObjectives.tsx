@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Target, ChevronDown, ChevronRight, Eye, Reply } from "lucide-react";
+import {
+  Target,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  MessageSquarePlus,
+} from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
@@ -19,7 +25,6 @@ import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { PersistentDetails } from "./PersistentDetails.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import { SubjectObjectiveDialog } from "./SubjectObjectiveDialog.js";
-import { UserInputPreview } from "./UserInputPreview.js";
 import type { ActivityThread } from "./execution-activity.js";
 import type { QuestionObjective } from "./UserInputDialogHost.js";
 
@@ -29,12 +34,14 @@ function ObjectiveHeading({
   status,
   onToggle,
   onView,
+  supplement,
 }: {
   title: string;
   open: boolean;
   status: ReactNode;
   onToggle(): void;
   onView(): void;
+  supplement?: ReactNode;
 }) {
   return (
     <div className="subject-objective-row">
@@ -52,6 +59,7 @@ function ObjectiveHeading({
           {open ? <ChevronDown /> : <ChevronRight />}
         </button>
       </Tooltip>
+      {supplement}
       <Tooltip label="查看目标">
         <button
           className="icon-button subject-objective-view"
@@ -181,6 +189,22 @@ export function SubjectObjectives({
           open={open}
           onToggle={() => setExpanded(open ? null : goal.id)}
           onView={() => setViewing(goal.id)}
+          supplement={
+            goal.pendingUserInput && onReplyObjective ? (
+              <Tooltip label="补充 · 有待答问题">
+                <button
+                  type="button"
+                  className="icon-button needs-input"
+                  data-size="icon-xs"
+                  aria-label="补充目标"
+                  disabled={!goalFresh || goal.status !== "active"}
+                  onClick={() => onReplyObjective(goal, threads)}
+                >
+                  <MessageSquarePlus />
+                </button>
+              </Tooltip>
+            ) : undefined
+          }
           status={
             <>
               {goalFresh
@@ -197,43 +221,6 @@ export function SubjectObjectives({
             </>
           }
         />
-        {threads
-          .filter((thread) => !!thread.userInputRequest)
-          .map((thread) => (
-            <UserInputPreview
-              key={thread.id}
-              thread={thread}
-              onReply={onReply}
-              disabled={
-                !client.online ||
-                !executionActivityThreadAvailable(thread, runtime)
-              }
-            />
-          ))}
-        {goal.pendingUserInput &&
-          !threads.some(
-            (thread) =>
-              thread.userInputRequest?.request_id ===
-              goal.pendingUserInput?.requestId,
-          ) && (
-            <div className="user-input-preview">
-              <p>
-                {goal.pendingUserInput.kind === "legacy"
-                  ? "旧记录没有保存具体问题。"
-                  : "有待答问题"}
-              </p>
-              {onReplyObjective && (
-                <button
-                  type="button"
-                  disabled={!goalFresh || goal.status !== "active"}
-                  onClick={() => onReplyObjective(goal, threads)}
-                >
-                  <Reply size={15} aria-hidden="true" />
-                  回复
-                </button>
-              )}
-            </div>
-          )}
         {open && (
           <div className="subject-objective-detail">
             <p role="status">

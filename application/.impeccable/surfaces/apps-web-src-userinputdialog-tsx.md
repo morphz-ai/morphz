@@ -7,6 +7,22 @@ related_targets: ["apps/web/src/user-input-dialog.css"]
 
 # User input request interaction
 
+## Current direction, superseding the archived contract below
+
+Mode: Operate refinement; seed none. Reuse the existing Supplement action and the current
+composer. No extra answer button, inline activity question, backdrop or modal. Pending uses a
+static accent dot plus three gentle pulses; reduced motion retains the static state. Ordinary
+drafts/references/attachments remain mounted and unchanged. Show the exact original task,
+full questions, choices, free text and one explicit Send inside the input frame. Escape exits
+without answering and returns to the ordinary input. Keep original request/auth/command identity.
+Use incumbent system type, neutral themes and focus tokens; body bounds 48dvh/420px, narrow
+wrapping, no focus trap. No global DESIGN.md rewrite or raster assets.
+
+Current contract and evidence: [composer direction](../../docs/design/2026-10-25-user-input-composer-direction.md).
+Previous modal TEST A/B receipts and dimensions do not validate this new interaction.
+
+## Archived earlier direction and evidence
+
 Scope: an Operate extension of the existing activity and native-modal surfaces. The user
 confirmed explicit questions, optional numbered choices, always-available free text, deliberate
 submission, and dismissing without answering. No new visual identity or global system rewrite.
