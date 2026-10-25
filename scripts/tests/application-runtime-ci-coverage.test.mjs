@@ -39,6 +39,31 @@ function verifyTimingStability(source) {
   assert.doesNotMatch(step, /--grep|--shard|--retries|continue-on-error|\bif:|\|\|/);
 }
 
+function verifyHarnessStackStability(source) {
+  const job = jobSource(source, "runtime-admission");
+  const steps = job.split("\n      - ");
+  const inventory = steps.findIndex(part => part.includes("name: Run the complete Runtime library inventory through the installed implementation"));
+  const repeated = steps.findIndex(part => part.includes("name: Require five Harness root passes on the default 2 MiB test stack"));
+  assert.ok(inventory >= 0 && repeated > inventory, "stack repetition supplements the complete inventory");
+  const step = steps[repeated];
+  assert.match(step, /shell: bash/);
+  assert.match(step, /for round in 1 2 3 4 5; do/);
+  assert.match(step, /RUST_MIN_STACK=2097152 \/usr\/local\/libexec\/morphz-runtime-ci\/lib/);
+  assert.match(step, /runtime::tests::bound_runtime_harness_returns_without_a_model_rewrite_or_goal_completion/);
+  assert.match(step, /--exact --test-threads=1/);
+  assert.doesNotMatch(step, /continue-on-error|\bif:|\|\||--ignored|\buntil\b/);
+}
+
+test("Harness stack stability must pass five times at the default budget after the complete installed inventory", () => {
+  const source = readFileSync(new URL("../../.github/workflows/linux-sandbox-service.yml", import.meta.url), "utf8");
+  verifyHarnessStackStability(source);
+  for (const changed of [
+    source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    source.replace("RUST_MIN_STACK=2097152", "RUST_MIN_STACK=8388608"),
+    source.replace("--exact --test-threads=1\n          done", "--exact --test-threads=1 || true\n          done"),
+  ]) assert.throws(() => verifyHarnessStackStability(changed));
+});
+
 test("the latest commit must pass every timing and healthy-idle case five times, not retry failures", () => {
   const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
   verifyTimingStability(source);

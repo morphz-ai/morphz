@@ -14926,6 +14926,12 @@ impl Orchestrator {
                 }
             }
         }
+        // The model protocol/correction phase has a large debug poll frame.
+        // A Harness root never uses it, but an inline branch still reserves
+        // that frame before dispatching the Harness. Keep the phases behind
+        // separate heap boundaries, without spawning, yielding or changing
+        // the current Evaluation's leases and error propagation.
+        Box::pin(async move {
         let mut allowed_tool_names = allowed_tools
             .iter()
             .map(|tool| tool.name.clone())
@@ -16678,6 +16684,7 @@ impl Orchestrator {
         }
 
         unreachable!("A tool-free response must be handled by terminal-protocol classification, correction, or the circuit breaker")
+        }).await
         }).await
     }
 

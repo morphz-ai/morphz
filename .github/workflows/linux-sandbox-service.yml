@@ -94,6 +94,15 @@ jobs:
       - name: Run the complete Runtime library inventory through the installed implementation
         if: ${{ !cancelled() }}
         run: /usr/local/libexec/morphz-runtime-ci/lib --test-threads=1
+      - name: Require five Harness root passes on the default 2 MiB test stack
+        shell: bash
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'Harness stack pass %s/5\n' "$round"
+            RUST_MIN_STACK=2097152 /usr/local/libexec/morphz-runtime-ci/lib \
+              runtime::tests::bound_runtime_harness_returns_without_a_model_rewrite_or_goal_completion \
+              --exact --test-threads=1
+          done
       - name: Require real PostgreSQL approval, input and PTY contracts even after another failure
         if: ${{ !cancelled() }}
         env:
