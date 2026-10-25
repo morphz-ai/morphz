@@ -1,5 +1,11 @@
 import { useEffect, useId, useRef } from "react";
-import { LoaderCircle, MessageSquarePlus, Send, X } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  LoaderCircle,
+  MessageSquarePlus,
+  X,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   userInputAnswerText,
@@ -47,6 +53,31 @@ export function UserInputDialog({
   const text = userInputAnswerText(request.questions, answers);
   const canSend =
     !busy && (frozen || (available && text !== null && text.length <= 30000));
+  const singleQuestion = request.questions.length === 1;
+  const sendLabel = t(
+    busy
+      ? "userInput.sending"
+      : frozen
+        ? "userInput.recheck"
+        : "userInput.send",
+  );
+  const send = (
+    <button
+      type="submit"
+      className={`question-send runtime-question-send${frozen ? " is-recheck" : ""}`}
+      disabled={!canSend}
+      aria-label={sendLabel}
+      title={sendLabel}
+      aria-describedby={error ? feedbackId : undefined}
+    >
+      {busy ? (
+        <LoaderCircle size={16} className="spin" aria-hidden="true" />
+      ) : (
+        <ArrowUp size={18} aria-hidden="true" />
+      )}
+      {frozen && <span>{t("userInput.recheck")}</span>}
+    </button>
+  );
   function change(
     id: string,
     patch: Partial<UserInputAnswer>,
@@ -67,6 +98,7 @@ export function UserInputDialog({
     <section
       ref={panel}
       className="composer-question runtime-question-composer"
+      data-single-question={singleQuestion || undefined}
       aria-label={t("userInput.title")}
       aria-busy={busy}
       onKeyDown={(event) => {
@@ -111,10 +143,13 @@ export function UserInputDialog({
               (value) => value.question_id === question.id,
             );
             const textId = `${titleId}-text-${index}`;
+            const inputLabel = t(
+              question.options?.length ? "userInput.extra" : "userInput.answer",
+            );
             return (
               <fieldset
                 key={question.id}
-                disabled={!available || busy || frozen}
+                disabled={busy || (!available && !frozen)}
               >
                 <legend>{question.question}</legend>
                 {(question.options ?? []).map((option, ordinal) => {
@@ -124,13 +159,18 @@ export function UserInputDialog({
                     <label
                       className="runtime-question-choice"
                       data-selected={selected || undefined}
+                      data-multiple={question.multi_select || undefined}
                       key={option.id}
                     >
                       <span
                         className="runtime-question-number"
                         aria-hidden="true"
                       >
-                        {ordinal + 1}
+                        {selected && !question.multi_select ? (
+                          <Check size={13} />
+                        ) : (
+                          ordinal + 1
+                        )}
                       </span>
                       <span>
                         <span>{option.label}</span>
@@ -142,6 +182,7 @@ export function UserInputDialog({
                         type={question.multi_select ? "checkbox" : "radio"}
                         name={`${titleId}-${question.id}`}
                         checked={selected}
+                        disabled={frozen}
                         onChange={() =>
                           change(
                             question.id,
@@ -165,16 +206,13 @@ export function UserInputDialog({
                   );
                 })}
                 <div className="runtime-question-text-label">
-                  <label htmlFor={textId}>
-                    {t(
-                      question.options?.length
-                        ? "userInput.extra"
-                        : "userInput.answer",
-                    )}
+                  <label className="question-input-label" htmlFor={textId}>
+                    {inputLabel}
                   </label>
                   {!!answer?.selected_option_ids.length && (
                     <button
                       type="button"
+                      disabled={frozen}
                       onClick={() =>
                         change(question.id, { selected_option_ids: [] })
                       }
@@ -183,15 +221,24 @@ export function UserInputDialog({
                     </button>
                   )}
                 </div>
-                <textarea
-                  id={textId}
-                  rows={2}
-                  maxLength={8000}
-                  value={answer?.text ?? ""}
-                  onChange={(event) =>
-                    change(question.id, { text: event.target.value })
-                  }
-                />
+                <div className="question-answer-row">
+                  <textarea
+                    id={textId}
+                    rows={1}
+                    placeholder={t(
+                      question.options?.length
+                        ? "userInput.extraPlaceholder"
+                        : "userInput.answerPlaceholder",
+                    )}
+                    maxLength={8000}
+                    value={answer?.text ?? ""}
+                    disabled={frozen}
+                    onChange={(event) =>
+                      change(question.id, { text: event.target.value })
+                    }
+                  />
+                  {singleQuestion && send}
+                </div>
               </fieldset>
             );
           })}
@@ -200,37 +247,22 @@ export function UserInputDialog({
           <div id={feedbackId} aria-live="polite">
             {error ? (
               <p role="alert">{error}</p>
-            ) : (
+            ) : (status ??
+              (!available && !frozen
+                ? t("userInput.stale")
+                : text && text.length > 30000
+                  ? t("userInput.tooLong")
+                  : "")) ? (
               <p>
                 {status ??
                   (!available && !frozen
                     ? t("userInput.stale")
-                    : text && text.length > 30000
-                      ? t("userInput.tooLong")
-                      : "")}
+                    : t("userInput.tooLong"))}
               </p>
-            )}
+            ) : null}
             {frozen && <p>{t("userInput.receiptRetained")}</p>}
           </div>
-          <button
-            type="submit"
-            className="runtime-question-send"
-            disabled={!canSend}
-            aria-describedby={error ? feedbackId : undefined}
-          >
-            {busy ? (
-              <LoaderCircle size={15} className="spin" aria-hidden="true" />
-            ) : (
-              <Send size={15} aria-hidden="true" />
-            )}
-            {t(
-              busy
-                ? "userInput.sending"
-                : frozen
-                  ? "userInput.recheck"
-                  : "userInput.send",
-            )}
-          </button>
+          {!singleQuestion && send}
         </footer>
       </form>
     </section>

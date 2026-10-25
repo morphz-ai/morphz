@@ -38,7 +38,7 @@ ${surface === "desktop" ? currentAppCSSImports() : `import '/@fs/${dashboard}/in
 const desktop=${JSON.stringify(surface === "desktop")};
 let refresh=()=>{};
 const accepted=new Map(),commands=[];
-let failNext=false,forbidden=false;
+let failNext=false,forbidden=false,readHeld=null,releaseRead=()=>{};
 function question(n){return {request_id:'question-'+n,thread_id:'thread-'+n,thread_generation:1,
  session_id:'TEST-session',context_id:'TEST-context',requested_at:'2026-10-25T01:00:00Z',
  questions:[{id:'preview',question:'是否启用第 '+n+' 项合成预览？',multi_select:true,options:[{id:'yes',label:'启用预览'},{id:'no',label:'保持关闭'}]}]};}
@@ -80,6 +80,7 @@ function api(path,body){
 window.morphzDesktop={application:{cancel(){},async invoke(envelope){
  const origin=envelope.params;
  if(envelope.method!=='user-input.read')throw Error('Unexpected logical method');
+ if(readHeld)await readHeld;
  if(forbidden)return {ok:false,error:{status:403,code:'forbidden',message:'TEST permission revoked'}};
  const thread=threads.find(thread=>thread.id===origin.continuation.threadId);
  return {ok:true,value:{title:thread?.title??legacyGoal.title,
@@ -101,9 +102,10 @@ function Fixture(){
  const host=useRef(null);const [composerSlot,setComposerSlot]=useState(null);
  const release=()=>requestAnimationFrame(()=>document.querySelector('#main-draft')?.focus());
  window.questionFixture={api,report:()=>({commands,accepted:accepted.size,draft:document.querySelector('#main-draft').value}),
+  holdRead:()=>{readHeld=new Promise(resolve=>{releaseRead=()=>{readHeld=null;resolve();};});},releaseRead:()=>releaseRead(),
   loseReceipt:()=>{failNext=true;},revoke:()=>{forbidden=true;},
   replace:()=>{threads[1].userInputRequest={...question(2),request_id:'question-2-replaced'};refresh();},
-  single:()=>{threads[0].userInputRequest={...question(1),request_id:'question-single',questions:[{...question(1).questions[0],multi_select:false}]};refresh();},
+  single:()=>{threads[0].userInputRequest={...question(1),request_id:'question-single',questions:[{...question(1).questions[0],multi_select:false,options:[{id:'yes',label:'启用预览',description:'仅使用合成数据，不执行业务操作'},{id:'no',label:'保持关闭',description:'保留当前待答问题，稍后回答'}]}]};refresh();},
   singleBatch:()=>{threads[0].userInputRequest={...question(1),request_id:'question-single-batch',questions:[
    {...question(1).questions[0],multi_select:false},{...question(1).questions[0],id:'second',question:'第二个单选问题',multi_select:false}]};refresh();},
   batch:()=>{threads[0].userInputRequest={...question(1),request_id:'question-batch',questions:[
@@ -548,8 +550,19 @@ test(
             .locator('[data-thread="thread-2"]')
             .getByRole("button", { name: "补充", exact: true });
         await page.getByLabel("主输入").fill("主输入：不要修改我");
+        if (surface === "desktop")
+          await page.evaluate(() => (window as any).questionFixture.holdRead());
         await first.click();
         let dialog = page.locator(".composer-question");
+        if (surface === "desktop") {
+          await expect(dialog).toHaveAttribute("aria-busy", "true");
+          await expect(dialog).toBeFocused();
+          await page.evaluate(() =>
+            (window as any).questionFixture.releaseRead(),
+          );
+          await expect(dialog).toHaveAttribute("aria-busy", "false");
+          await expect(dialog.getByRole("textbox")).toBeFocused();
+        }
         assert.equal(await page.locator("dialog[open]").count(), 0);
         assert.equal(await page.getByLabel("主输入").isVisible(), false);
         assert.equal(
@@ -850,6 +863,59 @@ test(
         await first.click();
         dialog = page.locator(".composer-question");
         await expect(dialog.getByRole("textbox")).toBeEnabled();
+        const compactAnswer = await dialog.evaluate((element) => {
+          const input = element.querySelector("textarea")!;
+          const row = element.querySelector(".question-answer-row")!;
+          const send = row.querySelector("button")!;
+          const label = element.querySelector(".question-input-label")!;
+          return {
+            height: element.getBoundingClientRect().height,
+            inputHeight: input.getBoundingClientRect().height,
+            inputSize: getComputedStyle(input).fontSize,
+            labelHeight: label.getBoundingClientRect().height,
+            labelClipped: getComputedStyle(label).clipPath,
+            sendWidth: send.getBoundingClientRect().width,
+            sendBottom: send.getBoundingClientRect().bottom,
+            inputBottom: input.getBoundingClientRect().bottom,
+            footerDisplay: getComputedStyle(element.querySelector("footer")!)
+              .display,
+          };
+        });
+        assert.ok(
+          compactAnswer.height <= 248,
+          `${surface} short questions have no empty form block: ${JSON.stringify(compactAnswer)}`,
+        );
+        assert.ok(
+          compactAnswer.inputHeight <= 36,
+          "the empty answer never inherits the ordinary 60px composer minimum",
+        );
+        assert.equal(
+          compactAnswer.inputSize,
+          "14px",
+          "compactness does not shrink readable input text",
+        );
+        assert.equal(
+          compactAnswer.labelHeight,
+          1,
+          "the redundant explanation line occupies no layout space",
+        );
+        assert.equal(compactAnswer.labelClipped, "inset(50%)");
+        assert.equal(compactAnswer.sendWidth, 32);
+        assert.ok(
+          Math.abs(compactAnswer.sendBottom - compactAnswer.inputBottom) <= 1,
+          "input and Send share the same row",
+        );
+        assert.equal(
+          compactAnswer.footerDisplay,
+          "none",
+          "a healthy short question has no empty footer",
+        );
+        await capture("single-empty-compact");
+        if (captureDirectory) {
+          await page.setViewportSize({ width: 390, height: 844 });
+          await capture("single-empty-narrow");
+          await page.setViewportSize({ width: 1280, height: 900 });
+        }
         await dialog.getByRole("textbox").fill("单选附加说明");
         const beforeSingle = report.commands.length;
         await page.evaluate(() =>

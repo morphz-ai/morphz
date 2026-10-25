@@ -20,6 +20,12 @@ batches submit on selection; multi-choice/free-text batches keep explicit submis
 without answering and returns to the ordinary input. Keep original request/auth/command identity.
 Use incumbent system type, neutral themes and focus tokens; body bounds 48dvh/420px, narrow
 wrapping, no focus trap. No global DESIGN.md rewrite or raster assets.
+Short questions are content-sized: 14px question and choice copy, 12px descriptions, a compact
+source row, and one reply/Send row. The redundant extra-answer label is accessibility-only;
+do not allocate an empty textarea block or empty footer. Numbered single choices do not also
+show a far-right radio circle. Multi-select retains visible checkboxes and explicit Send.
+While Desktop loads a question, focus stays in the original exchange before moving to its
+editable reply; the collapsed composer must not immediately dismiss an explicit Supplement.
 
 Current contract and evidence: [composer direction](../../docs/design/2026-10-25-user-input-composer-direction.md).
 Previous modal TEST A/B receipts and dimensions do not validate this new interaction.

@@ -9,6 +9,8 @@
     "close": "关闭，稍后回复",
     "reply": "回答问题",
     "extra": "补充说明，或直接填写答案",
+    "extraPlaceholder": "补充回答…",
+    "answerPlaceholder": "输入回答…",
     "answer": "你的回复",
     "clear": "取消选择",
     "send": "发送",

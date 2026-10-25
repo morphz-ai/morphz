@@ -9,6 +9,8 @@
     "close": "Close and answer later",
     "reply": "Reply",
     "extra": "Add details, or write your answer",
+    "extraPlaceholder": "Add a reply…",
+    "answerPlaceholder": "Write your answer…",
     "answer": "Your answer",
     "clear": "Clear selection",
     "send": "Send",
