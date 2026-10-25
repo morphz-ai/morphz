@@ -959,9 +959,12 @@ export class ApplicationSession {
       historyVersion: undefined as string | undefined,
     };
     if (head)
-      value.historyVersion = createHash("sha256")
-        .update(JSON.stringify([value.historyVersion, head]))
-        .digest("hex");
+      value.historyVersion =
+        head.latestSequence === null
+          ? undefined
+          : createHash("sha256")
+              .update(JSON.stringify([value.historyVersion, head]))
+              .digest("hex");
     this.active();
     return { ...value, catalogVersion, revisions };
   }

@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 
-test("正式 Platform 会话定时刷新复用正文，新事件版本才重读", async ({
+test("正式 Platform 会话显式唤醒复用正文，健康空闲不读取，新事件版本才重读", async ({
   page,
 }) => {
   let version = "a".repeat(64);
@@ -62,6 +62,10 @@ test("正式 Platform 会话定时刷新复用正文，新事件版本才重读"
     page.getByRole("heading", { name: "工作台", exact: true }),
   ).toBeVisible();
   await expect.poll(() => historyCalls.length).toBe(1);
+  // Initial navigation has no selected scope until the authorized catalog and
+  // latest page commit. Enter the existing foreground trigger explicitly;
+  // there is intentionally no idle ticker to issue that second scoped read.
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect
     .poll(
       () => navigationScopes.some((scope) => scope.includes("projectId=")),
@@ -71,10 +75,12 @@ test("正式 Platform 会话定时刷新复用正文，新事件版本才重读"
     )
     .toBe(true);
   const initialCatalogCalls = catalogCalls;
+  const initialNavigationCalls = navigationScopes.length;
   expect(initialCatalogCalls).toBeGreaterThan(0);
   await page.waitForTimeout(5_600);
   expect(historyCalls).toHaveLength(1);
   expect(catalogCalls).toBe(initialCatalogCalls);
+  expect(navigationScopes).toHaveLength(initialNavigationCalls);
 
   version = "b".repeat(64);
   // Changing this routed snapshot is not a server event. Foregrounding is an

@@ -5,6 +5,7 @@ export const connectionReadFailureSchema = z.object({
   operation: z.enum([
     "status",
     "session-events",
+    "conversation-history",
     "activity-current",
     "activity-history",
     "activity-projection",

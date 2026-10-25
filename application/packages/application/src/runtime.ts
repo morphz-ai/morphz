@@ -2496,6 +2496,15 @@ export class RuntimeBridge {
   private executionObserver?: RuntimeChangeObserver;
   private executionObserverSessions = "";
   private executionChangeVersions = new Map<string, number>();
+  private started = false;
+  private wakeTimer?: ReturnType<typeof setTimeout>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private failedSessionReads = new Set<string>();
+  private retryAttempts = 0;
+  private changedSessions = new Set<string>();
+  private reconciliation?: Promise<void>;
+  private reconcilePending = false;
+  private reconcileSessions: Set<string> | null = new Set();
   // Finite startup work and committed-event wakeups, not a second polling
   // loop. Failed/unknown proofs leave the ledger intact and are not retried
   // until another actual Runtime change (or a fresh Host incarnation).
@@ -2503,6 +2512,17 @@ export class RuntimeBridge {
   /** Host-only wake-up for actual public Runtime projection changes. */
   observeWorkspaceChanges(listener: () => void): () => void {
     this.workspaceChangeListeners.add(listener);
+    this.ensureExecutionObserver();
+    return () => {
+      this.workspaceChangeListeners.delete(listener);
+      if (!this.workspaceChangeListeners.size && !this.started) {
+        this.executionObserver?.close();
+        this.executionObserver = undefined;
+        this.executionObserverSessions = "";
+      }
+    };
+  }
+  private ensureExecutionObserver() {
     if (!this.executionObserver && !this.stopped) {
       const access = this.teamIdentity
         ? { principalId: "morphz-service", actantId: "morphz-agent" }
@@ -2522,11 +2542,14 @@ export class RuntimeBridge {
         }),
         request: (path) =>
           this.request(path, "GET", undefined, access, undefined),
+        startAtHead: true,
         changed: (sessionId) => {
           this.executionChangeVersions.set(
             sessionId,
             (this.executionChangeVersions.get(sessionId) ?? 0) + 1,
           );
+          this.changedSessions.add(sessionId);
+          this.scheduleChangedSessions();
           this.publishWorkspaceChange();
         },
       });
@@ -2535,14 +2558,17 @@ export class RuntimeBridge {
         .sort()
         .join("\n");
     }
-    return () => {
-      this.workspaceChangeListeners.delete(listener);
-      if (!this.workspaceChangeListeners.size) {
-        this.executionObserver?.close();
-        this.executionObserver = undefined;
-        this.executionObserverSessions = "";
-      }
-    };
+  }
+  private scheduleChangedSessions() {
+    if (!this.started || this.stopped || this.wakeTimer) return;
+    // Coalesce committed event bursts, never a periodic data read.
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = undefined;
+      const changed = this.changedSessions;
+      this.changedSessions = new Set();
+      if (changed.size) void this.reconcile(changed);
+    }, 100);
+    this.wakeTimer.unref?.();
   }
   /** Ephemeral, authorization-scoped invalidation only. Neither a Runtime
    * cursor nor a token received over WebSocket is an execution-state receipt. */
@@ -2642,7 +2668,6 @@ export class RuntimeBridge {
   ) => Promise<PlatformReadGrant>;
   private messageAttachments?: MessageAttachmentService;
   private platformAgentScope?: (route: HostInvocation) => Promise<ToolScope>;
-  private timer?: ReturnType<typeof setInterval>;
   constructor(
     private store: WorkspaceStore,
     private config: RuntimeConfig,
@@ -4046,7 +4071,7 @@ export class RuntimeBridge {
     }
   }
 
-  private runtimeReadUnavailable(error: unknown): boolean {
+  private async runtimeReadUnavailable(error: unknown): Promise<boolean> {
     if (
       !(error instanceof RuntimeTransportError) &&
       !(
@@ -4057,13 +4082,41 @@ export class RuntimeBridge {
       )
     )
       return false;
-    // Platform has independently authorized the current reader before these
-    // calls. Runtime transport/credential failure is not a failure of that
-    // data store and cannot grant access or restore accepted message history.
-    this.state.connected = false;
-    this.state.error =
-      error instanceof Error ? error.message : "Runtime 不可用。";
+    this.rememberReadFailure("conversation-history", error);
+    try {
+      this.host.reportFailure?.("runtime.conversation-history", error);
+    } catch {}
+    // A slow data query/5xx is not a health receipt. Confirm transport health
+    // independently on failure only; never erase all current work because one
+    // authorized history read failed, or claim that history is fresh.
+    if (error instanceof UpstreamError && [401, 403].includes(error.status)) {
+      this.state.connected = false;
+      this.state.error = error.message;
+    } else {
+      await this.confirmHealthAfterReadFailure();
+    }
     return true;
+  }
+  private healthConfirmation?: Promise<void>;
+  private confirmHealthAfterReadFailure() {
+    return (this.healthConfirmation ??= (async () => {
+      try {
+        const status = this.teamIdentity
+          ? (await this.observedRead("status", "/api/sessions"), null)
+          : z
+              .object({ model: z.string() })
+              .parse(await this.observedRead("status", "/api/status"));
+        this.state.connected = true;
+        if (status) this.state.model = status.model;
+        this.state.error = "";
+      } catch (error) {
+        this.state.connected = false;
+        this.state.error =
+          error instanceof Error ? error.message : "Runtime 不可用。";
+      }
+    })().finally(() => {
+      this.healthConfirmation = undefined;
+    }));
   }
 
   private async request(
@@ -5288,7 +5341,7 @@ export class RuntimeBridge {
         );
       } catch (error) {
         if (error instanceof UpstreamError && error.status === 404) break;
-        if (this.runtimeReadUnavailable(error)) {
+        if (await this.runtimeReadUnavailable(error)) {
           if (page.requireAvailable)
             throw new RuntimeConversationHistoryUnavailable(error);
           // Do not present an incomplete scan or cached accepted history as a
@@ -5301,6 +5354,7 @@ export class RuntimeBridge {
         throw error;
       }
       const batch = sessionTimelinePageSchema.parse(raw);
+      this.readRecovered("conversation-history");
       for (const item of [...batch.entries].reverse()) {
         const mapped = this.platformTimelineEntry(
           item,
@@ -5443,7 +5497,7 @@ export class RuntimeBridge {
         } catch (error) {
           if (
             !(error instanceof UpstreamError && error.status === 404) &&
-            !this.runtimeReadUnavailable(error)
+            !(await this.runtimeReadUnavailable(error))
           )
             throw error;
           // Optional diagnostics becoming unavailable must not hide the failure
@@ -5535,7 +5589,7 @@ export class RuntimeBridge {
   async platformConversationHead(
     scope: { projectId: string; conversationId: string },
     access: AccessContext,
-  ): Promise<{ sessionId: string; latestSequence: number }> {
+  ): Promise<{ sessionId: string; latestSequence: number | null }> {
     const authorize = this.authorizePlatformRead;
     if (!authorize)
       throw new DomainError("invalid", "Platform 对话读取尚未接入。");
@@ -5557,12 +5611,13 @@ export class RuntimeBridge {
             undefined,
           ),
         );
+      this.readRecovered("conversation-history");
       return { sessionId, latestSequence: page.latest_sequence ?? 0 };
     } catch (error) {
       if (error instanceof UpstreamError && error.status === 404)
         return { sessionId, latestSequence: 0 };
-      if (this.runtimeReadUnavailable(error))
-        return { sessionId, latestSequence: 0 };
+      if (await this.runtimeReadUnavailable(error))
+        return { sessionId, latestSequence: null };
       throw error;
     }
   }
@@ -7639,7 +7694,7 @@ export class RuntimeBridge {
     const initial = this.state.deliveries.find((d) => d.inputId === inputId);
     if (!initial?.supplement) return;
     const deadline = Date.now() + 12000;
-    if (initial.state === "queued") void this.tick();
+    if (initial.state === "queued") void this.reconcile();
     while (Date.now() < deadline) {
       const delivery = this.state.deliveries.find((d) => d.inputId === inputId);
       if (!delivery?.supplement) return;
@@ -8080,7 +8135,7 @@ export class RuntimeBridge {
       platformHeld: !!newConversation,
     });
     this.save(this.state.deliveries.at(-1)!);
-    if (!newConversation) void this.tick();
+    if (!newConversation) void this.reconcile();
     return input.id;
   }
   async releasePlatformInput(inputId: string) {
@@ -8105,7 +8160,7 @@ export class RuntimeBridge {
     if (delivery.platformHeld) {
       delivery.platformHeld = false;
       this.save(delivery);
-      void this.tick();
+      void this.reconcile();
     }
   }
   /** Retry only an unaccepted Platform input owned by this Human. The saved
@@ -8145,7 +8200,7 @@ export class RuntimeBridge {
       delivery.error = null;
       delivery.platformHeld = false;
       this.save(delivery);
-      void this.tick();
+      void this.reconcile();
       return;
     }
     if (
@@ -8161,7 +8216,7 @@ export class RuntimeBridge {
     delivery.state = "queued";
     delivery.error = null;
     this.save(delivery);
-    void this.tick();
+    void this.reconcile();
   }
   platformInputFingerprint(inputId: string) {
     const actor = this.actor();
@@ -8331,9 +8386,10 @@ export class RuntimeBridge {
     this.save();
   }
   start() {
+    if (this.started || this.stopped) return;
+    this.started = true;
+    this.ensureExecutionObserver();
     void this.tick();
-    this.timer = setInterval(() => void this.tick(), 1200);
-    this.timer.unref();
   }
   async cancelPlatformInput(inputId: string, access: AccessContext) {
     const delivery = this.state.deliveries.find((d) => d.inputId === inputId);
@@ -8381,7 +8437,7 @@ export class RuntimeBridge {
     delivery.cancelRequested = true;
     delivery.error = null;
     this.save(delivery);
-    void this.tick();
+    void this.reconcile();
   }
   private async processCancellations() {
     for (const delivery of this.activeDeliveries()) {
@@ -8782,22 +8838,47 @@ export class RuntimeBridge {
   }
   async stop() {
     this.stopped = true;
-    clearInterval(this.timer);
+    this.started = false;
+    clearTimeout(this.wakeTimer);
+    clearTimeout(this.retryTimer);
     this.executionObserver?.close();
     this.executionObserver = undefined;
     for (const feed of this.feeds) feed.close();
     this.feeds.clear();
+    await this.reconciliation;
     await this.busyCompletion;
   }
   async tick() {
-    return this.as(
-      this.teamIdentity
-        ? { principalId: "morphz-service", actantId: "morphz-agent" }
-        : localAccess,
-      () => this.tickAsService(),
-    );
+    // Explicit waiters join the current immutable pass. New work/events use
+    // reconcile() directly so only an actual mutation queues a later pass.
+    return this.reconciliation ?? this.reconcile();
   }
-  private async tickAsService() {
+  private reconcile(sessions?: ReadonlySet<string>): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.reconcilePending = true;
+    if (!sessions) this.reconcileSessions = null;
+    else if (this.reconcileSessions)
+      for (const id of sessions) this.reconcileSessions.add(id);
+    this.reconciliation ??= Promise.resolve()
+      .then(async () => {
+        while (this.reconcilePending && !this.stopped) {
+          this.reconcilePending = false;
+          const scope = this.reconcileSessions;
+          this.reconcileSessions = new Set();
+          await this.as(
+            this.teamIdentity
+              ? { principalId: "morphz-service", actantId: "morphz-agent" }
+              : localAccess,
+            () => this.tickAsService(scope ?? undefined),
+          );
+        }
+      })
+      .finally(() => {
+        this.reconciliation = undefined;
+      });
+    return this.reconciliation;
+  }
+  private async tickAsService(changedSessions?: ReadonlySet<string>) {
     if (this.stopped) return;
     // Enqueue wakes the loop immediately. A caller that then explicitly awaits
     // tick must await that same in-flight pass, not observe a false success
@@ -9177,11 +9258,13 @@ export class RuntimeBridge {
       const currentDeliveries = this.activeDeliveries();
       for (const session of this.activeSessions()) {
         if (this.stopped) break;
+        if (changedSessions && !changedSessions.has(session.id)) continue;
         if (
           !session.hasWork &&
           !currentDeliveries.some((d) => d.sessionId === session.id && d.rootId)
         )
           continue;
+        this.failedSessionReads.delete(session.id);
         // Durable cursor resumes after restart; do not filter out causal thread-result joins.
         for (let page = 0; page < 10; page++) {
           let data: { events: RuntimeEvent[] };
@@ -9207,8 +9290,10 @@ export class RuntimeBridge {
               [401, 403].includes(error.status)
             )
               throw error;
+            this.failedSessionReads.add(session.id);
             break;
           }
+          const previousCursor = session.cursor;
           for (const event of data.events.sort(
             (a, b) => a.sequence - b.sequence,
           )) {
@@ -9251,7 +9336,16 @@ export class RuntimeBridge {
               session.events.push(event);
             session.cursor = event.sequence;
           }
+          if (session.cursor > previousCursor)
+            this.executionObserver?.acknowledge(session.id, session.cursor);
           if (data.events.length < 100) break;
+          if (page === 9) {
+            // A durable delivery cursor can have a larger *missed* gap after
+            // restart. Yield this bounded pass, then continue only that gap;
+            // do not rely on a healthy periodic scanner to finish recovery.
+            this.reconcilePending = true;
+            this.reconcileSessions?.add(session.id);
+          }
         }
         const scopedDeliveries = currentDeliveries.filter(
           (delivery) => delivery.sessionId === session.id && delivery.rootId,
@@ -9345,7 +9439,7 @@ export class RuntimeBridge {
       await this.refreshAttention();
     } catch (error) {
       try {
-        this.host.reportFailure?.("runtime.poll", error);
+        this.host.reportFailure?.("runtime.reconcile", error);
       } catch {
         // Preserve the original failure and all delivery/receipt semantics.
       }
@@ -9355,6 +9449,29 @@ export class RuntimeBridge {
           ? error.message
           : "暂时无法连接 Morphz，正在重连；消息和执行状态已保留。";
     } finally {
+      // Only failed transport / unconfirmed queued capabilities need retry.
+      // Successful idle state has no timer and performs no background reads.
+      clearTimeout(this.retryTimer);
+      const retryAll =
+        !this.state.connected ||
+        this.activeDeliveries().some(
+          (d) => d.state === "queued" && !d.platformHeld,
+        );
+      const retrySessions = new Set(
+        this.activeSessions()
+          .filter((session) => this.failedSessionReads.has(session.id))
+          .map((session) => session.id),
+      );
+      if (this.started && !this.stopped && (retryAll || retrySessions.size)) {
+        this.retryTimer = setTimeout(
+          () => {
+            this.retryTimer = undefined;
+            void this.reconcile(retryAll ? undefined : retrySessions);
+          },
+          Math.min(3000 * 2 ** this.retryAttempts++, 30000),
+        );
+        this.retryTimer.unref?.();
+      } else this.retryAttempts = 0;
       try {
         this.save();
       } finally {

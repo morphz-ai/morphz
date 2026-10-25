@@ -394,6 +394,10 @@ impl SqliteStore {
             WHERE json_extract(payload, '$.reply_to_request_id') IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
         CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
+        -- A single-column SQLite index is ordered by (session_id, rowid).
+        -- Session heads and keyset deltas must seek in append order, not sort
+        -- every historical payload through the timestamp/root indexes.
+        CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON events(session_id);
         CREATE INDEX IF NOT EXISTS idx_events_session_topic
             ON events(session_id, topic);
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);

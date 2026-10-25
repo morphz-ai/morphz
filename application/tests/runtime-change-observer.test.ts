@@ -35,6 +35,73 @@ const typedState = z.object({
   ),
 });
 
+test("head-only invalidation starts at the latest committed event, closes the subscription gap and resumes only missed events", async () => {
+  const peer = await runtimeChangeFixture();
+  for (let n = 0; n < 1200; n++)
+    peer.append("session-one", "chat/progress", {}, false);
+  let gap = false;
+  peer.intercept(async (path) => {
+    if (path.endsWith("/events?limit=1") && !gap) {
+      gap = true;
+      const head = peer.events.get("session-one")!.at(-1)!;
+      peer.append("session-one", "runtime/thread_completed", {}, false);
+      return { body: { events: [head], latest_sequence: head.sequence } };
+    }
+  });
+  const changed: string[] = [];
+  const observer = new RuntimeChangeObserver({
+    url: peer.origin,
+    sessions: () => [{ id: "session-one", cursor: 0 }],
+    headers: () => ({ Authorization: `Bearer ${peer.token}` }),
+    request: peer.request,
+    startAtHead: true,
+    changed: (id) => changed.push(id),
+  });
+  try {
+    await observer.sync();
+    assert.equal(
+      changed.length,
+      2,
+      "only the gap event and ready invalidation, not 1200 old events",
+    );
+    assert.deepEqual(
+      peer.requests
+        .filter((r) => r.path.includes("/events?"))
+        .map((r) => r.path),
+      [
+        "/api/sessions/session-one/events?limit=1",
+        "/api/sessions/session-one/events?after_sequence=1200&limit=1000",
+      ],
+    );
+    peer.disconnect("session-one");
+    peer.append("session-one", "runtime/thread_failed", {}, false);
+    await until(() => peer.opens.length === 2, "no reconnect");
+    await until(
+      () => changed.length === 5,
+      "reconnect missed event not caught up",
+    );
+    assert.equal(
+      peer.requests.filter((r) => r.path.endsWith("/events?limit=1")).length,
+      1,
+      "reconnect keeps its accepted cursor instead of skipping missed work via a new head",
+    );
+    assert.equal(
+      peer.requests.at(-1)!.path,
+      "/api/sessions/session-one/events?after_sequence=1201&limit=1000",
+    );
+    const count = peer.requests.length;
+    await pause(3200);
+    assert.equal(
+      peer.requests.length,
+      count,
+      "healthy idle performs zero data reads",
+    );
+  } finally {
+    observer.close();
+    await peer.close();
+  }
+});
+
 test("committed WS events wake authoritative typed HTTP reads without a message; healthy idle, foreign, duplicate and transient frames do not read", async () => {
   const peer = await runtimeChangeFixture();
   const published: z.infer<typeof typedState>[] = [];

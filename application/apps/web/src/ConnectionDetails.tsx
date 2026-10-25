@@ -201,6 +201,7 @@ export function ConnectionSettings({
   const readNames = {
     status: "运行服务状态",
     "session-events": "会话增量事件",
+    "conversation-history": "会话消息分页",
     "activity-current": "当前活动",
     "activity-history": "活动历史",
     "activity-projection": "活动状态整理",
@@ -208,6 +209,8 @@ export function ConnectionSettings({
   const readPaths = {
     status: "GET /api/status",
     "session-events": "GET /api/sessions/:session/events · 增量分页",
+    "conversation-history":
+      "GET /api/sessions/:session/timeline · 消息分页或最新位置",
     "activity-current": "GET /api/contexts/:context/scheduler · 当前状态",
     "activity-history": "GET /api/contexts/:context/scheduler · 历史分页",
     "activity-projection": "应用内状态投影",

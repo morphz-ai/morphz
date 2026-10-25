@@ -17,6 +17,7 @@ type Connection = {
   retryAt: number;
   loading?: Promise<void>;
   seen: Set<string>;
+  initialized?: boolean;
 };
 
 /** Host-only invalidation, not another execution ledger. Runtime's committed
@@ -35,6 +36,9 @@ export class RuntimeChangeObserver {
       headers: () => Record<string, string>;
       request: (path: string) => Promise<unknown>;
       changed: (sessionId: string) => void;
+      // Invalidation consumers read current typed state. They must not replay
+      // an entire old Session merely because this Host has never observed it.
+      startAtHead?: boolean;
     },
   ) {
     void this.sync();
@@ -93,6 +97,18 @@ export class RuntimeChangeObserver {
     );
     this.timer.unref?.();
   }
+  /** A sequenced, authorized HTTP delta accepted by the owning Host, never a
+   * live unsequenced hint or a persisted cursor from an earlier incarnation. */
+  acknowledge(id: string, sequence: number) {
+    const c = this.connections.get(id);
+    if (
+      c &&
+      this.active(id, c) &&
+      Number.isSafeInteger(sequence) &&
+      sequence > c.cursor
+    )
+      c.cursor = sequence;
+  }
   async sync() {
     if (this.stopped) return;
     if (this.draining) {
@@ -147,6 +163,20 @@ export class RuntimeChangeObserver {
           await this.options.request(`/api/sessions/${encodeURIComponent(id)}`),
         );
       if (!this.active(session.id, c)) return;
+      if (this.options.startAtHead && !c.initialized) {
+        const head = z
+          .object({
+            latest_sequence: z.number().int().nonnegative().nullable(),
+          })
+          .parse(
+            await this.options.request(
+              `/api/sessions/${encodeURIComponent(id)}/events?limit=1`,
+            ),
+          );
+        if (!this.active(id, c)) return;
+        c.cursor = head.latest_sequence ?? 0;
+        c.initialized = true;
+      }
       const after = c.cursor;
       const url = new URL("/ws", this.options.url);
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
