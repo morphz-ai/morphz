@@ -19,6 +19,9 @@ on:
       - application/apps/web/src/ModelSettings.tsx
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
+      - application/tests/platform-history-cache.spec.ts
+      - application/tests/search-panel.spec.ts
+      - application/tests/exchange-controller.spec.ts
       - application/tests/model-settings.spec.ts
       - application/tests/ui-consistency.spec.ts
       - application/tests/execution-ui-details.spec.ts
@@ -205,6 +208,8 @@ jobs:
           xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
             tests/conversation-performance.spec.ts \
             tests/platform-history-cache.spec.ts \
+            tests/search-panel.spec.ts \
+            tests/exchange-controller.spec.ts \
             --repeat-each=5 --forbid-only --output=test-results/timing-stability
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()

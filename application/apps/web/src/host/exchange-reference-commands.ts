@@ -78,7 +78,7 @@ export type ExchangeReferenceOptions = {
     "showInput" | "setInteraction" | "requestConversationFocus"
   > & {
     keepOpen(): void;
-    scheduleSearchQuoteFocus(): void;
+    scheduleSearchQuoteFocus(id: string, generation: number): void;
     scheduleCommentComposerFocus(): void;
   };
   quotes: {
@@ -307,7 +307,8 @@ export function createExchangeReferenceCommands({
         generation !== navigationGeneration.current
       )
         return;
-      const key = conversationKey(projectId) + ":" + id;
+      const quoteConversationId = conversationKey(projectId);
+      const key = quoteConversationId + ":" + id;
       setDraft(key, {
         ...(drafts[key] ?? emptyDraft),
         selection: quote,
@@ -315,7 +316,7 @@ export function createExchangeReferenceCommands({
         page,
       });
       setInteraction("recent");
-      scheduleSearchQuoteFocus();
+      scheduleSearchQuoteFocus(quoteConversationId, generation);
     });
   }
   function selectArtifactQuote(

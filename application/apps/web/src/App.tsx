@@ -2018,11 +2018,10 @@ function WorkspaceApp({
       showInput,
       setInteraction,
       requestConversationFocus,
-      scheduleSearchQuoteFocus: () =>
-        requestAnimationFrame(() => {
-          if (!exchange.current?.contains(document.activeElement))
-            input.current?.focus();
-        }),
+      scheduleSearchQuoteFocus: (id, generation) => {
+        if (!exchange.current?.contains(document.activeElement))
+          requestConversationFocus(id, generation);
+      },
       scheduleCommentComposerFocus: () =>
         requestAnimationFrame(() =>
           input.current?.focus({ preventScroll: true }),

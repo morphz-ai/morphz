@@ -33,7 +33,7 @@ function verifyTimingStability(source) {
   const job = jobSource(source, "linux-native-regressions");
   const step = job.split("\n      - ").find(part => part.includes("name: Require five consecutive timing and healthy-idle passes without retries"));
   assert.ok(step, "mandatory timing stability step");
-  for (const file of ["tests/conversation-performance.spec.ts", "tests/platform-history-cache.spec.ts"])
+  for (const file of ["tests/conversation-performance.spec.ts", "tests/platform-history-cache.spec.ts", "tests/search-panel.spec.ts", "tests/exchange-controller.spec.ts"])
     assert.ok(step.includes(`            ${file} \\\n`), `complete ${file} must be repeated`);
   assert.match(step, /--repeat-each=5 --forbid-only/);
   assert.doesNotMatch(step, /--grep|--shard|--retries|continue-on-error|\bif:|\|\|/);
@@ -103,6 +103,8 @@ test("the latest commit must pass every timing and healthy-idle case five times,
   for (const changed of [
     source.replace("--repeat-each=5", "--repeat-each=1"),
     source.replace("            tests/platform-history-cache.spec.ts \\\n", ""),
+    source.replace("            tests/search-panel.spec.ts \\\n", ""),
+    source.replace("            tests/exchange-controller.spec.ts \\\n", ""),
     source.replace("--repeat-each=5", "--retries=5"),
     source.replace("--repeat-each=5", "--repeat-each=5 --grep fast"),
   ]) assert.throws(() => verifyTimingStability(changed));

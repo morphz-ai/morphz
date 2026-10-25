@@ -309,6 +309,47 @@ const focusPorts = `      scheduleSearchQuoteFocus: () =>
       scheduleCommentComposerFocus: () =>
         ${fixed.commentFrame},
 `;
+const committedSearchFocusPorts = `      scheduleSearchQuoteFocus: (id, generation) => {
+        if (!exchange.current?.contains(document.activeElement))
+          requestConversationFocus(id, generation);
+      },
+      scheduleCommentComposerFocus: () =>
+        ${fixed.commentFrame},
+`;
+
+// Reviewed focus-race repair only. Preserve the immutable migration archive and
+// every other argument, scope, draft and method recipe. A frame is not a React
+// commit; the current seam queues the same exact conversation/generation with
+// the existing layout owner instead of focusing an uncommitted textarea.
+export function normalizeReviewedSearchQuoteCommitOwner(text: string) {
+  text = replace(
+    text,
+    "    scheduleSearchQuoteFocus(id: string, generation: number): void;",
+    "    scheduleSearchQuoteFocus(): void;",
+    "exact preparation scope focus render and authority port types",
+  );
+  text = replace(
+    text,
+    '      const quoteConversationId = conversationKey(projectId);\n      const key = quoteConversationId + ":" + id;',
+    '      const key = conversationKey(projectId) + ":" + id;',
+    "complete original preparation recipe prepareSearchQuote",
+  );
+  return replace(
+    text,
+    "      scheduleSearchQuoteFocus(quoteConversationId, generation);",
+    "      scheduleSearchQuoteFocus();",
+    "complete original preparation recipe prepareSearchQuote",
+  );
+}
+
+function normalizeReviewedSearchQuoteCommitApp(text: string) {
+  return replace(
+    text,
+    committedSearchFocusPorts,
+    focusPorts,
+    "complete preparation captured render fields scope and distinct lazy focus ports",
+  );
+}
 let expectedFactory =
   "const {\n" +
   allNames.map((name) => "    " + name + ",").join("\n") +
@@ -1400,6 +1441,7 @@ function currentTypeFields(
   }
 }
 export function verifyExchangeReferencePreparationModuleCurrent(text: string) {
+  text = normalizeReviewedSearchQuoteCommitOwner(text);
   const parsed = parseReferencePreparation({
       Actual: text,
       Expected: expectedModule,
@@ -1704,6 +1746,7 @@ export function verifyExchangeReferencePreparationConsumption(
   },
 ) {
   verifyExchangeReferencePreparationModuleCurrent(ownerText);
+  appText = normalizeReviewedSearchQuoteCommitApp(appText);
   const history = referenceGovernanceHistory;
   const parsed = parseReferencePreparation({
     App: appText,

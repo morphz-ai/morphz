@@ -143,7 +143,15 @@ async function assertPreparationBodies(source: string) {
           oldBody.indexOf("requestAnimationFrame("),
           oldBody.lastIndexOf("});"),
         );
-        body = body.replace("scheduleSearchQuoteFocus();", frame.trimEnd());
+        body = body
+          .replace(
+            'const quoteConversationId = conversationKey(projectId);\n      const key = quoteConversationId + ":" + id;',
+            'const key = conversationKey(projectId) + ":" + id;',
+          )
+          .replace(
+            "scheduleSearchQuoteFocus(quoteConversationId, generation);",
+            frame.trimEnd(),
+          );
       }
       if (name === "focusCommentComposer") {
         const frame = oldBody.slice(
