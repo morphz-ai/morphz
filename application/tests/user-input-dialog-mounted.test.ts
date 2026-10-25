@@ -314,25 +314,31 @@ test(
         assert.equal(light.play, "running");
         assert.equal(light.border, "solid");
         assert.equal(light.top, "0px", "a breathing button, not a corner dot");
-        assert.ok(
-          Number(light.opacity) >= 0.54,
-          "the action remains visible at its dimmest",
+        assert.equal(
+          light.opacity,
+          "1",
+          "the icon remains readable while the surrounding light breathes",
         );
         const breathLevels = await attention.evaluate((button) => {
-          const icon = button.querySelector("svg")!;
-          const breath = icon.getAnimations()[0]!;
+          const breath = button
+            .getAnimations({ subtree: true })
+            .find(
+              (animation) =>
+                (animation as CSSAnimation).animationName ===
+                "supplement-breathe",
+            )!;
           const previous = breath.currentTime;
           breath.pause();
           breath.currentTime = 0;
-          const dim = Number(getComputedStyle(icon).opacity);
+          const dim = Number(getComputedStyle(button, "::before").opacity);
           breath.currentTime = 1600;
-          const bright = Number(getComputedStyle(icon).opacity);
+          const bright = Number(getComputedStyle(button, "::before").opacity);
           breath.currentTime = previous;
           breath.play();
           return [dim, bright];
         });
         assert.ok(
-          breathLevels[1]! - breathLevels[0]! >= 0.4,
+          breathLevels[1]! - breathLevels[0]! >= 0.6,
           "the button really breathes between dim and bright, not a static style",
         );
         const motionCaptures = process.env.MORPHZ_QUESTION_UI_CAPTURE_DIR;

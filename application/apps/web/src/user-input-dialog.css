@@ -312,8 +312,7 @@ button.needs-input {
 button.needs-input > svg {
   position: relative;
   color: var(--accent-strong);
-  opacity: .55;
-  animation: supplement-lamp 3.2s ease-in-out infinite paused;
+  opacity: 1;
 }
 button.needs-input::before,
 button.needs-input::after {

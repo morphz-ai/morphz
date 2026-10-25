@@ -84,7 +84,7 @@ test("待答线程明确显示等待你的输入，原补充按钮呼吸而不�
   await expect(supplement).toHaveAttribute("data-attention-motion", "on");
   await expect(supplement.locator("svg")).toHaveCSS(
     "animation-name",
-    "supplement-lamp",
+    "none",
   );
   expect(
     await supplement.evaluate(
