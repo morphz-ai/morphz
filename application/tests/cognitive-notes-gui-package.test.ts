@@ -25,6 +25,7 @@ import {
   startNotesGuiAuthor,
   expectNotesGuiStartupRefusal,
   openNotesGuiBrowser,
+  waitForNotesGuiInteraction,
 } from "./fixtures/cognitive-notes-gui-package.js";
 
 let packed: ReturnType<typeof packCognitiveNotesGui>;
@@ -445,6 +446,88 @@ test("missing optional GUI release refuses only explicit --gui without creating 
     renameSync(held, path);
   }
 });
+
+test(
+  "Notes GUI first interaction awaits activation, fonts and two paints in every frame",
+  { timeout: 1000 },
+  async () => {
+    const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+    let activate!: () => void;
+    const active = new Promise<void>((resolve) => {
+      activate = resolve;
+    });
+    const frames = Array.from({ length: 3 }, () => {
+      let loadFonts!: () => void;
+      const fonts = new Promise<void>((resolve) => {
+        loadFonts = resolve;
+      });
+      const paints: (() => void)[] = [];
+      return {
+        loadFonts,
+        paints,
+        evaluations: 0,
+        async evaluate(read: () => Promise<void>) {
+          this.evaluations++;
+          await new Script(`(${read.toString()})()`).runInNewContext({
+            document: { fonts: { ready: fonts } },
+            requestAnimationFrame: (paint: () => void) => paints.push(paint),
+          });
+        },
+      };
+    });
+    let ready = false;
+    const waiting = waitForNotesGuiInteraction(
+      { bringToFront: () => active },
+      frames,
+    ).then(() => {
+      ready = true;
+    });
+    await tick();
+    assert.deepEqual(
+      frames.map((frame) => frame.evaluations),
+      [0, 0, 0],
+    );
+    activate();
+    await tick();
+    assert.deepEqual(
+      frames.map((frame) => frame.evaluations),
+      [1, 1, 1],
+    );
+    assert.deepEqual(
+      frames.map((frame) => frame.paints.length),
+      [0, 0, 0],
+    );
+    for (const frame of frames) frame.loadFonts();
+    await tick();
+    for (const frame of frames) frame.paints.shift()!();
+    await tick();
+    assert.equal(
+      ready,
+      false,
+      "one frame is not an interaction-ready paint boundary",
+    );
+    for (const frame of frames.slice(0, 2)) frame.paints.shift()!();
+    await tick();
+    assert.equal(
+      ready,
+      false,
+      "the author frame cannot be replaced by its ancestors",
+    );
+    frames[2]!.paints.shift()!();
+    await waiting;
+    assert.equal(ready, true);
+    await assert.rejects(
+      waitForNotesGuiInteraction({ bringToFront: async () => {} }, [
+        {
+          evaluate: async () => {
+            throw new Error("controlled frame failure");
+          },
+        },
+      ]),
+      /controlled frame failure/,
+    );
+  },
+);
 
 test("Notes GUI diagnostics are bounded and never replace the original failure", async () => {
   const { notesGuiDiagnostic } =

@@ -54,6 +54,30 @@ function verifyHarnessStackStability(source) {
   assert.doesNotMatch(step, /continue-on-error|\bif:|\|\||--ignored|\buntil\b/);
 }
 
+function verifyNotesGuiStability(source) {
+  const job = jobSource(source, "macos-compose-regressions");
+  const steps = job.split("\n      - ");
+  const prepare = steps.findIndex(part => part.includes("name: Prepare exact independent author dependencies for early GUI stability"));
+  const repeated = steps.findIndex(part => part.includes("name: Require five complete Notes GUI passes without retries"));
+  assert.ok(prepare >= 0 && repeated > prepare);
+  assert.match(steps[prepare], /scripts\/prepare-cognitive-author-dependencies\.ts/);
+  assert.match(steps[repeated], /for round in 1 2 3 4 5; do/);
+  assert.match(steps[repeated], /npm test -- --test-concurrency=1 tests\/cognitive-notes-gui-package\.test\.ts/);
+  assert.doesNotMatch(steps[repeated], /--test-name-pattern|--grep|--retries|continue-on-error|\bif:|\|\||\buntil\b/);
+  assert.match(job, /timeout-minutes: 20/);
+}
+
+test("macOS repeats the complete Notes GUI five times before the long inventory without narrowing or retrying", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  verifyNotesGuiStability(source);
+  for (const changed of [
+    source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    source.replaceAll("scripts/prepare-cognitive-author-dependencies.ts", "scripts/omitted.ts"),
+    source.replace("tests/cognitive-notes-gui-package.test.ts\n          done", "tests/cognitive-notes-gui-package.test.ts --test-name-pattern=fast\n          done"),
+    source.replace("tests/cognitive-notes-gui-package.test.ts\n          done", "tests/cognitive-notes-gui-package.test.ts || true\n          done"),
+  ]) assert.throws(() => verifyNotesGuiStability(changed));
+});
+
 test("Harness stack stability must pass five times at the default budget after the complete installed inventory", () => {
   const source = readFileSync(new URL("../../.github/workflows/linux-sandbox-service.yml", import.meta.url), "utf8");
   verifyHarnessStackStability(source);

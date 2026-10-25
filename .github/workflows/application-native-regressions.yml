@@ -40,6 +40,9 @@ on:
       - application/tests/profile-actual-transport-fixture.ts
       - application/tests/runtime-listener-fixture.ts
       - application/tests/runtime-listener-fixture.test.ts
+      - application/tests/cognitive-notes-gui-package.test.ts
+      - application/tests/fixtures/cognitive-notes-gui-package.ts
+      - application/examples/cognitive-notes/gui/**
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
@@ -229,6 +232,16 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: brew install postgresql@16
       - run: npx playwright install chromium
+      - name: Prepare exact independent author dependencies for early GUI stability
+        run: |
+          printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-notes-gui-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          MORPHZ_TEST_COGNITIVE_NPM_CACHE="$RUNNER_TEMP/morphz-notes-gui-cache" npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - name: Require five complete Notes GUI passes without retries
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'Complete Notes GUI pass %s/5\n' "$round"
+            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/cognitive-notes-gui-package.test.ts
+          done
       - name: Check actual iframe and application mounts with bounded diagnosis
         env:
           MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT: "1"

@@ -251,6 +251,26 @@ export async function expectNotesGuiStartupRefusal(
   }
 }
 
+/** A connected private port is not a painted, active input target. Await the
+ * owned page and every ancestor/author frame before the first real pointer
+ * action. No sleeps, repeated clicks, forced input or changed test deadlines. */
+export async function waitForNotesGuiInteraction(
+  page: { bringToFront(): Promise<void> },
+  frames: readonly { evaluate(read: () => Promise<void>): Promise<void> }[],
+) {
+  await page.bringToFront();
+  await Promise.all(
+    frames.map((frame) =>
+      frame.evaluate(async () => {
+        await document.fonts.ready;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+      }),
+    ),
+  );
+}
+
 /** Real packed author HTML and SDK, actual shared prefix and private native
  * MessageChannel. Only the Host's business DTOs are controlled; not a SQL GUI,
  * approved service connection, production owner or original desktop App. */
@@ -487,7 +507,9 @@ export async function openNotesGuiBrowser(
       );
       throw error;
     }
-    phase = "author connected";
+    phase = "wait for owned author interaction frames";
+    await waitForNotesGuiInteraction(page, [page.mainFrame(), carrier, guest]);
+    phase = "author connected and painted";
     return {
       browser,
       page,
