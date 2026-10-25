@@ -196,6 +196,12 @@ jobs:
             tests/message-work-footer.spec.ts \
             tests/exchange-resize.spec.ts \
             tests/exchange-floating-controls.spec.ts --trace on
+      - name: Require five consecutive timing and healthy-idle passes without retries
+        run: |
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
+            tests/conversation-performance.spec.ts \
+            tests/platform-history-cache.spec.ts \
+            --repeat-each=5 --forbid-only --output=test-results/timing-stability
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:

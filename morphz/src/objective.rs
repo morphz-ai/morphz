@@ -3511,16 +3511,17 @@ impl ObjectiveSupervisor {
             if crate::steering::destination(event)?
                 .is_some_and(|destination| destination.user_input_reply().is_some())
             {
-                return self
-                    .prepare_question_reply(
+                return Box::pin(
+                    self.prepare_question_reply(
                         event,
                         activation_id,
                         &objective,
                         reply_guard
                             .as_ref()
                             .ok_or("Question reply must hold the Objective scheduling lane")?,
-                    )
-                    .await;
+                    ),
+                )
+                .await;
             }
             let expected_root = crate::memory::objective_primary_execution_root_id(
                 &objective.id,

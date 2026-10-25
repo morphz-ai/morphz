@@ -305,7 +305,7 @@ async fn question_lifecycle(store: &dyn RuntimeStore, action: &str) {
         }
     }
     assert!(store
-        .list_pending_user_input_dependencies(&[thread.id.clone()])
+        .list_pending_user_input_dependencies(std::slice::from_ref(&thread.id))
         .await
         .unwrap()
         .is_empty());
@@ -508,7 +508,7 @@ async fn question_preserves_other_waits(store: &dyn RuntimeStore) {
     assert_eq!(runnable.len(), 1);
     assert_eq!(runnable[0].event_id, answer.id, "the accepted original answer, never the other primary Thread's input, owns the next admission");
     let barriers = store
-        .list_active_objective_user_input_dependencies(&[objective.id.clone()])
+        .list_active_objective_user_input_dependencies(std::slice::from_ref(&objective.id))
         .await
         .unwrap();
     assert_eq!(barriers.len(), 1);
@@ -699,10 +699,11 @@ fn sqlite_original_prelude_claims_its_goal_and_native_question_context_before_mo
         let evaluation = activations.iter().find(|activation| activation.trigger_event_id == answer.id).unwrap();
         assert_eq!(evaluation.trigger_event_id, answer.id);
         assert_eq!(evaluation.root_turn_id, thread.root_turn_id, "do not move this Human answer to the synthetic primary Goal root");
-        let messages = model.messages.lock().unwrap();
-        assert_eq!(messages.iter().flat_map(|message| message.tool_calls.iter().flatten()).filter(|call| call.id == "question-call").count(), 1);
-        assert_eq!(messages.iter().filter(|message| message.tool_call_id.as_deref() == Some("question-call")).count(), 1);
-        drop(messages);
+        {
+            let messages = model.messages.lock().unwrap();
+            assert_eq!(messages.iter().flat_map(|message| message.tool_calls.iter().flatten()).filter(|call| call.id == "question-call").count(), 1);
+            assert_eq!(messages.iter().filter(|message| message.tool_call_id.as_deref() == Some("question-call")).count(), 1);
+        }
         assert!(store.list_active_objective_user_input_dependencies(&[goal.id]).await.unwrap().is_empty());
     });
 }
@@ -728,7 +729,7 @@ fn reply(thread: &ThreadRecord, request: &Event, id: &str, text: &str) -> Event 
 
 async fn assert_pending(store: &dyn RuntimeStore, thread: &ThreadRecord, request: &Event) {
     let edges = store
-        .list_pending_user_input_dependencies(&[thread.id.clone()])
+        .list_pending_user_input_dependencies(std::slice::from_ref(&thread.id))
         .await
         .unwrap();
     assert_eq!(edges.len(), 1);
@@ -812,7 +813,7 @@ async fn sqlite_question_is_durable_and_answer_is_exactly_once() {
         .await
         .is_err());
     assert!(reopened
-        .list_pending_user_input_dependencies(&[current.id.clone()])
+        .list_pending_user_input_dependencies(std::slice::from_ref(&current.id))
         .await
         .unwrap()
         .is_empty());

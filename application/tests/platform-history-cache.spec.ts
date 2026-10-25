@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Request } from "@playwright/test";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 
 test("正式 Platform 会话显式唤醒复用正文，健康空闲不读取，新事件版本才重读", async ({
@@ -9,7 +9,15 @@ test("正式 Platform 会话显式唤醒复用正文，健康空闲不读取，�
   const historyCalls: string[] = [];
   let catalogCalls = 0;
   const navigationScopes: string[] = [];
+  const pendingReads = new Set<Request>();
   page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "GET" &&
+      url.pathname.startsWith("/api/platform/") &&
+      !url.pathname.endsWith("/stream")
+    )
+      pendingReads.add(request);
     if (
       [
         "/api/platform/spaces/ensure",
@@ -22,6 +30,8 @@ test("正式 Platform 会话显式唤醒复用正文，健康空闲不读取，�
     )
       catalogCalls++;
   });
+  page.on("requestfinished", (request) => pendingReads.delete(request));
+  page.on("requestfailed", (request) => pendingReads.delete(request));
   await page.route(
     /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
     async (route) => {
@@ -74,6 +84,22 @@ test("正式 Platform 会话显式唤醒复用正文，健康空闲不读取，�
       },
     )
     .toBe(true);
+  // A request starting is not a foreground reconciliation completing. The
+  // original assertion captured this counter during the first scoped read,
+  // then counted its CAS and already-queued startup resync as idle polling.
+  // Drain only in-flight reads/React commits; the full 5.6s zero-read window
+  // below remains unchanged and still catches a healthy-period scanner.
+  for (let pass = 0; pass < 10; pass++) {
+    await expect.poll(() => pendingReads.size).toBe(0);
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => done())),
+        ),
+    );
+    if (!pendingReads.size) break;
+  }
+  expect(pendingReads.size).toBe(0);
   const initialCatalogCalls = catalogCalls;
   const initialNavigationCalls = navigationScopes.length;
   expect(initialCatalogCalls).toBeGreaterThan(0);

@@ -3,12 +3,14 @@
 .question-composer-slot:empty {
   display: none;
 }
-#global-composer:has(.composer-question) {
+#global-composer:has(> .question-composer-slot > .composer-question) {
   display: block;
   flex: 0 1 auto;
   height: auto;
 }
-#global-composer:has(.composer-question) > :not(.question-composer-slot) {
+/* Only slot insertion/removal changes this mode. A universal descendant after
+   :has() invalidates unrelated historical tables on every input/text change. */
+#global-composer > .question-composer-slot:not(:empty) ~ * {
   display: none;
 }
 .question-composer-slot {

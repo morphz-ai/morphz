@@ -21913,6 +21913,9 @@ mod tests {
             assert_eq!(schemas.len(), 2);
             assert_eq!(schemas[0], schemas[1]);
             assert!(schemas[0].iter().any(|name| name == "objective_amend"));
+            assert!(schemas[0]
+                .iter()
+                .any(|name| name == crate::user_input::TOOL_NAME));
             assert_eq!(schemas[0].last().map(String::as_str), Some("no_reply"));
             assert!(schemas[0][..schemas[0].len() - 1]
                 .windows(2)

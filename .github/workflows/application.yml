@@ -33,6 +33,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
       - name: Verify independent SDK cache preparation in every full-test job
         run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs ../scripts/tests/application-electron-ci-setup.test.mjs ../scripts/tests/application-runtime-ci-coverage.test.mjs
       - name: Prepare pinned Electron before parallel test imports
@@ -180,6 +182,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
       - name: Prepare pinned Electron before parallel test imports
         run: node node_modules/electron/install.js
       - name: Prepare exact independent SDK and author dependencies
@@ -220,6 +224,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
       - name: Prepare exact independent SDK and author dependencies
         run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       # Download the pinned runtime before timed UI tests, not on first launch.

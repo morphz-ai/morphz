@@ -29,6 +29,27 @@ function jobSource(source, name) {
   return next === -1 ? tail : tail.slice(0, next);
 }
 
+function verifyTimingStability(source) {
+  const job = jobSource(source, "linux-native-regressions");
+  const step = job.split("\n      - ").find(part => part.includes("name: Require five consecutive timing and healthy-idle passes without retries"));
+  assert.ok(step, "mandatory timing stability step");
+  for (const file of ["tests/conversation-performance.spec.ts", "tests/platform-history-cache.spec.ts"])
+    assert.ok(step.includes(`            ${file} \\\n`), `complete ${file} must be repeated`);
+  assert.match(step, /--repeat-each=5 --forbid-only/);
+  assert.doesNotMatch(step, /--grep|--shard|--retries|continue-on-error|\bif:|\|\|/);
+}
+
+test("the latest commit must pass every timing and healthy-idle case five times, not retry failures", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  verifyTimingStability(source);
+  for (const changed of [
+    source.replace("--repeat-each=5", "--repeat-each=1"),
+    source.replace("            tests/platform-history-cache.spec.ts \\\n", ""),
+    source.replace("--repeat-each=5", "--retries=5"),
+    source.replace("--repeat-each=5", "--repeat-each=5 --grep fast"),
+  ]) assert.throws(() => verifyTimingStability(changed));
+});
+
 function verifyModelSettingsDiagnostic(source) {
   const triggers = source.slice(0, source.indexOf("\npermissions:"));
   for (const path of [

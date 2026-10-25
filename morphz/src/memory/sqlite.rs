@@ -27123,8 +27123,11 @@ impl EventStore for SqliteStore {
         }
         let forward_by_sequence = filter.after_sequence.is_some();
         let mut builder = QueryBuilder::new(
-            "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
+            "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM ",
         );
+        builder
+            .push(sqlite_event_query_source(&filter))
+            .push(" WHERE 1=1");
 
         if let Some(event_id) = filter.event_id {
             builder.push(" AND id = ");
@@ -27697,6 +27700,17 @@ fn sqlite_fts_query(terms: &[String], phrase: bool) -> String {
         .map(|term| format!("\"{}\"", quoted(term)))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+fn sqlite_event_query_source(filter: &QueryFilter) -> &'static str {
+    // Recovery for one Activation must never walk the whole Session's append
+    // index just to avoid sorting its two topic ranges. Exact event identities
+    // retain the primary-key path, and ordinary Session tails keep their seek.
+    if filter.activation_id.is_some() && filter.event_id.is_none() && filter.event_ids.is_empty() {
+        "events INDEXED BY idx_events_activation_topic"
+    } else {
+        "events"
+    }
 }
 
 /// Topics are Runtime-owned slash-separated identifiers.  SQLite's default
@@ -31420,22 +31434,28 @@ mod tests {
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
-        let rows = sqlx::query(
+        let filter = QueryFilter {
+            activation_id: Some("index-activation".into()),
+            ..Default::default()
+        };
+        let query = format!(
             r#"EXPLAIN QUERY PLAN
-               SELECT rowid, id, timestamp FROM events
+               SELECT rowid, id, timestamp FROM {}
                WHERE context_id = ? AND session_id = ? AND activation_id = ?
                  AND topic IN (?, ?) AND rowid > ?
                ORDER BY rowid ASC"#,
-        )
-        .bind("index-context")
-        .bind("index-session")
-        .bind("index-activation")
-        .bind("runtime/model_reasoning_summary")
-        .bind("runtime/reasoning_continuation")
-        .bind(0_i64)
-        .fetch_all(&store.pool)
-        .await
-        .unwrap();
+            sqlite_event_query_source(&filter)
+        );
+        let rows = sqlx::query(&query)
+            .bind("index-context")
+            .bind("index-session")
+            .bind("index-activation")
+            .bind("runtime/model_reasoning_summary")
+            .bind("runtime/reasoning_continuation")
+            .bind(0_i64)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
         let plan = rows
             .iter()
             .map(|row| row.get::<String, _>("detail"))
@@ -31446,6 +31466,19 @@ mod tests {
             "unexpected query plan: {plan}"
         );
         assert!(!plan.contains("SCAN events"), "unexpected scan: {plan}");
+        assert!(
+            !plan.contains("idx_events_session_sequence"),
+            "Session-wide recovery: {plan}"
+        );
+        assert_eq!(sqlite_event_query_source(&QueryFilter::default()), "events");
+        assert_eq!(
+            sqlite_event_query_source(&QueryFilter {
+                event_id: Some("exact-event".into()),
+                ..filter.clone()
+            }),
+            "events",
+            "exact event lookup must retain its primary-key path"
+        );
     }
 
     #[tokio::test]

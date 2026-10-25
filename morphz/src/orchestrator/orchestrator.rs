@@ -13274,8 +13274,13 @@ impl Orchestrator {
                         .get_thread_by_root(&activation.root_turn_id)
                         .await?
                         .ok_or("Question recovery Thread is missing")?;
-                    self.publish_user_input_request(activation, &thread, assistant_call, &request)
-                        .await?;
+                    Box::pin(self.publish_user_input_request(
+                        activation,
+                        &thread,
+                        assistant_call,
+                        &request,
+                    ))
+                    .await?;
                 }
             }
             return Ok(true);
@@ -14538,13 +14543,17 @@ impl Orchestrator {
         }
         restrict_tools_to_scope(&mut stable_work_tools, plan_infer_tools.as_ref());
         restrict_tools_to_scope(&mut stable_work_tools, model_harness_tool_scope.as_ref());
-        if thread.executor_kind != "plan_infer" {
-            stable_work_tools.push(no_reply_tool_definition());
-        }
         if thread.executor_kind == "self" && thread_kind != "delivery"
             && thread.initiating_principal_id.is_some() && plan_infer_tools.is_none()
             && model_harness_tool_scope.as_ref().is_none_or(|scope| scope.contains(crate::user_input::TOOL_NAME)) {
-            stable_work_tools.push(crate::user_input::definition());
+            // Preserve the sorted work prefix and the existing no_reply tail
+            // across physical requests; question availability is route-stable.
+            let index = stable_work_tools.partition_point(|tool|
+                tool.name.as_str() < crate::user_input::TOOL_NAME);
+            stable_work_tools.insert(index, crate::user_input::definition());
+        }
+        if thread.executor_kind != "plan_infer" {
+            stable_work_tools.push(no_reply_tool_definition());
         }
         if self.activation_route(&attempt_id).is_some_and(|route| route.return_binding.is_native()) {
             // Pure infer's actual requires scope excludes every action,
@@ -16405,7 +16414,9 @@ impl Orchestrator {
                     }).await?;
                 let call = self.context_engine.find_event(&activation.context_id, &call_id).await?
                     .ok_or("Question native-call boundary is not durable")?;
-                self.publish_user_input_request(activation, &thread, &call, request).await?;
+                // Keep the question outcome's state machine off the already
+                // large Evaluation frame on ordinary Tokio worker stacks.
+                Box::pin(self.publish_user_input_request(activation, &thread, &call, request)).await?;
                 if let Some(lease) = dialogue_lease.as_mut() { lease.release(); }
                 return Ok(());
             }

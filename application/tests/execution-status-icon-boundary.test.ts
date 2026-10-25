@@ -228,6 +228,10 @@ const templates = parse({
     "const preview = <>{thread && (<UserInputPreview thread={thread} onReply={onReply} disabled={!client.online || !executionActivityThreadAvailable(thread, runtime)} />)}</>;",
   SidebarQuestionEntry:
     'const entry = <div key={t.id} className="execution-activity-entry" />;',
+  SidebarQuestionFacts: `
+    const needsInput = !!t.userInputRequest && t.lifecycle === "open" && t.controlState !== "paused" && client.online && executionActivityThreadAvailable(t, runtime);
+    const threadNeedsInput = !!thread?.userInputRequest && thread.lifecycle === "open" && thread.controlState !== "paused" && client.online && !!currentThread && executionActivityThreadAvailable(thread, runtime);
+    const summary = needsInput ? "等待你的输入" : executionActivitySummary(t, client.online && executionActivityThreadAvailable(t, runtime));`,
   // User-approved 5ddfb935/aae741c7 visibility-only motion. Exclude only these
   // exact calls AND their original local bindings from the old lifecycle
   // digest. Keep every historical digest unchanged; inspect the React owner
@@ -465,6 +469,43 @@ function withoutReviewedQuestions(parsed: Parsed): string {
       "reviewed source span must be unique",
     );
     source = source.replace(before!, after!);
+  }
+  // The approved question state changed only these exact read-only seams.
+  // Verify every guard before restoring the original glyph/tree baseline;
+  // never accept a new digest of arbitrary current production source.
+  const facts = templates.get("SidebarQuestionFacts")!;
+  for (const name of ["needsInput", "threadNeedsInput", "summary"]) {
+    const actual = parsed.nodes
+      .filter(isVariableDeclaration)
+      .filter((node) => node.name.getText() === name);
+    const expected = facts.nodes
+      .filter(isVariableDeclaration)
+      .find((node) => node.name.getText() === name)!;
+    assert.equal(actual.length, 1);
+    assert.deepEqual(syntax(actual[0]!), syntax(expected));
+    const declaration = actual[0]!;
+    const before =
+      name === "summary"
+        ? declaration.initializer!.getText()
+        : declaration.parent.parent.getText();
+    const after =
+      name === "summary"
+        ? templates
+            .get("SidebarRowFacts")!
+            .nodes.filter(isVariableDeclaration)
+            .find((node) => node.name.getText() === name)!
+            .initializer!.getText()
+        : "";
+    assert.equal(source.split(before).length, 2);
+    source = source.replace(before, after);
+  }
+  for (const [before, after, count] of [
+    ['needsInput ? "等待你的输入" : status.label', "status.label", 2],
+    ['needsInput ? "" : summary', "summary", 1],
+    ["data-user-input={needsInput || undefined}", "", 1],
+  ] as const) {
+    assert.equal(source.split(before).length - 1, count);
+    source = source.replaceAll(before, after);
   }
   return source;
 }
@@ -708,6 +749,11 @@ test("question previews have exact independent owner, target, callback and fresh
     .find((node) => node.tagName.getText() === "UserInputPreview")!;
   assert.ok(preview);
   for (const [before, after] of [
+    ["!!t.userInputRequest &&", "true &&"],
+    ['t.lifecycle === "open" &&', "true &&"],
+    ['t.controlState !== "paused" &&', "true &&"],
+    ["!!thread?.userInputRequest &&", "true &&"],
+    ["data-user-input={needsInput || undefined}", "data-user-input={true}"],
     ['from "./UserInputPreview.js"', 'from "./UntrustedQuestion.js"'],
     [
       preview.getText(),
