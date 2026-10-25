@@ -16,4 +16,12 @@
 
 两端原组件的挂载交互通过，覆盖原输入区、独立草稿、精确投递、未知回执重试、权限失效，以及真实明暗差、离屏暂停、隐藏/卸载释放和 reduced-motion。正式 Desktop shell 的独立浏览器回归已验证状态文案、原按钮呼吸、不预先展开问题，以及状态不新鲜时不冒称待答。两端相关测试、Dashboard lint 和构建记录按最终日志确认。亮暗主题、完整活动视图与窄窗截图已审看：呼吸集中在原按钮，静止边缘不扫动；图标与元信息保持原对齐，中文问题不挤进活动卡，输入区层级不变。fixture 截图不冒充原应用。
 
-私有证据 `/tmp/morphz-question-composer.lUfS4e/breathing-captures/`。原 Desktop 已仅刷新前端并实拍 `desktop-breathing-original.jpg`，Runtime PID 保持。用户单独批准仅一条 TEST 追问，复用既有 TEST 项目/会话；问题已经产生，未替用户选择/回答业务问题。Dashboard 内嵌部署和最终两端实拍另行补记；中途流转版 release 打包由本轮主动终止，未部署，不把它记为成功构建。
+最终 fixture 证据 `/tmp/morphz-question-composer.lUfS4e/breathing-ready-captures/`。原 Desktop 前期只刷新前端，最终因内嵌 Dashboard 资产同步而正常切换 Runtime，见下节。用户单独批准仅一条 TEST 追问，复用既有 TEST 项目/会话，未替用户选择/回答业务问题。中途未采用版本的 release 打包由本轮主动终止，未部署，不把它记为成功构建。
+
+## 最终部署与验收
+
+- 最终纯呼吸实现为 `d27d6db0`。本轮 Runtime 业务逻辑未修改；因 Dashboard 资产内嵌二进制，构建正常 release 包并同步原 Runtime。release 构建 6m25s，索引升级/seek 集成 1/1 通过。已部署二进制 SHA256 `1cc3aa12d5966d18d0b6397e7d61784cacf4c2031c2e907bbbeb1881fd7285dc`，原 18089 服务与资料目录不变；未发布 RC 或正式版。
+- 仅在确认无正在运行的 Activation 或 Job、原输入为空后正常退出原 App，完成退出屏障再切换。唯一既有 queued 项没有 claimant/lease，不是执行中的工作；其原 ID、代次、状态和所有待答回执在切换前后相同。没有取消、重发或改写业务任务，保留旧二进制和冷备。
+- 原 Desktop 重开恢复主对话，仍可见“等待你的输入”和补充呼吸灯；图标始终全亮。原 Dashboard 实测离屏时暂停，点击补充自动进入视野后为 running，底光自然采样透明度 `0.730129` → `0.472071`、图标透明度保持 `1`，边光无流动背景。不是仅检查声明的 keyframe 名称。
+- 原 Dashboard 和 Desktop 均用同一条获准 TEST 点开原输入区的问题及选项，核对可输入，然后关闭。没有选择或填写答案，没有第二次发送 TEST，正常输入恢复，TEST 仍保留待答供用户观察。实拍：`desktop-breathing-verified-original.jpg`、`desktop-breathing-test-composer.jpg`、`dashboard-breathing-verified-original.png`、`dashboard-breathing-test-composer.png`；同一私有证据目录中保留中间失败日志，不把 fixture 当原应用。
+- 最终相关 Application 组 27/27（无跳过）、正式 shell 待答/暂停/失效 1/1、Dashboard 267/267 和 lint、两端构建及 TypeScript 检查通过。新增测试中的导入后缀、默认字段和伪元素动画枚举错误已分别修正，未修改生产权限或撤掉失败断言来求绿。这些是本次范围验证，不冒称 GitHub CI 或整个 Runtime 无其他缺陷。
