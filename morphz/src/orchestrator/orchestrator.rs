@@ -9101,8 +9101,10 @@ impl Orchestrator {
             }
         }
         if let Some(supervisor) = &self.objective_supervisor {
-            if supervisor
-                .prepare_routed_event(&event, &activation.id)
+            // Admission finishes before Evaluation begins. Do not reserve
+            // its question/recovery frame throughout the later model/Plan
+            // poll stack, including when the event needs no Objective route.
+            if Box::pin(supervisor.prepare_routed_event(&event, &activation.id))
                 .await?
                 == crate::objective::RoutedObjectiveEventDisposition::Suppressed
             {
@@ -14931,7 +14933,17 @@ impl Orchestrator {
         // that frame before dispatching the Harness. Keep the phases behind
         // separate heap boundaries, without spawning, yielding or changing
         // the current Evaluation's leases and error propagation.
+        let model_directive = runtime_directive.map(|(phase, prompt)| (phase.to_owned(), prompt));
         Box::pin(async move {
+        // Rebuild borrowed views inside their owning phase. Only the short
+        // directive label crosses the boundary as owned text; the Context,
+        // Harness metadata and return binding are moved, not deep-cloned.
+        let request_overlay = EvaluationContextOverlay {
+            return_binding: Some(&return_binding),
+            evaluation_profile: harness_context.as_ref().map(|item| item.profile.as_str()),
+            harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
+            runtime_directive: model_directive.as_ref().map(|(phase, prompt)| (phase.as_str(), *prompt)),
+        };
         let mut allowed_tool_names = allowed_tools
             .iter()
             .map(|tool| tool.name.clone())
