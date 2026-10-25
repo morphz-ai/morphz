@@ -18,12 +18,12 @@ export type UserInputDialogProps = {
   error?: string;
   status?: string;
   onChange(answers: UserInputAnswer[]): void;
-  onSubmit(): void;
+  onSubmit(answers?: UserInputAnswer[]): void;
   onClose(): void;
 };
 
-/** A selection is only a form edit. Native form submission is the sole answer
- * action; dismissing never consumes the Runtime request or the main draft. */
+/** A complete single-choice reply submits on selection. Multi-select and free
+ * text retain explicit submission; dismissing never consumes the request. */
 export function UserInputDialog({
   title,
   request,
@@ -53,13 +53,21 @@ export function UserInputDialog({
     !busy &&
     (frozen ||
       (available && answerText !== null && answerText.length <= 30000));
-  function change(questionId: string, patch: Partial<UserInputAnswer>) {
+  function change(
+    questionId: string,
+    patch: Partial<UserInputAnswer>,
+    selection = false,
+  ) {
     if (busy || frozen || !available) return;
-    onChange(
-      answers.map((answer) =>
-        answer.question_id === questionId ? { ...answer, ...patch } : answer,
-      ),
+    const next = answers.map((answer) =>
+      answer.question_id === questionId ? { ...answer, ...patch } : answer,
     );
+    onChange(next);
+    const text =
+      selection && !request.questions.some((question) => question.multi_select)
+        ? userInputAnswerText(request.questions, next)
+        : null;
+    if (text !== null && text.length <= 30000) onSubmit(next);
   }
   return (
     <section
@@ -152,18 +160,23 @@ export function UserInputDialog({
                             value={option.id}
                             checked={selected}
                             onChange={() =>
-                              change(question.id, {
-                                selected_option_ids: question.multi_select
-                                  ? selected
-                                    ? answer!.selected_option_ids.filter(
-                                        (id) => id !== option.id,
-                                      )
-                                    : [
-                                        ...(answer?.selected_option_ids ?? []),
-                                        option.id,
-                                      ]
-                                  : [option.id],
-                              })
+                              change(
+                                question.id,
+                                {
+                                  selected_option_ids: question.multi_select
+                                    ? selected
+                                      ? answer!.selected_option_ids.filter(
+                                          (id) => id !== option.id,
+                                        )
+                                      : [
+                                          ...(answer?.selected_option_ids ??
+                                            []),
+                                          option.id,
+                                        ]
+                                    : [option.id],
+                                },
+                                !question.multi_select,
+                              )
                             }
                           />
                         </label>

@@ -293,8 +293,8 @@ export const UserInputDialogHost = forwardRef<
     question?.reply_allowed !== false &&
     !!pending;
 
-  async function submit() {
-    const latest = draftsRef.current[key];
+  async function submit(answers?: UserInputAnswer[]) {
+    let latest = draftsRef.current[key];
     if (
       !latest ||
       latest.busy ||
@@ -302,6 +302,11 @@ export const UserInputDialogHost = forwardRef<
       currentIdentity.current !== identity
     )
       return;
+    if (answers && !latest.command) {
+      if (!available) return;
+      update(key, { answers });
+      latest = draftsRef.current[key]!;
+    }
     let command = latest.command;
     if (!command) {
       if (!available || !latest.target) return;
@@ -401,7 +406,7 @@ export const UserInputDialogHost = forwardRef<
                 : undefined
         }
         onChange={(answers) => update(key, { answers })}
-        onSubmit={() => void submit()}
+        onSubmit={(answers) => void submit(answers)}
         onClose={close}
       />
     ) : (

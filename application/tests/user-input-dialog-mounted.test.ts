@@ -41,7 +41,7 @@ const accepted=new Map(),commands=[];
 let failNext=false,forbidden=false;
 function question(n){return {request_id:'question-'+n,thread_id:'thread-'+n,thread_generation:1,
  session_id:'TEST-session',context_id:'TEST-context',requested_at:'2026-10-25T01:00:00Z',
- questions:[{id:'preview',question:'是否启用第 '+n+' 项合成预览？',options:[{id:'yes',label:'启用预览'},{id:'no',label:'保持关闭'}]}]};}
+ questions:[{id:'preview',question:'是否启用第 '+n+' 项合成预览？',multi_select:true,options:[{id:'yes',label:'启用预览'},{id:'no',label:'保持关闭'}]}]};}
 const threads=[1,2].map(n=>({id:'thread-'+n,title:'TEST 合成预览 '+n+(n===1?'：'+ '这是保留原文与原身份的长任务来源，不应该遮住当前待答问题。'.repeat(12):''),sessionId:'TEST-session',contextId:'TEST-context',
  projectId:'TEST-project',conversationId:'TEST-project',inputId:'TEST-input-'+n,kind:'execution',lifecycle:'open',phase:'waiting',controlState:'active',
  continuation:{mode:'supplement',inputId:'TEST-input-'+n,threadId:'thread-'+n,generation:1},userInputRequest:question(n)}));
@@ -103,8 +103,11 @@ function Fixture(){
  window.questionFixture={api,report:()=>({commands,accepted:accepted.size,draft:document.querySelector('#main-draft').value}),
   loseReceipt:()=>{failNext=true;},revoke:()=>{forbidden=true;},
   replace:()=>{threads[1].userInputRequest={...question(2),request_id:'question-2-replaced'};refresh();},
+  single:()=>{threads[0].userInputRequest={...question(1),request_id:'question-single',questions:[{...question(1).questions[0],multi_select:false}]};refresh();},
+  singleBatch:()=>{threads[0].userInputRequest={...question(1),request_id:'question-single-batch',questions:[
+   {...question(1).questions[0],multi_select:false},{...question(1).questions[0],id:'second',question:'第二个单选问题',multi_select:false}]};refresh();},
   batch:()=>{threads[0].userInputRequest={...question(1),request_id:'question-batch',questions:[
-   question(1).questions[0],{id:'multiple',question:'选择要验证的两项',multi_select:true,options:[{id:'one',label:'第一项'},{id:'two',label:'第二项'}]},
+   {...question(1).questions[0],multi_select:false},{id:'multiple',question:'选择要验证的两项',multi_select:true,options:[{id:'one',label:'第一项'},{id:'two',label:'第二项'}]},
    {id:'custom',question:'补充你的验收条件'}]};refresh();}};
  return <div className={desktop?'app':'page-shell'} data-color-mode="light" data-accent="cyan" style={{height:'100vh',width:'100%',display:'block'}}>
   <div className="workspace" style={{height:'100%',display:'block'}}><main className="primary-panel" style={{height:'100%',padding:24,overflow:'auto',color:desktop?'var(--ink)':'var(--text)'}}>
@@ -303,17 +306,30 @@ test(
           return {
             glow: glow.animationName,
             ring: ring.animationName,
-            play: ring.animationPlayState,
+            play: glow.animationPlayState,
             border: ring.borderStyle,
             top: ring.top,
+            blur: glow.filter,
+            background: getComputedStyle(button).backgroundColor,
+            color: getComputedStyle(button.querySelector("svg")!).color,
             opacity: getComputedStyle(button.querySelector("svg")!).opacity,
           };
         });
         assert.equal(light.glow, "supplement-breathe");
-        assert.equal(light.ring, "supplement-lamp");
+        assert.equal(
+          light.ring,
+          "none",
+          "the edge stays fixed while surface gloss breathes",
+        );
         assert.equal(light.play, "running");
         assert.equal(light.border, "solid");
         assert.equal(light.top, "0px", "a breathing button, not a corner dot");
+        assert.equal(light.blur, "none", "no blurry tint outside the button");
+        assert.ok(
+          !light.background.startsWith("rgba"),
+          "the theme background is solid: " + JSON.stringify(light),
+        );
+        assert.ok(contrastRatio(light.color, light.background) >= 4.5);
         assert.equal(
           light.opacity,
           "1",
@@ -341,6 +357,50 @@ test(
           breathLevels[1]! - breathLevels[0]! >= 0.6,
           "the button really breathes between dim and bright, not a static style",
         );
+        const palettes = await attention.evaluate(async (button) => {
+          const root = button.closest(".app, .page-shell")!;
+          const colors = [];
+          for (const mode of ["light", "dark"]) {
+            for (const accent of ["cyan", "iris", "coral", "mono"]) {
+              root.setAttribute("data-appearance", mode);
+              root.setAttribute("data-color-mode", mode);
+              root.setAttribute("data-accent", accent);
+              document.documentElement.setAttribute("data-appearance", mode);
+              document.documentElement.setAttribute("data-color-mode", mode);
+              // Theme switches use the incumbent short background transition;
+              // inspect the settled theme, not its previous-frame color.
+              getComputedStyle(button).backgroundColor;
+              await Promise.all(
+                button
+                  .getAnimations()
+                  .filter((animation) => animation instanceof CSSTransition)
+                  .map((animation) => animation.finished),
+              );
+              colors.push({
+                mode,
+                accent,
+                background: getComputedStyle(button).backgroundColor,
+                color: getComputedStyle(button.querySelector("svg")!).color,
+              });
+            }
+          }
+          root.setAttribute("data-appearance", "light");
+          root.setAttribute("data-color-mode", "light");
+          root.setAttribute("data-accent", "cyan");
+          document.documentElement.setAttribute("data-appearance", "light");
+          document.documentElement.setAttribute("data-color-mode", "light");
+          return colors;
+        });
+        for (const palette of palettes) {
+          assert.ok(
+            !palette.background.startsWith("rgba"),
+            JSON.stringify(palette),
+          );
+          assert.ok(
+            contrastRatio(palette.color, palette.background) >= 4.5,
+            surface + " " + JSON.stringify(palette),
+          );
+        }
         const motionCaptures = process.env.MORPHZ_QUESTION_UI_CAPTURE_DIR;
         if (motionCaptures) {
           mkdirSync(motionCaptures, { recursive: true });
@@ -385,7 +445,7 @@ test(
         await page.emulateMedia({ reducedMotion: "reduce" });
         assert.equal(
           await attention.evaluate(
-            (button) => getComputedStyle(button, "::after").animationName,
+            (button) => getComputedStyle(button, "::before").animationName,
           ),
           "none",
         );
@@ -403,7 +463,7 @@ test(
         await expect(attention).toHaveAttribute("data-attention-motion", "off");
         assert.equal(
           await attention.evaluate(
-            (button) => getComputedStyle(button, "::after").animationPlayState,
+            (button) => getComputedStyle(button, "::before").animationPlayState,
           ),
           "paused",
         );
@@ -470,7 +530,7 @@ test(
           await dialog.evaluate((el) => !!el.closest(".composer")),
           true,
         );
-        await dialog.getByRole("radio", { name: /启用预览/ }).waitFor();
+        await dialog.getByRole("checkbox", { name: /启用预览/ }).waitFor();
         const source = dialog.locator(
           surface === "desktop"
             ? ".user-input-composer-target"
@@ -495,7 +555,7 @@ test(
             .querySelector("header")!
             .getBoundingClientRect();
           const choice = element
-            .querySelector("label:has(input[type=radio])")!
+            .querySelector("label:has(input[type=checkbox])")!
             .getBoundingClientRect();
           return {
             width: rect.width,
@@ -529,7 +589,7 @@ test(
             .isDisabled(),
           true,
         );
-        await dialog.getByRole("radio", { name: /启用预览/ }).check();
+        await dialog.getByRole("checkbox", { name: /启用预览/ }).check();
         await dialog.getByRole("textbox").fill("只使用合成数据");
         if (captureDirectory) {
           for (const mode of ["light", "dark"]) {
@@ -622,13 +682,13 @@ test(
         await expect(page.getByLabel("主输入")).toBeFocused();
         await second.click();
         dialog = page.locator(".composer-question");
-        await dialog.getByRole("radio", { name: /保持关闭/ }).check();
+        await dialog.getByRole("checkbox", { name: /保持关闭/ }).check();
         await dialog.getByRole("textbox").fill("第二项独立草稿");
         await page.keyboard.press("Escape");
         await first.click();
         dialog = page.locator(".composer-question");
         assert.equal(
-          await dialog.getByRole("radio", { name: /启用预览/ }).isChecked(),
+          await dialog.getByRole("checkbox", { name: /启用预览/ }).isChecked(),
           true,
         );
         assert.equal(
@@ -754,6 +814,80 @@ test(
           generation: 1,
           reply_to_request_id: "legacy-record-1",
         });
+        await page.evaluate(() => (window as any).questionFixture.single());
+        await first.click();
+        dialog = page.locator(".composer-question");
+        await expect(dialog.getByRole("textbox")).toBeEnabled();
+        await dialog.getByRole("textbox").fill("单选附加说明");
+        const beforeSingle = report.commands.length;
+        await page.evaluate(() =>
+          (window as any).questionFixture.loseReceipt(),
+        );
+        await dialog
+          .getByRole("radio", { name: /启用预览/ })
+          .evaluate((element) => {
+            (element as HTMLInputElement).click();
+            (element as HTMLInputElement).click();
+          });
+        await dialog.getByRole("alert").waitFor();
+        report = await page.evaluate(() =>
+          (window as any).questionFixture.report(),
+        );
+        assert.equal(
+          report.commands.length,
+          beforeSingle + 1,
+          "single choice submits exactly once without a Send click",
+        );
+        assert.equal(report.accepted, 4);
+        assert.deepEqual(report.commands.at(-1).input_destination.answers, [
+          {
+            question_id: "preview",
+            selected_option_ids: ["yes"],
+            text: "单选附加说明",
+          },
+        ]);
+        await dialog
+          .getByRole("button", { name: "核对投递", exact: true })
+          .click();
+        await dialog.waitFor({ state: "detached" });
+        report = await page.evaluate(() =>
+          (window as any).questionFixture.report(),
+        );
+        assert.deepEqual(
+          report.commands.at(-1),
+          report.commands.at(-2),
+          "automatic send retains exact command identity after unknown receipt",
+        );
+        await page.evaluate(() =>
+          (window as any).questionFixture.singleBatch(),
+        );
+        await first.click();
+        dialog = page.locator(".composer-question");
+        await expect(dialog.getByRole("radio").first()).toBeEnabled();
+        await dialog
+          .getByRole("radio", { name: /启用预览/ })
+          .first()
+          .check();
+        assert.equal(
+          (await page.evaluate(() => (window as any).questionFixture.report()))
+            .accepted,
+          4,
+          "an incomplete question batch never sends early",
+        );
+        await dialog
+          .getByRole("radio", { name: /保持关闭/ })
+          .nth(1)
+          .click();
+        await dialog.waitFor({ state: "detached" });
+        report = await page.evaluate(() =>
+          (window as any).questionFixture.report(),
+        );
+        assert.equal(report.accepted, 5);
+        assert.equal(
+          report.commands.at(-1).input_destination.answers.length,
+          2,
+        );
+        assert.equal(report.draft, "主输入：不要修改我");
         await page.evaluate(() => (window as any).questionFixture.revoke());
         await second.click();
         dialog = page.locator(".composer-question");
@@ -769,7 +903,7 @@ test(
         assert.equal(
           (await page.evaluate(() => (window as any).questionFixture.report()))
             .accepted,
-          3,
+          5,
         );
         await page.keyboard.press("Escape");
         assert.deepEqual(errors, [], surface + " has no browser exceptions");

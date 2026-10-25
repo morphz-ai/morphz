@@ -30,12 +30,13 @@ export function UserInputDialog({
   error?: string;
   status?: string;
   onChange(answers: UserInputAnswer[]): void;
-  onSubmit(): void;
+  onSubmit(answers?: UserInputAnswer[]): void;
   onClose(): void;
 }) {
   const { t } = useTranslation();
   const panel = useRef<HTMLElement>(null);
-  const titleId = useId(), feedbackId = useId();
+  const titleId = useId(),
+    feedbackId = useId();
   const focused = useRef(false);
   useEffect(() => {
     if (busy || !available || focused.current) return;
@@ -46,13 +47,21 @@ export function UserInputDialog({
   const text = userInputAnswerText(request.questions, answers);
   const canSend =
     !busy && (frozen || (available && text !== null && text.length <= 30000));
-  function change(id: string, patch: Partial<UserInputAnswer>) {
+  function change(
+    id: string,
+    patch: Partial<UserInputAnswer>,
+    selection = false,
+  ) {
     if (!available || busy || frozen) return;
-    onChange(
-      answers.map((answer) =>
-        answer.question_id === id ? { ...answer, ...patch } : answer,
-      ),
+    const next = answers.map((answer) =>
+      answer.question_id === id ? { ...answer, ...patch } : answer,
     );
+    onChange(next);
+    const text =
+      selection && !request.questions.some((question) => question.multi_select)
+        ? userInputAnswerText(request.questions, next)
+        : null;
+    if (text !== null && text.length <= 30000) onSubmit(next);
   }
   return (
     <section
@@ -61,8 +70,16 @@ export function UserInputDialog({
       aria-label={t("userInput.title")}
       aria-busy={busy}
       onKeyDown={(event) => {
-        if (event.key === "Escape") { event.preventDefault(); onClose(); }
-        else if (event.target instanceof HTMLTextAreaElement && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onClose();
+        } else if (
+          event.target instanceof HTMLTextAreaElement &&
+          event.key === "Enter" &&
+          !event.shiftKey &&
+          !event.nativeEvent.isComposing &&
+          event.nativeEvent.keyCode !== 229
+        ) {
           event.preventDefault();
           if (canSend) onSubmit();
         }
@@ -76,7 +93,9 @@ export function UserInputDialog({
       >
         <header>
           <MessageSquarePlus size={16} aria-hidden="true" />
-          <span className="runtime-question-target" tabIndex={0} title={title}>{t("steering.supplement")} · {title}</span>
+          <span className="runtime-question-target" tabIndex={0} title={title}>
+            {t("steering.supplement")} · {title}
+          </span>
           <button
             type="button"
             aria-label={t("userInput.close")}
@@ -124,18 +143,22 @@ export function UserInputDialog({
                         name={`${titleId}-${question.id}`}
                         checked={selected}
                         onChange={() =>
-                          change(question.id, {
-                            selected_option_ids: question.multi_select
-                              ? selected
-                                ? answer!.selected_option_ids.filter(
-                                    (id) => id !== option.id,
-                                  )
-                                : [
-                                    ...(answer?.selected_option_ids ?? []),
-                                    option.id,
-                                  ]
-                              : [option.id],
-                          })
+                          change(
+                            question.id,
+                            {
+                              selected_option_ids: question.multi_select
+                                ? selected
+                                  ? answer!.selected_option_ids.filter(
+                                      (id) => id !== option.id,
+                                    )
+                                  : [
+                                      ...(answer?.selected_option_ids ?? []),
+                                      option.id,
+                                    ]
+                                : [option.id],
+                            },
+                            !question.multi_select,
+                          )
                         }
                       />
                     </label>

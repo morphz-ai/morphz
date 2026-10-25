@@ -79,7 +79,10 @@ export const UserInputDialogHost = forwardRef<
     onEngage?(): void;
     onRelease?(): void;
   }
->(function UserInputDialogHost({ principalId, readOnly, onAccepted, container, onEngage, onRelease }, ref) {
+>(function UserInputDialogHost(
+  { principalId, readOnly, onAccepted, container, onEngage, onRelease },
+  ref,
+) {
   const { t } = useTranslation();
   const scope = `${CORE_HTTP_URL}:${principalId}`;
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
@@ -292,11 +295,15 @@ export const UserInputDialogHost = forwardRef<
     update(key, { answers, error: undefined });
     saveQuestionForm(browserStorage(), scope, draftsRef.current[key]);
   }
-  async function submit(key: string) {
-    const draft = draftsRef.current[key];
+  async function submit(key: string, answers?: UserInputAnswer[]) {
+    let draft = draftsRef.current[key];
     if (!draft || draft.busy || draft.reading || readOnly || !principalId)
       return;
     if (!draft.command && !draft.available) return;
+    if (answers && !draft.command) {
+      change(key, answers);
+      draft = draftsRef.current[key];
+    }
     update(key, { busy: true, error: undefined }); // synchronous ref fence for double-clicks
     let command = draft.command;
     try {
@@ -341,7 +348,10 @@ export const UserInputDialogHost = forwardRef<
       delete next[key];
       draftsRef.current = next;
       setDrafts(next);
-      if (activeKeyRef.current === key) { close(); onRelease?.(); }
+      if (activeKeyRef.current === key) {
+        close();
+        onRelease?.();
+      }
       onAccepted();
     } catch (error) {
       if (!mounted.current) return;
@@ -439,7 +449,7 @@ export const UserInputDialogHost = forwardRef<
     ([, draft]) => draft.command && !draft.busy,
   );
   if (!container) return null;
-  return createPortal((
+  return createPortal(
     <>
       {(!!unresolved.length ||
         Object.values(legacyDrafts).some((draft) => draft.command)) &&
@@ -499,7 +509,7 @@ export const UserInputDialogHost = forwardRef<
                 : undefined
           }
           onChange={(answers) => change(activeKey!, answers)}
-          onSubmit={() => void submit(activeKey!)}
+          onSubmit={(answers) => void submit(activeKey!, answers)}
           onClose={dismiss}
         />
       )}
@@ -525,6 +535,7 @@ export const UserInputDialogHost = forwardRef<
           onClose={dismiss}
         />
       )}
-    </>
-  ), container);
+    </>,
+    container,
+  );
 });
