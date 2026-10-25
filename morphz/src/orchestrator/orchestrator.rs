@@ -9104,8 +9104,7 @@ impl Orchestrator {
             // Admission finishes before Evaluation begins. Do not reserve
             // its question/recovery frame throughout the later model/Plan
             // poll stack, including when the event needs no Objective route.
-            if Box::pin(supervisor.prepare_routed_event(&event, &activation.id))
-                .await?
+            if Box::pin(supervisor.prepare_routed_event(&event, &activation.id)).await?
                 == crate::objective::RoutedObjectiveEventDisposition::Suppressed
             {
                 tracing::info!(
