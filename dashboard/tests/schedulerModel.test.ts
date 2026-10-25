@@ -5,6 +5,7 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
+  mergeSchedulerCurrentAndHistory,
   activeSchedulerActivations,
   activeSchedulerThreads,
   currentSchedulerSchedules,
@@ -23,6 +24,28 @@ import {
   retryableDialogueThread,
 } from '../src/scheduler/model.ts'
 import type { SchedulerSnapshot } from '../src/scheduler/types.ts'
+
+test('bounded terminal history never evicts old pending questions or restores historical live controls', () => {
+  const current = fixture()
+  const history = fixture()
+  current.objectives = []
+  history.objectives = []
+  current.threads[0]!.thread.id = 'old-waiting-question'
+  current.threads[0]!.thread.updated_at = '2026-07-01T00:00:00Z'
+  const finished = structuredClone(history.threads[0]!)
+  finished.thread.id = 'recent-finished'
+  finished.thread.lifecycle = 'completed'
+  history.threads = [finished, history.threads[0]!]
+  history.summary.open_threads = 0
+  history.orphan_approvals = [structuredClone(current.threads[0]!.activations[0]!.jobs[0]!.approval!)]
+  const merged = mergeSchedulerCurrentAndHistory(current, history)
+  assert.deepEqual(merged.threads.map(value => value.thread.id), ['recent-finished', 'old-waiting-question'])
+  assert.equal(merged.threads[1], current.threads[0])
+  assert.equal(merged.summary, current.summary)
+  assert.equal(merged.orphan_approvals, current.orphan_approvals)
+  history.context_id = 'different-context'
+  assert.equal(mergeSchedulerCurrentAndHistory(current, history), current)
+})
 
 test('scheduler detail bounds tolerate an older Runtime snapshot during rolling upgrades', () => {
   assert.equal(schedulerDetailsTruncated(undefined), false)

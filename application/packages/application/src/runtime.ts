@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { HostFailureReporter } from "./host-diagnostics.js";
+import {
+  hostFailureDiagnostic,
+  type HostFailureReporter,
+} from "./host-diagnostics.js";
+import type { ConnectionReadFailure } from "../../core/src/connection.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { threadWaitProjection } from "./thread-wait-projection.js";
 import {
@@ -2473,6 +2477,8 @@ export class RuntimeBridge {
     string,
     { active?: unknown; history?: unknown }
   >();
+  private activityHistoryDirty = new Map<string, number>();
+  private lastReadFailure?: ConnectionReadFailure;
   private activityRootRoutes = new Map<
     string,
     {
@@ -4284,13 +4290,19 @@ export class RuntimeBridge {
     }
     return catalog;
   }
-  inspectConnection(signal?: AbortSignal) {
-    return inspectRuntimeConnection(
+  async inspectConnection(signal?: AbortSignal) {
+    const details = await inspectRuntimeConnection(
       this.config,
       signal,
       this.teamIdentity ? this.principalId("morphz-service") : undefined,
       (...args) => this.fetchRuntime(...args),
     );
+    return {
+      ...details,
+      ...(this.lastReadFailure
+        ? { lastReadFailure: { ...this.lastReadFailure } }
+        : {}),
+    };
   }
   validateConnection(config: RuntimeConfig) {
     if (
@@ -5850,11 +5862,60 @@ export class RuntimeBridge {
     );
   }
   private activityRefresh: Promise<void> | null = null;
+  private activityRefreshIncludesHistory = true;
+  private rememberReadFailure(
+    operation: ConnectionReadFailure["operation"],
+    error: unknown,
+  ) {
+    const diagnostic = hostFailureDiagnostic("runtime.read", error);
+    const timeout = diagnostic.errors.some((value) =>
+      ["TimeoutError", "AbortError"].includes(value.name),
+    );
+    const code = timeout
+      ? "TimeoutError"
+      : error instanceof UpstreamError
+        ? `HTTP_${error.status}`
+        : (diagnostic.errors.findLast((value) => value.code)?.code ??
+          (error instanceof z.ZodError || error instanceof SyntaxError
+            ? "ProtocolError"
+            : "UnexpectedError"));
+    this.lastReadFailure = {
+      operation,
+      code,
+      at: new Date().toISOString(),
+      timeoutMs: 8000,
+      ...(error instanceof UpstreamError ? { httpStatus: error.status } : {}),
+    };
+  }
+  private readRecovered(operation: ConnectionReadFailure["operation"]) {
+    if (
+      this.lastReadFailure?.operation === operation &&
+      !this.lastReadFailure.recoveredAt
+    )
+      this.lastReadFailure = {
+        ...this.lastReadFailure,
+        recoveredAt: new Date().toISOString(),
+      };
+  }
+  private async observedRead(
+    operation: ConnectionReadFailure["operation"],
+    path: string,
+  ) {
+    try {
+      const value = await this.request(path);
+      this.readRecovered(operation);
+      return value;
+    } catch (error) {
+      this.rememberReadFailure(operation, error);
+      throw error;
+    }
+  }
   private reportActivityReadFailure(
     scope: string,
     stage: "current" | "history" | "projection",
     error: unknown,
   ) {
+    this.rememberReadFailure(`activity-${stage}`, error);
     const cause = error instanceof RuntimeTransportError ? error.cause : error;
     const timeout =
       cause instanceof Error &&
@@ -5883,11 +5944,21 @@ export class RuntimeBridge {
       // Diagnostic failure is secondary, never a new business/read outcome.
     }
   }
-  private refreshActivity() {
-    if (!this.activityRefresh)
-      this.activityRefresh = this.refreshActivityNow().finally(() => {
-        this.activityRefresh = null;
-      });
+  private refreshActivity(includeHistory = true): Promise<void> {
+    if (
+      this.activityRefresh &&
+      includeHistory &&
+      !this.activityRefreshIncludesHistory
+    )
+      return this.activityRefresh.then(() => this.refreshActivity(true));
+    if (!this.activityRefresh) {
+      this.activityRefreshIncludesHistory = includeHistory;
+      this.activityRefresh = this.refreshActivityNow(includeHistory).finally(
+        () => {
+          this.activityRefresh = null;
+        },
+      );
+    }
     return this.activityRefresh;
   }
   /** An explicit inventory read never dispatches the outbox or creates work. */
@@ -5899,7 +5970,7 @@ export class RuntimeBridge {
       () => this.refreshActivity(),
     );
   }
-  private async refreshActivityNow() {
+  private async refreshActivityNow(includeHistory = true) {
     const activity: z.infer<typeof activitySchema> = {
       available: true,
       truncated: false,
@@ -6267,6 +6338,7 @@ export class RuntimeBridge {
         contextId: string;
         currentAvailable: boolean;
         historyAvailable: boolean;
+        historyRetained?: boolean;
         active: z.infer<typeof schema>;
         history: z.infer<typeof schema>;
       }[] = [];
@@ -6308,15 +6380,32 @@ export class RuntimeBridge {
       for (const contextId of contextIds) {
         const key = initialKeys.get(contextId)!;
         const cached = this.activitySnapshotCache.get(key);
+        const historyVersion = this.activityHistoryDirty.get(contextId);
+        // Current work is independent of the terminal-history page. The
+        // background tick rereads history only on startup or a committed
+        // terminal/Objective change; explicit Human refresh still reads it.
+        // A retained page is disclosed as retained, never fresh read evidence.
+        const readHistory =
+          includeHistory ||
+          !cached?.history ||
+          this.activityHistoryDirty.has(contextId);
         const read = async (terminal: boolean) => {
           try {
             const value = schema.parse(
               await this.request(
-                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=200`,
+                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=${terminal ? 50 : 200}`,
               ),
             );
             if (value.context_id !== undefined)
               z.literal(contextId).parse(value.context_id);
+            this.readRecovered(
+              terminal ? "activity-history" : "activity-current",
+            );
+            if (
+              terminal &&
+              this.activityHistoryDirty.get(contextId) === historyVersion
+            )
+              this.activityHistoryDirty.delete(contextId);
             return { value, denied: false };
           } catch (error) {
             this.reportActivityReadFailure(
@@ -6334,10 +6423,13 @@ export class RuntimeBridge {
             };
           }
         };
-        const [currentRead, historyRead] = await Promise.all([
-          read(false),
-          read(true),
-        ]);
+        // Prioritize the small current inventory; a large terminal aggregate
+        // must not monopolize the same SQLite-backed service beside it.
+        const currentRead = await read(false);
+        const historyRead =
+          readHistory && !currentRead.denied
+            ? await read(true)
+            : { value: undefined, denied: false };
         const changed = key !== readScopeKey(contextId, this.activeSessions());
         const denied = currentRead.denied || historyRead.denied || changed;
         if (changed)
@@ -6402,15 +6494,22 @@ export class RuntimeBridge {
           contextId,
           currentAvailable,
           historyAvailable,
+          ...(!readHistory && !denied ? { historyRetained: true } : {}),
           active,
           history,
         });
       }
       activity.readScopes = snapshots.map(
-        ({ contextId, currentAvailable, historyAvailable }) => ({
+        ({
           contextId,
           currentAvailable,
           historyAvailable,
+          historyRetained,
+        }) => ({
+          contextId,
+          currentAvailable,
+          historyAvailable,
+          ...(historyRetained ? { historyRetained } : {}),
         }),
       );
       activity.available = snapshots.every((value) => value.currentAvailable);
@@ -8711,11 +8810,12 @@ export class RuntimeBridge {
     });
     try {
       const status = this.teamIdentity
-        ? (await this.request("/api/sessions"), { model: "Runtime 默认模型" })
+        ? (await this.observedRead("status", "/api/sessions"),
+          { model: "Runtime 默认模型" })
         : z
             .object({ model: z.string() })
             .passthrough()
-            .parse(await this.request("/api/status"));
+            .parse(await this.observedRead("status", "/api/status"));
       this.state.connected = true;
       this.state.model = status.model;
       this.state.error = "";
@@ -9084,17 +9184,50 @@ export class RuntimeBridge {
           continue;
         // Durable cursor resumes after restart; do not filter out causal thread-result joins.
         for (let page = 0; page < 10; page++) {
-          const data = z
-            .object({ events: z.array(eventSchema) })
-            .parse(
-              await this.request(
-                `/api/sessions/${session.id}/events?after_sequence=${session.cursor}&limit=1000`,
-              ),
-            );
+          let data: { events: RuntimeEvent[] };
+          try {
+            data = z
+              .object({ events: z.array(eventSchema) })
+              .parse(
+                await this.observedRead(
+                  "session-events",
+                  `/api/sessions/${session.id}/events?after_sequence=${session.cursor}&limit=100`,
+                ),
+              );
+          } catch (error) {
+            // A single Session delta timeout does not disprove a successful
+            // Runtime health read or erase independently read current work.
+            // Keep its original durable cursor and retry only that read later.
+            this.rememberReadFailure("session-events", error);
+            try {
+              this.host.reportFailure?.("runtime.session-events", error);
+            } catch {}
+            if (
+              error instanceof UpstreamError &&
+              [401, 403].includes(error.status)
+            )
+              throw error;
+            break;
+          }
           for (const event of data.events.sort(
             (a, b) => a.sequence - b.sequence,
           )) {
             if (event.sequence <= session.cursor) continue;
+            if (
+              terminal.has(event.topic) ||
+              event.topic.startsWith("objective/") ||
+              [
+                "runtime/thread_cancelled",
+                "runtime/thread_completed",
+                "runtime/thread_failed",
+              ].includes(event.topic)
+            ) {
+              const contextId = this.contextId(session.projectId);
+              this.activityHistoryDirty.set(
+                contextId,
+                (this.activityHistoryDirty.get(contextId) ?? 0) + 1,
+              );
+            }
             if (
               payloadString(event, "session_id") &&
               payloadString(event, "session_id") !== session.id
@@ -9118,7 +9251,7 @@ export class RuntimeBridge {
               session.events.push(event);
             session.cursor = event.sequence;
           }
-          if (data.events.length < 1000) break;
+          if (data.events.length < 100) break;
         }
         const scopedDeliveries = currentDeliveries.filter(
           (delivery) => delivery.sessionId === session.id && delivery.rootId,
@@ -9208,7 +9341,7 @@ export class RuntimeBridge {
         }
       }
       await this.processRootCancellationChecks();
-      await this.refreshActivity();
+      await this.refreshActivity(false);
       await this.refreshAttention();
     } catch (error) {
       try {

@@ -1,5 +1,22 @@
 import { z } from "zod";
 
+/** Ephemeral read evidence, never execution state or a request/response dump. */
+export const connectionReadFailureSchema = z.object({
+  operation: z.enum([
+    "status",
+    "session-events",
+    "activity-current",
+    "activity-history",
+    "activity-projection",
+  ]),
+  code: z.string().min(1).max(64),
+  at: z.string(),
+  timeoutMs: z.number().int().positive(),
+  httpStatus: z.number().int().min(100).max(599).optional(),
+  recoveredAt: z.string().optional(),
+});
+export type ConnectionReadFailure = z.infer<typeof connectionReadFailureSchema>;
+
 export const connectionDetailsSchema = z.object({
   state: z.enum([
     "not-configured",
@@ -21,6 +38,7 @@ export const connectionDetailsSchema = z.object({
   endpoint: z.string().optional(),
   version: z.string().optional(),
   modelSettingsAvailable: z.boolean().optional(),
+  lastReadFailure: connectionReadFailureSchema.optional(),
 });
 export type ConnectionDetails = z.infer<typeof connectionDetailsSchema>;
 export const unconfiguredConnection: ConnectionDetails = {

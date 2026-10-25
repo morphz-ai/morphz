@@ -197,6 +197,21 @@ export function ConnectionSettings({
       : details?.state === "authentication-required"
         ? "更新连接凭据"
         : "连接设置";
+  const failure = details?.lastReadFailure;
+  const readNames = {
+    status: "运行服务状态",
+    "session-events": "会话增量事件",
+    "activity-current": "当前活动",
+    "activity-history": "活动历史",
+    "activity-projection": "活动状态整理",
+  };
+  const readPaths = {
+    status: "GET /api/status",
+    "session-events": "GET /api/sessions/:session/events · 增量分页",
+    "activity-current": "GET /api/contexts/:context/scheduler · 当前状态",
+    "activity-history": "GET /api/contexts/:context/scheduler · 历史分页",
+    "activity-projection": "应用内状态投影",
+  };
   return (
     <div ref={body} className="connection-settings">
       <header>
@@ -247,6 +262,36 @@ export function ConnectionSettings({
           </p>
         )}
       {error && <p role="alert">{error}</p>}
+      {failure && (
+        <details className="connection-read-failure" open>
+          <summary>
+            {readNames[failure.operation]}
+            {failure.code === "TimeoutError" ? "读取超时" : "读取失败"}
+            {failure.recoveredAt ? " · 已恢复" : ""}
+          </summary>
+          <dl className="connection-facts">
+            <dt>发生时间</dt>
+            <dd>
+              {new Date(failure.at).toLocaleString("zh-CN", { hour12: false })}
+            </dd>
+            <dt>错误代码</dt>
+            <dd>
+              <code>{failure.code}</code>
+              {failure.httpStatus ? `（HTTP ${failure.httpStatus}）` : ""}
+            </dd>
+            <dt>失败读取</dt>
+            <dd>
+              <code>{readPaths[failure.operation]}</code>
+            </dd>
+            {failure.code === "TimeoutError" && (
+              <>
+                <dt>等待上限</dt>
+                <dd>{failure.timeoutMs / 1000} 秒</dd>
+              </>
+            )}
+          </dl>
+        </details>
+      )}
       {editing ? (
         <form
           className="connection-setup"

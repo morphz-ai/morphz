@@ -42,5 +42,7 @@ count isolated fixtures as original-app acceptance. No raster assets are planned
 
 Current review: ship-with-notes from a fresh reviewer of the compact Desktop original-app
 capture and 16 current component fixtures; no residual visual blocker in that evidence set.
-This is not user aesthetic approval or complete original-app/Runtime acceptance. See
-[current evidence and remaining work](2026-10-25-user-input-dialog-review.md).
+Subsequent original Desktop A and Dashboard B submissions completed on their original
+Threads, including restart retention, exact native tool correlation, and one answer each.
+This is synthetic acceptance, not user aesthetic approval or business completion. See
+[current evidence and limits](2026-10-25-user-input-dialog-review.md).

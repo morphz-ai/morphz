@@ -83,6 +83,7 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
+  mergeSchedulerCurrentAndHistory,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
@@ -3558,6 +3559,11 @@ export default function App() {
   const operatorReturnScopeRef = useRef<PrincipalScopeLocation | null>(null)
   const activeViewRef = useRef(view)
   const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
+  const schedulerHistoryVersionRef = useRef(0)
+  const schedulerHistoryCacheRef = useRef<{
+    contextId: string; principalId: string; limit: number; version: number; snapshot: SchedulerSnapshot
+  } | null>(null)
+  const schedulerOpenIdsRef = useRef<{ contextId: string; ids: Set<string> }>({contextId: '', ids: new Set()})
 
   useEffect(() => {
     try {
@@ -3973,6 +3979,7 @@ export default function App() {
       // Keep one window for both views; "load more" then remains stable when
       // the operator returns to Dialogue and opens Scheduler again.
       const schedulerLimit = includeTerminal ? schedulerHistoryLimitRef.current : 50
+      const readPrincipalId = principalScopeRef.current?.principal.id ?? ''
       let resolvedSchedulerSummary: SchedulerSnapshot['summary'] | null = null
       const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
         if (!isCurrentScope()) return
@@ -4024,6 +4031,32 @@ export default function App() {
         )
         applySchedulerSnapshot(scheduler)
       })
+      const activityRequest = async () => {
+        const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200`
+        const current = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
+        if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
+        const previousOpen = schedulerOpenIdsRef.current
+        const ids = new Set(current.threads.map(value => value.thread.id))
+        if (previousOpen.contextId === contextId && [...previousOpen.ids].some(id => !ids.has(id)))
+          schedulerHistoryVersionRef.current++
+        schedulerOpenIdsRef.current = {contextId, ids}
+        const cached = schedulerHistoryCacheRef.current
+        const matching = cached?.contextId === contextId && cached.principalId === readPrincipalId ? cached : null
+        applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(current, matching?.snapshot))
+        const version = schedulerHistoryVersionRef.current
+        if (matching?.limit === schedulerLimit && matching.version === version) return
+        const history = await DASHBOARD_API.get<SchedulerSnapshot>(
+          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
+        )
+        if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
+        schedulerHistoryCacheRef.current = {contextId, principalId: readPrincipalId, limit: schedulerLimit, version, snapshot: history}
+        // History can take longer than current state. Re-read the small live
+        // inventory so a late historical page never restores old approvals,
+        // terminal phase or a question that has already been answered.
+        const latest = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
+        if ((principalScopeRef.current?.principal.id ?? '') === readPrincipalId)
+          applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(latest, history))
+      }
       const requests = [
         DASHBOARD_API.tryGet<AttentionAcknowledgementsPage>(
           (() => {
@@ -4103,9 +4136,7 @@ export default function App() {
         }),
         overviewRequest,
         ...(includeTerminal
-          ? [DASHBOARD_API.get<SchedulerSnapshot>(
-              `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
-            ).then(applySchedulerSnapshot)]
+          ? [activityRequest()]
           : []),
         DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>(
           `/api/delegations?context_id=${encodeURIComponent(contextId)}&include_terminal=true&limit=200`,
@@ -4918,6 +4949,9 @@ export default function App() {
     const pendingAuthoritativeQueries = new Set<AuthoritativeQuery>()
     let disposed = false
     const scheduleAuthoritativeRefresh = (topic: string) => {
+      if (['chat/reply', 'chat/no_reply', 'chat/cancelled', 'chat/runtime_error',
+        'runtime/thread_completed', 'runtime/thread_cancelled', 'runtime/thread_failed'].includes(topic) || topic.startsWith('objective/'))
+        schedulerHistoryVersionRef.current++
       for (const query of invalidatedQueriesForTopic(topic)) {
         pendingAuthoritativeQueries.add(query)
       }
@@ -4968,6 +5002,7 @@ export default function App() {
       nextSocket.onopen = () => {
         if (disposed || socket !== nextSocket) return
         setWsStatus('connected')
+        schedulerHistoryVersionRef.current++
         void loadSession(selectedSessionId, selectedContextId)
       }
       nextSocket.onmessage = messageEvent => {
@@ -8949,7 +8984,7 @@ export default function App() {
               <header className="workspace-heading">
                 <div><span>{t('work.title').toUpperCase()}</span><h1>{t('work.heading')}</h1><p>{t('work.description')}</p></div>
                 <div className="workspace-actions">
-                  <button type="button" onClick={() => void loadSession(selectedSessionId, selectedContextId)}><RefreshCw size={14} /> {t('work.refresh')}</button>
+                  <button type="button" onClick={() => { schedulerHistoryVersionRef.current++; void loadSession(selectedSessionId, selectedContextId) }}><RefreshCw size={14} /> {t('work.refresh')}</button>
                   <button type="button" onClick={() => setView('dialogue')}><ArrowLeft size={14} /> {t('work.backToChat')}</button>
                 </div>
               </header>

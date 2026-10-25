@@ -49,8 +49,11 @@ count isolated fixtures as original-app acceptance. No raster assets are planned
 
 Current review 2026-10-25: ship-with-notes from a fresh reviewer of the compact Desktop
 original-app capture and 16 current component fixtures. Earlier user-rejected ship verdicts
-are void. Mounted regression: 1/1 pass, 0 skip. Original-app evidence covers the short-question
-open/close state and earlier same-request draft retention, with no answer sent; other states
-remain mounted evidence. User aesthetic approval, overall Runtime acceptance and local commit
-remain pending; unpublished. See [evidence and limits](../../docs/design/2026-10-25-user-input-dialog-review.md).
+are void. Mounted regression: 1/1 pass, 0 skip. Subsequent original-app TEST A submission and
+same-command unknown-receipt check completed once, leaving independent TEST B pending.
+Dashboard B subsequently completed once on its own original Thread after restart retention
+and human Keychain authorization. Native tool calls, results and original Thread identities
+were audited. Other exception-state pictures remain mounted evidence; no user aesthetic or
+business approval is claimed. Focused local delivery only; unpublished and not pushed. See
+[evidence and limits](../../docs/design/2026-10-25-user-input-dialog-review.md).
 Existing DESIGN.md and sidecar scope are preserved; seed none, no new raster asset ships.

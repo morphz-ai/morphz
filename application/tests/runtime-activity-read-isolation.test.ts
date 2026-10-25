@@ -7,12 +7,156 @@ import { hostFailureDiagnostic } from "../packages/application/src/host-diagnost
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 
 const at = "2026-10-24T03:00:00.000Z";
+
+test("background activity reads keep terminal history off the hot path and disclose retained facts", async () => {
+  const x = await fixture();
+  try {
+    const paths: string[] = [];
+    x.internal.request = async (path: string) => {
+      if (path.includes("/scheduler?")) paths.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      return path.includes("include_terminal=false")
+        ? x.view([x.thread("current")])
+        : x.view([x.thread("finished", "completed")]);
+    };
+    await x.internal.refreshActivity();
+    await x.internal.refreshActivity(false);
+    await x.internal.refreshActivity(false);
+    assert.equal(
+      paths.filter((path) => path.includes("include_terminal=true")).length,
+      1,
+    );
+    assert.equal(
+      paths.filter((path) => path.includes("include_terminal=false")).length,
+      3,
+    );
+    assert.ok(
+      paths.some((path) => path.includes("include_terminal=true&limit=50")),
+    );
+    assert.ok(
+      paths.some((path) => path.includes("include_terminal=false&limit=200")),
+    );
+    const activity = x.read();
+    assert.equal(activity.available, true);
+    assert.equal(activity.openWorkComplete, true);
+    assert.deepEqual(activity.threads.map((thread) => thread.id).sort(), [
+      "current",
+      "finished",
+    ]);
+    assert.deepEqual(activity.readScopes, [
+      {
+        contextId: x.contextId,
+        currentAvailable: true,
+        historyAvailable: false,
+        historyRetained: true,
+      },
+    ]);
+    x.internal.activityHistoryDirty.set(x.contextId, 1);
+    await x.internal.refreshActivity(false);
+    assert.equal(
+      paths.filter((path) => path.includes("include_terminal=true")).length,
+      2,
+    );
+    assert.equal(x.read().readScopes![0]!.historyAvailable, true);
+    await x.internal.refreshActivity();
+    assert.equal(
+      paths.filter((path) => path.includes("include_terminal=true")).length,
+      3,
+    );
+    assert.equal(x.diagnostics.length, 0);
+  } finally {
+    await x.f.close();
+  }
+});
 const bounds = {
   limit: 200,
   has_more_threads: false,
   has_more_objectives: false,
   has_more_schedules: false,
 };
+
+test("an explicit history refresh queued behind a background read still performs its own fresh read", async () => {
+  const x = await fixture();
+  try {
+    x.route(
+      x.view([x.thread("current")]),
+      x.view([x.thread("finished", "completed")]),
+    );
+    await x.internal.refreshActivity();
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let held = false,
+      histories = 0;
+    x.internal.request = async (path: string) => {
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      if (path.includes("include_terminal=true")) {
+        histories++;
+        return x.view([x.thread("finished", "completed")]);
+      }
+      if (!held) {
+        held = true;
+        entered();
+        await gate;
+      }
+      return x.view([x.thread("current")]);
+    };
+    const background = x.internal.refreshActivity(false);
+    await started;
+    const explicit = x.internal.refreshActivity(true);
+    release();
+    await Promise.all([background, explicit]);
+    assert.equal(histories, 1);
+    assert.equal(x.read().readScopes![0]!.historyAvailable, true);
+  } finally {
+    await x.f.close();
+  }
+});
+
+test("a terminal invalidation arriving during a history read is not lost when that older read completes", async () => {
+  const x = await fixture();
+  try {
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let histories = 0;
+    x.internal.activityHistoryDirty.set(x.contextId, 1);
+    x.internal.request = async (path: string) => {
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      if (path.includes("include_terminal=true")) {
+        histories++;
+        if (histories === 1) {
+          entered();
+          await gate;
+        }
+        return x.view([x.thread("finished", "completed")]);
+      }
+      return x.view([x.thread("current")]);
+    };
+    const first = x.internal.refreshActivity(false);
+    await started;
+    x.internal.activityHistoryDirty.set(x.contextId, 2);
+    release();
+    await first;
+    assert.equal(x.internal.activityHistoryDirty.get(x.contextId), 2);
+    await x.internal.refreshActivity(false);
+    assert.equal(histories, 2);
+    assert.equal(x.internal.activityHistoryDirty.has(x.contextId), false);
+  } finally {
+    await x.f.close();
+  }
+});
 
 async function fixture() {
   const f = await platformRuntimeHostFixture();

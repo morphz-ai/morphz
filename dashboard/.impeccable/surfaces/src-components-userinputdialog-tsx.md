@@ -21,7 +21,12 @@ unknown receipt, cancellation, authorization and multiple independent requests. 
 Current review 2026-10-25: ship-with-notes from a fresh reviewer of the compact Desktop
 original-app capture and 16 current TEST fixtures; no residual visual blocker in that set.
 Earlier user-rejected ship verdicts are void. Mounted regression: 1/1 pass, 0 skip.
-Dashboard still has mounted evidence only. User aesthetic approval, full original-app/Runtime
-acceptance and local commit remain pending; unpublished.
+Subsequent original Dashboard TEST B verified the button-only card and 512×343.75px modal,
+retained selection/text across Runtime restarts and reload, an unchanged main draft, and one
+explicit submission to the original Thread. Human Keychain authorization released Provider
+backoff; the original Thread returned the full answer without another submission. Desktop A
+and Dashboard B each have one Human answer and one correlated native ToolResult/reply.
+Other exception-state pictures remain mounted evidence. User aesthetic and business approval
+are not claimed. Focused local delivery only; unpublished and not pushed.
 See [evidence and limits](../../../application/docs/design/2026-10-25-user-input-dialog-review.md).
 The pre-existing absence of Dashboard DESIGN.md is recorded, not repaired; seed remains none.

@@ -2020,6 +2020,20 @@ body:has(dialog[open]) .cognitive-application-frame {
   font-size: 12px;
   line-height: 1.6;
 }
+.connection-read-failure {
+  margin-block: var(--ui-space-4);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.connection-read-failure > summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 600;
+}
+.connection-read-failure .connection-facts {
+  font-size: 12px;
+  margin-block: var(--ui-space-2);
+}
 .connection-actions {
   display: flex;
   gap: 8px;

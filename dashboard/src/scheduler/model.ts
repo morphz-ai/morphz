@@ -7,6 +7,24 @@ import type {
   SchedulerThreadSnapshot,
 } from './types'
 
+/** A bounded terminal-history page must never replace the current open-work
+ * inventory. Retain only terminal history; all current controls, summaries,
+ * approvals and pending questions come from the independently read inventory. */
+export function mergeSchedulerCurrentAndHistory(current: SchedulerSnapshot, history?: SchedulerSnapshot | null): SchedulerSnapshot {
+  if (!history || history.context_id !== current.context_id) return current
+  const terminal = new Set(['completed', 'failed', 'cancelled'])
+  const threads = new Map(history.threads.filter(value => terminal.has(value.thread.lifecycle)).map(value => [value.thread.id, value]))
+  for (const value of current.threads) threads.set(value.thread.id, value)
+  const objectives = new Map(history.objectives.filter(value => terminal.has(value.objective.status)).map(value => [value.objective.id, value]))
+  for (const value of current.objectives) objectives.set(value.objective.id, value)
+  return { ...current, threads: [...threads.values()], objectives: [...objectives.values()],
+    detail_bounds: { ...current.detail_bounds,
+      has_more_threads: current.detail_bounds.has_more_threads || history.detail_bounds.has_more_threads,
+      has_more_objectives: current.detail_bounds.has_more_objectives || history.detail_bounds.has_more_objectives,
+    },
+  }
+}
+
 export function schedulerDetailsTruncated(
   detailBounds: SchedulerDetailBounds | null | undefined,
 ): boolean {

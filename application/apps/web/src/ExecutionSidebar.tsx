@@ -434,7 +434,7 @@ export function ExecutionSidebar({
       {runtime.connected &&
         runtime.activity?.available &&
         runtime.activity.readScopes?.some(
-          (value) => !value.historyAvailable,
+          (value) => !value.historyAvailable && !value.historyRetained,
         ) && (
           <p className="execution-activity-notice" role="status">
             <span>历史记录刷新失败，当前活动状态可用。</span>

@@ -51,6 +51,8 @@ export const activitySchema = z.object({
         contextId: z.string().min(1),
         currentAvailable: z.boolean(),
         historyAvailable: z.boolean(),
+        /** Background reads may retain immutable terminal facts without rereading history. */
+        historyRetained: z.boolean().optional(),
       }),
     )
     .optional(),
