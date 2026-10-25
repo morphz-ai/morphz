@@ -151,6 +151,13 @@ export function ExecutionSidebar({
           executionActivityThreadAvailable(value, runtime),
       )
     : undefined;
+  const threadNeedsInput =
+    !!thread?.userInputRequest &&
+    thread.lifecycle === "open" &&
+    thread.controlState !== "paused" &&
+    client.online &&
+    !!currentThread &&
+    executionActivityThreadAvailable(thread, runtime);
   const summaryRef = useRef<HTMLParagraphElement>(null);
   const [summaryVisible, setSummaryVisible] = useState(true);
   useEffect(() => {
@@ -248,7 +255,9 @@ export function ExecutionSidebar({
       data-status={threadStatus?.kind ?? "unknown"}
     >
       <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
-      {threadStatus?.label ?? "此分支不在当前快照中"}
+      {threadNeedsInput
+        ? "等待你的输入"
+        : (threadStatus?.label ?? "此分支不在当前快照中")}
     </span>
   );
   const detailActions = (
@@ -292,10 +301,18 @@ export function ExecutionSidebar({
         client.online && executionActivityThreadAvailable(value, runtime),
     );
     const children = executionActivityDescendants(t, activityThreads);
-    const summary = executionActivitySummary(
-      t,
-      client.online && executionActivityThreadAvailable(t, runtime),
-    );
+    const needsInput =
+      !!t.userInputRequest &&
+      t.lifecycle === "open" &&
+      t.controlState !== "paused" &&
+      client.online &&
+      executionActivityThreadAvailable(t, runtime);
+    const summary = needsInput
+      ? "等待你的输入"
+      : executionActivitySummary(
+          t,
+          client.online && executionActivityThreadAvailable(t, runtime),
+        );
     const origin = executionActivityOrigin(
       t,
       state,
@@ -320,8 +337,8 @@ export function ExecutionSidebar({
           data-root-id={t.rootId}
           aria-label={[
             t.title || "执行事项",
-            status.label,
-            summary,
+            needsInput ? "等待你的输入" : status.label,
+            needsInput ? "" : summary,
             origin,
             executionActivityClock(t),
             model,
@@ -333,14 +350,18 @@ export function ExecutionSidebar({
           <span
             className="execution-activity-icon"
             data-status={status.kind}
-            title={status.label}
+            title={needsInput ? "等待你的输入" : status.label}
           >
             <ExecutionStatusIcon kind={status.kind} size={19} />
           </span>
           <span className="execution-activity-body">
             <strong title={t.title}>{t.title || "执行事项"}</strong>
             {summary && (
-              <span className="execution-activity-summary" title={summary}>
+              <span
+                className="execution-activity-summary"
+                data-user-input={needsInput || undefined}
+                title={summary}
+              >
                 {summary}
               </span>
             )}

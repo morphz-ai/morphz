@@ -265,7 +265,7 @@ export function ThreadCausalCard({
   return (
     <details className={`causal-thread ${displayPhase}`} open={active}>
       <summary>
-        <span className={`status-pill ${displayPhase}`}>{statusLabel(displayPhase, t)}</span>
+        <span className={`status-pill ${displayPhase}`}>{thread.control_state !== 'paused' && currentQuestion(snapshot) ? t('work.attention.waitingUser') : statusLabel(displayPhase, t)}</span>
         <div>
           <strong>{threadKindLabel(thread.kind, t)}</strong>
           <span className="thread-assignment" title={threadAssignment(snapshot)}>{threadAssignment(snapshot) ?? t('steering.intentUnknown')}</span>

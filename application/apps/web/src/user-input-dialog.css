@@ -300,13 +300,8 @@
   color: var(--accent-strong);
   background: transparent;
 }
-/* The existing supplement action owns attention; no badge or new control.
-   Keep all light inside a small local footprint and never fade the icon. */
-@property --supplement-orbit {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
+/* Pending input is a breathing lamp on the existing supplement action.
+   No moving border, badge, new button, layout change or invisible icon. */
 button.needs-input {
   position: relative;
   isolation: isolate;
@@ -317,6 +312,8 @@ button.needs-input {
 button.needs-input > svg {
   position: relative;
   color: var(--accent-strong);
+  opacity: .55;
+  animation: supplement-lamp 3.2s ease-in-out infinite paused;
 }
 button.needs-input::before,
 button.needs-input::after {
@@ -324,29 +321,23 @@ button.needs-input::after {
   position: absolute;
   border-radius: inherit;
   pointer-events: none;
-  animation-play-state: paused;
 }
 button.needs-input::before {
   z-index: -1;
-  inset: -6px;
-  background: radial-gradient(ellipse, color-mix(in srgb, var(--accent-strong) 30%, transparent), transparent 72%);
+  inset: -5px;
+  background: radial-gradient(ellipse, color-mix(in srgb, var(--accent-strong) 32%, transparent), transparent 72%);
   filter: blur(4px);
-  opacity: .4;
-  transform: scale(.92);
-  animation: supplement-breathe 3.6s ease-in-out infinite paused;
+  opacity: .25;
+  transform: scale(.9);
+  animation: supplement-breathe 3.2s ease-in-out infinite paused;
 }
 button.needs-input::after {
   inset: 0;
-  padding: 1.25px;
-  background: conic-gradient(from var(--supplement-orbit),
-    transparent 0turn, color-mix(in srgb, var(--accent-strong) 18%, transparent) .13turn,
-    var(--accent-strong) .24turn, transparent .36turn,
-    transparent .52turn, color-mix(in srgb, var(--accent-strong) 40%, transparent) .72turn,
-    transparent .88turn);
-  mask: linear-gradient(#fff 0 0) content-box exclude, linear-gradient(#fff 0 0);
-  opacity: .8;
-  animation: supplement-orbit 5.2s linear infinite paused;
+  border: 1px solid color-mix(in srgb, var(--accent-strong) 38%, transparent);
+  opacity: .55;
+  animation: supplement-lamp 3.2s ease-in-out infinite paused;
 }
+button.needs-input[data-attention-motion="on"]:not(:disabled) > svg,
 button.needs-input[data-attention-motion="on"]:not(:disabled)::before,
 button.needs-input[data-attention-motion="on"]:not(:disabled)::after {
   animation-play-state: running;
@@ -360,24 +351,30 @@ button.needs-input:focus-visible {
   outline-offset: 3px;
 }
 button.objective-steering-button.is-waiting.needs-input > svg { color: var(--accent-strong); }
+.execution-activity-summary[data-user-input] { color: var(--accent-strong); }
 @keyframes supplement-breathe {
-  0%, 100% { opacity: .4; transform: scale(.92); }
-  50% { opacity: .85; transform: scale(1.08); }
+  0%, 100% { opacity: .25; transform: scale(.9); }
+  50% { opacity: .9; transform: scale(1.07); }
 }
-@keyframes supplement-orbit {
-  to { --supplement-orbit: 360deg; }
+@keyframes supplement-lamp {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
+  button.needs-input > svg,
   button.needs-input::before, button.needs-input::after {
     animation: none;
     transform: none;
   }
+  button.needs-input > svg { opacity: 1; }
 }
+[data-motion="reduce"] button.needs-input > svg,
 [data-motion="reduce"] button.needs-input::before,
 [data-motion="reduce"] button.needs-input::after {
   animation: none;
   transform: none;
 }
+[data-motion="reduce"] button.needs-input > svg { opacity: 1; }
 @media (forced-colors: active) {
   button.needs-input { outline: 1px solid Highlight; }
   button.needs-input::before, button.needs-input::after { display: none; }

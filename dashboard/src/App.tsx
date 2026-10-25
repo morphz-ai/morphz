@@ -2051,7 +2051,7 @@ export function DialogueActivityDock({
                         aria-expanded={expanded}
                         onClick={() => onThreadToggle(effective.thread.id)}
                       >
-                        <span className={`activity-status ${displayState}`} title={effective.phase === 'idle' && effective.thread.lifecycle === 'open' ? t('conversation.activity.idleThreadHint') : undefined}><i />{statusLabel(displayState, t)}</span>
+                        <span className={`activity-status ${displayState}`} title={effective.phase === 'idle' && effective.thread.lifecycle === 'open' ? t('conversation.activity.idleThreadHint') : undefined}><i />{effective.thread.control_state !== 'paused' && currentQuestion(effective) ? t('work.attention.waitingUser') : statusLabel(displayState, t)}</span>
                         <span className="dialogue-thread-identity">
                           <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
                           <span className="thread-assignment" title={threadAssignment(effective)}>{threadAssignment(effective) ?? t('steering.intentUnknown')}</span>
