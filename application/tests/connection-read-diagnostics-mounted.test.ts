@@ -3,10 +3,112 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Script } from "node:vm";
 import react from "@vitejs/plugin-react";
-import { chromium, expect, type Browser } from "@playwright/test";
+import { chromium, expect, type Browser, type Page } from "@playwright/test";
 import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
+
+// setViewportSize acknowledges the browser command, not delivery of the
+// renderer's resize event or useModal's layout update. Arm the actual event
+// before the command, then cross its paint boundary; never retry geometry.
+async function resizeConnectionFixture(
+  page: Pick<Page, "evaluateHandle" | "setViewportSize">,
+  viewport: { width: number; height: number },
+) {
+  const boundary = await page.evaluateHandle(() => ({
+    painted: new Promise<void>((resolve) => {
+      window.addEventListener(
+        "resize",
+        () => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        },
+        { once: true },
+      );
+    }),
+  }));
+  try {
+    await page.setViewportSize(viewport);
+    await boundary.evaluate(({ painted }) => painted);
+  } finally {
+    await boundary.dispose();
+  }
+}
+
+test(
+  "connection geometry awaits the actual resize event and two paints, not the command receipt",
+  { timeout: 1000 },
+  async () => {
+    const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const order: string[] = [];
+    const paints: (() => void)[] = [];
+    let resize!: () => void;
+    let disposed = 0;
+    const page = {
+      async evaluateHandle(read: () => object) {
+        const state = new Script(`(${read.toString()})()`).runInNewContext({
+          window: {
+            addEventListener(
+              name: string,
+              listener: () => void,
+              options: { once: boolean },
+            ) {
+              assert.equal(name, "resize");
+              assert.equal(options.once, true);
+              order.push("armed");
+              resize = listener;
+            },
+          },
+          requestAnimationFrame: (paint: () => void) => paints.push(paint),
+        });
+        return {
+          evaluate: (read: (value: { painted: Promise<void> }) => unknown) =>
+            read(state),
+          async dispose() {
+            disposed++;
+          },
+        };
+      },
+      async setViewportSize(size: { width: number; height: number }) {
+        assert.deepEqual(size, { width: 390, height: 844 });
+        order.push("command");
+      },
+    } as unknown as Pick<Page, "evaluateHandle" | "setViewportSize">;
+    let ready = false;
+    const waiting = resizeConnectionFixture(page, {
+      width: 390,
+      height: 844,
+    }).then(() => {
+      ready = true;
+    });
+    await tick();
+    assert.deepEqual(order, ["armed", "command"]);
+    assert.equal(ready, false);
+    assert.equal(paints.length, 0, "command receipt is not a resize event");
+    resize();
+    assert.equal(paints.length, 1);
+    paints.shift()!();
+    await tick();
+    assert.equal(ready, false, "the first frame still precedes observer paint");
+    paints.shift()!();
+    await waiting;
+    assert.equal(ready, true);
+    assert.equal(disposed, 1);
+    await assert.rejects(
+      resizeConnectionFixture(
+        {
+          ...page,
+          async setViewportSize() {
+            throw new Error("controlled resize failure");
+          },
+        },
+        { width: 390, height: 844 },
+      ),
+      /controlled resize failure/,
+    );
+    assert.equal(disposed, 2, "failed commands still dispose their boundary");
+  },
+);
 
 test(
   "connection details keep the exact redacted failed read visible after a healthy recheck",
@@ -96,7 +198,7 @@ createRoot(document.getElementById('root')).render(<div className="app" data-col
         dialog.getByText("活动历史读取超时 · 已恢复", { exact: true }),
       ).toBeVisible();
       assert.match(await dialog.innerText(), /2026.*10.*25.*11:25:33/);
-      await page.setViewportSize({ width: 390, height: 844 });
+      await resizeConnectionFixture(page, { width: 390, height: 844 });
       const box = await dialog.boundingBox();
       assert.ok(box && box.x >= 0 && box.x + box.width <= 390);
       assert.deepEqual(errors, []);

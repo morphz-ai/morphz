@@ -55,26 +55,35 @@ function verifyHarnessStackStability(source) {
 }
 
 function verifyNotesGuiStability(source) {
+  const triggers = source.slice(0, source.indexOf("\npermissions:"));
+  for (const path of [
+    "application/tests/cognitive-notes-gui-package.test.ts",
+    "application/tests/fixtures/cognitive-notes-gui-package.ts",
+    "application/tests/connection-read-diagnostics-mounted.test.ts",
+  ]) assert.ok(triggers.includes(`      - ${path}\n`), `${path} must trigger stability checks`);
   const job = jobSource(source, "macos-compose-regressions");
   const steps = job.split("\n      - ");
   const prepare = steps.findIndex(part => part.includes("name: Prepare exact independent author dependencies for early GUI stability"));
-  const repeated = steps.findIndex(part => part.includes("name: Require five complete Notes GUI passes without retries"));
+  const repeated = steps.findIndex(part => part.includes("name: Require five complete Notes GUI and connection resize passes without retries"));
   assert.ok(prepare >= 0 && repeated > prepare);
   assert.match(steps[prepare], /scripts\/prepare-cognitive-author-dependencies\.ts/);
   assert.match(steps[repeated], /for round in 1 2 3 4 5; do/);
   assert.match(steps[repeated], /npm test -- --test-concurrency=1 tests\/cognitive-notes-gui-package\.test\.ts/);
+  assert.match(steps[repeated], /tests\/connection-read-diagnostics-mounted\.test\.ts/);
   assert.doesNotMatch(steps[repeated], /--test-name-pattern|--grep|--retries|continue-on-error|\bif:|\|\||\buntil\b/);
   assert.match(job, /timeout-minutes: 20/);
 }
 
-test("macOS repeats the complete Notes GUI five times before the long inventory without narrowing or retrying", () => {
+test("macOS repeats complete Notes GUI and connection resize files five times before the long inventory without narrowing or retrying", () => {
   const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
   verifyNotesGuiStability(source);
   for (const changed of [
     source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
     source.replaceAll("scripts/prepare-cognitive-author-dependencies.ts", "scripts/omitted.ts"),
-    source.replace("tests/cognitive-notes-gui-package.test.ts\n          done", "tests/cognitive-notes-gui-package.test.ts --test-name-pattern=fast\n          done"),
-    source.replace("tests/cognitive-notes-gui-package.test.ts\n          done", "tests/cognitive-notes-gui-package.test.ts || true\n          done"),
+    source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "--test-name-pattern=fast\n          done"),
+    source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "tests/connection-read-diagnostics-mounted.test.ts || true\n          done"),
+    source.replace(" tests/connection-read-diagnostics-mounted.test.ts\n          done", "\n          done"),
+    source.replace("      - application/tests/connection-read-diagnostics-mounted.test.ts\n", ""),
   ]) assert.throws(() => verifyNotesGuiStability(changed));
 });
 

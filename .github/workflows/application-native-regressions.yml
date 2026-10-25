@@ -42,6 +42,7 @@ on:
       - application/tests/runtime-listener-fixture.test.ts
       - application/tests/cognitive-notes-gui-package.test.ts
       - application/tests/fixtures/cognitive-notes-gui-package.ts
+      - application/tests/connection-read-diagnostics-mounted.test.ts
       - application/examples/cognitive-notes/gui/**
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
@@ -236,11 +237,11 @@ jobs:
         run: |
           printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-notes-gui-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
           MORPHZ_TEST_COGNITIVE_NPM_CACHE="$RUNNER_TEMP/morphz-notes-gui-cache" npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
-      - name: Require five complete Notes GUI passes without retries
+      - name: Require five complete Notes GUI and connection resize passes without retries
         run: |
           for round in 1 2 3 4 5; do
-            printf 'Complete Notes GUI pass %s/5\n' "$round"
-            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/cognitive-notes-gui-package.test.ts
+            printf 'Complete Notes GUI and connection resize pass %s/5\n' "$round"
+            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/cognitive-notes-gui-package.test.ts tests/connection-read-diagnostics-mounted.test.ts
           done
       - name: Check actual iframe and application mounts with bounded diagnosis
         env:
