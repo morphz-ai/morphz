@@ -204,7 +204,7 @@ test(
                 response.end(
                   await vite.transformIndexHtml(
                     request.url!,
-                    '<!doctype html><html><head><base href="/"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module" src="/__question-' +
+                    '<!doctype html><html data-color-mode="light" data-appearance="light"><head><base href="/"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module" src="/__question-' +
                       surface +
                       '.tsx"></script></body></html>',
                   ),
@@ -307,9 +307,12 @@ test(
             glow: glow.animationName,
             ring: ring.animationName,
             play: glow.animationPlayState,
-            border: ring.borderStyle,
+            border: glow.borderStyle,
             top: ring.top,
             blur: glow.filter,
+            glowFill: glow.backgroundColor,
+            ringFill: ring.backgroundColor,
+            shadow: ring.boxShadow,
             background: getComputedStyle(button).backgroundColor,
             color: getComputedStyle(button.querySelector("svg")!).color,
             opacity: getComputedStyle(button.querySelector("svg")!).opacity,
@@ -318,17 +321,25 @@ test(
         assert.equal(light.glow, "supplement-breathe");
         assert.equal(
           light.ring,
-          "none",
-          "the edge stays fixed while surface gloss breathes",
+          "supplement-breathe",
+          "the fixed accent edge and soft outer light breathe together",
         );
         assert.equal(light.play, "running");
         assert.equal(light.border, "solid");
-        assert.equal(light.top, "0px", "a breathing button, not a corner dot");
-        assert.equal(light.blur, "none", "no blurry tint outside the button");
-        assert.ok(
-          !light.background.startsWith("rgba"),
-          "the theme background is solid: " + JSON.stringify(light),
+        assert.equal(
+          light.top,
+          "-1px",
+          "the light follows the button perimeter",
         );
+        assert.equal(light.blur, "none", "do not blur the button surface");
+        assert.equal(light.glowFill, "rgba(0, 0, 0, 0)");
+        assert.equal(light.ringFill, "rgba(0, 0, 0, 0)");
+        assert.notEqual(light.shadow, "none");
+        assert.ok(
+          !light.shadow.includes("inset"),
+          "light never tints the center",
+        );
+        assert.equal(light.background, "rgb(255, 255, 255)");
         assert.ok(contrastRatio(light.color, light.background) >= 4.5);
         assert.equal(
           light.opacity,
@@ -345,18 +356,23 @@ test(
             )!;
           const previous = breath.currentTime;
           breath.pause();
-          breath.currentTime = 0;
+          const timing = breath.effect!.getTiming();
+          const start = Number(timing.delay);
+          breath.currentTime = start;
           const dim = Number(getComputedStyle(button, "::before").opacity);
-          breath.currentTime = 1600;
+          const base = getComputedStyle(button).backgroundColor;
+          breath.currentTime = start + Number(timing.duration) / 2;
           const bright = Number(getComputedStyle(button, "::before").opacity);
+          const brightBase = getComputedStyle(button).backgroundColor;
           breath.currentTime = previous;
           breath.play();
-          return [dim, bright];
+          return { dim, bright, base, brightBase };
         });
         assert.ok(
-          breathLevels[1]! - breathLevels[0]! >= 0.6,
+          breathLevels.bright - breathLevels.dim >= 0.6,
           "the button really breathes between dim and bright, not a static style",
         );
+        assert.equal(breathLevels.base, breathLevels.brightBase);
         const palettes = await attention.evaluate(async (button) => {
           const root = button.closest(".app, .page-shell")!;
           const colors = [];
@@ -381,6 +397,7 @@ test(
                 accent,
                 background: getComputedStyle(button).backgroundColor,
                 color: getComputedStyle(button.querySelector("svg")!).color,
+                edge: getComputedStyle(button, "::before").borderColor,
               });
             }
           }
@@ -392,10 +409,13 @@ test(
           return colors;
         });
         for (const palette of palettes) {
-          assert.ok(
-            !palette.background.startsWith("rgba"),
-            JSON.stringify(palette),
+          assert.equal(
+            palette.background,
+            palette.mode === "light" ? "rgb(255, 255, 255)" : "rgb(16, 16, 16)",
+            "every accent keeps the same neutral center: " +
+              JSON.stringify(palette),
           );
+          assert.notEqual(palette.edge, palette.background);
           assert.ok(
             contrastRatio(palette.color, palette.background) >= 4.5,
             surface + " " + JSON.stringify(palette),
@@ -413,13 +433,25 @@ test(
                 document.documentElement.setAttribute("data-color-mode", mode);
                 document.documentElement.setAttribute("data-appearance", mode);
               }, mode);
-            for (const time of [0, 1600]) {
+            await page.evaluate(async () => {
+              await Promise.all(
+                document
+                  .getAnimations()
+                  .filter((animation) => animation instanceof CSSTransition)
+                  .map((animation) =>
+                    animation.finished.catch(() => undefined),
+                  ),
+              );
+            });
+            for (const time of [0, 1400]) {
               await attention.evaluate((button, time) => {
                 for (const animation of button.getAnimations({
                   subtree: true,
                 })) {
+                  if (!(animation instanceof CSSAnimation)) continue;
                   animation.pause();
-                  animation.currentTime = time;
+                  animation.currentTime =
+                    Number(animation.effect!.getTiming().delay) + time;
                 }
               }, time);
               await page.screenshot({
@@ -451,7 +483,7 @@ test(
         );
         assert.notEqual(
           await attention.evaluate(
-            (button) => getComputedStyle(button, "::after").borderStyle,
+            (button) => getComputedStyle(button, "::before").borderStyle,
           ),
           "none",
           "reduced motion retains a static, legible pending state",

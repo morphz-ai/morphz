@@ -13,6 +13,7 @@ test("待答线程明确显示等待你的输入，原补充按钮呼吸而不�
   page,
 }) => {
   const threads: ExecutionActivity["threads"] = [];
+  await page.emulateMedia({ colorScheme: "light" });
   const inputs: ReturnType<
     Awaited<ReturnType<typeof mockPlatformConversation>>["input"]
   >[] = [];
@@ -82,10 +83,13 @@ test("待答线程明确显示等待你的输入，原补充按钮呼吸而不�
     .filter({ has: row })
     .getByRole("button", { name: "补充", exact: true });
   await expect(supplement).toHaveAttribute("data-attention-motion", "on");
-  await expect(supplement.locator("svg")).toHaveCSS(
-    "animation-name",
-    "none",
-  );
+  await expect(supplement).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  expect(
+    await supplement.evaluate(
+      (button) => getComputedStyle(button, "::before").backgroundImage,
+    ),
+  ).toBe("none");
+  await expect(supplement.locator("svg")).toHaveCSS("animation-name", "none");
   expect(
     await supplement.evaluate(
       (button) => getComputedStyle(button, "::after").backgroundImage,

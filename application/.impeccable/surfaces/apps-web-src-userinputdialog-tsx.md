@@ -10,10 +10,13 @@ related_targets: ["apps/web/src/user-input-dialog.css"]
 ## Current direction, superseding the archived contract below
 
 Mode: Operate refinement; seed none. Reuse the existing Supplement action and the current
-composer. No extra answer button, inline activity question, backdrop or modal. Pending uses a
-static accent dot plus three gentle pulses; reduced motion retains the static state. Ordinary
+composer. No extra answer button, inline activity question, backdrop or modal. The user selected
+the neutral-base soft halo: fixed white/black center and neutral icon, with only the accent
+edge breathing; reduced motion retains a static edge. No dot, rotating light or filled accent.
+Ordinary
 drafts/references/attachments remain mounted and unchanged. Show the exact original task,
-full questions, choices, free text and one explicit Send inside the input frame. Escape exits
+full questions, choices, free text and Send inside the input frame. Complete single-choice
+batches submit on selection; multi-choice/free-text batches keep explicit submission. Escape exits
 without answering and returns to the ordinary input. Keep original request/auth/command identity.
 Use incumbent system type, neutral themes and focus tokens; body bounds 48dvh/420px, narrow
 wrapping, no focus trap. No global DESIGN.md rewrite or raster assets.
