@@ -170,3 +170,17 @@ new source/freshness/refresh seam before restoring only moved state for its
 unchanged historical hashes; its negative mutations remain required. The popup
 counterfactual now detaches all relative depths. No assertion, deadline,
 performance target, ownership check or current inventory was removed.
+
+The completed first full local inventory also found that the added Schedule
+container had moved `data-schedule-id` away from its original clickable record.
+The production row now keeps that original identity/anchor, while the sibling
+menu stays outside the record button. Its unchanged complete mounted controller
+passed 8/8. The Thread collection fixture now implements the actual Client
+`refreshView` port and asserts exactly one explicit refresh after control; its
+12 existing cases passed without dropping the accepted stop-lock assertion.
+After these corrections, all 14 cases across the new controls and original
+Schedule/subject-sidebar browser files passed five consecutive rounds (70/70).
+The original app was refreshed once, its Schedule row inspected, then restored
+to Activity with the same empty draft and connected Runtime. The initial full
+run's failures remain recorded; final full-inventory CI must use the corrected
+commit, not that earlier source or a selected successful retry.

@@ -264,7 +264,9 @@ test("Objective shortcut and native Schedule actions operate on original objects
     goal.getByRole("button", { name: "暂停目标", exact: true }),
   ).toBeVisible();
   await page.getByRole("tab", { name: "定时任务", exact: true }).click();
-  const row = page.locator('[data-schedule-id="TEST-timer"]');
+  const row = page.locator(".subject-schedule-row").filter({
+    has: page.locator('[data-schedule-id="TEST-timer"]'),
+  });
   await row.getByRole("button", { name: "调整定时任务", exact: true }).click();
   await page
     .getByRole("group", { name: "定时任务操作", exact: true })

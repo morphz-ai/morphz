@@ -70,14 +70,11 @@ export function SubjectSchedules({
           </>
         );
         return (
-          <div
-            className="subject-schedule-row"
-            data-schedule-id={row.scheduleId}
-            key={row.scheduleId}
-          >
+          <div className="subject-schedule-row" key={row.scheduleId}>
             {exactThread ? (
               <button
                 className="subject-record"
+                data-schedule-id={row.scheduleId}
                 onClick={() =>
                   onInspect({
                     projectId: row.projectId,
@@ -91,7 +88,9 @@ export function SubjectSchedules({
                 {content}
               </button>
             ) : (
-              <div className="subject-record">{content}</div>
+              <div className="subject-record" data-schedule-id={row.scheduleId}>
+                {content}
+              </div>
             )}
             <RuntimeScheduleActions
               key={`${client.boot!.csrfToken}:${row.scheduleId}`}
