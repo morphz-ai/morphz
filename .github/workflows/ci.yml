@@ -172,6 +172,15 @@ jobs:
         env:
           MORPHZ_TEST_RUNTIME_LIB: /usr/local/libexec/morphz-runtime-ci/lib
         run: python3 scripts/test_runtime_postgres_lib.py
+      - name: Require five complete PostgreSQL statement-budget passes
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'PostgreSQL statement-budget pass %s/5\n' "$round"
+            cargo test --locked -p morphz --test postgres_storage_statement_budget -- --test-threads=1 --nocapture
+          done
       - name: Preserve installed sandbox diagnostics
         if: failure()
         run: sudo journalctl -u morphz-sandbox.service --no-pager

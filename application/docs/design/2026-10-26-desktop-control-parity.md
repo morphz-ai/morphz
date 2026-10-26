@@ -312,3 +312,24 @@ only one short ARM allocation eligible while the two long Intel inventories
 run, without another product change, test filter, optional mandatory job or
 deadline extension. The existing coverage contract rejects removing that
 ordering or silently moving the remaining ARM checks to Intel.
+
+## PostgreSQL steady-state budget checkpoint
+
+The later full CI kept one real failure: the PostgreSQL Context budget counted
+81 statements instead of 80. A controlled cold-connection counterfactual
+reproduced exactly 81: twenty of each of the four Context statements plus one
+`SELECT set_config($1, $2, false)` connection writer-fence initialization. This
+is test setup mixing cold connection creation with its explicitly steady-state
+window; the production connection fence is unchanged.
+
+The fixture now awaits full pool initialization and idle return before measuring
+hot paths. It also deliberately forces a cold connection and requires all five
+physical statements, including the fence, to stay observable. No query is
+filtered out. The original one/four-statement budgets, twenty-sample total of
+80 statements and 80 pool acquires, and 500ms p95 smoke budget remain unchanged.
+Ten complete release-file rounds passed against an owned temporary PostgreSQL,
+including ten forced cold-connection checks and 200 steady Context samples;
+observed per-round p95 was 4.314–6.996ms. This is engineering measurement on the
+local test server, not a production latency claim. Required CI repeats the
+complete file five times on its own PostgreSQL service; fourteen source/owner
+guard cases reject omission, filtering, optional success and budget overrides.
