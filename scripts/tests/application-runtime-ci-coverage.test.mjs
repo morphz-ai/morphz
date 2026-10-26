@@ -533,7 +533,7 @@ test("native browser omission, optional execution and name filters cannot pass c
   const desktop = jobSource(workflow, "desktop");
   for (const changed of [
     desktop.replace(" tests/sidebar-resize.spec.ts", ""),
-    desktop.replace("runs-on: macos-latest", "runs-on: ubuntu-latest"),
+    desktop.replace(/runs-on: macos-[^\n]+/, "runs-on: ubuntu-latest"),
     desktop.replace(
       "run: npx playwright test",
       "continue-on-error: true\n        run: npx playwright test",

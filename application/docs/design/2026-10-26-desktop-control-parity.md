@@ -241,3 +241,25 @@ The generated Rust license bundle follows that exact dependency graph. Actual
 Windows sandbox/runtime compilation and execution remain part of the complete
 final-source CI gate. The already published v0.1.4 tag and assets stay immutable;
 this development dependency correction is not silently substituted into them.
+
+## Hosted runner allocation correction
+
+The first matrix on `e8278870` passed the full dependency audit and repeated
+Linux/macOS regression lanes. Its full Embedded Desktop job was cancelled
+before acquiring any runner, with no executed steps. GitHub's check annotations
+report that the hosted runner was not acquired after multiple attempts and that
+macOS arm64 capacity was constrained:
+[job 121628987967](https://github.com/morphz-ai/morphz/actions/runs/40339218428/job/121628987967).
+That incomplete matrix is excluded from acceptance.
+
+The complete application inventory now selects `macos-26-intel`, an official
+standard runner with the same macOS major version. The other three mandatory
+native macOS jobs explicitly select `macos-26` and retain Apple Silicon coverage.
+All Node files, explicit native
+focus requirements, embedded Host/restart/OCR flows, macOS-only browser files,
+test assertions, single-worker scheduling and deadlines remain unchanged.
+Architecture selection only chooses the matching browser binary; the catalog
+has no architecture-based test omission. The coverage test's negative mutation
+now replaces any selected macOS label with Linux rather than matching the old
+floating label, so the original non-macOS rejection remains effective. This
+does not add a failed-job retry or a success exemption for missing runners.

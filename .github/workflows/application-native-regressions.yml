@@ -109,7 +109,7 @@ jobs:
 
   macos-reader-regressions:
     name: Public pinned OCR acquisition and real Desktop reader
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 15
     defaults:
       run:
@@ -220,7 +220,7 @@ jobs:
 
   macos-compose-regressions:
     name: Isolated macOS iframe, manager and native control diagnosis
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 20
     defaults:
       run:

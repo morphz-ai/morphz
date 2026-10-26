@@ -204,7 +204,11 @@ jobs:
 
   desktop:
     name: Embedded Desktop (macOS)
-    runs-on: macos-latest
+    # The arm64 hosted fleet cancelled the complete inventory before acquiring
+    # a runner (40339218428 / 121628987967). Keep the same macOS 26 release on
+    # the standard Intel fleet; CI's three native macOS jobs retain arm64.
+    # Every case, native-focus requirement and deadline below stays mandatory.
+    runs-on: macos-26-intel
     # On the 7 GiB runner, the complete single-worker Node inventory took 84m20s.
     # Native/OCR assertions also passed, but the old 90m budget cancelled final
     # cleanup. Preserve every case and its own deadlines; budget the whole job.
