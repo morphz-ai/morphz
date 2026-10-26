@@ -123,6 +123,7 @@ import { RuntimeProfileClient } from "./runtime-profile-client.js";
 import { activityAnnotationFields } from "./response-annotations.js";
 import {
   authorizedExecutionThreadTree,
+  executionRecordThread,
   readExecutionRecords,
   runtimeExecutionRecordsSchema,
 } from "./execution-thread-tree.js";
@@ -5860,6 +5861,15 @@ export class RuntimeBridge {
     const visibleInputs = new Set(
       pageItems.filter((item) => item.kind === "input").map((item) => item.id),
     );
+    // Pending Human work is not a message-page member. Keep its original
+    // authorized input reachable even after that input leaves the newest page.
+    const approvalInputs = new Set(
+      local
+        .filter((delivery) =>
+          current.projectIds.includes(delivery.platformSource!.projectId),
+        )
+        .map((delivery) => delivery.inputId),
+    );
     const oldest = pageItems[0];
     return {
       inputs: pageItems.flatMap((item) =>
@@ -5879,7 +5889,7 @@ export class RuntimeBridge {
             (approval) =>
               readableProjects.has(approval.scope.projectId) &&
               !!approval.scope.inputId &&
-              visibleInputs.has(approval.scope.inputId),
+              approvalInputs.has(approval.scope.inputId),
           ),
         },
         ...(this.state.activity
@@ -7654,6 +7664,19 @@ export class RuntimeBridge {
   }
   private async refreshAttention() {
     try {
+      const readKey = () =>
+        JSON.stringify([
+          this.config.url,
+          this.config.namespace,
+          this.actor(),
+          this.activeSessions().map((session) => [
+            session.id,
+            session.projectId,
+            session.conversationId,
+            session.sharedDefault,
+          ]),
+        ]);
+      const initialKey = readKey();
       const data = z
         .object({ approvals: z.array(approvalSchema) })
         .parse(await this.request("/api/approvals"));
@@ -7663,6 +7686,7 @@ export class RuntimeBridge {
       );
       const deliveries = this.activeDeliveries();
       const approvals: ExecutionAttention["approvals"] = [];
+      let complete = true;
       for (const approval of data.approvals) {
         const request = approval.request;
         const session = sessionsById.get(request.session_id);
@@ -7671,38 +7695,90 @@ export class RuntimeBridge {
           request.context_id !== this.contextId(session.projectId)
         )
           continue;
-        const thread = request.thread_id
+        let thread = request.thread_id
           ? this.state.threadBindings[request.thread_id]
           : undefined;
         if (
           thread &&
           (thread.sessionId !== session.id ||
+            (thread.contextId && thread.contextId !== request.context_id) ||
             (request.root_turn_id && thread.rootId !== request.root_turn_id))
-        )
+        ) {
+          complete = false;
           continue;
+        }
         const root = request.root_turn_id ?? thread?.rootId;
-        const delivery = root
+        let delivery = root
           ? deliveries.find(
-              (d) => d.sessionId === session.id && d.rootId === root,
+              (d) =>
+                d.sessionId === session.id &&
+                (d.rootId === root ||
+                  (!!thread &&
+                    d.inputId === thread.inputId &&
+                    d.platformSource!.projectId === thread.projectId &&
+                    d.platformSource!.conversationId ===
+                      thread.conversationId)),
             )
           : undefined;
+        if (!delivery && request.thread_id) {
+          // The current-work inventory is bounded. A pending approval is an
+          // exact locator into the same Runtime-owned source proof used by the
+          // inspector, never a reason to enumerate history or infer a parent
+          // from a synthetic root name.
+          const records = await readExecutionRecords(
+            (path) => this.request(path),
+            {
+              sessionId: session.id,
+              contextId: request.context_id,
+              threadId: request.thread_id,
+              metadataOnly: true,
+            },
+          );
+          const selected = records.threads[0]!;
+          if (readKey() !== initialKey)
+            throw new DomainError("forbidden", "审批读取范围已变化。");
+          if (root && selected.root_turn_id !== root) {
+            complete = false;
+            continue;
+          }
+          delivery = deliveries.find(
+            (d) =>
+              d.sessionId === session.id &&
+              !!records.source_root_id &&
+              d.rootId === records.source_root_id,
+          );
+          if (delivery) {
+            const source = delivery.platformSource!;
+            thread = {
+              ...executionRecordThread(selected),
+              inputId: delivery.inputId,
+              projectId: source.projectId,
+              conversationId: source.conversationId,
+            };
+            this.state.threadBindings[thread.id] = thread;
+          }
+        }
         const source = delivery?.platformSource;
-        // Shared default Sessions span work projects. Never infer ownership from
-        // the selected page or transport session when the receipt is missing.
-        if (session.sharedDefault && !source) continue;
-        const projectId = source?.projectId ?? session.projectId;
+        // A Session can span projects. Never infer ownership from the selected
+        // page or transport session when the original input proof is missing.
+        if (!source) {
+          complete = false;
+          continue;
+        }
         approvals.push({
           scope: {
-            projectId,
-            conversationId: source?.conversationId ?? discussionId(session),
-            artifactId: source?.artifactId ?? session.artifactId,
-            ...(source ? { inputId: delivery!.inputId } : {}),
+            projectId: source.projectId,
+            conversationId: source.conversationId,
+            artifactId: source.artifactId ?? null,
+            inputId: delivery!.inputId,
             ...(thread ? { threadId: thread.id } : {}),
           },
           approval: { ...approval, fingerprint: approvalFingerprint(approval) },
         });
       }
-      this.attention = { available: true, approvals };
+      if (readKey() !== initialKey)
+        throw new DomainError("forbidden", "审批读取范围已变化。");
+      this.attention = { available: complete, approvals };
     } catch {
       this.attention = { ...this.attention, available: false };
     }

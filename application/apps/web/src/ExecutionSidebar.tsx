@@ -144,6 +144,7 @@ export function ExecutionSidebar({
           client.online &&
           !!currentThread &&
           executionActivityThreadAvailable(value, runtime),
+        client.online ? runtime.attention : undefined,
       )
     : undefined;
   const threadNeedsInput =
@@ -256,6 +257,7 @@ export function ExecutionSidebar({
       activityThreads,
       (value) =>
         client.online && executionActivityThreadAvailable(value, runtime),
+      client.online ? runtime.attention : undefined,
     );
     const children = executionActivityDescendants(t, activityThreads);
     const needsInput =
@@ -264,12 +266,15 @@ export function ExecutionSidebar({
       t.controlState !== "paused" &&
       client.online &&
       executionActivityThreadAvailable(t, runtime);
-    const summary = needsInput
-      ? "等待你的输入"
-      : executionActivitySummary(
-          t,
-          client.online && executionActivityThreadAvailable(t, runtime),
-        );
+    const summary =
+      status.kind === "approval"
+        ? status.label
+        : needsInput
+          ? "等待你的输入"
+          : executionActivitySummary(
+              t,
+              client.online && executionActivityThreadAvailable(t, runtime),
+            );
     const origin = executionActivityOrigin(
       t,
       state,
@@ -317,6 +322,7 @@ export function ExecutionSidebar({
               <span
                 className="execution-activity-summary"
                 data-user-input={needsInput || undefined}
+                data-approval={status.kind === "approval" || undefined}
                 title={summary}
               >
                 {summary}

@@ -12,6 +12,8 @@ import {
 import { scriptOutputSchema } from "../packages/core/src/script-delivery.js";
 import {
   executionActivityDateGroups,
+  executionActivityApprovals,
+  executionActivityGroupStatus,
   executionActivityIsDeferred,
   executionActivityOrigin,
   executionActivityOverview,
@@ -47,6 +49,89 @@ function thread(overrides: Partial<ActivityThread> = {}): ActivityThread {
     ...overrides,
   };
 }
+
+test("real descendant approval overrides a generic parent wait without changing phase or marking unrelated siblings", () => {
+  const parent = thread({
+    id: "parent",
+    phase: "waiting",
+    waitKinds: ["thread"],
+    contextId: "context-one",
+  });
+  const child = thread({
+    id: "child",
+    parentThreadId: parent.id,
+    rootId: "scheduled-root",
+    phase: "runnable",
+    contextId: parent.contextId,
+  });
+  const sibling = thread({
+    id: "sibling",
+    phase: "running",
+    contextId: parent.contextId,
+  });
+  const threads = [parent, child, sibling];
+  const attention = {
+    available: true,
+    approvals: [
+      {
+        scope: {
+          projectId: child.projectId!,
+          conversationId: child.conversationId!,
+          artifactId: null,
+          inputId: child.inputId!,
+          threadId: child.id,
+        },
+        approval: {
+          fingerprint: "exact-fingerprint",
+          requested_at: stamp,
+          request: {
+            approval_id: "approval-child",
+            session_id: child.sessionId,
+            context_id: child.contextId!,
+            root_turn_id: child.rootId,
+            thread_id: child.id,
+            justification: "TEST approval",
+            action: {},
+            requested: {},
+          },
+        },
+      },
+    ],
+  };
+  assert.deepEqual(
+    executionActivityGroupStatus(parent, threads, true, attention),
+    { kind: "approval", label: "子任务等待你的批准" },
+  );
+  assert.deepEqual(
+    executionActivityGroupStatus(child, threads, true, attention),
+    { kind: "approval", label: "等待你的批准" },
+  );
+  assert.equal(
+    executionActivityGroupStatus(sibling, threads, true, attention).kind,
+    "running",
+  );
+  assert.equal(parent.phase, "waiting");
+  for (const request of [
+    { context_id: "other-context" },
+    { session_id: "other-session" },
+    { root_turn_id: "other-root" },
+    { thread_id: "not-a-descendant" },
+  ]) {
+    const unrelated = structuredClone(attention);
+    Object.assign(unrelated.approvals[0]!.approval.request, request);
+    assert.equal(
+      executionActivityApprovals(parent, threads, unrelated).length,
+      0,
+    );
+  }
+  assert.equal(
+    executionActivityApprovals(parent, threads, {
+      ...attention,
+      available: false,
+    }).length,
+    0,
+  );
+});
 function input(overrides: Partial<RecordedInput> = {}): RecordedInput {
   return {
     id: "input-one",

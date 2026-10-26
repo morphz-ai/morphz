@@ -4,7 +4,10 @@ import {
   type ConversationRuntime,
   type ExecutionActivity,
 } from "../../../packages/core/src/conversation.js";
-import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
+import type {
+  ExecutionAttention,
+  ExecutionReadScope,
+} from "../../../packages/core/src/execution.js";
 import {
   inConversation,
   type RecordedInput,
@@ -18,6 +21,7 @@ export type ActivityStatus = {
   kind:
     | "running"
     | "waiting"
+    | "approval"
     | "paused"
     | "ended"
     | "failed"
@@ -176,8 +180,19 @@ export function executionActivityGroupStatus(
   thread: ActivityThread,
   threads: readonly ActivityThread[],
   available: boolean | ((thread: ActivityThread) => boolean),
+  attention?: ExecutionAttention,
 ): ActivityStatus {
   const children = executionActivityDescendants(thread, threads);
+  const approvals = executionActivityApprovals(thread, threads, attention);
+  if (approvals.length)
+    return {
+      kind: "approval",
+      label: approvals.some(
+        (entry) => entry.approval.request.thread_id === thread.id,
+      )
+        ? "等待你的批准"
+        : "子任务等待你的批准",
+    };
   const open = [thread, ...children].filter(
     (value) => value.lifecycle === "open",
   );
@@ -204,6 +219,35 @@ export function executionActivityGroupStatus(
   return executionActivityStatus(
     thread,
     typeof available === "function" ? available(thread) : available,
+  );
+}
+
+/** Pending Human attention is separate from the parent's scheduler phase.
+ * Match the original request's exact owner/causal branch, never a sibling
+ * that happens to share a Session, input, title or selected project. */
+export function executionActivityApprovals(
+  thread: ActivityThread,
+  threads: readonly ActivityThread[],
+  attention?: ExecutionAttention,
+) {
+  if (!attention?.available) return [];
+  const owners = [thread, ...executionActivityDescendants(thread, threads)];
+  return attention.approvals.filter((entry) =>
+    owners.some((owner) => {
+      const request = entry.approval.request;
+      return (
+        owner.lifecycle === "open" &&
+        request.session_id === owner.sessionId &&
+        request.context_id === owner.contextId &&
+        entry.scope.projectId === owner.projectId &&
+        entry.scope.conversationId === owner.conversationId &&
+        entry.scope.inputId === owner.inputId &&
+        (request.thread_id
+          ? request.thread_id === owner.id
+          : !!request.root_turn_id && request.root_turn_id === owner.rootId) &&
+        (!request.root_turn_id || request.root_turn_id === owner.rootId)
+      );
+    }),
   );
 }
 

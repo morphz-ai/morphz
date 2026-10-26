@@ -22,6 +22,7 @@ import {
   executionActivityStatus,
   executionActivityContextAvailable,
   executionActivityThreadAvailable,
+  executionActivityApprovals,
 } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { PersistentDetails } from "./PersistentDetails.js";
@@ -224,6 +225,16 @@ export function SubjectObjectives({
           goal.threadIds.includes(thread.id),
       ) ?? [];
     const open = expanded === goal.id;
+    const needsApproval =
+      goalFresh &&
+      threads.some(
+        (thread) =>
+          executionActivityApprovals(
+            thread,
+            runtime.activity?.threads ?? [],
+            runtime.attention,
+          ).length,
+      );
     const running = goalFresh
       ? threads.filter(
           (thread) =>
@@ -294,15 +305,17 @@ export function SubjectObjectives({
           }
           status={
             <>
-              {goalFresh
-                ? goal.readiness === "waiting"
-                  ? objectiveDetailStatus(
-                      goal.status,
-                      goal.readiness,
-                      goal.waitKinds,
-                    )
-                  : objectiveStatus(goal.status)
-                : "状态待核对"}{" "}
+              {needsApproval
+                ? "等待你的批准"
+                : goalFresh
+                  ? goal.readiness === "waiting"
+                    ? objectiveDetailStatus(
+                        goal.status,
+                        goal.readiness,
+                        goal.waitKinds,
+                      )
+                    : objectiveStatus(goal.status)
+                  : "状态待核对"}{" "}
               · {threads.length} 个关联执行
               {running > 0 && ` · ${running} 条执行中`}
             </>
@@ -311,13 +324,15 @@ export function SubjectObjectives({
         {open && (
           <div className="subject-objective-detail">
             <p role="status">
-              {goalFresh
-                ? objectiveDetailStatus(
-                    goal.status,
-                    goal.readiness,
-                    goal.waitKinds,
-                  )
-                : "目标状态待核对"}
+              {needsApproval
+                ? "等待你的批准"
+                : goalFresh
+                  ? objectiveDetailStatus(
+                      goal.status,
+                      goal.readiness,
+                      goal.waitKinds,
+                    )
+                  : "目标状态待核对"}
             </p>
             {threads.map((thread) => {
               const status = executionActivityStatus(

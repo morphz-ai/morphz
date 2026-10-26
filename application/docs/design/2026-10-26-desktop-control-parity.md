@@ -36,6 +36,15 @@ typed application operations. Agents continue to use the corresponding native
 Runtime operations; UI controls do not create another model-facing tool set.
 Human-only approval remains Human-only.
 
+Pending approvals must remain discoverable outside the execution inspector.
+The authorization inventory follows the verified original input binding for
+scheduled/descendant roots. An approval missing from the bounded activity page
+uses one exact metadata-only Runtime source proof, not a history scan. An
+unverifiable source cannot become an actionable scope or a confirmed empty
+inbox. Message-page membership is not approval membership. The existing Shield
+tab shows its pending count; only the exact causal branch and its ancestors
+show Human approval attention, separately from unchanged scheduler phase.
+
 ### Threads
 
 Extend `execution.control` with explicit pause/resume/supersede actions. A

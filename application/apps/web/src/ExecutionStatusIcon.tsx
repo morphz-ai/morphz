@@ -5,6 +5,7 @@ import {
   CircleX,
   Clock3,
   Pause,
+  ShieldAlert,
 } from "lucide-react";
 import type { ActivityStatus } from "./execution-activity.js";
 import { RunningActivityIcon } from "./RunningActivityIcon.js";
@@ -22,6 +23,7 @@ export function ExecutionStatusIcon({
   if (kind === "running") return <RunningActivityIcon />;
   const Icon = {
     waiting: Clock3,
+    approval: ShieldAlert,
     paused: Pause,
     ended: CircleCheck,
     failed: CircleX,

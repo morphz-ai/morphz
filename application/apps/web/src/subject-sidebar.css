@@ -43,6 +43,7 @@
   margin-bottom: 18px;
 }
 .app .subject-tabs > button {
+  position: relative;
   flex: 1;
   min-width: 0;
   height: 34px;
@@ -65,6 +66,23 @@
 .subject-tabs svg {
   width: 18px;
   height: 18px;
+}
+.subject-approval-count {
+  position: absolute;
+  top: 0;
+  right: calc(50% - 22px);
+  display: grid;
+  place-items: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: var(--paper);
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
 }
 .app .subject-tabs .profile-avatar,
 .app .subject-tabs .brand-mark {
