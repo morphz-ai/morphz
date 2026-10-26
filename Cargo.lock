@@ -3643,7 +3643,7 @@ dependencies = [
 
 [[package]]
 name = "morphz"
-version = "0.1.4-rc.1"
+version = "0.1.4"
 dependencies = [
  "async-trait",
  "axum",
