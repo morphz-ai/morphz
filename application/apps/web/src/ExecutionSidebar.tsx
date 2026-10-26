@@ -9,7 +9,6 @@ import { StopResponse, ToolMessage } from "./Conversation.js";
 import { useConversationStream } from "./useConversationStream.js";
 import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
-import { ApprovalCard } from "./ApprovalCard.js";
 import type { ComposerOption } from "./ComposerOptions.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
@@ -435,33 +434,6 @@ export function ExecutionSidebar({
         <p className="delivery-error" role="alert">
           {error}
         </p>
-      )}
-      {!detail && runtime.attention && (
-        <section className="execution-attention" aria-label="需要处理的审批">
-          {!runtime.attention.available && (
-            <p className="muted" role="status">
-              审批状态暂不可用，请刷新后核对。
-            </p>
-          )}
-          {runtime.attention.approvals.map((entry) => (
-            <ApprovalCard
-              key={
-                entry.approval.request.approval_id + entry.approval.fingerprint
-              }
-              entry={entry}
-              client={client}
-              available={
-                client.online &&
-                runtime.connected &&
-                runtime.attention!.available
-              }
-              origin={projectDisplayLabel(
-                state.projects.find((p) => p.id === entry.scope.projectId),
-              )}
-              onInspect={() => onSelect(entry.scope)}
-            />
-          ))}
-        </section>
       )}
       {!detail && runtime.activity?.delegationsAvailable === false && (
         <p className="muted" role="status">

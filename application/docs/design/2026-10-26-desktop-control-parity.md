@@ -44,6 +44,8 @@ unverifiable source cannot become an actionable scope or a confirmed empty
 inbox. Message-page membership is not approval membership. The existing Shield
 tab shows its pending count; only the exact causal branch and its ancestors
 show Human approval attention, separately from unchanged scheduler phase.
+The activity overview does not duplicate approval cards or decision buttons;
+the authorization tab is the overview's approval handling destination.
 
 ### Threads
 

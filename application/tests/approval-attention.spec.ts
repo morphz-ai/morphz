@@ -122,6 +122,10 @@ test("审批在外层和授权页可见，旧消息不必在当前页；状态�
     exact: true,
   });
   const permission = panel.getByRole("tab", { name: "授权", exact: true });
+  await expect(panel.locator(".execution-attention")).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "仅允许这一次", exact: true }),
+  ).toHaveCount(0);
   await expect(permission.locator(".subject-approval-count")).toHaveText("1");
   await expect(permission).toHaveAttribute(
     "aria-description",
