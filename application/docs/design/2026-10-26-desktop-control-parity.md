@@ -108,6 +108,16 @@ expiry, not to all tools or a permission preset. The Human reviews and explicitl
 confirms that scope before submission. The UI cannot approve on behalf of the
 Human merely by opening a menu or choosing a work item.
 
+Pending offers carry a finite `duration_secs`, beginning at the durable approval
+decision rather than request creation. A two-day Human wait must not erase the
+available scopes. Runtime stores the selected duration with the approval decision
+and derives the issued lease expiry from its persisted decision time; a restart,
+replay or later TTL configuration change never renews that grant. Previously
+issued grants retain their original expiry. Offer reads remain stable for the
+existing confirmation fingerprint, and exact Job-proven Objective identity is
+included in the offer so the authorization page needs no historical scan to show
+the available Objective scope. Once-only decisions still issue no reusable lease.
+
 ## Receipts, errors and lifecycle
 
 Thread/Schedule commands retain the displayed revision and exact payload.

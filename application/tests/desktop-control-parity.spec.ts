@@ -365,7 +365,7 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
         capabilities: ["network"],
         requested: { network: true },
         policy_digest: "TEST-policy",
-        expires_at: "2099-01-01T00:00:00Z",
+        duration_secs: 8 * 60 * 60,
       },
     },
   };
@@ -397,6 +397,7 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
   x.runtime.activity!.threads.push(child);
   await page.goto("/");
   await openExecutionPanel(page);
+  await page.getByRole("tab", { name: "授权", exact: true }).click();
   const card = page.locator('[data-approval-id="TEST-approval"]');
   await card.getByRole("button", { name: "更多授权范围", exact: true }).click();
   await page
@@ -408,6 +409,7 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
     exact: true,
   });
   await expect(confirm).toContainText("TEST-node");
+  await expect(confirm).toContainText("批准后 8 小时内有效");
   await expect(confirm).toHaveCSS("opacity", "1");
   expect(x.calls).toHaveLength(0);
   await page.screenshot({
@@ -420,6 +422,7 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
     approvalId: "TEST-approval",
     fingerprint: approval.fingerprint,
   });
+  await page.getByRole("tab", { name: "活动", exact: true }).click();
   await page
     .locator(`[data-thread-id="${x.thread.id}"].execution-activity-row`)
     .click();

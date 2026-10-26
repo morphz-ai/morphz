@@ -444,7 +444,9 @@ export class ExecutionControls {
       // Re-read one bounded exact-Thread page for causal Job evidence. Never
       // mistake the model attempt ID or a nearby goal for the approved Job.
       const records =
-        action.type === "allow-objective" && offer.scope !== "objective"
+        action.type === "allow-objective" &&
+        offer.scope !== "objective" &&
+        !offer.objective_id
           ? await readExecutionRecords(this.request, {
               sessionId: approval.request.session_id,
               contextId: binding.contextId,
@@ -454,10 +456,7 @@ export class ExecutionControls {
       const desired =
         action.type === "allow-objective" ? "objective" : "session";
       if (!reusableApprovalScopes(approval, records?.jobs).includes(desired))
-        throw new DomainError(
-          "conflict",
-          "持续授权范围不可用或已过期，请重新查看。",
-        );
+        throw new DomainError("conflict", "持续授权范围不可用，请重新查看。");
     }
     const receipt = z
       .object({ accepted: z.literal(true) })

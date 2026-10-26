@@ -98,12 +98,13 @@ export const approvalSchema = z.object({
         thread_id: z.string(),
         scope: z.enum(["thread", "objective", "session"]),
         scope_id: z.string(),
+        objective_id: z.string().optional(),
         target_id: z.string(),
         capability: z.string(),
         capabilities: z.array(z.string()).default([]),
         requested: z.record(z.string(), z.unknown()),
         policy_digest: z.string(),
-        expires_at: z.string(),
+        duration_secs: z.number().int().nonnegative(),
       })
       .optional(),
   }),
@@ -231,12 +232,11 @@ export function isExecutionApprovalControl(
 ): action is ExecutionApprovalControl {
   return "approvalId" in action;
 }
-/** Reusable grants require an actual, unexpired Runtime offer. A displayed
+/** Reusable grants require an actual, finite Runtime offer. A displayed
  * goal association is not proof of causal supervision of this approval. */
 export function reusableApprovalScopes(
   approval: z.infer<typeof approvalSchema>,
   jobs: z.infer<typeof jobSchema>[] = [],
-  now = Date.now(),
 ): ("objective" | "session")[] {
   const request = approval.request,
     offer = request.lease_offer;
@@ -244,11 +244,12 @@ export function reusableApprovalScopes(
     !offer ||
     offer.session_id !== request.session_id ||
     offer.thread_id !== request.thread_id ||
-    !(Date.parse(offer.expires_at) > now)
+    !(offer.duration_secs > 0)
   )
     return [];
   const objective =
     offer.scope === "objective" ||
+    !!offer.objective_id ||
     jobs.some((job) => {
       const value = job.request;
       return (

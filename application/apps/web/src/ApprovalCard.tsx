@@ -95,7 +95,7 @@ export function ApprovalDetails({
       <small className="muted">
         {reusable
           ? "授权仅覆盖本次确认的范围和执行节点。"
-          : "仅限本次请求，不授予持续权限。"}
+          : "“仅允许这一次”不授予持续权限。"}
       </small>
     </>
   );
@@ -258,6 +258,13 @@ function ScopedApprovalConfirmation({
   const dialog = useRef<HTMLDialogElement>(null);
   useModal(dialog);
   const offer = approval.request.lease_offer!;
+  const duration = offer.duration_secs;
+  const lifetime =
+    duration % 3600 === 0
+      ? `${duration / 3600} 小时`
+      : duration % 60 === 0
+        ? `${duration / 60} 分钟`
+        : `${duration} 秒`;
   return (
     <dialog
       ref={dialog}
@@ -275,8 +282,7 @@ function ScopedApprovalConfirmation({
         </button>
       </header>
       <p className="muted">
-        仅允许下列范围内的同类操作，至{" "}
-        {new Date(offer.expires_at).toLocaleString("zh-CN")} 到期。
+        仅允许下列范围内的同类操作，批准后 {lifetime}内有效。
       </p>
       <ApprovalDetails
         reusable
@@ -294,7 +300,7 @@ function ScopedApprovalConfirmation({
         <button onClick={onClose}>取消</button>
         <button
           className="primary"
-          disabled={disabled || !(Date.parse(offer.expires_at) > Date.now())}
+          disabled={disabled || !(duration > 0)}
           onClick={() => void onConfirm()}
         >
           确认允许

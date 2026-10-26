@@ -1,8 +1,10 @@
 use crate::approval::{
+    approved_capability_lease_duration, bind_capability_lease_duration,
     capability_lease_policy_digest, capability_lease_scope_risk_tag, reusable_capabilities,
-    AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, ApprovalRequest, ApprovalScope,
-    CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
-    CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
+    without_capability_lease_authority, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
+    ApprovalRequest, ApprovalScope, CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider,
+    PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 
 mod execution_model;
@@ -7826,7 +7828,7 @@ impl MorphzRuntime {
                 risk_tags,
             } => ApprovalResolution::Allow {
                 rationale: rationale.clone(),
-                risk_tags: risk_tags.clone(),
+                risk_tags: without_capability_lease_authority(risk_tags.clone()),
             },
             ApprovalDecision::AllowLease {
                 rationale,
@@ -7851,11 +7853,28 @@ impl MorphzRuntime {
                     );
                 }
                 let mut risk_tags = risk_tags.clone();
+                let duration = if current.status.is_pending() {
+                    let duration = self
+                        .inner
+                        .config
+                        .edge_execution
+                        .capability_lease_ttl
+                        .as_secs();
+                    if duration == 0 {
+                        return Err("Runtime has disabled Capability Lease duration".into());
+                    }
+                    Some(duration)
+                } else {
+                    approved_capability_lease_duration(&current.risk_tags)?
+                };
                 if !risk_tags
                     .iter()
                     .any(|tag| tag == CAPABILITY_LEASE_APPROVED_RISK_TAG)
                 {
                     risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
+                }
+                if let Some(duration) = duration {
+                    risk_tags = bind_capability_lease_duration(risk_tags, duration);
                 }
                 ApprovalResolution::Allow {
                     rationale: rationale.clone(),

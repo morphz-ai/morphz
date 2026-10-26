@@ -35,7 +35,14 @@ fn authority(session_id: &str, principal_id: &str) -> ApprovalDecisionAuthority 
 }
 
 async fn fixture(store: Arc<dyn RuntimeStore>) -> (MorphzRuntime, MorphzSdk) {
-    let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
+    fixture_with_config(store, AppConfig::default()).await
+}
+
+async fn fixture_with_config(
+    store: Arc<dyn RuntimeStore>,
+    config: AppConfig,
+) -> (MorphzRuntime, MorphzSdk) {
+    let runtime = MorphzRuntime::builder(config, Arc::new(OfflineClient))
         .store("session-approval-test", store)
         .build()
         .await
@@ -245,7 +252,7 @@ async fn conformance(runtime: &MorphzRuntime, sdk: &MorphzSdk) {
         view.requested.write_roots,
         vec![std::path::PathBuf::from("/new-project")]
     );
-    assert!(view.lease_expires_at.is_some());
+    assert_eq!(view.lease_duration_secs, Some(8 * 60 * 60));
     assert!(sdk
         .session_pending_approvals("bob", &job.session_id)
         .await
@@ -541,6 +548,183 @@ async fn conformance(runtime: &MorphzRuntime, sdk: &MorphzSdk) {
             .mutation,
         ApprovalMutation::Rejected { .. } | ApprovalMutation::Conflict { .. }
     ));
+}
+
+#[tokio::test]
+async fn delayed_human_approval_starts_its_finite_lifetime_at_the_durable_decision() {
+    let db = crate::test_sqlite::TempSqliteDb::new().unwrap();
+    let raw = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(db.path()))
+        .await
+        .unwrap();
+    let store = Arc::new(SqliteStore::new(db.path().to_str().unwrap()).await.unwrap());
+    let (runtime, sdk) = fixture(store.clone()).await;
+    let (job, approval) = seed(
+        &runtime,
+        "delayed",
+        ApprovalStatus::PendingHuman,
+        ApprovalScope::Thread,
+    )
+    .await;
+    let old = chrono::Utc::now() - chrono::Duration::days(2);
+    sqlx::query("UPDATE approval_requests SET created_at = ? WHERE id = ?")
+        .bind(old.to_rfc3339())
+        .bind(&approval.id)
+        .execute(&raw)
+        .await
+        .unwrap();
+    let pending = runtime.pending_approvals().await;
+    let request = pending
+        .iter()
+        .find(|pending| pending.request.approval_id == approval.id)
+        .unwrap();
+    assert_eq!(
+        request.request.lease_offer.as_ref().unwrap().duration_secs,
+        8 * 60 * 60
+    );
+    assert_eq!(
+        serde_json::to_value(&pending).unwrap(),
+        serde_json::to_value(runtime.pending_approvals().await).unwrap(),
+        "reading an offer must not renew it or change its confirmation fingerprint"
+    );
+    let page = sdk
+        .session_pending_approvals("alice", &job.session_id)
+        .await
+        .unwrap();
+    assert!(page.approvals[0]
+        .available_scopes
+        .contains(&ApprovalScope::Session));
+    let command = SessionApprovalCommand {
+        expected_revision: approval.revision,
+        decision: SessionApprovalChoice::AllowSession,
+    };
+    let receipt = sdk
+        .decide_session_approval(
+            &principal("alice"),
+            &job.session_id,
+            &approval.id,
+            command.clone(),
+        )
+        .await
+        .unwrap();
+    let decided = store.get_approval(&approval.id).await.unwrap().unwrap();
+    assert_eq!(
+        approved_capability_lease_duration(&decided.risk_tags).unwrap(),
+        Some(8 * 60 * 60)
+    );
+    let expiry = crate::approval::capability_lease_expires_at(&decided)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        expiry,
+        decided.decided_at.unwrap() + chrono::Duration::hours(8)
+    );
+    assert!(expiry > chrono::Utc::now());
+    let (_, once) = seed(
+        &runtime,
+        "once-duration",
+        ApprovalStatus::PendingHuman,
+        ApprovalScope::Thread,
+    )
+    .await;
+    runtime
+        .decide_approval(
+            &once.id,
+            ApprovalDecision::AllowOnce {
+                rationale: "TEST exact operation only".into(),
+                risk_tags: vec![
+                    CAPABILITY_LEASE_APPROVED_RISK_TAG.into(),
+                    "capability-lease-scope:session".into(),
+                    "capability-lease-duration-secs:999999".into(),
+                    "explanation".into(),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+    let once = store.get_approval(&once.id).await.unwrap().unwrap();
+    assert_eq!(once.risk_tags, vec!["explanation"]);
+    assert_eq!(
+        crate::approval::capability_lease_expires_at(&once).unwrap(),
+        None
+    );
+    let (_, operator_approval) = seed(
+        &runtime,
+        "operator-duration",
+        ApprovalStatus::PendingHuman,
+        ApprovalScope::Thread,
+    )
+    .await;
+    runtime
+        .allow_approval_session_capability(
+            &operator_approval.id,
+            "TEST explicit Human decision".into(),
+        )
+        .await
+        .unwrap();
+    let operator_record = store
+        .get_approval(&operator_approval.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        operator_record.risk_tags,
+        bind_capability_lease_duration(operator_record.risk_tags.clone(), 8 * 60 * 60),
+        "waking the Reviewer must preserve the exact committed decision, including tag order"
+    );
+    // A later process/config cannot restart or enlarge this already approved lifetime.
+    drop(sdk);
+    drop(runtime);
+    let mut config = AppConfig::default();
+    config.edge_execution.capability_lease_ttl =
+        crate::config::HumanDuration::from_secs(48 * 60 * 60);
+    let (_, restored) = fixture_with_config(store.clone(), config).await;
+    let replay = restored
+        .decide_session_approval(&principal("alice"), &job.session_id, &approval.id, command)
+        .await
+        .unwrap();
+    assert_eq!(receipt.revision, replay.revision);
+    let record = store.get_approval(&approval.id).await.unwrap().unwrap();
+    assert_eq!(
+        crate::approval::capability_lease_expires_at(&record)
+            .unwrap()
+            .unwrap(),
+        expiry
+    );
+    // Previously issued grants keep their stored expiry; old decisions cannot
+    // recreate them with the current configuration's potentially longer TTL.
+    let mut previous = record;
+    previous
+        .risk_tags
+        .retain(|tag| !tag.starts_with("capability-lease-duration-secs:"));
+    assert_eq!(
+        crate::approval::capability_lease_expires_at(&previous).unwrap(),
+        None
+    );
+    let mut expired = decided;
+    expired.decided_at = Some(old);
+    assert!(
+        crate::approval::capability_lease_expires_at(&expired)
+            .unwrap()
+            .unwrap()
+            < chrono::Utc::now()
+    );
+    let tags =
+        bind_capability_lease_duration(vec!["capability-lease-duration-secs:999999".into()], 300);
+    assert_eq!(
+        approved_capability_lease_duration(&tags).unwrap(),
+        Some(300)
+    );
+    assert!(
+        approved_capability_lease_duration(&["capability-lease-duration-secs:0".into()]).is_err()
+    );
+    assert!(approved_capability_lease_duration(&[
+        "capability-lease-duration-secs:300".into(),
+        "capability-lease-duration-secs:400".into()
+    ])
+    .is_err());
+    raw.close().await;
 }
 
 #[tokio::test]

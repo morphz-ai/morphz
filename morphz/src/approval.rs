@@ -1,6 +1,8 @@
 use crate::event::TYPE_USER_MESSAGE;
 use crate::llm::{Client, Message, ModelRequestContext};
-use crate::memory::{ApprovalStatus, ApprovalStore, CapabilityLeaseScope, EventStore, QueryFilter};
+use crate::memory::{
+    ApprovalRecord, ApprovalStatus, ApprovalStore, CapabilityLeaseScope, EventStore, QueryFilter,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -29,7 +31,7 @@ Policy:
 
 Lease semantics:
 - `allow_once` authorizes only this exact Job request.
-- `allow_lease` is available only when `lease_offer` is present. It additionally authorizes the explicitly shown reusable Principal + causal scope + Target capability boundary until its stated expiry. The scope is exactly one of Thread, Objective, or Session. Never infer or widen a lease.
+- `allow_lease` is available only when `lease_offer` is present. It additionally authorizes the explicitly shown reusable Principal + causal scope + Target capability boundary for `duration_secs` after approval. Waiting for a decision does not consume this duration. The scope is exactly one of Thread, Objective, or Session. Never infer or widen a lease.
 - Prefer `allow_once` when the exact action is acceptable but repeating the whole offered capability without another review would be too broad.
 - Never return `allow_lease` when `lease_offer` is absent.
 
@@ -41,6 +43,69 @@ pub const CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY: &str = "_morphz_capability_lea
 pub const CAPABILITY_LEASE_THREAD_SCOPE_RISK_TAG: &str = "capability-lease-scope:thread";
 pub const CAPABILITY_LEASE_OBJECTIVE_SCOPE_RISK_TAG: &str = "capability-lease-scope:objective";
 pub const CAPABILITY_LEASE_SESSION_SCOPE_RISK_TAG: &str = "capability-lease-scope:session";
+const CAPABILITY_LEASE_DURATION_RISK_TAG_PREFIX: &str = "capability-lease-duration-secs:";
+
+/// Explanatory Reviewer tags cannot turn an allow-once decision into a lease.
+pub fn without_capability_lease_authority(mut risk_tags: Vec<String>) -> Vec<String> {
+    risk_tags.retain(|tag| {
+        tag != CAPABILITY_LEASE_APPROVED_RISK_TAG
+            && !tag.starts_with("capability-lease-scope:")
+            && !tag.starts_with(CAPABILITY_LEASE_DURATION_RISK_TAG_PREFIX)
+    });
+    risk_tags
+}
+
+/// The Runtime, not Reviewer-supplied tags, binds the offered lifetime to the
+/// durable decision. Recovery must not silently renew it or use a changed TTL.
+pub fn bind_capability_lease_duration(
+    mut risk_tags: Vec<String>,
+    duration_secs: u64,
+) -> Vec<String> {
+    risk_tags.retain(|tag| !tag.starts_with(CAPABILITY_LEASE_DURATION_RISK_TAG_PREFIX));
+    risk_tags.push(format!(
+        "{CAPABILITY_LEASE_DURATION_RISK_TAG_PREFIX}{duration_secs}"
+    ));
+    risk_tags
+}
+
+pub fn approved_capability_lease_duration(risk_tags: &[String]) -> Result<Option<u64>, String> {
+    let mut durations = risk_tags
+        .iter()
+        .filter_map(|tag| tag.strip_prefix(CAPABILITY_LEASE_DURATION_RISK_TAG_PREFIX));
+    let Some(duration) = durations.next() else {
+        return Ok(None);
+    };
+    let duration = duration
+        .parse::<u64>()
+        .ok()
+        .filter(|duration| *duration > 0)
+        .ok_or("Capability Lease decision has an invalid duration")?;
+    if durations.next().is_some() {
+        return Err("Capability Lease decision has conflicting durations".into());
+    }
+    Ok(Some(duration))
+}
+
+pub fn capability_lease_expires_at(
+    approval: &ApprovalRecord,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
+    let Some(duration) = approved_capability_lease_duration(&approval.risk_tags)? else {
+        // Existing leases keep their stored expiry. A pre-cutover decision
+        // without a frozen lifetime cannot mint or renew a reusable grant.
+        return Ok(None);
+    };
+    let start = approval
+        .decided_at
+        .ok_or("Capability Lease is missing its durable decision time")?;
+    let duration = i64::try_from(duration)
+        .ok()
+        .and_then(chrono::Duration::try_seconds)
+        .ok_or("Capability Lease duration is out of range")?;
+    start
+        .checked_add_signed(duration)
+        .map(Some)
+        .ok_or_else(|| "Capability Lease expiry is out of range".into())
+}
 
 fn mark_capability_lease_approved(mut risk_tags: Vec<String>) -> Vec<String> {
     if !risk_tags
@@ -380,6 +445,9 @@ pub struct CapabilityLeaseOffer {
     pub thread_id: String,
     pub scope: CapabilityLeaseScope,
     pub scope_id: String,
+    /// Exact supervising Objective proven by the original Execution Job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_id: Option<String>,
     pub target_id: String,
     /// Legacy display/action family retained for wire compatibility. New
     /// authorization decisions use `capabilities` below.
@@ -388,7 +456,8 @@ pub struct CapabilityLeaseOffer {
     pub capabilities: Vec<String>,
     pub requested: CapabilityDelta,
     pub policy_digest: String,
-    pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// Finite lifetime beginning at the durable approval decision, not request creation.
+    pub duration_secs: u64,
 }
 
 impl CapabilityLeaseOffer {
@@ -1602,12 +1671,13 @@ mod tests {
             thread_id: "thread-1".to_string(),
             scope: CapabilityLeaseScope::Thread,
             scope_id: "thread-1".to_string(),
+            objective_id: None,
             target_id: "target-1".to_string(),
             capability: "read:read".to_string(),
             capabilities: vec!["filesystem.read".to_string()],
             requested: request.requested.clone(),
             policy_digest: "policy-1".to_string(),
-            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            duration_secs: 3600,
         });
 
         let decision = reviewer.review(&request).await.unwrap();

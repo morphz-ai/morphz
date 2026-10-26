@@ -42,7 +42,7 @@ function approval() {
         capabilities: ["network"],
         requested: { network: true },
         policy_digest: "digest",
-        expires_at: "2099-01-01T00:00:00Z",
+        duration_secs: 8 * 60 * 60,
       },
     },
   });
@@ -82,14 +82,13 @@ test("explicit Objective and Session approvals retain the complete boundary fing
   }
 });
 
-test("changed offer, expired offer, wrong Human or absent reusable boundary reject before approval", async () => {
-  for (const change of ["changed", "expired", "owner", "absent"] as const) {
+test("changed offer, disabled lifetime, wrong Human or absent reusable boundary reject before approval", async () => {
+  for (const change of ["changed", "disabled", "owner", "absent"] as const) {
     const current = approval(),
       original = approvalFingerprint(current);
     if (change === "changed")
       current.request.lease_offer!.policy_digest = "changed";
-    if (change === "expired")
-      current.request.lease_offer!.expires_at = "2020-01-01T00:00:00Z";
+    if (change === "disabled") current.request.lease_offer!.duration_secs = 0;
     if (change === "owner") current.request.lease_offer!.principal_id = "other";
     if (change === "absent") delete current.request.lease_offer;
     let writes = 0;
@@ -113,6 +112,46 @@ test("changed offer, expired offer, wrong Human or absent reusable boundary reje
     );
     assert.equal(writes, 0);
   }
+});
+
+test("waiting for the Human does not consume the offered lifetime or alter its fingerprint", async () => {
+  let current = approval();
+  current.requested_at = "2026-10-18T00:00:00Z";
+  current.request.lease_offer!.scope = "thread";
+  current.request.lease_offer!.objective_id = "original-goal";
+  current = approvalSchema.parse(current);
+  const fingerprint = approvalFingerprint(current);
+  assert.deepEqual(reusableApprovalScopes(current), ["objective", "session"]);
+  let reads = 0;
+  let writes = 0;
+  const controls = new ExecutionControls(
+    async (path, method) => {
+      if (!method) {
+        reads++;
+        assert.equal(path, "/api/approvals");
+        return { approvals: [current] };
+      }
+      writes++;
+      return { accepted: true, approval_id: "a", scope: "objective" };
+    },
+    () => binding,
+  );
+  assert.equal(
+    (
+      await controls.control({
+        scope,
+        action: { type: "allow-objective", approvalId: "a", fingerprint },
+      })
+    ).accepted,
+    true,
+  );
+  assert.equal(
+    reads,
+    1,
+    "the original Runtime offer already proves Objective supervision",
+  );
+  assert.equal(writes, 1);
+  assert.equal(approvalFingerprint(current), fingerprint);
 });
 
 test("no offer cannot become Full Access; Thread or nearby goal does not prove Objective supervision", () => {

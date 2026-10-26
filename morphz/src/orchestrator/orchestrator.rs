@@ -4,8 +4,9 @@ use crate::activation_admission::{
 };
 use crate::admission::{AdmissionClass, AdmissionKey};
 use crate::approval::{
-    capability_lease_policy_digest, capability_lease_scope, capability_lease_was_approved,
-    reusable_capabilities, reusable_capabilities_cover, stable_capability_lease_id,
+    bind_capability_lease_duration, capability_lease_expires_at, capability_lease_policy_digest,
+    capability_lease_scope, capability_lease_was_approved, reusable_capabilities,
+    reusable_capabilities_cover, stable_capability_lease_id, without_capability_lease_authority,
     ApprovalDecision, ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub,
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
@@ -20934,7 +20935,7 @@ impl Orchestrator {
                     &services.broker.policy_digest(),
                     &target.policy_digest,
                 );
-                let mut lease_offer = route
+                let lease_offer = route
                     .initiating_principal_id
                     .as_ref()
                     .filter(|_| {
@@ -20963,6 +20964,7 @@ impl Orchestrator {
                             thread_id: thread.id.clone(),
                             scope,
                             scope_id,
+                            objective_id: objective_scope_id.clone(),
                             target_id: new_job.target_id.clone(),
                             capability: requirement.action.lease_capability(),
                             capabilities: reusable_capabilities(
@@ -20971,11 +20973,7 @@ impl Orchestrator {
                             ),
                             requested: requirement.requested.clone(),
                             policy_digest: lease_policy_digest.clone(),
-                            expires_at: Utc::now()
-                                + chrono::Duration::seconds(
-                                    i64::try_from(services.capability_lease_ttl_secs)
-                                        .unwrap_or(i64::MAX),
-                                ),
+                            duration_secs: services.capability_lease_ttl_secs,
                         }
                     });
                 let identity = stable_approval_identity(
@@ -21006,12 +21004,6 @@ impl Orchestrator {
                         .await?,
                     "create approval authority",
                 )?;
-                if let Some(offer) = lease_offer.as_mut() {
-                    offer.expires_at = approval.created_at
-                        + chrono::Duration::seconds(
-                            i64::try_from(services.capability_lease_ttl_secs).unwrap_or(i64::MAX),
-                        );
-                }
                 // A persisted request is an immutable fact, but UI delivery is
                 // process-local. Re-dispatch an exact still-pending replay so
                 // restart never leaves a human Approval invisible merely
@@ -21129,7 +21121,7 @@ impl Orchestrator {
                                 risk_tags,
                             } => ApprovalResolution::Allow {
                                 rationale,
-                                risk_tags,
+                                risk_tags: without_capability_lease_authority(risk_tags),
                             },
                             ApprovalDecision::AllowLease {
                                 rationale,
@@ -21144,6 +21136,13 @@ impl Orchestrator {
                                 if !capability_lease_was_approved(&risk_tags) {
                                     risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
                                 }
+                                risk_tags = bind_capability_lease_duration(
+                                    risk_tags,
+                                    lease_offer
+                                        .as_ref()
+                                        .expect("offer checked above")
+                                        .duration_secs,
+                                );
                                 ApprovalResolution::Allow {
                                     rationale,
                                     risk_tags,
@@ -21181,9 +21180,14 @@ impl Orchestrator {
                     }
                 }
 
-                if approval.status == ApprovalStatus::Allowed
+                let lease_expiry = if approval.status == ApprovalStatus::Allowed
                     && capability_lease_was_approved(&approval.risk_tags)
                 {
+                    capability_lease_expires_at(&approval)?.filter(|expiry| *expiry > Utc::now())
+                } else {
+                    None
+                };
+                if let Some(expires_at) = lease_expiry {
                     let offer = lease_offer.as_ref().ok_or(
                         "Allowed Approval is marked as a Capability Lease, but the current request lacks a lease_offer",
                     )?;
@@ -21206,7 +21210,7 @@ impl Orchestrator {
                         requested: serde_json::to_value(&offer.requested)?,
                         policy_digest: offer.policy_digest.clone(),
                         issued_by_approval_id: Some(approval.id.clone()),
-                        expires_at: offer.expires_at,
+                        expires_at,
                     };
                     match services
                         .capability_leases
