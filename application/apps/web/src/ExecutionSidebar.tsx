@@ -220,12 +220,19 @@ export function ExecutionSidebar({
   const detailStatus = scope.threadId && (
     <span
       className="execution-origin-status"
+      title={
+        threadNeedsInput
+          ? "等待你的输入"
+          : (threadStatus?.label ?? "此分支不在当前快照中")
+      }
       data-status={threadStatus?.kind ?? "unknown"}
     >
       <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
-      {threadNeedsInput
-        ? "等待你的输入"
-        : (threadStatus?.label ?? "此分支不在当前快照中")}
+      <span className="execution-status-label">
+        {threadNeedsInput
+          ? "等待你的输入"
+          : (threadStatus?.label ?? "此分支不在当前快照中")}
+      </span>
     </span>
   );
   const detailActions = (
@@ -380,8 +387,10 @@ export function ExecutionSidebar({
     <div className="execution-sidebar-scroll">
       {embedded && detail && (
         <div className="execution-detail-header">
-          {headerLeading}
-          {detailStatus}
+          <div className="execution-header-context">
+            {headerLeading}
+            {detailStatus}
+          </div>
           {detailActions}
         </div>
       )}

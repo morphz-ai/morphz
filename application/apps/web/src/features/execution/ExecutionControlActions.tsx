@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Pause, Pencil, Play, Square, X } from "lucide-react";
+import { Pause, Play, Square, X } from "lucide-react";
 import type {
   ExecutionControl,
   ExecutionReadScope,
 } from "../../../../../packages/core/src/execution.js";
-import { ComposerOptions } from "../../ComposerOptions.js";
 import { Tooltip } from "../../ui/Tooltip.js";
 import { useModal } from "../../useModal.js";
 
@@ -31,10 +30,7 @@ export function ExecutionControlActions({
   stopLabel?: string;
   compact?: boolean;
 }) {
-  const [confirmation, setConfirmation] = useState<{
-    kind: "correct" | "delegation";
-    thread: Thread;
-  } | null>(null);
+  const [confirmation, setConfirmation] = useState(false);
   const [busy, setBusy] = useState(false),
     [notice, setNotice] = useState("");
   const [stopRequested, setStopRequested] = useState(false),
@@ -62,7 +58,7 @@ export function ExecutionControlActions({
     try {
       await onControl(action);
       if (alive.current) {
-        setConfirmation(null);
+        setConfirmation(false);
         if (action.type.startsWith("cancel-")) setStopRequested(true);
       }
     } catch (cause) {
@@ -104,25 +100,6 @@ export function ExecutionControlActions({
           </button>
         </Tooltip>
       )}
-      {knownControl && (
-        <ComposerOptions
-          below
-          label="更多执行操作"
-          menuLabel="执行操作"
-          triggerDisabled={unavailable}
-          options={[
-            {
-              label: "纠正并继续",
-              icon: <Pencil />,
-              disabled: !["active", "paused"].includes(
-                thread.controlState ?? "",
-              ),
-              onSelect: () =>
-                setConfirmation({ kind: "correct", thread: { ...thread } }),
-            },
-          ]}
-        />
-      )}
       <Tooltip
         label={
           stopping
@@ -144,7 +121,7 @@ export function ExecutionControlActions({
           aria-busy={busy}
           onClick={() =>
             delegated
-              ? setConfirmation({ kind: "delegation", thread: { ...thread } })
+              ? setConfirmation(true)
               : void submit({
                   type: "cancel-thread",
                   threadId: thread.id,
@@ -167,60 +144,44 @@ export function ExecutionControlActions({
         </span>
       )}
       {confirmation && (
-        <ExecutionControlConfirmation
-          kind={confirmation.kind}
+        <DelegationCancellationConfirmation
           busy={busy}
           disabled={unavailable}
           onClose={() => {
-            if (!busy) setConfirmation(null);
+            if (!busy) setConfirmation(false);
           }}
-          onSubmit={(intent) =>
-            submit(
-              confirmation.kind === "delegation"
-                ? { type: "cancel-delegation" }
-                : {
-                    type: "supersede-thread",
-                    threadId: confirmation.thread.id,
-                    revision: confirmation.thread.revision,
-                    intent,
-                  },
-            )
-          }
+          onSubmit={() => submit({ type: "cancel-delegation" })}
         />
       )}
     </span>
   );
 }
 
-function ExecutionControlConfirmation({
-  kind,
+function DelegationCancellationConfirmation({
   busy,
   disabled,
   onClose,
   onSubmit,
 }: {
-  kind: "correct" | "delegation";
   busy: boolean;
   disabled: boolean;
   onClose(): void;
-  onSubmit(intent: string): Promise<unknown>;
+  onSubmit(): Promise<unknown>;
 }) {
-  const dialog = useRef<HTMLDialogElement>(null),
-    [intent, setIntent] = useState("");
+  const dialog = useRef<HTMLDialogElement>(null);
   useModal(dialog);
-  const correction = kind === "correct";
   return (
     <dialog
       ref={dialog}
       className="create-dialog execution-control-dialog"
-      aria-label={correction ? "纠正并继续" : "停止子智能体"}
+      aria-label="停止子智能体"
       onCancel={(event) => {
         event.preventDefault();
         if (!busy) onClose();
       }}
     >
       <header>
-        <h2>{correction ? "纠正并继续" : "停止子智能体"}</h2>
+        <h2>停止子智能体</h2>
         <button
           className="icon-button"
           aria-label="关闭"
@@ -231,31 +192,18 @@ function ExecutionControlConfirmation({
         </button>
       </header>
       <p className="muted">
-        {correction
-          ? "更新此执行的要求后继续。已完成的操作会保留。"
-          : "停止这次委派及其下属子智能体。已完成的操作会保留。"}
+        停止这次委派及其下属子智能体。已完成的操作会保留。
       </p>
-      {correction && (
-        <textarea
-          aria-label="修正后的执行要求"
-          rows={4}
-          maxLength={64000}
-          value={intent}
-          disabled={busy}
-          onChange={(event) => setIntent(event.target.value)}
-          placeholder="写下修正后的完整执行要求…"
-        />
-      )}
       <footer>
         <button disabled={busy} onClick={onClose}>
           取消
         </button>
         <button
-          className={correction ? "primary" : "danger"}
-          disabled={disabled || (correction && !intent.trim())}
-          onClick={() => void onSubmit(intent.trim())}
+          className="danger"
+          disabled={disabled}
+          onClick={() => void onSubmit()}
         >
-          {busy ? "正在提交…" : correction ? "纠正并继续" : "停止子智能体"}
+          {busy ? "正在提交…" : "停止子智能体"}
         </button>
       </footer>
     </dialog>

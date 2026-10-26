@@ -190,26 +190,37 @@
   margin-top: 12px;
 }
 .execution-detail-header {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-height: 32px;
   margin-bottom: 10px;
   padding-inline: 6px;
 }
-.app .execution-detail-header > .subject-back {
+.execution-header-context {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.app .execution-header-context > .subject-back {
   flex-shrink: 0;
   min-height: 32px;
   margin: 0;
   padding: 4px 0;
 }
-.execution-detail-header > .execution-origin-status {
+.execution-header-context > .execution-origin-status {
   min-width: 0;
-  flex-shrink: 0;
+  flex: 1;
   white-space: nowrap;
 }
-.execution-detail-header > .execution-origin-status > svg {
+.execution-header-context .execution-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.execution-header-context > .execution-origin-status > svg {
   width: 20px;
   height: 20px;
 }
@@ -591,7 +602,7 @@
     --execution-step-action-size: 44px;
   }
   .app .execution-origin-actions > .icon-button,
-  .app .execution-detail-header > .subject-back {
+  .app .execution-header-context > .subject-back {
     height: 44px;
     min-height: 44px;
     min-width: 44px;

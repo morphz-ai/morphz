@@ -9,8 +9,10 @@ its complete remote CI acceptance before the combined goal is complete.
 1. Pause/resume an exact execution Thread alongside its existing stop action.
 2. Pause/resume, reschedule and cancel a native Runtime Schedule. Existing
    task-bound arrangement controls retain their own source-watch semantics.
-3. Explicitly revise and continue a Thread through Runtime supersede, distinct
-   from supplementing its current work or resuming a paused Thread.
+3. Runtime supersede remains a typed control contract. The dedicated Desktop
+   "纠正并继续" entry and its single-item More menu were withdrawn on 2026-10-27:
+   users express revised requirements through the existing directed supplement
+   flow. A supplement remains a directed input, not an automatic supersede call.
 4. Cancel a real delegated sub-agent through its durable delegation edge.
 5. Explicit Human approval of the offered capability boundary within its
    Objective or Session, alongside the existing allow-once/deny decisions.
