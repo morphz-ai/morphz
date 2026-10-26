@@ -91,6 +91,52 @@ async fn build(directory: &std::path::Path, model: Arc<QuestionModel>) -> Morphz
     runtime
 }
 
+fn pending_checkpoint(
+    thread: SchedulerThreadSnapshot,
+) -> Option<(SchedulerThreadSnapshot, PendingUserInputRequest)> {
+    // Phase is read before question attachment. A question can belong to a
+    // newer commit, so require a coherent Waiting snapshot for a cold restart.
+    if thread.phase != morphz::memory::ThreadPhase::Waiting {
+        return None;
+    }
+    let question = thread.user_input_request.clone()?;
+    Some((thread, question))
+}
+
+#[test]
+fn published_question_is_not_yet_a_cold_restart_checkpoint() {
+    // Force CI's read interleaving: an older Running phase with a newly
+    // committed question, followed by a coherent parked snapshot.
+    let mut thread: SchedulerThreadSnapshot = serde_json::from_value(json!({
+        "thread": {
+            "id": "checkpoint-thread", "revision": 1, "generation": 1,
+            "agent_id": "checkpoint-agent", "context_id": "checkpoint-context",
+            "session_id": "checkpoint-session", "root_turn_id": "checkpoint-root",
+            "kind": "execution", "lifecycle": "open", "control_state": "active",
+            "executor_kind": "plan", "supervision": morphz::memory::ThreadSupervision::legacy(),
+            "delivery_status": "none", "created_at": "2026-10-26T00:00:00Z",
+            "updated_at": "2026-10-26T00:00:00Z"
+        },
+        "phase": "running", "pending_signals": [], "activations": [], "schedules": [],
+        "user_input_request": {
+            "request_id": "checkpoint-question", "thread_id": "checkpoint-thread",
+            "thread_generation": 1, "session_id": "checkpoint-session",
+            "context_id": "checkpoint-context", "requested_at": "2026-10-26T00:00:00Z",
+            "questions": [{"id": "scope", "question": "Only synthetic data?", "options": []}]
+        }
+    }))
+    .unwrap();
+    assert!(
+        pending_checkpoint(thread.clone()).is_none(),
+        "a pending question must not validate an older running snapshot"
+    );
+    thread.phase = morphz::memory::ThreadPhase::Waiting;
+    let expected = thread.user_input_request.clone().unwrap();
+    let (checkpoint, question) = pending_checkpoint(thread).unwrap();
+    assert_eq!(checkpoint.phase, morphz::memory::ThreadPhase::Waiting);
+    assert_eq!(question, expected);
+}
+
 async fn pending(runtime: &MorphzRuntime) -> (SchedulerThreadSnapshot, PendingUserInputRequest) {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -104,19 +150,18 @@ async fn pending(runtime: &MorphzRuntime) -> (SchedulerThreadSnapshot, PendingUs
                 )
                 .await
                 .unwrap();
-            if let Some((thread, question)) = snapshot.threads.into_iter().find_map(|thread| {
-                thread
-                    .user_input_request
-                    .clone()
-                    .map(|question| (thread, question))
-            }) {
+            if let Some((thread, question)) =
+                snapshot.threads.into_iter().find_map(pending_checkpoint)
+            {
                 break (thread, question);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("real Runtime must persist the native question and expose its exact pending read model")
+    .expect(
+        "real Runtime must expose its exact pending question at the parked cold-restart checkpoint",
+    )
 }
 
 #[test]
