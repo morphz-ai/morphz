@@ -14,6 +14,7 @@ members = [
 exclude = [
     "third_party/candle-core-0.10.2",
     "third_party/codex-otel-stub",
+    "third_party/codex-http-client-types",
     "third_party/codex-utils-absolute-path",
     "third_party/codex-utils-pty",
     "third_party/sqlx-core-0.8.6",
@@ -51,6 +52,10 @@ candle-core = { path = "third_party/candle-core-0.10.2" }
 sqlx-core = { path = "third_party/sqlx-core-0.8.6" }
 
 [patch."https://github.com/openai/codex"]
+# The pinned Windows protocol consumes only HttpError/HttpResponse aliases.
+# Preserve those exact reqwest types without its unused compression transport
+# (RUSTSEC-2026-0391/0398/0403/0410), proxy or telemetry implementation.
+codex-http-client = { path = "third_party/codex-http-client-types" }
 # The Windows sandbox crate uses Codex OTEL only for optional setup metrics.
 # Morphz keeps its telemetry boundary independent and supplies the same tiny
 # API as a deliberate no-op adapter instead of importing Codex's HTTP/OTEL

@@ -1,0 +1,13 @@
+[package]
+name = "codex-http-client"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# Keep the pinned upstream reqwest feature request, including its workspace's
+# cookies feature, so this boundary correction does not retune Runtime HTTP.
+reqwest = { version = "0.12", features = ["cookies", "json", "rustls-tls-native-roots", "stream"] }
+
+[workspace]

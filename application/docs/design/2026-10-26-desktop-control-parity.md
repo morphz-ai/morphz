@@ -212,3 +212,32 @@ consecutive rounds without retries. Original Morphz was refreshed for this
 renderer-only correction; the separate Rust Runtime does not need a restart
 for these existing native APIs. Final remote acceptance still requires two
 complete successful matrices on the new immutable source.
+
+## Dependency audit correction after the release
+
+The next matrix on `4fd8b693` passed the corrected Objective browser regression
+and Linux timing/performance lane, but its unchanged lockfile failed the
+dependency audit. RustSec published 23 additional advisories at
+2026-10-26 13:45:01 UTC, after the formal release and the previous audit:
+[`a78282a1`](https://github.com/RustSec/advisory-db/commit/a78282a1414d6c28cc228c4eae3570451affb0dc).
+The advisory inventory grew from 1355 to 1378. This is a changed external audit
+dataset, not a successful retry of the failed source.
+
+Four new advisories (RUSTSEC-2026-0391, 0398, 0403 and 0410) reached the lock
+through the pinned Windows `codex-protocol` HTTP dependency and its zstd stack.
+The protocol consumes only the upstream `HttpError` and `HttpResponse` aliases;
+Morphz does not invoke that client's compression APIs. The local
+`third_party/codex-http-client-types` adapter preserves those exact reqwest type
+identities and the pinned upstream reqwest feature request. It supplies no HTTP
+transport, compressor, proxy or telemetry implementation. Both the root and
+isolated response-annotation workspace patch this same boundary. Future
+upstream imports of any other client API will fail compilation until reviewed.
+
+The regenerated locks remove the unused implementation, all three affected
+zstd crates and their now-unneeded transitive dependencies, without changing
+registry package versions or adding an advisory exception. The unchanged audit
+script passed all five tracked locks against the current 1378-entry database.
+The generated Rust license bundle follows that exact dependency graph. Actual
+Windows sandbox/runtime compilation and execution remain part of the complete
+final-source CI gate. The already published v0.1.4 tag and assets stay immutable;
+this development dependency correction is not silently substituted into them.
