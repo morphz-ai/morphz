@@ -155,8 +155,8 @@ import { ApprovalDetails } from "../../apps/web/src/ApprovalCard.js";
 import {
   type ExecutionScope,
   type ExecutionSnapshot,
-  type ExecutionControl,
 } from "../../packages/core/src/execution.js";
+import type { HistoricalExecutionControl as ExecutionControl } from "./execution-control-114960d1.js";
 import type { WorkspaceClient } from "../../apps/web/src/client.js";
 import { useObservedRead } from "../../apps/web/src/useObservedRead.js";
 

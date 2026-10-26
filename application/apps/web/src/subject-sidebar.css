@@ -134,6 +134,18 @@
   align-items: center;
   gap: 0;
 }
+.subject-schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.subject-schedule-row > .subject-record {
+  flex: 1;
+  min-width: 0;
+}
+.runtime-schedule-actions {
+  flex: none;
+}
 .app .subject-objective-row > .subject-objective-heading {
   flex: 1;
   min-width: 0;
@@ -143,6 +155,11 @@
 }
 .subject-objective-row .subject-objective-heading > span {
   gap: 2px;
+}
+.subject-objective-heading small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .subject-objective-heading > svg:last-child {
   width: 14px;

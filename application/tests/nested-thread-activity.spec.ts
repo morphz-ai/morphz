@@ -143,7 +143,7 @@ test("执行详情保留主执行真实等待原因和独立子任务状态，�
   expect(writes).toEqual([]);
 });
 
-test("无输入关联的真实执行保留全局活动与只读命令详情，不附会项目、不出现控制入口", async ({
+test("无输入关联的真实执行保留全局活动与只读命令详情，不附会项目；线程控制须另行核验", async ({
   page,
 }, info) => {
   const thread: ExecutionActivity["threads"][number] = {
@@ -237,8 +237,11 @@ test("无输入关联的真实执行保留全局活动与只读命令详情，�
   await expect(panel.locator(".execution-job")).toHaveCount(1);
   await expect(panel.locator(".execution-job")).toContainText("pwd");
   await expect(
-    panel.getByRole("button", { name: /停止|补充|批准|拒绝/ }),
+    panel.getByRole("button", { name: /补充|批准|拒绝/ }),
   ).toHaveCount(0);
+  await expect(
+    panel.getByRole("button", { name: "停止", exact: true }),
+  ).toHaveCount(1);
   await panel.getByRole("button", { name: "查看结果", exact: true }).click();
   await expect(panel).toContainText("/actual/workspace");
   expect(reads).toBe(1);
@@ -248,7 +251,7 @@ test("无输入关联的真实执行保留全局活动与只读命令详情，�
   await page.setViewportSize({ width: 760, height: 540 });
   await expect(panel.locator(".execution-job")).toBeVisible();
   await expect(
-    panel.getByRole("button", { name: /停止|补充|批准|拒绝/ }),
+    panel.getByRole("button", { name: /补充|批准|拒绝/ }),
   ).toHaveCount(0);
   await panel.screenshot({
     path: info.outputPath("unassociated-execution-narrow.png"),

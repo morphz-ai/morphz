@@ -6,6 +6,8 @@ import {
   ChevronRight,
   Eye,
   MessageSquarePlus,
+  Pause,
+  Play,
 } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
@@ -28,6 +30,7 @@ import { SubjectObjectiveDialog } from "./SubjectObjectiveDialog.js";
 import type { ActivityThread } from "./execution-activity.js";
 import type { QuestionObjective } from "./UserInputDialogHost.js";
 import { observeSupplementAttention } from "./supplement-attention.js";
+import { applicationCall } from "./application-transport.js";
 
 function ObjectiveHeading({
   title,
@@ -36,6 +39,7 @@ function ObjectiveHeading({
   onToggle,
   onView,
   supplement,
+  control,
 }: {
   title: string;
   open: boolean;
@@ -43,6 +47,7 @@ function ObjectiveHeading({
   onToggle(): void;
   onView(): void;
   supplement?: ReactNode;
+  control?: ReactNode;
 }) {
   return (
     <div className="subject-objective-row">
@@ -61,6 +66,7 @@ function ObjectiveHeading({
         </button>
       </Tooltip>
       {supplement}
+      {control}
       <Tooltip label="查看目标">
         <button
           className="icon-button subject-objective-view"
@@ -95,6 +101,11 @@ export function SubjectObjectives({
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
+  const [controlling, setControlling] = useState(""),
+    [controlError, setControlError] = useState("");
+  const pendingControl = useRef(false),
+    identity = useRef(client.boot!.csrfToken);
+  identity.current = client.boot!.csrfToken;
   const supplement = useRef(onSupplement);
   supplement.current = onSupplement;
   const supplementRequest = useRef(0);
@@ -143,6 +154,47 @@ export function SubjectObjectives({
           ))
       );
     }) ?? [];
+  async function quickControl(goal: (typeof goals)[number]) {
+    if (
+      pendingControl.current ||
+      !client.online ||
+      !runtime.connected ||
+      !goal.controlAllowed ||
+      !goal.revision ||
+      !executionActivityContextAvailable(goal.contextId, runtime)
+    )
+      return;
+    const origin = client.boot!.csrfToken;
+    pendingControl.current = true;
+    setControlling(goal.id);
+    setControlError("");
+    try {
+      await applicationCall(
+        "objective.control",
+        {
+          objectiveId: goal.id,
+          projectId: goal.projectId,
+          conversationId: goal.conversationId,
+          revision: goal.revision,
+          action: ["paused", "blocked"].includes(goal.status)
+            ? "resume"
+            : "pause",
+        },
+        { identityGeneration: origin, signal: AbortSignal.timeout(12000) },
+      );
+      await client.refreshView();
+    } catch (cause) {
+      if (identity.current === origin)
+        setControlError(
+          cause instanceof Error
+            ? cause.message
+            : "目标操作未确认，请核对状态。",
+        );
+    } finally {
+      pendingControl.current = false;
+      if (identity.current === origin) setControlling("");
+    }
+  }
   if (!goals.length && (scope || !runtime.activity?.objectivesTruncated))
     return null;
   const fresh =
@@ -190,6 +242,37 @@ export function SubjectObjectives({
           open={open}
           onToggle={() => setExpanded(open ? null : goal.id)}
           onView={() => setViewing(goal.id)}
+          control={
+            goal.controlAllowed &&
+            ["active", "blocked", "paused"].includes(goal.status) ? (
+              <Tooltip
+                label={
+                  ["paused", "blocked"].includes(goal.status)
+                    ? "继续目标"
+                    : "暂停目标"
+                }
+              >
+                <button
+                  className="icon-button"
+                  data-size="icon-xs"
+                  aria-label={
+                    ["paused", "blocked"].includes(goal.status)
+                      ? "继续目标"
+                      : "暂停目标"
+                  }
+                  disabled={!goalFresh || !!controlling}
+                  aria-busy={controlling === goal.id}
+                  onClick={() => void quickControl(goal)}
+                >
+                  {["paused", "blocked"].includes(goal.status) ? (
+                    <Play />
+                  ) : (
+                    <Pause />
+                  )}
+                </button>
+              </Tooltip>
+            ) : undefined
+          }
           supplement={
             goal.pendingUserInput && onReplyObjective ? (
               <Tooltip label="补充 · 有待答问题">
@@ -288,6 +371,11 @@ export function SubjectObjectives({
         <section className="subject-objectives" aria-label={label}>
           <h3>{label}</h3>
           {current.map(renderGoal)}
+          {controlError && (
+            <p role="alert" className="delivery-error">
+              {controlError}
+            </p>
+          )}
           {runtime.activity?.objectivesTruncated && (
             <small className="muted">目标概览尚不完整</small>
           )}

@@ -863,6 +863,10 @@ export class HttpApplicationClient {
         path = "/api/objectives/control";
         post(params);
         break;
+      case "schedule.control":
+        path = "/api/schedules/control";
+        post(params);
+        break;
       case "task.snapshot":
         path = `/api/tasks/${encodeURIComponent(String(params))}/runtime`;
         break;

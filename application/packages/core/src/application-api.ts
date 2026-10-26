@@ -219,6 +219,7 @@ export const applicationMethods = [
   "execution.result",
   "execution.control",
   "objective.control",
+  "schedule.control",
   "task.snapshot",
   "task.run-history",
   "task.run-status",

@@ -5,6 +5,8 @@ import {
   approvalSchema,
   jobSchema,
   executionControlSchema,
+  isExecutionThreadControl,
+  reusableApprovalScopes,
   type ExecutionScope,
   type ExecutionReadScope,
   type ExecutionSnapshot,
@@ -31,6 +33,7 @@ type Binding = {
   additionalRoot?: (rootId: string, threadId: string) => Promise<boolean>;
   threadIds?: () => Promise<string[]>;
   records?: RuntimeExecutionRecords;
+  principalId?: string;
 } | null;
 const sessionIds = (binding: NonNullable<Binding>) => [
   ...new Set([binding.sessionId, ...(binding.legacySessionIds ?? [])]),
@@ -281,30 +284,47 @@ export class ExecutionControls {
   }
   async control(raw: unknown) {
     const { scope, action } = executionControlSchema.parse(raw);
+    if (action.type === "cancel-delegation")
+      throw new DomainError(
+        "forbidden",
+        "子智能体须通过已核验的原始委派控制。",
+      );
     const binding = this.binding(scope);
     if (!binding) throw new DomainError("not_found", "工作对话不存在。");
-    if (action.type === "cancel-thread") {
+    if (isExecutionThreadControl(action)) {
       if (scope.threadId !== action.threadId)
-        throw new DomainError("forbidden", "停止目标与查看的执行不一致。");
+        throw new DomainError("forbidden", "控制目标与查看的执行不一致。");
       const path = `/api/contexts/${encodeURIComponent(binding.contextId)}/threads/${encodeURIComponent(action.threadId)}`;
-      const current = z
-        .object({
-          snapshot: z.object({
-            thread: z.object({
-              id: z.literal(action.threadId),
-              session_id: z.string(),
-              context_id: z.literal(binding.contextId),
-              root_turn_id: z.string(),
-              revision: z.number(),
-            }),
-          }),
-        })
-        .parse(
-          await this.request(
-            `/api/sessions/${encodeURIComponent(binding.sessionId)}/threads/${encodeURIComponent(action.threadId)}`,
-          ),
-        );
-      const thread = current.snapshot.thread;
+      const thread =
+        action.type !== "cancel-thread"
+          ? (
+              await readExecutionRecords(this.request, {
+                sessionId: binding.sessionId,
+                contextId: binding.contextId,
+                threadId: action.threadId,
+                metadataOnly: true,
+              })
+            ).threads[0]!
+          : z
+              .object({
+                snapshot: z.object({
+                  thread: z.object({
+                    id: z.literal(action.threadId),
+                    session_id: z.string(),
+                    context_id: z.literal(binding.contextId),
+                    root_turn_id: z.string(),
+                    revision: z.number(),
+                    lifecycle: z.string().optional(),
+                    control_state: z.string().optional(),
+                    generation: z.number().int().nonnegative().optional(),
+                  }),
+                }),
+              })
+              .parse(
+                await this.request(
+                  `/api/sessions/${encodeURIComponent(binding.sessionId)}/threads/${encodeURIComponent(action.threadId)}`,
+                ),
+              ).snapshot.thread;
       if (
         !sessionIds(binding).includes(thread.session_id) ||
         thread.root_turn_id !== binding.rootId
@@ -312,22 +332,74 @@ export class ExecutionControls {
         throw new DomainError("forbidden", "执行不属于选中的工作。");
       if (thread.revision !== action.revision)
         throw new DomainError("conflict", "执行状态已变化，请刷新后重新决定。");
+      if (
+        action.type !== "cancel-thread" &&
+        (thread.lifecycle !== "open" ||
+          !["active", "paused"].includes(thread.control_state ?? ""))
+      )
+        throw new DomainError(
+          "conflict",
+          "执行已结束或控制状态不可用，请重新查看。",
+        );
+      if (action.type === "supersede-thread" && thread.generation === undefined)
+        throw new DomainError("conflict", "执行代次不可用，未提交修改。");
+      const operation = {
+        "cancel-thread": "cancel",
+        "pause-thread": "pause",
+        "resume-thread": "resume",
+        "supersede-thread": "supersede",
+      }[action.type];
       const result = z
         .object({
           updated: z.literal(true),
           thread: z.object({
             id: z.literal(action.threadId),
             lifecycle: z.string(),
+            control_state: z.string().optional(),
+            generation: z.number().int().nonnegative().optional(),
+            revision: z.number().int().positive().optional(),
+            session_id: z.string().optional(),
+            context_id: z.string().optional(),
+            root_turn_id: z.string().optional(),
           }),
         })
         .parse(
-          await this.request(path, "POST", {
-            action: "cancel",
-            expected_revision: action.revision,
-            reason: "用户在 Morphz 停止此执行分支",
-          }),
+          await this.request(
+            action.type === "supersede-thread" ? `${path}/supersede` : path,
+            "POST",
+            {
+              ...(action.type === "supersede-thread"
+                ? { intent: action.intent }
+                : { action: operation }),
+              expected_revision: action.revision,
+              reason: {
+                cancel: "用户在 Morphz 停止此执行分支",
+                pause: "用户在 Morphz 暂停此执行分支",
+                resume: "用户在 Morphz 恢复此执行分支",
+                supersede: "用户在 Morphz 纠正并继续此执行分支",
+              }[operation],
+            },
+          ),
         );
-      return { accepted: true, status: result.thread.lifecycle };
+      if (action.type === "cancel-thread")
+        return { accepted: true, status: result.thread.lifecycle };
+      const expectedState =
+        action.type === "pause-thread" ? "paused" : "active";
+      if (
+        result.thread.lifecycle !== "open" ||
+        !(result.thread.revision! > thread.revision) ||
+        result.thread.session_id !== thread.session_id ||
+        result.thread.context_id !== binding.contextId ||
+        result.thread.root_turn_id !== thread.root_turn_id ||
+        result.thread.control_state !== expectedState ||
+        (action.type === "supersede-thread" &&
+          result.thread.generation !== thread.generation! + 1)
+      )
+        throw new DomainError(
+          "conflict",
+          "Runtime 控制回执不匹配，请核对最新状态。",
+        );
+      return { accepted: true, status: result.thread.control_state };
     }
     if (action.type === "cancel-job") {
       const job = await this.job(binding, action.jobId);
@@ -360,16 +432,66 @@ export class ExecutionControls {
       throw new DomainError("conflict", "审批已结束或内容已变化，请重新查看。");
     if (binding.threadId && approval.request.thread_id !== binding.threadId)
       throw new DomainError("forbidden", "审批目标与选中的执行不一致。");
-    const receipt = z.object({ accepted: z.literal(true) }).parse(
-      await this.request(
-        `/api/approvals/${encodeURIComponent(action.approvalId)}`,
-        "POST",
-        {
-          decision: action.type === "allow-once" ? "allow_once" : "deny",
-          rationale: "用户通过 Morphz 明确决定此次操作",
-        },
-      ),
-    );
+    const reusable =
+      action.type === "allow-objective" || action.type === "allow-session";
+    if (reusable) {
+      const offer = approval.request.lease_offer;
+      if (!binding.principalId || offer?.principal_id !== binding.principalId)
+        throw new DomainError(
+          "forbidden",
+          "持续授权只能由原始请求的用户确认。",
+        );
+      // Re-read one bounded exact-Thread page for causal Job evidence. Never
+      // mistake the model attempt ID or a nearby goal for the approved Job.
+      const records =
+        action.type === "allow-objective" && offer.scope !== "objective"
+          ? await readExecutionRecords(this.request, {
+              sessionId: approval.request.session_id,
+              contextId: binding.contextId,
+              threadId: approval.request.thread_id,
+            })
+          : undefined;
+      const desired =
+        action.type === "allow-objective" ? "objective" : "session";
+      if (!reusableApprovalScopes(approval, records?.jobs).includes(desired))
+        throw new DomainError(
+          "conflict",
+          "持续授权范围不可用或已过期，请重新查看。",
+        );
+    }
+    const receipt = z
+      .object({ accepted: z.literal(true) })
+      .passthrough()
+      .parse(
+        await this.request(
+          `/api/approvals/${encodeURIComponent(action.approvalId)}`,
+          "POST",
+          {
+            decision: {
+              "allow-once": "allow_once",
+              deny: "deny",
+              "allow-objective": "allow_objective",
+              "allow-session": "allow_session",
+            }[action.type],
+            rationale: "用户通过 Morphz 明确决定此次操作",
+          },
+        ),
+      );
+    if (
+      reusable &&
+      !z
+        .object({
+          approval_id: z.literal(action.approvalId),
+          scope: z.literal(
+            action.type === "allow-objective" ? "objective" : "session",
+          ),
+        })
+        .safeParse(receipt).success
+    )
+      throw new DomainError(
+        "conflict",
+        "持续授权回执未确认，请核对状态，不要重复批准。",
+      );
     return receipt;
   }
 }

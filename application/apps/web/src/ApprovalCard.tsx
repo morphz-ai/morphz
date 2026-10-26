@@ -1,5 +1,11 @@
 import { useRef, useState } from "react";
-import { Shield } from "lucide-react";
+import { Shield, X } from "lucide-react";
+import {
+  reusableApprovalScopes,
+  type ExecutionApprovalControl,
+} from "../../../packages/core/src/execution.js";
+import { ComposerOptions } from "./ComposerOptions.js";
+import { useModal } from "./useModal.js";
 import type {
   ExecutionAttention,
   ExecutionSnapshot,
@@ -8,7 +14,11 @@ import type { WorkspaceClient } from "./client.js";
 
 export function ApprovalDetails({
   approval,
+  reusable = false,
+  heading = true,
 }: {
+  reusable?: boolean;
+  heading?: boolean;
   approval: ExecutionSnapshot["approvals"][number];
 }) {
   const action = approval.request.action;
@@ -26,10 +36,12 @@ export function ApprovalDetails({
       : String(requested[key]);
   return (
     <>
-      <h3>
-        <Shield size={15} />
-        需要你的批准
-      </h3>
+      {heading && (
+        <h3>
+          <Shield size={15} />
+          需要你的批准
+        </h3>
+      )}
       <p>{approval.request.justification}</p>
       <div className="approval-operation">
         <span>操作</span>
@@ -72,9 +84,19 @@ export function ApprovalDetails({
       </div>
       <details className="approval-raw">
         <summary>查看完整请求</summary>
-        <pre>{JSON.stringify({ action, requested }, null, 2)}</pre>
+        <pre>
+          {JSON.stringify(
+            { action, requested, lease_offer: approval.request.lease_offer },
+            null,
+            2,
+          )}
+        </pre>
       </details>
-      <small className="muted">仅限本次请求，不授予持续权限。</small>
+      <small className="muted">
+        {reusable
+          ? "授权仅覆盖本次确认的范围和执行节点。"
+          : "仅限本次请求，不授予持续权限。"}
+      </small>
     </>
   );
 }
@@ -101,7 +123,7 @@ export function ApprovalCard({
     approval.request.approval_id,
     approval.fingerprint,
   );
-  async function decide(type: "allow-once" | "deny") {
+  async function decide(action: ExecutionApprovalControl) {
     if (submitted.current || !available) return;
     submitted.current = true;
     setLocked(true);
@@ -109,13 +131,9 @@ export function ApprovalCard({
     try {
       await client.controlExecution({
         scope,
-        action: {
-          type,
-          approvalId: approval.request.approval_id,
-          fingerprint: approval.fingerprint,
-        },
+        action,
       });
-      setNotice(type === "deny" ? "已拒绝本次请求" : "已允许本次请求");
+      setNotice(action.type === "deny" ? "已拒绝本次请求" : "已提交授权决定");
     } catch (error) {
       setNotice(
         error instanceof Error
@@ -142,20 +160,146 @@ export function ApprovalCard({
       )}
       <div className="execution-actions">
         {onInspect && <button onClick={onInspect}>查看执行</button>}
-        <button
+        <ApprovalActions
+          approval={approval}
           disabled={!available || locked || previouslySubmitted}
-          onClick={() => void decide("deny")}
-        >
-          拒绝
-        </button>
-        <button
-          className="primary"
-          disabled={!available || locked || previouslySubmitted}
-          onClick={() => void decide("allow-once")}
-        >
-          仅允许这一次
-        </button>
+          onDecide={decide}
+        />
       </div>
     </section>
+  );
+}
+
+export function ApprovalActions({
+  approval,
+  jobs = [],
+  disabled,
+  onDecide,
+}: {
+  approval: ExecutionSnapshot["approvals"][number];
+  jobs?: ExecutionSnapshot["jobs"];
+  disabled: boolean;
+  onDecide(action: ExecutionApprovalControl): Promise<unknown>;
+}) {
+  const [confirmation, setConfirmation] = useState<{
+    scope: "objective" | "session";
+    approval: typeof approval;
+  } | null>(null);
+  const scopes = reusableApprovalScopes(approval, jobs);
+  const action = (
+    type: ExecutionApprovalControl["type"],
+  ): ExecutionApprovalControl => ({
+    type,
+    approvalId: approval.request.approval_id,
+    fingerprint: approval.fingerprint,
+  });
+  return (
+    <>
+      <button disabled={disabled} onClick={() => void onDecide(action("deny"))}>
+        拒绝
+      </button>
+      <button
+        className="primary"
+        disabled={disabled}
+        onClick={() => void onDecide(action("allow-once"))}
+      >
+        仅允许这一次
+      </button>
+      {scopes.length > 0 && (
+        <ComposerOptions
+          label="更多授权范围"
+          menuLabel="授权范围"
+          triggerDisabled={disabled}
+          options={scopes.map((scope) => ({
+            label:
+              scope === "objective" ? "在此目标内允许…" : "在此会话内允许…",
+            icon: <Shield />,
+            onSelect: () => setConfirmation({ scope, approval }),
+          }))}
+        />
+      )}
+      {confirmation && (
+        <ScopedApprovalConfirmation
+          approval={confirmation.approval}
+          scope={confirmation.scope}
+          disabled={disabled || !scopes.includes(confirmation.scope)}
+          onClose={() => setConfirmation(null)}
+          onConfirm={async () => {
+            const captured = confirmation;
+            setConfirmation(null);
+            await onDecide({
+              type:
+                captured.scope === "objective"
+                  ? "allow-objective"
+                  : "allow-session",
+              approvalId: captured.approval.request.approval_id,
+              fingerprint: captured.approval.fingerprint,
+            });
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function ScopedApprovalConfirmation({
+  approval,
+  scope,
+  disabled,
+  onClose,
+  onConfirm,
+}: {
+  approval: ExecutionSnapshot["approvals"][number];
+  scope: "objective" | "session";
+  disabled: boolean;
+  onClose(): void;
+  onConfirm(): Promise<void>;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useModal(dialog);
+  const offer = approval.request.lease_offer!;
+  return (
+    <dialog
+      ref={dialog}
+      className="create-dialog execution-control-dialog"
+      aria-label="确认授权范围"
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+    >
+      <header>
+        <h2>{scope === "objective" ? "在此目标内允许" : "在此会话内允许"}</h2>
+        <button className="icon-button" aria-label="关闭" onClick={onClose}>
+          <X />
+        </button>
+      </header>
+      <p className="muted">
+        仅允许下列范围内的同类操作，至{" "}
+        {new Date(offer.expires_at).toLocaleString("zh-CN")} 到期。
+      </p>
+      <ApprovalDetails
+        reusable
+        heading={false}
+        approval={{
+          ...approval,
+          request: { ...approval.request, requested: offer.requested },
+        }}
+      />
+      <div className="approval-operation">
+        <span>执行节点</span>
+        <code>{offer.target_id}</code>
+      </div>
+      <footer>
+        <button onClick={onClose}>取消</button>
+        <button
+          className="primary"
+          disabled={disabled || !(Date.parse(offer.expires_at) > Date.now())}
+          onClick={() => void onConfirm()}
+        >
+          确认允许
+        </button>
+      </footer>
+    </dialog>
   );
 }

@@ -3220,9 +3220,24 @@ export class ApplicationSession {
       this.active(),
     );
   }
+  async scheduleControl(raw: unknown) {
+    this.active();
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("定时任务控制尚未接入 Platform。");
+    return this.runtime().platformScheduleControl(raw, this.access, () =>
+      this.active(),
+    );
+  }
   async executionControl(raw: unknown) {
     const runtime = this.runtime(),
       control = executionControlSchema.parse(raw);
+    if ("runtime" in control.scope) {
+      if (!this.options.platformWork)
+        throw new ApplicationUnavailable("执行控制尚未接入 Platform。");
+      return runtime.platformRuntimeExecutionControl(control, this.access, () =>
+        this.active(),
+      );
+    }
     if (control.scope.taskRun) {
       const { controls, recheck } = await this.platformTaskExecution(
         control.scope,
@@ -4205,6 +4220,8 @@ export function invokeApplication(
       return session.executionControl(params);
     case "objective.control":
       return session.objectiveControl(params);
+    case "schedule.control":
+      return session.scheduleControl(params);
     case "task.snapshot":
       return session.taskSnapshot(params);
     case "task.run-history":

@@ -175,6 +175,7 @@ test(
         clock?: boolean;
         embedded?: boolean;
         coalescing?: boolean;
+        currentOnly?: boolean;
       } = {},
     ) {
       const pages: Page[] = [],
@@ -184,6 +185,7 @@ test(
       // renderer; its native behavior is asserted on the actual renderer below.
       for (const lane of migration &&
       !options.coalescing &&
+      !options.currentOnly &&
       options.surface !== "renderer"
         ? ["fixed", "actual"]
         : ["actual"]) {
@@ -503,7 +505,10 @@ test(
       "control and result retain separate IDs, thread override, failure words, guarded refresh order and Promise<void>",
       async () => {
         phase = "commands-order";
-        const p = await pair();
+        // The approved control vocabulary and Thread stop feedback now differ
+        // from the frozen four-action fixture. Exercise every current action
+        // here; the other lifecycle cases still compare both implementations.
+        const p = await pair({ currentOnly: true });
         await p.jobs();
         const cases = [
           {
@@ -516,7 +521,30 @@ test(
             action: { type: "cancel-thread", threadId: "child-a", revision: 2 },
             busy: "child-a",
             threadId: "child-a",
-            notice: "已提交决定",
+            notice: "已请求停止",
+          },
+          {
+            action: { type: "pause-thread", threadId: "child-a", revision: 2 },
+            busy: "child-a",
+            threadId: "child-a",
+            notice: "已暂停此执行",
+          },
+          {
+            action: { type: "resume-thread", threadId: "child-a", revision: 2 },
+            busy: "child-a",
+            threadId: "child-a",
+            notice: "已继续此执行",
+          },
+          {
+            action: {
+              type: "supersede-thread",
+              threadId: "child-a",
+              revision: 2,
+              intent: "明确的新要求",
+            },
+            busy: "child-a",
+            threadId: "child-a",
+            notice: "已纠正并继续此执行",
           },
           {
             action: {
@@ -527,6 +555,17 @@ test(
             busy: "approval-a",
             notice: "已提交决定",
           },
+          ...(["deny", "allow-objective", "allow-session"] as const).map(
+            (type) => ({
+              action: {
+                type,
+                approvalId: "approval-a",
+                fingerprint: "a".repeat(64),
+              },
+              busy: "approval-a",
+              notice: "已提交决定",
+            }),
+          ),
         ];
         for (const input of cases) {
           let current = await p.run("control", input);

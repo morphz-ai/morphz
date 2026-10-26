@@ -86,15 +86,16 @@ export function useExecutionInspection({
     action: ExecutionControl["action"],
     threadId?: string,
   ) {
-    if ("runtime" in scope) return;
     const origin = observationScope;
     const current = () => mounted.current && currentScope.current === origin;
     setBusy(
       action.type === "cancel-job"
         ? action.jobId
-        : action.type === "cancel-thread"
+        : "threadId" in action
           ? action.threadId
-          : action.approvalId,
+          : action.type === "cancel-delegation"
+            ? (scope.threadId ?? "delegation")
+            : action.approvalId,
     );
     setNotice("");
     try {
@@ -103,7 +104,17 @@ export function useExecutionInspection({
         action,
       });
       if (current())
-        setNotice(action.type === "cancel-job" ? "已请求停止" : "已提交决定");
+        setNotice(
+          action.type === "pause-thread"
+            ? "已暂停此执行"
+            : action.type === "resume-thread"
+              ? "已继续此执行"
+              : action.type === "supersede-thread"
+                ? "已纠正并继续此执行"
+                : action.type.startsWith("cancel-")
+                  ? "已请求停止"
+                  : "已提交决定",
+        );
     } catch (error) {
       if (current())
         setNotice(

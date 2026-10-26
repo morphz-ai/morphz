@@ -65,10 +65,7 @@ export function createExecutionInteractions({
   }
   async function controlExecution(command: ExecutionControl) {
     if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
-    if (
-      command.action.type === "allow-once" ||
-      command.action.type === "deny"
-    ) {
+    if ("approvalId" in command.action) {
       const key = JSON.stringify([
         current.current.csrfToken,
         command.action.approvalId,

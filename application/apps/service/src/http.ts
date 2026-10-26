@@ -2167,7 +2167,11 @@ export function createAppServer(
           );
           return;
         }
-        if (url.pathname === "/api/objectives/control") {
+        if (
+          ["/api/objectives/control", "/api/schedules/control"].includes(
+            url.pathname,
+          )
+        ) {
           if (req.headers["content-type"] !== "application/json") {
             json(res, 415, { message: "需要 JSON 请求。" });
             return;
@@ -2175,7 +2179,9 @@ export function createAppServer(
           json(
             res,
             200,
-            await business.objectiveControl(await jsonBody(req, 131072)),
+            await (url.pathname === "/api/schedules/control"
+              ? business.scheduleControl(await jsonBody(req, 16384))
+              : business.objectiveControl(await jsonBody(req, 131072))),
           );
           return;
         }
@@ -2199,7 +2205,7 @@ export function createAppServer(
           json(
             res,
             200,
-            await business.executionControl(await jsonBody(req, 16384)),
+            await business.executionControl(await jsonBody(req, 262144)),
           );
           return;
         }

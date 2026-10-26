@@ -1,6 +1,7 @@
 import { CalendarClock, RefreshCw } from "lucide-react";
 import { applicationCall } from "./application-transport.js";
 import { useSubjectSchedules } from "./features/subject/useSubjectSchedules.js";
+import { RuntimeScheduleActions } from "./features/subject/RuntimeScheduleActions.js";
 import { liveArrangement } from "./subject-sidebar-model.js";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
@@ -68,30 +69,36 @@ export function SubjectSchedules({
             </span>
           </>
         );
-        return exactThread ? (
-          <button
-            className="subject-record"
-            data-schedule-id={row.scheduleId}
-            key={row.scheduleId}
-            onClick={() =>
-              onInspect({
-                projectId: row.projectId,
-                conversationId: row.conversationId,
-                artifactId: null,
-                inputId: row.inputId,
-                threadId: row.threadId,
-              })
-            }
-          >
-            {content}
-          </button>
-        ) : (
+        return (
           <div
-            className="subject-record"
+            className="subject-schedule-row"
             data-schedule-id={row.scheduleId}
             key={row.scheduleId}
           >
-            {content}
+            {exactThread ? (
+              <button
+                className="subject-record"
+                onClick={() =>
+                  onInspect({
+                    projectId: row.projectId,
+                    conversationId: row.conversationId,
+                    artifactId: null,
+                    inputId: row.inputId,
+                    threadId: row.threadId,
+                  })
+                }
+              >
+                {content}
+              </button>
+            ) : (
+              <div className="subject-record">{content}</div>
+            )}
+            <RuntimeScheduleActions
+              key={`${client.boot!.csrfToken}:${row.scheduleId}`}
+              row={row}
+              client={client}
+              disabled={nativeError}
+            />
           </div>
         );
       })}

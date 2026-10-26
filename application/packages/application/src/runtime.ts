@@ -14,6 +14,8 @@ import {
 } from "./delegation-read.js";
 import { messageSourceSummary } from "../../core/src/message-source.js";
 import { objectiveControlSchema } from "../../core/src/objective-control.js";
+import { scheduleControlSchema } from "../../core/src/schedule-control.js";
+import { RuntimeScheduleControls } from "./runtime-schedule-controls.js";
 import {
   terminalCatalogSchema,
   terminalReceiptSchema,
@@ -122,6 +124,7 @@ import { activityAnnotationFields } from "./response-annotations.js";
 import {
   authorizedExecutionThreadTree,
   readExecutionRecords,
+  runtimeExecutionRecordsSchema,
 } from "./execution-thread-tree.js";
 import {
   DomainError,
@@ -133,10 +136,16 @@ import {
   type RecordedInput,
 } from "../../../packages/core/src/model.js";
 import { localAccess } from "../../../packages/core/src/model.js";
-import { ExecutionControls, approvalFingerprint } from "./execution.js";
+import {
+  ExecutionControls,
+  approvalFingerprint,
+  type RuntimeRequest,
+} from "./execution.js";
 import {
   approvalSchema,
   jobSchema,
+  executionControlSchema,
+  isExecutionThreadControl,
   type ExecutionControl,
   type ExecutionScope,
   type ExecutionReadScope,
@@ -2439,6 +2448,10 @@ export class RuntimeBridge {
       () => ({
         sessionId: ref.sessionId,
         contextId: session.context_id,
+        principalId: this.teamIdentity
+          ? this.principalId(access.principalId)
+          : (this.state.sessions[ref.sessionId]?.runtimePrincipalId ??
+            access.principalId),
         rootId: `client-schedule-${ref.scheduleId}`,
         threadId: ref.threadId,
         additionalRoot,
@@ -2985,6 +2998,42 @@ export class RuntimeBridge {
   ) {
     if (scope.runtime.delegation)
       return this.platformDelegatedExecutionRead(scope, access, active);
+    const { request, records, selected, recheck } =
+      await this.platformOwnedExecutionProof(scope, access, active);
+    const viewer = new ExecutionControls(request, () => ({
+      ...scope.runtime,
+      rootId: selected.root_turn_id,
+      threadId: scope.threadId,
+      records,
+      additionalRoot: async (rootId, threadId) =>
+        records.threads.some(
+          (t) => t.id === threadId && t.root_turn_id === rootId,
+        ),
+    }));
+    return {
+      snapshot: async (): Promise<ExecutionSnapshot> => {
+        const value = await viewer.snapshot(scope, false);
+        await recheck();
+        return { ...value, approvals: [] };
+      },
+      result: async (jobId: string) => {
+        await recheck();
+        const value = await viewer.result(scope, jobId);
+        await recheck();
+        return value;
+      },
+    };
+  }
+
+  private async platformOwnedExecutionProof(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+    includeDescendants = true,
+    metadataOnly = false,
+  ) {
+    if (scope.runtime.delegation)
+      throw new DomainError("forbidden", "委派执行不属于普通线程控制。");
     const owner = this.teamIdentity
       ? this.principalId(access.principalId)
       : access.principalId;
@@ -3019,7 +3068,8 @@ export class RuntimeBridge {
     const records = await readExecutionRecords(request, {
       ...scope.runtime,
       threadId: scope.threadId,
-      includeDescendants: true,
+      includeDescendants,
+      metadataOnly,
     });
     if (records.threads.some((t) => t.initiating_principal_id !== owner))
       throw new DomainError("forbidden", "执行记录的所属身份已变化。");
@@ -3113,33 +3163,94 @@ export class RuntimeBridge {
     };
     await recheck();
     verify();
-    const viewer = new ExecutionControls(request, () => ({
-      ...scope.runtime,
-      rootId: selected.root_turn_id,
-      threadId: scope.threadId,
-      records,
-      additionalRoot: async (rootId, threadId) =>
-        records.threads.some(
-          (t) => t.id === threadId && t.root_turn_id === rootId,
-        ),
-    }));
-    return {
-      snapshot: async (): Promise<ExecutionSnapshot> => {
-        // Approval actions belong to exact Platform work, not inventory reads.
-        const value = await viewer.snapshot(scope, false);
-        await recheck();
-        return {
-          ...value,
-          approvals: [],
-        };
-      },
-      result: async (jobId: string) => {
-        await recheck();
-        const value = await viewer.result(scope, jobId);
-        await recheck();
+    return { request, records, selected, recheck, owner };
+  }
+
+  /** Explicit writes re-establish ownership and current access independently
+   * of a read reference. The existing read entry remains physically read-only. */
+  async platformRuntimeExecutionControl(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const control = executionControlSchema.parse(raw);
+    const { scope, action } = control;
+    if (!("runtime" in scope))
+      throw new DomainError("forbidden", "执行来源不匹配。");
+    if (action.type === "cancel-delegation")
+      return this.platformDelegationControl(scope, access, active);
+    if (!isExecutionThreadControl(action) || scope.runtime.delegation)
+      throw new DomainError("forbidden", "此执行来源不支持该控制动作。");
+    const proof = await this.platformOwnedExecutionProof(
+      scope,
+      access,
+      active,
+      false,
+      true,
+    );
+    const readPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/threads/${encodeURIComponent(scope.threadId)}`;
+    const recordsPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/execution-records?${new URLSearchParams({ limit: "100", thread_id: scope.threadId, metadata_only: "true" })}`;
+    const writePath = `/api/contexts/${encodeURIComponent(scope.runtime.contextId)}/threads/${encodeURIComponent(scope.threadId)}${action.type === "supersede-thread" ? "/supersede" : ""}`;
+    const request: RuntimeRequest = async (path, method = "GET", body) => {
+      active();
+      if (
+        method === "GET" &&
+        (path === readPath || path === recordsPath) &&
+        body === undefined
+      ) {
+        const value = await proof.request(path);
+        if (path === recordsPath) {
+          const records = runtimeExecutionRecordsSchema.parse(value);
+          if (
+            records.threads.some(
+              (thread) => thread.initiating_principal_id !== proof.owner,
+            )
+          )
+            throw new DomainError("forbidden", "执行记录的所属身份已变化。");
+        } else {
+          z.object({
+            snapshot: z.object({
+              thread: z.object({
+                initiating_principal_id: z.literal(proof.owner),
+              }),
+            }),
+          }).parse(value);
+        }
+        await proof.recheck();
         return value;
-      },
+      }
+      if (method !== "POST" || path !== writePath)
+        throw new DomainError("forbidden", "控制目标超出所选执行。");
+      const latest = await this.platformOwnedExecutionProof(
+        scope,
+        access,
+        active,
+        false,
+        true,
+      );
+      if (latest.selected.root_turn_id !== proof.selected.root_turn_id)
+        throw new DomainError("conflict", "执行来源已变化，未提交控制。");
+      const value = await this.request(path, method, body, access);
+      await latest.recheck();
+      active();
+      return value;
     };
+    const controls = new ExecutionControls(request, () => ({
+      sessionId: scope.runtime.sessionId,
+      contextId: scope.runtime.contextId,
+      rootId: proof.selected.root_turn_id,
+      threadId: scope.threadId,
+    }));
+    try {
+      return await controls.control(control);
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError("conflict", "执行控制未确认，请核对最新状态。");
+      throw error;
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
   }
 
   /** Cross-Session delegate reads follow the original durable request. The
@@ -3332,6 +3443,111 @@ export class RuntimeBridge {
     };
   }
 
+  private async platformDelegationControl(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const reference = scope.runtime.delegation;
+    if (!reference || !this.authorizePlatformRead)
+      throw new DomainError("forbidden", "缺少可核验的原始委派。");
+    const verify = async (requireLive: boolean) => {
+      active();
+      const proof = await this.delegationSource(reference, access);
+      const parent = {
+        projectId: proof.source.projectId,
+        conversationId: proof.source.conversationId,
+      };
+      const grant = await this.authorizePlatformRead!(parent, access);
+      if (
+        proof.record.child_session_id !== scope.runtime.sessionId ||
+        proof.record.child_context_id !== scope.runtime.contextId ||
+        !proof.record.initiating_principal_id ||
+        (this.teamIdentity &&
+          proof.record.initiating_principal_id !==
+            this.principalId(access.principalId)) ||
+        (!this.teamIdentity &&
+          this.state.sessions[proof.record.parent_session_id]
+            ?.runtimePrincipalId &&
+          proof.record.initiating_principal_id !==
+            this.state.sessions[proof.record.parent_session_id]
+              ?.runtimePrincipalId) ||
+        proof.source.author.principalId !== access.principalId ||
+        proof.source.author.actantId !== access.actantId ||
+        !this.platformSourceReadable(proof.source, parent, access, grant)
+      )
+        throw new DomainError("forbidden", "无权控制这项原始委派。");
+      if (requireLive && !["queued", "running"].includes(proof.record.status))
+        throw new DomainError("conflict", "子智能体已经结束，请核对最新状态。");
+      active();
+      return proof;
+    };
+    const initial = await verify(true);
+    const owner = initial.record.initiating_principal_id;
+    z.object({
+      snapshot: z.object({
+        thread: z.object({
+          id: z.literal(scope.threadId),
+          session_id: z.literal(scope.runtime.sessionId),
+          context_id: z.literal(scope.runtime.contextId),
+          initiating_principal_id: z.literal(owner),
+        }),
+      }),
+    }).parse(
+      await this.request(
+        `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/threads/${encodeURIComponent(scope.threadId)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+        "json",
+        true,
+      ),
+    );
+    const proof = await verify(true);
+    try {
+      const result = z
+        .object({
+          cancelled: z.literal(true),
+          delegation: delegationRecordSchema,
+        })
+        .parse(
+          await this.request(
+            `/api/delegations/${encodeURIComponent(reference.id)}/cancel`,
+            "POST",
+            undefined,
+            access,
+          ),
+        );
+      const record = result.delegation;
+      if (
+        record.id !== proof.record.id ||
+        record.parent_session_id !== proof.record.parent_session_id ||
+        record.parent_context_id !== proof.record.parent_context_id ||
+        record.child_session_id !== proof.record.child_session_id ||
+        record.child_context_id !== proof.record.child_context_id ||
+        record.initiating_principal_id !== owner ||
+        record.status !== "cancelled"
+      )
+        throw new DomainError(
+          "conflict",
+          "委派停止回执不匹配，请核对最新状态。",
+        );
+      await verify(false);
+      return { accepted: true, status: record.status };
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError(
+          "conflict",
+          "子智能体停止未确认，请核对最新状态。",
+        );
+      throw error;
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
+  }
+
   async platformObjectiveControl(
     raw: unknown,
     access: AccessContext,
@@ -3459,6 +3675,129 @@ export class RuntimeBridge {
     }
   }
 
+  async platformScheduleControl(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const control = scheduleControlSchema.parse(raw);
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("forbidden", "定时任务控制尚未接入。");
+    const conversation = {
+      projectId: control.scope.projectId,
+      conversationId: control.scope.conversationId,
+    };
+    active();
+    await authorize(conversation, access);
+    const row = this.state.activity?.schedules?.find(
+      (record) =>
+        record.scheduleId === control.scheduleId &&
+        record.threadId === control.scope.threadId &&
+        record.inputId === control.scope.inputId &&
+        record.projectId === conversation.projectId &&
+        record.conversationId === conversation.conversationId,
+    );
+    const hint = row && this.activitySources.get(row.inputId);
+    if (!row || !hint)
+      throw new DomainError(
+        "conflict",
+        "定时任务来源未核验，请重新读取后操作。",
+      );
+    const verifySource = async (source: PlatformInputSource) => {
+      active();
+      const grant = await authorize(conversation, access);
+      if (
+        source.projectId !== conversation.projectId ||
+        source.conversationId !== conversation.conversationId ||
+        source.author.principalId !== access.principalId ||
+        source.author.actantId !== access.actantId ||
+        this.contextId(source.projectId) !== row.contextId ||
+        this.objectSessionId(
+          source.projectId,
+          source.conversationId,
+          source.sharedDefault,
+        ) !== row.sessionId ||
+        !this.platformSourceReadable(source, conversation, access, grant)
+      )
+        throw new DomainError(
+          "forbidden",
+          "定时任务不属于当前有权控制的原始工作。",
+        );
+      active();
+    };
+    await verifySource(hint);
+    // The bounded inventory is only a locator. The immutable input Event is
+    // point-read again; no history traversal or renderer-provided Session.
+    const event = z
+      .object({ event: eventSchema })
+      .parse(
+        await this.request(
+          `/api/sessions/${encodeURIComponent(row.sessionId)}/events/${encodeURIComponent(row.sourceRootId)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+          "json",
+          true,
+        ),
+      ).event;
+    const source = platformSourceFromRuntimeRoot(
+      event,
+      row.sessionId,
+      row.inputId,
+      (id) => (this.teamIdentity ? this.principalId(id) : null),
+    );
+    if (
+      !source ||
+      event.id !== row.sourceRootId ||
+      payloadString(event, "session_id") !== row.sessionId ||
+      payloadString(event, "context_id") !== row.contextId ||
+      payloadString(event, "client_message_id") !== row.inputId
+    )
+      throw new DomainError("forbidden", "定时任务的原始输入不匹配。");
+    await verifySource(source);
+    const request: RuntimeRequest = async (path, method = "GET", body) => {
+      await verifySource(source);
+      const value = await this.request(
+        path,
+        method,
+        body,
+        access,
+        undefined,
+        "json",
+        method === "GET",
+      );
+      await verifySource(source);
+      return value;
+    };
+    try {
+      return await new RuntimeScheduleControls(request, {
+        sessionId: row.sessionId,
+        contextId: row.contextId,
+        threadId: row.threadId,
+        rootId: row.rootId,
+        sourceTurnId: row.sourceTurnId,
+        principalId: this.teamIdentity
+          ? this.principalId(access.principalId)
+          : (this.state.sessions[row.sessionId]?.runtimePrincipalId ??
+            access.principalId),
+      }).control(control);
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError(
+          error.status === 403 ? "forbidden" : "conflict",
+          error.status === 403
+            ? "当前身份无权调整这项定时任务。"
+            : "定时任务操作未确认，请核对最新状态。",
+        );
+      throw error;
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
+  }
+
   async platformExecutionControls(
     scope: ExecutionScope,
     access: AccessContext,
@@ -3577,6 +3916,10 @@ export class RuntimeBridge {
       viewer: new ExecutionControls(request, () => ({
         sessionId: entry.sessionId,
         contextId: entry.contextId,
+        principalId: this.teamIdentity
+          ? this.principalId(access.principalId)
+          : (this.state.sessions[entry.sessionId]?.runtimePrincipalId ??
+            access.principalId),
         ...(scope.inputId || scope.threadId
           ? { rootId: selectedTree?.selected.rootId ?? [...entry.roots][0] }
           : { rootsBySession: { [entry.sessionId]: [...entry.roots] } }),
@@ -3820,16 +4163,17 @@ export class RuntimeBridge {
       },
       control: async (control: ExecutionControl) => {
         const action = control.action;
-        const viewer =
-          action.type === "cancel-thread"
-            ? controls.length === 1 && scope.threadId === action.threadId
-              ? controls[0]!.viewer
-              : null
-            : await viewerFor(
-                action.type === "cancel-job"
-                  ? { jobId: action.jobId }
-                  : { approvalId: action.approvalId },
-              );
+        if (action.type === "cancel-delegation")
+          throw new DomainError("forbidden", "委派控制必须核验其原始请求。");
+        const viewer = isExecutionThreadControl(action)
+          ? controls.length === 1 && scope.threadId === action.threadId
+            ? controls[0]!.viewer
+            : null
+          : await viewerFor(
+              action.type === "cancel-job"
+                ? { jobId: action.jobId }
+                : { approvalId: action.approvalId },
+            );
         if (!viewer)
           throw new DomainError("forbidden", "执行不属于当前工作对话。");
         await recheck();

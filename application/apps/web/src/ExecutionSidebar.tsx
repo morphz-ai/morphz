@@ -1,14 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { observeSupplementAttention } from "./supplement-attention.js";
-import {
-  ArrowLeft,
-  ChevronRight,
-  MessageSquarePlus,
-  Square,
-} from "lucide-react";
+import { ArrowLeft, ChevronRight, MessageSquarePlus } from "lucide-react";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
+import { ExecutionControlActions } from "./features/execution/ExecutionControlActions.js";
 import { StopResponse, ToolMessage } from "./Conversation.js";
 import { useConversationStream } from "./useConversationStream.js";
 import { InspectorPanel } from "./InspectorPanel.js";
@@ -81,8 +77,7 @@ export function ExecutionSidebar({
   const [stopping, setStopping] = useState(false),
     [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [showOther, setShowOther] = useState(false),
-    [stopRequested, setStopRequested] = useState(false);
+  const [showOther, setShowOther] = useState(false);
   const threads = runtime.activity?.threads ?? [];
   const currentThread = threads.find((t) => t.id === scope.threadId);
   const [initialThread] = useState(currentThread);
@@ -222,33 +217,6 @@ export function ExecutionSidebar({
       setStopping(false);
     }
   }
-  async function stopThread() {
-    if (
-      readOnly ||
-      !currentThread ||
-      currentThread.lifecycle !== "open" ||
-      !activityAvailable ||
-      !client.online
-    )
-      return;
-    setStopping(true);
-    setError("");
-    try {
-      await client.controlExecution({
-        scope,
-        action: {
-          type: "cancel-thread",
-          threadId: currentThread.id,
-          revision: currentThread.revision,
-        },
-      });
-      setStopRequested(true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStopping(false);
-    }
-  }
   const detailStatus = scope.threadId && (
     <span
       className="execution-origin-status"
@@ -263,33 +231,22 @@ export function ExecutionSidebar({
   const detailActions = (
     <div className="execution-origin-actions">
       {supplementAction}
-      {scope.threadId && !readOnly && currentThread?.lifecycle === "open" && (
-        <Tooltip
-          label={
-            stopping
-              ? "正在请求停止"
-              : stopRequested
-                ? "停止请求已发送"
-                : "停止当前执行"
+      {scope.threadId && currentThread?.lifecycle === "open" && (
+        <ExecutionControlActions
+          key={`${client.boot!.csrfToken}:${JSON.stringify(scope)}`}
+          scope={scope}
+          thread={currentThread}
+          disabled={
+            !client.online ||
+            !runtime.connected ||
+            !activityAvailable ||
+            !executionActivityThreadAvailable(currentThread, runtime)
           }
-        >
-          <button
-            className="icon-button execution-stop-thread"
-            aria-label="停止"
-            aria-busy={stopping}
-            disabled={
-              stopping || stopRequested || !activityAvailable || !client.online
-            }
-            onClick={stopThread}
-          >
-            <Square aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      {(stopping || stopRequested) && scope.threadId && (
-        <span className="sr-only" role="status">
-          {stopping ? "正在请求停止" : "停止请求已发送"}
-        </span>
+          onControl={async (action) => {
+            await client.controlExecution({ scope, action });
+            await client.refreshView();
+          }}
+        />
       )}
     </div>
   );

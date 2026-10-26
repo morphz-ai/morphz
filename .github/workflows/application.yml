@@ -387,6 +387,8 @@ jobs:
       - run: npm --prefix application run test:runtime-identity
       - run: npm --prefix application run test:platform-task-runtime
       - run: npm --prefix application run test:platform-message-runtime
+      - name: Actual Thread and Objective controls through the embedded Host
+        run: npm --prefix application run test:objective-controls-runtime
       - name: Check and format the official Yao Harness offline
         run: |
           target/debug/morphz harness check application/harnesses/script-studio.hns --tool-schema=application/harnesses/script-studio.tools.json --format=json

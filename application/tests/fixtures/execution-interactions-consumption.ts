@@ -162,7 +162,13 @@ export function verifyExecutionInteractionOwner(
       // two read ports use the reviewed read scope.
       readerFunction(fixed, name)
         .getText()
-        .replace("scope: ExecutionScope", "scope: ExecutionReadScope"),
+        .replace("scope: ExecutionScope", "scope: ExecutionReadScope")
+        // All four explicit approval decisions must share the original
+        // before-send/unknown-outcome ledger. No other algorithm changes.
+        .replace(
+          'if (\n      command.action.type === "allow-once" ||\n      command.action.type === "deny"\n    )',
+          'if ("approvalId" in command.action)',
+        ),
       "complete original execution algorithm " + name,
     );
   for (const statement of owner.source.statements)

@@ -1105,7 +1105,8 @@ test("source-null executions retain ownership/facts in global inventory without 
       ).runtime.activity!.threads.length,
       0,
     );
-    // Raw cache facts are not a renderer permission or a domain-tool binding.
+    // A typed pointer is accepted as a control locator, never as authority.
+    // The control-authority suite verifies fresh owner/source/revocation fences.
     assert.equal(internal.state.activity.threads.length, values.length + 2);
     const selected = activity.threads[0]!;
     const scope = executionActivityScope(selected, initialWorkspace(now));
@@ -1117,6 +1118,17 @@ test("source-null executions retain ownership/facts in global inventory without 
           type: "cancel-thread",
           threadId: selected.id,
           revision: selected.revision,
+        },
+      }).success,
+      true,
+    );
+    assert.equal(
+      executionControlSchema.safeParse({
+        scope,
+        action: {
+          type: "allow-session",
+          approvalId: "forged",
+          fingerprint: "a".repeat(64),
         },
       }).success,
       false,
@@ -1260,9 +1272,9 @@ test("unassociated inspector reads bounded real commands and receipts, rejects f
       f.session().executionControl({
         scope,
         action: {
-          type: "cancel-thread",
-          threadId: selected.id,
-          revision: 1,
+          type: "cancel-job",
+          jobId: job.id,
+          revision: job.revision,
         },
       }),
     );

@@ -214,6 +214,83 @@ try {
   let goal = (await read()).objectives![0]!;
   assert.equal(goal.controlAllowed, true);
   const goalId = goal.id;
+  // Hold the synthetic provider's next evaluation in flight, then exercise the
+  // same exact-Thread Host operation the Desktop uses. No business provider,
+  // user database, external command or installed Runtime process is involved.
+  await wait(
+    async () =>
+      calls >= 3 &&
+      (await read()).threads.some(
+        (thread) =>
+          thread.lifecycle === "open" &&
+          thread.kind === "execution" &&
+          thread.inputId === goal.inputId &&
+          thread.projectId === goal.projectId,
+      ),
+    "attributed in-flight synthetic Thread",
+  );
+  const live = (await read()).threads.find(
+    (thread) =>
+      thread.lifecycle === "open" &&
+      thread.kind === "execution" &&
+      thread.inputId === goal.inputId &&
+      thread.projectId === goal.projectId,
+  )!;
+  const executionScope = {
+    projectId: live.projectId!,
+    conversationId: live.conversationId!,
+    inputId: live.inputId!,
+    threadId: live.id,
+    artifactId: null,
+  };
+  const readThread = async () => {
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/sessions/${encodeURIComponent(live.sessionId)}/execution-records?${new URLSearchParams({ limit: "100", thread_id: live.id, metadata_only: "true" })}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    assert.ok(response.ok);
+    return (
+      (await response.json()) as {
+        threads: {
+          revision: number;
+          generation: number;
+          control_state: string;
+        }[];
+      }
+    ).threads[0]!;
+  };
+  let current = await readThread();
+  const generation = current.generation;
+  for (const type of [
+    "pause-thread",
+    "resume-thread",
+    "supersede-thread",
+  ] as const) {
+    await invoke("execution.control", {
+      scope: executionScope,
+      action: {
+        type,
+        threadId: live.id,
+        revision: current.revision,
+        ...(type === "supersede-thread"
+          ? {
+              intent:
+                "TEST corrected synthetic intent; no external operations.",
+            }
+          : {}),
+      },
+    });
+    current = await readThread();
+    assert.equal(
+      current.control_state,
+      type === "pause-thread" ? "paused" : "active",
+    );
+    assert.equal(
+      current.generation,
+      type === "supersede-thread" ? generation + 1 : generation,
+    );
+  }
+  goal = (await read()).objectives!.find((value) => value.id === goalId)!;
   const control = async (
     action: "pause" | "resume" | "delete",
     revision = goal.revision!,
@@ -276,7 +353,7 @@ try {
   assert.equal(runtime.exitCode, null);
   passed = true;
   console.log(
-    "PASS: real Runtime + embedded typed control; Agent-created attributed goal paused/resumed/deleted with exact revisions; stale revision rejected; execution history and cancelled goal retained after Host reopen. Synthetic provider, isolated data.",
+    "PASS: real Runtime + embedded typed control; exact Thread paused/resumed/superseded with native generation receipts; Agent-created attributed goal paused/resumed/deleted with exact revisions; stale revision rejected; execution history and cancelled goal retained after Host reopen. Synthetic provider, isolated data.",
   );
 } catch (error) {
   console.error(logs.split(token).join("[redacted]"));
