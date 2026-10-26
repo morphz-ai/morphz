@@ -599,6 +599,14 @@ test("跨 root、陈旧代次、他人身份、扩大目录或模型权限均拒
     ]).runtime.activity!;
     assert.ok(ownerActivity.threads.length > 0);
     assert.deepEqual(ownerActivity.threads[0]!.continuation, targets[0]);
+    assert.deepEqual(ownerActivity.threads[0]!.continuationSource, {
+      inputId: targets[0]!.inputId,
+      projectId: "first-project",
+      conversationId: "first-project",
+      targetActantId: "morphz-agent",
+      artifactId: null,
+      artifactRevision: null,
+    });
     assert.equal(
       f.bridge.platformNavigationSnapshot(
         {
@@ -607,6 +615,13 @@ test("跨 root、陈旧代次、他人身份、扩大目录或模型权限均拒
         },
         ["first-project"],
       ).runtime.activity!.threads[0]!.continuation,
+      undefined,
+    );
+    assert.equal(
+      f.bridge.platformNavigationSnapshot(
+        { principalId: "local-owner", actantId: "morphz-agent" },
+        ["first-project"],
+      ).runtime.activity!.threads[0]!.continuationSource,
       undefined,
     );
     await assert.rejects(

@@ -8,7 +8,10 @@ import {
 } from "./evaluation-result.js";
 import { providerRecoverySchema } from "./provider-recovery.js";
 import { executionAttentionSchema, delegationLinkSchema } from "./execution.js";
-import { continuationSchema } from "./continuation.js";
+import {
+  continuationSchema,
+  continuationSourceSchema,
+} from "./continuation.js";
 import { pendingUserInputRequestSchema } from "./user-input.js";
 export const artifactOutputSchema = z.object({
   commandId: z.string(),
@@ -143,6 +146,7 @@ export const activitySchema = z.object({
       revision: z.number(),
       updatedAt: z.string(),
       continuation: continuationSchema.optional(),
+      continuationSource: continuationSourceSchema.optional(),
     }),
   ),
 });

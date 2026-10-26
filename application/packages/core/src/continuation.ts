@@ -46,6 +46,21 @@ export const continuationSchema = z
   );
 export type InputContinuation = z.infer<typeof continuationSchema>;
 
+/** Original routing facts projected with an authorized Thread. This is not a
+ * message body or a permission grant; submission rechecks the immutable owner. */
+const sourceId = z.string().min(1).max(256);
+export const continuationSourceSchema = z
+  .object({
+    inputId: sourceId,
+    projectId: sourceId,
+    conversationId: sourceId,
+    targetActantId: sourceId,
+    artifactId: sourceId.nullable(),
+    artifactRevision: z.number().int().positive().nullable(),
+  })
+  .strict();
+export type ContinuationSource = z.infer<typeof continuationSourceSchema>;
+
 export function isDirectedContinuation(
   target: InputContinuation | undefined,
 ): boolean {

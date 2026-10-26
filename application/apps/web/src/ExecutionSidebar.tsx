@@ -76,6 +76,7 @@ export function ExecutionSidebar({
   const [stopping, setStopping] = useState(false),
     [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [controlNotice, setControlNotice] = useState("");
   const [showOther, setShowOther] = useState(false);
   const threads = runtime.activity?.threads ?? [];
   const currentThread = threads.find((t) => t.id === scope.threadId);
@@ -249,8 +250,16 @@ export function ExecutionSidebar({
             !activityAvailable ||
             !executionActivityThreadAvailable(currentThread, runtime)
           }
+          onNotice={setControlNotice}
           onControl={async (action) => {
-            await client.controlExecution({ scope, action });
+            try {
+              await client.controlExecution({ scope, action });
+            } catch (cause) {
+              // One failed command may reconcile the current bounded head;
+              // never retry a Human's control with a newer revision.
+              void client.refreshView().catch(() => {});
+              throw cause;
+            }
             await client.refreshView();
           }}
         />
@@ -392,6 +401,20 @@ export function ExecutionSidebar({
             {detailStatus}
           </div>
           {detailActions}
+        </div>
+      )}
+      {controlNotice && (
+        <div className="execution-control-feedback">
+          <p role="alert">{controlNotice}</p>
+          {onRefresh && (
+            <button
+              data-size="sm"
+              disabled={refreshing}
+              onClick={() => void refresh()}
+            >
+              刷新
+            </button>
+          )}
         </div>
       )}
       {!detail && (

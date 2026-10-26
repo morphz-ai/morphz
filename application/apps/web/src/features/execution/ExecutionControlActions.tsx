@@ -20,6 +20,7 @@ export function ExecutionControlActions({
   thread,
   disabled,
   onControl,
+  onNotice,
   stopLabel = "停止",
   compact = true,
 }: {
@@ -27,6 +28,7 @@ export function ExecutionControlActions({
   thread: Thread;
   disabled: boolean;
   onControl(action: ExecutionControl["action"]): Promise<unknown>;
+  onNotice?(message: string): void;
   stopLabel?: string;
   compact?: boolean;
 }) {
@@ -55,6 +57,7 @@ export function ExecutionControlActions({
     setBusy(true);
     setStopping(action.type.startsWith("cancel-"));
     setNotice("");
+    onNotice?.("");
     try {
       await onControl(action);
       if (alive.current) {
@@ -62,12 +65,14 @@ export function ExecutionControlActions({
         if (action.type.startsWith("cancel-")) setStopRequested(true);
       }
     } catch (cause) {
-      if (alive.current)
-        setNotice(
+      if (alive.current) {
+        const message =
           cause instanceof Error
             ? cause.message
-            : "操作未确认，请核对最新状态。",
-        );
+            : "操作未确认，请核对最新状态。";
+        if (onNotice) onNotice(message);
+        else setNotice(message);
+      }
     } finally {
       pending.current = false;
       if (alive.current) {

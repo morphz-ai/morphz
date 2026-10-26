@@ -4,7 +4,10 @@ import type {
   InputAttachment,
   Operation,
 } from "../../../../packages/core/src/model.js";
-import type { InputContinuation } from "../../../../packages/core/src/continuation.js";
+import type {
+  ContinuationSource,
+  InputContinuation,
+} from "../../../../packages/core/src/continuation.js";
 import type { InputIntent } from "../../../../packages/core/src/input-intent.js";
 import type { ReasoningEffort } from "../../../../packages/core/src/inference.js";
 import type { ReadingInput } from "../../../../packages/core/src/reader.js";
@@ -25,6 +28,7 @@ export type InputDraft = {
   scriptGeneration?: ScriptGeneration;
   continuation?: InputContinuation;
   continuationLabel?: string;
+  continuationSource?: ContinuationSource;
   continuationFailure?: "closed" | "changed" | "unknown";
   pendingSupplement?: { commandId: string; operation: Operation };
   attachments?: InputAttachment[];

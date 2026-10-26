@@ -393,7 +393,23 @@ export function verifySubmissionCommands(
         "requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));",
       );
     }
-    if (algorithms)
+    // The Git9122 send witness stays immutable. Supplement intentionally no
+    // longer requires its original message in the visible history window.
+    // Pin that reviewed algorithm separately; the negative mutation matrix
+    // and owner/route/draft behavior tests still reject any unreviewed change.
+    if (algorithms && name === "supplement")
+      assert.equal(
+        createHash("sha256")
+          .update(
+            JSON.stringify(
+              submissionSyntax(oneFunction(parseSubmission(source), name)),
+            ),
+          )
+          .digest("hex"),
+        "f2b8e0ccfa251f3d4c9396fca70529e0f0bf596cc593681024b3f87961b44857",
+        "reviewed Thread supplement algorithm 2026-10-27",
+      );
+    else if (algorithms)
       assert.deepEqual(
         submissionSyntax(oneFunction(parseSubmission(source), name)),
         submissionSyntax(oneFunction(parseSubmission(old[name]), name)),

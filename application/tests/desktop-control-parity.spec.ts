@@ -61,6 +61,13 @@ async function fixture(page: Page) {
       threadId: "TEST-control-thread",
       generation: 1,
     },
+    continuationSource: {
+      inputId: "TEST-input",
+      ...f.scope,
+      targetActantId: "TEST-agent",
+      artifactId: null,
+      artifactRevision: null,
+    },
     parentThreadId: null,
     revision: 7,
     updatedAt: stamp,
@@ -224,6 +231,122 @@ test("Thread header keeps navigation and status together, preserves drafts and e
   });
   expect(x.calls).toHaveLength(2);
   await expect(await openInput(page)).toHaveValue("TEST 必须保留的输入草稿");
+});
+
+test("a rejected control cannot displace header hit targets; supplement works without its old message being loaded", async ({
+  page,
+}) => {
+  const x = await fixture(page);
+  const error = "执行状态已变化，请刷新后重新决定。";
+  const messages: any[] = [],
+    reads: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/history")) reads.push(request.url());
+  });
+  await page.route("**/api/executions/control", (route) => {
+    x.calls.push({
+      method: "execution",
+      command: route.request().postDataJSON(),
+    });
+    x.thread.revision++;
+    return route.fulfill({
+      status: 409,
+      json: { code: "conflict", message: error },
+    });
+  });
+  await page.route("**/api/platform/messages", (route) => {
+    const command = route.request().postDataJSON();
+    messages.push(command);
+    return route.fulfill({
+      json: {
+        commandId: command.commandId,
+        entityId: "TEST-supplement-receipt",
+        workspaceRevision: 1,
+      },
+    });
+  });
+  await page.goto("/");
+  const input = await openInput(page);
+  await input.fill("TEST 只补充这一条原线程");
+  await openExecutionPanel(page);
+  await page
+    .locator(`[data-thread-id="${x.thread.id}"].execution-activity-row`)
+    .click();
+  const header = page.locator(".execution-detail-header");
+  await header.getByRole("button", { name: "暂停此执行", exact: true }).click();
+  const feedback = page.locator(".execution-control-feedback");
+  await expect(feedback.getByRole("alert")).toHaveText(error);
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      const app = document.querySelector<HTMLElement>(".app")!;
+      app.dataset.appearance = appearance;
+      document.querySelector<HTMLElement>(
+        ".execution-detail-header",
+      )!.style.width = "248px";
+    }, appearance);
+    await settleTransitions(page);
+    const top = (await header.boundingBox())!;
+    const boxes = await Promise.all(
+      (await header.getByRole("button").all()).map((button) =>
+        button.boundingBox(),
+      ),
+    );
+    for (let i = 0; i < boxes.length; i++) {
+      const box = boxes[i]!;
+      expect(box.x).toBeGreaterThanOrEqual(top.x);
+      expect(box.x + box.width).toBeLessThanOrEqual(top.x + top.width + 1);
+      if (i)
+        expect(box.x).toBeGreaterThanOrEqual(
+          boxes[i - 1]!.x + boxes[i - 1]!.width,
+        );
+    }
+    expect((await feedback.boundingBox())!.y).toBeGreaterThanOrEqual(
+      top.y + top.height,
+    );
+    expect(
+      await feedback.evaluate(
+        (node) => node.scrollWidth <= node.clientWidth + 1,
+      ),
+    ).toBe(true);
+    const supplement = header.getByRole("button", {
+      name: "补充",
+      exact: true,
+    });
+    expect(
+      await supplement.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        return node.contains(
+          document.elementFromPoint(
+            box.x + box.width / 2,
+            box.y + box.height / 2,
+          ),
+        );
+      }),
+    ).toBe(true);
+    await page.screenshot({
+      path: `test-results/execution-header-rejected-${appearance}.png`,
+    });
+  }
+  const before = reads.length;
+  await header.getByRole("button", { name: "补充", exact: true }).click();
+  await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
+    x.thread.title,
+  );
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("TEST 只补充这一条原线程");
+  expect(messages).toHaveLength(0);
+  expect(x.calls).toHaveLength(1);
+  expect(reads).toHaveLength(before);
+  await page.getByRole("button", { name: "发送补充", exact: true }).click();
+  await expect.poll(() => messages.length).toBe(1);
+  const { inputId: _inputId, ...routing } = x.thread.continuationSource;
+  expect(messages[0].operation).toMatchObject({
+    ...routing,
+    type: "record-input",
+    body: "TEST 只补充这一条原线程",
+    continuation: x.thread.continuation,
+  });
 });
 
 test("Objective shortcut and native Schedule actions operate on original objects; opening/cancelling editors never writes", async ({

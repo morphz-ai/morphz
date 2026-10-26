@@ -16,7 +16,15 @@ its complete remote CI acceptance before the combined goal is complete.
 4. Cancel a real delegated sub-agent through its durable delegation edge.
 5. Explicit Human approval of the offered capability boundary within its
    Objective or Session, alongside the existing allow-once/deny decisions.
-6. Make the existing Objective pause/resume reachable from its compact row.
+
+The 2026-10-27 supplement correction carries only immutable routing metadata
+with an already authorized Thread's continuation projection. Runtime remains
+the owner of that source; it is removed with continuation for other principals.
+The composer may retain those fields with its existing local draft, without
+hydrating old messages, adding a data table, scanning history or polling. The
+existing submission boundary rechecks owner, generation, original delivery and
+grants; projection fields are not new authority. A rejected control's complete
+message belongs below the header and cannot displace any control's hit target. 6. Make the existing Objective pause/resume reachable from its compact row.
 
 No new execution engine, application database, history inventory, model call,
 background polling, permissions preset or independent control ledger is added.

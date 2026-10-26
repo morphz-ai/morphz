@@ -3497,6 +3497,7 @@ function WorkspaceApp({
                                 ...draft,
                                 continuation: undefined,
                                 continuationLabel: undefined,
+                                continuationSource: undefined,
                                 continuationFailure: undefined,
                               });
                               setInputErrors((old) => ({
@@ -3646,6 +3647,7 @@ function WorkspaceApp({
                                   ...draft,
                                   continuation: undefined,
                                   continuationLabel: undefined,
+                                  continuationSource: undefined,
                                   continuationFailure: undefined,
                                   pendingSupplement: undefined,
                                 });

@@ -6052,7 +6052,11 @@ export class RuntimeBridge {
       })
       .map((thread) => {
         if (thread.inputId && continuable.has(thread.inputId)) return thread;
-        const { continuation: _continuation, ...readOnly } = thread;
+        const {
+          continuation: _continuation,
+          continuationSource: _continuationSource,
+          ...readOnly
+        } = thread;
         return readOnly;
       });
   }
@@ -7156,8 +7160,18 @@ export class RuntimeBridge {
               : {}),
             revision: t.revision,
             updatedAt: t.updated_at,
-            ...(source && delivery && this.state.directedInput
-              ? { continuation: target }
+            ...(source && delivery && target && this.state.directedInput
+              ? {
+                  continuation: target,
+                  continuationSource: {
+                    inputId: delivery.inputId,
+                    projectId: source.projectId,
+                    conversationId: source.conversationId,
+                    targetActantId: source.targetActantId,
+                    artifactId: source.artifactId ?? null,
+                    artifactRevision: source.artifactRevision ?? null,
+                  },
+                }
               : {}),
           });
         }

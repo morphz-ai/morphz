@@ -99,10 +99,16 @@ const onRejected = (e) => {
   setInputErrors((old) => ({ ...old, [key]: e instanceof Error ? e.message : "保存失败，草稿已保留。" }));
 };
 const onSettled = () => { if (!staged) { sendPending.current = false; setSending(false); } };
-const sourceFields = { continuation: captured.continuation, projectId: original.projectId,
+const fallbackOriginal = captured.continuationSource ? undefined : ports.originalInput(captured.continuation.inputId);
+const supplementSource = captured.continuationSource ?? (original ? {
+  inputId: original.id, projectId: original.projectId,
   conversationId: discussionId(original), artifactId: original.artifactId,
-  artifactRevision: original.artifactRevision, selection: "", body: captured.body,
-  targetActantId: original.targetActantId };
+  artifactRevision: original.artifactRevision, targetActantId: original.targetActantId,
+} : undefined);
+const sourceFields = { continuation: captured.continuation, projectId: source!.projectId,
+  conversationId: source!.conversationId, artifactId: source!.artifactId,
+  artifactRevision: source!.artifactRevision, selection: "", body: captured.body,
+  targetActantId: source!.targetActantId };
 function finalCallbacks() {
   try { ports.onResolved(result); } catch (error) { ports.onRejected(error); } finally { ports.onSettled(); }
 }
@@ -566,6 +572,17 @@ function ownership(
           "pending-command-short-circuit-no-new-retry-identity",
         );
         const actual = properties(operation);
+        check(
+          same(
+            variable(branch, "original")[0]?.initializer,
+            expected("fallbackOriginal"),
+          ) &&
+            same(
+              variable(branch, "source")[0]?.initializer,
+              expected("supplementSource"),
+            ),
+          "supplement-uses-original-request-not-current-surface",
+        );
         for (const [name, value] of properties(expected("sourceFields")))
           check(
             same(actual.get(name), value),
@@ -930,8 +947,8 @@ test("submission gate rejects dependency, global state, fake helper and callback
       "owner-no-service-store-or-extra-retry-construction",
     ],
     [
-      "      const original = ports.originalInput(captured.continuation.inputId);",
-      "      const ports = { execute: async () => ({}) }; const original = ports.originalInput(captured.continuation.inputId);",
+      "      const original = captured.continuationSource\n        ? undefined\n        : ports.originalInput(captured.continuation.inputId);",
+      "      const ports = { execute: async () => ({}) }; const original = captured.continuationSource\n        ? undefined\n        : ports.originalInput(captured.continuation.inputId);",
       "semantic-ports-use-real-supplied-parameter-not-local-fakes",
     ],
     [
@@ -996,7 +1013,7 @@ test("submission gate rejects branch order, Profile ordering and frozen suppleme
       "pending-command-short-circuit-no-new-retry-identity",
     ],
     [
-      "          projectId: original.projectId,",
+      "          projectId: source!.projectId,",
       "          projectId,",
       "supplement-uses-original-request-not-current-surface",
     ],
