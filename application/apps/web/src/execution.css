@@ -306,6 +306,24 @@
 .approval-origin {
   color: var(--muted);
 }
+.approval-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.approval-source .approval-origin {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-source > button {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+}
 .approval-operation {
   display: grid;
   grid-template-columns: 4em minmax(0, 1fr);
@@ -315,6 +333,7 @@
 }
 .approval-operation > span {
   color: var(--muted);
+  white-space: nowrap;
 }
 .approval-operation code {
   white-space: pre-wrap;
@@ -324,6 +343,51 @@
 }
 .inline-approval .execution-actions {
   flex-wrap: wrap;
+}
+.approval-capabilities {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  line-height: 1.55;
+}
+.approval-capability > span:first-child {
+  white-space: nowrap;
+  color: var(--muted);
+}
+.approval-capability code {
+  white-space: break-spaces;
+}
+.approval-actions {
+  gap: 8px;
+  justify-content: flex-end;
+}
+.approval-allow {
+  display: inline-flex;
+  align-items: stretch;
+  flex: none;
+  border-radius: 7px;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 550;
+}
+.app .approval-allow > button {
+  color: inherit;
+  background: transparent;
+  border-radius: 7px;
+}
+.app .approval-allow:has(.approval-scope-trigger) > button:first-child {
+  border-radius: 7px 0 0 7px;
+}
+.app .approval-allow > .approval-scope-trigger {
+  border-radius: 0 7px 7px 0;
+  border-left: 1px solid color-mix(in srgb, var(--on-accent) 18%, transparent);
+}
+.app .approval-allow > button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--on-accent) 10%, transparent);
+}
+.app .composer-options.approval-scope-menu {
+  width: 180px;
+  font-weight: 400;
 }
 .conversation-message .message-source {
   display: flex;

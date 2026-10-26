@@ -11,6 +11,13 @@
   min-width: 32px;
   min-height: 32px;
 }
+/* Explicit compact text controls use the same 32px row as normal icons. */
+.app button[data-size="sm"] {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 12px;
+  line-height: 20px;
+}
 /* Explicit dense actions, following shadcn/ui's icon-xs size role. This is
    a shared native-control recipe, not a claim that shadcn is installed. */
 .app .icon-button[data-size="icon-xs"] {
@@ -28,6 +35,10 @@
   flex: none;
 }
 @media (pointer: coarse) {
+  .app button[data-size="sm"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
   .app .icon-button[data-size="icon-xs"] {
     --ui-control-size: 44px;
   }

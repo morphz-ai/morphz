@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Shield, X } from "lucide-react";
+import { ChevronDown, MessagesSquare, Shield, Target, X } from "lucide-react";
 import {
   reusableApprovalScopes,
   type ExecutionApprovalControl,
@@ -30,10 +30,6 @@ export function ApprovalDetails({
         Array.isArray(value) &&
         value.every((entry) => typeof entry === "string"),
   );
-  const values = (key: string) =>
-    Array.isArray(requested[key])
-      ? (requested[key] as unknown[]).map(String).join("、")
-      : String(requested[key]);
   return (
     <>
       {heading && (
@@ -62,25 +58,36 @@ export function ApprovalDetails({
       )}
       <div className="approval-operation">
         <span>新增权限</span>
-        <code>
-          {knownScope
-            ? [
-                requested.network === true ? "允许联网" : "不额外授权联网",
-                ...(Array.isArray(requested.read_roots) &&
-                requested.read_roots.length
-                  ? [`读取：${values("read_roots")}`]
-                  : []),
-                ...(Array.isArray(requested.write_roots) &&
-                requested.write_roots.length
-                  ? [`写入：${values("write_roots")}`]
-                  : []),
-                ...(Array.isArray(requested.secret_env) &&
-                requested.secret_env.length
-                  ? [`传入凭据变量：${values("secret_env")}`]
-                  : []),
-              ].join("\n")
-            : JSON.stringify(requested)}
-        </code>
+        {knownScope ? (
+          <div className="approval-capabilities">
+            <span>
+              {requested.network === true ? "允许联网" : "不额外授权联网"}
+            </span>
+            {(
+              [
+                ["read_roots", "读取："],
+                ["write_roots", "写入："],
+                ["secret_env", "传入凭据变量："],
+              ] as const
+            ).map(
+              ([key, label]) =>
+                Array.isArray(requested[key]) &&
+                requested[key].length > 0 && (
+                  <div className="approval-capability" key={key}>
+                    <span>{label}</span>
+                    {(requested[key] as string[]).map((value, index) => (
+                      <span key={index}>
+                        {index > 0 && "、"}
+                        <code>{value}</code>
+                      </span>
+                    ))}
+                  </div>
+                ),
+            )}
+          </div>
+        ) : (
+          <code>{JSON.stringify(requested)}</code>
+        )}
       </div>
       <details className="approval-raw">
         <summary>查看完整请求</summary>
@@ -93,9 +100,7 @@ export function ApprovalDetails({
         </pre>
       </details>
       <small className="muted">
-        {reusable
-          ? "授权仅覆盖本次确认的范围和执行节点。"
-          : "“仅允许这一次”不授予持续权限。"}
+        {reusable ? "授权仅覆盖本次确认的范围和执行节点。" : "仅授权本次操作。"}
       </small>
     </>
   );
@@ -151,15 +156,27 @@ export function ApprovalCard({
       aria-label="待审批操作"
       data-approval-id={approval.request.approval_id}
     >
-      {origin && <small className="approval-origin">{origin}</small>}
+      {(origin || onInspect) && (
+        <div className="approval-source">
+          {origin && (
+            <small className="approval-origin" title={origin}>
+              {origin}
+            </small>
+          )}
+          {onInspect && (
+            <button data-size="sm" onClick={onInspect}>
+              查看执行
+            </button>
+          )}
+        </div>
+      )}
       <ApprovalDetails approval={approval} />
       {!available && <p role="status">审批状态待确认，暂不能操作。</p>}
       {notice && <p role="status">{notice}</p>}
       {!notice && previouslySubmitted && (
         <p role="status">已提交本次决定，等待最新状态确认。</p>
       )}
-      <div className="execution-actions">
-        {onInspect && <button onClick={onInspect}>查看执行</button>}
+      <div className="execution-actions approval-actions">
         <ApprovalActions
           approval={approval}
           disabled={!available || locked || previouslySubmitted}
@@ -195,29 +212,40 @@ export function ApprovalActions({
   });
   return (
     <>
-      <button disabled={disabled} onClick={() => void onDecide(action("deny"))}>
+      <button
+        data-size="sm"
+        disabled={disabled}
+        onClick={() => void onDecide(action("deny"))}
+      >
         拒绝
       </button>
-      <button
-        className="primary"
-        disabled={disabled}
-        onClick={() => void onDecide(action("allow-once"))}
-      >
-        仅允许这一次
-      </button>
-      {scopes.length > 0 && (
-        <ComposerOptions
-          label="更多授权范围"
-          menuLabel="授权范围"
-          triggerDisabled={disabled}
-          options={scopes.map((scope) => ({
-            label:
-              scope === "objective" ? "在此目标内允许…" : "在此会话内允许…",
-            icon: <Shield />,
-            onSelect: () => setConfirmation({ scope, approval }),
-          }))}
-        />
-      )}
+      <div className="approval-allow" role="group" aria-label="允许操作">
+        <button
+          data-size="sm"
+          aria-label="仅允许这一次"
+          disabled={disabled}
+          onClick={() => void onDecide(action("allow-once"))}
+        >
+          允许一次
+        </button>
+        {scopes.length > 0 && (
+          <ComposerOptions
+            label="更多授权范围"
+            menuLabel="授权范围"
+            triggerDisabled={disabled}
+            triggerIcon={<ChevronDown />}
+            triggerClassName="icon-button approval-scope-trigger"
+            menuClassName="approval-scope-menu"
+            options={scopes.map((scope) => ({
+              label:
+                scope === "objective" ? "在此目标内允许…" : "在此会话内允许…",
+              text: scope === "objective" ? "此目标内允许" : "此会话内允许",
+              icon: scope === "objective" ? <Target /> : <MessagesSquare />,
+              onSelect: () => setConfirmation({ scope, approval }),
+            }))}
+          />
+        )}
+      </div>
       {confirmation && (
         <ScopedApprovalConfirmation
           approval={confirmation.approval}

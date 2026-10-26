@@ -32,10 +32,13 @@ test("approval summaries retain every known capability and distinguish one-time 
   });
   for (const expected of [
     "允许联网",
-    "读取：/fixture/read",
-    "写入：/fixture/write",
-    "传入凭据变量：FIXTURE_TOKEN",
-    "“仅允许这一次”不授予持续权限。",
+    "读取：",
+    "/fixture/read",
+    "写入：",
+    "/fixture/write",
+    "传入凭据变量：",
+    "FIXTURE_TOKEN",
+    "仅授权本次操作。",
   ])
     assert.ok(html.includes(expected), expected);
   assert.ok(details({ network: false }).includes("不额外授权联网"));

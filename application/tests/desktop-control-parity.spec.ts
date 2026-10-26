@@ -341,6 +341,10 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
   page,
 }) => {
   const x = await fixture(page);
+  const requested = {
+    network: false,
+    write_roots: ["/Users/fixture/Library/Application Support/agently-cli"],
+  };
   const approval = {
     requested_at: stamp,
     fingerprint: "a".repeat(64),
@@ -352,7 +356,7 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
       thread_id: x.thread.id,
       justification: "TEST 明确权限边界",
       action: { kind: "shell", command: "TEST read-only command" },
-      requested: { network: true },
+      requested,
       lease_offer: {
         principal_id: "TEST-human",
         agent_id: "TEST-agent",
@@ -362,8 +366,8 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
         scope_id: "TEST-goal",
         target_id: "TEST-node",
         capability: "shell",
-        capabilities: ["network"],
-        requested: { network: true },
+        capabilities: ["filesystem.write"],
+        requested,
         policy_digest: "TEST-policy",
         duration_secs: 8 * 60 * 60,
       },
@@ -399,6 +403,45 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
   await openExecutionPanel(page);
   await page.getByRole("tab", { name: "授权", exact: true }).click();
   const card = page.locator('[data-approval-id="TEST-approval"]');
+  await expect(
+    card.getByRole("button", { name: "查看执行", exact: true }),
+  ).toHaveText("查看执行");
+  await expect(
+    card
+      .locator(".approval-actions")
+      .getByRole("button", { name: "查看执行", exact: true }),
+  ).toHaveCount(0);
+  const once = card.getByRole("button", { name: "仅允许这一次", exact: true });
+  const more = card.getByRole("button", { name: "更多授权范围", exact: true });
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+        appearance;
+    }, appearance);
+    await settleTransitions(page);
+    const first = await once.boundingBox(),
+      second = await more.boundingBox();
+    expect(first!.height).toBe(32);
+    expect(second!.height).toBe(32);
+    expect(first!.y).toBe(second!.y);
+    expect(second!.x).toBeCloseTo(first!.x + first!.width, 0);
+    const write = card.locator(".approval-capability > span").first();
+    expect(await write.textContent()).toBe("写入：");
+    const label = await write.boundingBox();
+    expect(label!.height).toBeLessThan(22);
+    await more.click();
+    const menu = page.getByRole("group", { name: "授权范围", exact: true });
+    await settleTransitions(page);
+    for (const option of await menu.getByRole("button").all())
+      await expect(option).toHaveCSS("opacity", "1");
+    expect((await menu.boundingBox())!.width).toBeLessThanOrEqual(182);
+    await page.screenshot({
+      path: `test-results/approval-compact-${appearance}.png`,
+    });
+    await page.keyboard.press("Escape");
+  }
+  expect(x.calls).toHaveLength(0);
   await card.getByRole("button", { name: "更多授权范围", exact: true }).click();
   await page
     .getByRole("group", { name: "授权范围", exact: true })
