@@ -65,18 +65,20 @@ function ObjectiveHeading({
           {open ? <ChevronDown /> : <ChevronRight />}
         </button>
       </Tooltip>
-      {supplement}
-      {control}
-      <Tooltip label="查看目标">
-        <button
-          className="icon-button subject-objective-view"
-          data-size="icon-xs"
-          aria-label="查看目标"
-          onClick={onView}
-        >
-          <Eye />
-        </button>
-      </Tooltip>
+      <span className="subject-objective-actions">
+        {supplement}
+        <Tooltip label="查看目标">
+          <button
+            className="icon-button subject-objective-view"
+            data-size="icon-xs"
+            aria-label="查看目标"
+            onClick={onView}
+          >
+            <Eye />
+          </button>
+        </Tooltip>
+        {control}
+      </span>
     </div>
   );
 }

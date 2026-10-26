@@ -184,3 +184,31 @@ The original app was refreshed once, its Schedule row inspected, then restored
 to Activity with the same empty draft and connected Runtime. The initial full
 run's failures remain recorded; final full-inventory CI must use the corrected
 commit, not that earlier source or a selected successful retry.
+
+## First remote matrix correction: Objective action geometry
+
+The first remote matrix on `8ac9da71` found one deterministic product regression:
+the new pause shortcut between expansion and View widened their center gap to
+45px against the original 26px maximum. Both the dedicated regression job and
+the complete second browser shard found the same error; their failed receipts
+are retained and do not count as acceptance. The complete first shard passed;
+this source's complete local Node inventory selected all 560 files and passed
+4704 cases, with 27 declared optional integrations unexecuted and no unexpected
+skips or failures. Those receipts do not cover a later source revision.
+
+View again directly follows expansion. Its existing actions now share a compact
+container: at widths below 180px they stack vertically without removing an
+action. This also fixes actual compression during the 200% viewport case. A
+wait-only diagnostic still failed, so that hypothesis and the added wait were
+removed; all original immediate measurements and 26px/24px/72px bounds remain.
+The test additionally checks quick-control adjacency without overlap, keyboard
+order, numeric geometry receipts, and a synthetic DOM counterfactual that
+recreates the rejected order and must still exceed 26px. One stale-build
+attempt is separately excluded. Verification now uses the build-then-E2E entry.
+
+After rebuilding, the focused geometry diagnostic passed five times, and the
+complete Objective and Desktop-control files passed all 130 cases across five
+consecutive rounds without retries. Original Morphz was refreshed for this
+renderer-only correction; the separate Rust Runtime does not need a restart
+for these existing native APIs. Final remote acceptance still requires two
+complete successful matrices on the new immutable source.

@@ -133,6 +133,18 @@
   display: flex;
   align-items: center;
   gap: 0;
+  container: objective-row / inline-size;
+}
+.subject-objective-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+@container objective-row (max-width: 180px) {
+  .subject-objective-actions {
+    flex-direction: column;
+    gap: 4px;
+  }
 }
 .subject-schedule-row {
   display: flex;
