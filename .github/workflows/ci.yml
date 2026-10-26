@@ -218,7 +218,11 @@ jobs:
 
   native-sandbox-macos:
     name: Native Sandbox (macOS)
-    runs-on: macos-26
+    # The long arm64 job also failed allocation before executing any step
+    # (40342793588 / 121641670890). Run every native Rust case on the same
+    # macOS 26 standard Intel fleet as the full application inventory; the
+    # dedicated Reader/GUI jobs retain actual Apple Silicon execution.
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

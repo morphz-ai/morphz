@@ -253,8 +253,12 @@ macOS arm64 capacity was constrained:
 That incomplete matrix is excluded from acceptance.
 
 The complete application inventory now selects `macos-26-intel`, an official
-standard runner with the same macOS major version. The other three mandatory
-native macOS jobs explicitly select `macos-26` and retain Apple Silicon coverage.
+standard runner with the same macOS major version. The long native Rust job on
+the next matrix also failed allocation before any test step (job 121641670890),
+so both long inventories now select that standard Intel fleet. The two mandatory
+Reader/GUI jobs explicitly select `macos-26` and retain actual Apple Silicon
+execution. Every original native Rust case and command remains required on
+macOS 26; this changes the execution architecture, not the test selection.
 All Node files, explicit native
 focus requirements, embedded Host/restart/OCR flows, macOS-only browser files,
 test assertions, single-worker scheduling and deadlines remain unchanged.
