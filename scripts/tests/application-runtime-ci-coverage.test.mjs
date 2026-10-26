@@ -62,6 +62,9 @@ function verifyNotesGuiStability(source) {
     "application/tests/connection-read-diagnostics-mounted.test.ts",
   ]) assert.ok(triggers.includes(`      - ${path}\n`), `${path} must trigger stability checks`);
   const job = jobSource(source, "macos-compose-regressions");
+  assert.match(job, /^    needs: macos-reader-regressions$/m);
+  assert.match(job, /^    runs-on: macos-26$/m);
+  assert.match(jobSource(source, "macos-reader-regressions"), /^    runs-on: macos-26$/m);
   const steps = job.split("\n      - ");
   const prepare = steps.findIndex(part => part.includes("name: Prepare exact independent author dependencies for early GUI stability"));
   const repeated = steps.findIndex(part => part.includes("name: Require five complete Notes GUI and connection resize passes without retries"));
@@ -78,6 +81,8 @@ test("macOS repeats complete Notes GUI and connection resize files five times be
   const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
   verifyNotesGuiStability(source);
   for (const changed of [
+    source.replace("    needs: macos-reader-regressions\n", ""),
+    source.replaceAll("runs-on: macos-26\n", "runs-on: macos-26-intel\n"),
     source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
     source.replaceAll("scripts/prepare-cognitive-author-dependencies.ts", "scripts/omitted.ts"),
     source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "--test-name-pattern=fast\n          done"),

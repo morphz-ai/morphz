@@ -158,9 +158,9 @@ native Schedule time editor. Editors were closed without saving, no business
 control or approval was submitted, and the activity overview was restored.
 Visual review found compact action grouping, consistent system type and red
 stop, readable single-line status, and a two-line expandable intent rather than
-a large text wall. Full current-source Node inventory and two complete CI rounds
-on the final immutable Desktop commit remain the closeout gate; old release
-CI cannot satisfy that gate.
+a large text wall. Full current-source Node inventory, one complete final-source
+CI/Application matrix and all required five-round critical gates remain the
+closeout gate; old release CI cannot satisfy that gate.
 
 The first full local Node run exposed stale stop wording, a fixed glyph-consumer
 contract that did not recognize the reviewed shared action seam, and a popup
@@ -210,8 +210,9 @@ After rebuilding, the focused geometry diagnostic passed five times, and the
 complete Objective and Desktop-control files passed all 130 cases across five
 consecutive rounds without retries. Original Morphz was refreshed for this
 renderer-only correction; the separate Rust Runtime does not need a restart
-for these existing native APIs. Final remote acceptance still requires two
-complete successful matrices on the new immutable source.
+for these existing native APIs. Final remote acceptance requires the complete
+CI/Application matrix and unchanged critical repeat gates on the new immutable
+source.
 
 ## Dependency audit correction after the release
 
@@ -267,3 +268,36 @@ has no architecture-based test omission. The coverage test's negative mutation
 now replaces any selected macOS label with Linux rather than matching the old
 floating label, so the original non-macOS rejection remains effective. This
 does not add a failed-job retry or a success exemption for missing runners.
+
+## Final cold-restart checkpoint and ARM allocation corrections
+
+The matrix on `b30df1cd` found a real intermittent test failure in the repeated
+native question cold-restart file: its selected snapshot had a `Waiting` phase
+and pending question, but an earlier `DialogueTurn` Thread record. SQLite and
+PostgreSQL atomically promote the Thread to `Execution` in the same transaction
+that parks the question. The aggregate scheduler view reads Thread inventory
+before later activations, dependencies and question attachments, so its fields
+can span that commit. A phase-only test checkpoint accepted this mixed sample.
+
+The checkpoint must require both the original `Execution` kind and `Waiting`
+phase before dropping the executor. A fixed interleaving regression reproduces
+the old mixed sample and requires rejection before accepting the new execution
+revision. The actual cold-restart case also point-reads the persisted original
+Thread and verifies its ID, generation and kind. Its original kind assertion,
+20-second deadlines, model-call counts, correlated receipt, idempotent ingress
+and single original Thread checks remain. No Runtime production code changes
+or restart of the original business Runtime are needed for this test correction.
+
+The deterministic regression first failed against the old phase-only guard.
+After correction, all three cases passed ten consecutive complete-file rounds
+(30 passes, no failures or ignored cases) in an isolated release build. This
+includes ten actual executor cold restarts with scripted model values, not live
+provider or business-task acceptance. The 42 CI coverage/setup contract cases
+also passed, including the new allocation-order and retained-ARM counterfactuals.
+
+The short ARM GUI job also failed hosted allocation before executing any step.
+Reader acquisition now precedes that GUI job within the same CI run. This keeps
+only one short ARM allocation eligible while the two long Intel inventories
+run, without another product change, test filter, optional mandatory job or
+deadline extension. The existing coverage contract rejects removing that
+ordering or silently moving the remaining ARM checks to Intel.

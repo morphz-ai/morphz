@@ -94,20 +94,20 @@ async fn build(directory: &std::path::Path, model: Arc<QuestionModel>) -> Morphz
 fn pending_checkpoint(
     thread: SchedulerThreadSnapshot,
 ) -> Option<(SchedulerThreadSnapshot, PendingUserInputRequest)> {
-    // Phase is read before question attachment. A question can belong to a
-    // newer commit, so require a coherent Waiting snapshot for a cold restart.
-    if thread.phase != morphz::memory::ThreadPhase::Waiting {
+    // Thread inventory is read before the phase and question attachment. The
+    // latter can belong to a newer commit which also promoted the Thread, so
+    // require the complete parked checkpoint rather than a mixed projection.
+    if thread.phase != morphz::memory::ThreadPhase::Waiting
+        || thread.thread.kind != morphz::memory::ThreadKind::Execution
+    {
         return None;
     }
     let question = thread.user_input_request.clone()?;
     Some((thread, question))
 }
 
-#[test]
-fn published_question_is_not_yet_a_cold_restart_checkpoint() {
-    // Force CI's read interleaving: an older Running phase with a newly
-    // committed question, followed by a coherent parked snapshot.
-    let mut thread: SchedulerThreadSnapshot = serde_json::from_value(json!({
+fn checkpoint_snapshot() -> SchedulerThreadSnapshot {
+    serde_json::from_value(json!({
         "thread": {
             "id": "checkpoint-thread", "revision": 1, "generation": 1,
             "agent_id": "checkpoint-agent", "context_id": "checkpoint-context",
@@ -125,7 +125,14 @@ fn published_question_is_not_yet_a_cold_restart_checkpoint() {
             "questions": [{"id": "scope", "question": "Only synthetic data?", "options": []}]
         }
     }))
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn published_question_is_not_yet_a_cold_restart_checkpoint() {
+    // Force CI's read interleaving: an older Running phase with a newly
+    // committed question, followed by a coherent parked snapshot.
+    let mut thread = checkpoint_snapshot();
     assert!(
         pending_checkpoint(thread.clone()).is_none(),
         "a pending question must not validate an older running snapshot"
@@ -134,6 +141,28 @@ fn published_question_is_not_yet_a_cold_restart_checkpoint() {
     let expected = thread.user_input_request.clone().unwrap();
     let (checkpoint, question) = pending_checkpoint(thread).unwrap();
     assert_eq!(checkpoint.phase, morphz::memory::ThreadPhase::Waiting);
+    assert_eq!(question, expected);
+}
+
+#[test]
+fn waiting_phase_with_older_dialogue_kind_is_not_a_cold_restart_checkpoint() {
+    // Thread inventory is read before activations, dependencies and questions.
+    // Reproduce CI's older DialogueTurn record with the new parked phase.
+    let mut thread = checkpoint_snapshot();
+    thread.phase = morphz::memory::ThreadPhase::Waiting;
+    thread.thread.kind = morphz::memory::ThreadKind::DialogueTurn;
+    assert!(thread.user_input_request.is_some());
+    assert!(pending_checkpoint(thread.clone()).is_none());
+
+    thread.thread.kind = morphz::memory::ThreadKind::Execution;
+    thread.thread.revision += 1;
+    let expected = thread.user_input_request.clone().unwrap();
+    let (checkpoint, question) = pending_checkpoint(thread).unwrap();
+    assert_eq!(
+        checkpoint.thread.kind,
+        morphz::memory::ThreadKind::Execution
+    );
+    assert_eq!(checkpoint.thread.revision, 2);
     assert_eq!(question, expected);
 }
 
@@ -203,6 +232,14 @@ fn native_question_survives_cold_runtime_and_resumes_once_with_correlated_answer
                 .await
                 .unwrap();
             let (thread, question) = pending(&runtime).await;
+            let durable_thread = runtime
+                .session_thread_by_root(&question.session_id, &thread.thread.root_turn_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(durable_thread.id, question.thread_id);
+            assert_eq!(durable_thread.generation, question.thread_generation);
+            assert_eq!(durable_thread.kind, morphz::memory::ThreadKind::Execution);
             let overview = runtime
                 .runtime_overview(morphz::runtime::RuntimeOverviewQuery {
                     context_id: Some(question.context_id.clone()),

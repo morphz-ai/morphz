@@ -220,6 +220,10 @@ jobs:
 
   macos-compose-regressions:
     name: Isolated macOS iframe, manager and native control diagnosis
+    # Keep one ARM allocation eligible at a time while the two long Intel
+    # inventories run. Provider allocation cancellation must not consume the
+    # GUI job's entire queue budget behind the Reader's short ARM workload.
+    needs: macos-reader-regressions
     runs-on: macos-26
     timeout-minutes: 20
     defaults:
