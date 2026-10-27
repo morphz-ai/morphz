@@ -454,37 +454,28 @@ export function SubjectObjectives({
                       ? async (target) => {
                           const request = ++supplementRequest.current;
                           const identity = `${client.boot!.centerId}:${client.boot!.principalId}:${client.boot!.actantId}`;
-                          await client.loadHistoryUntil(target.inputId);
-                          // History hydration publishes a new render. Invoke its current
-                          // draft command, never a captured pre-hydration draft snapshot.
-                          await new Promise<void>((resolve) =>
-                            requestAnimationFrame(() => resolve()),
-                          );
                           const boot = client.getSnapshot();
-                          const original = boot?.workspace.inputs.find(
-                            (input) => input.id === target.inputId,
-                          );
                           if (
                             request !== supplementRequest.current ||
                             currentView.current !== goal.id ||
                             !boot ||
                             `${boot.centerId}:${boot.principalId}:${boot.actantId}` !==
                               identity ||
-                            !original ||
-                            original.author.principalId !== boot.principalId ||
-                            original.author.actantId !== boot.actantId ||
                             !supplement.current
                           )
                             throw new Error(
-                              "此目标的原消息暂时无法读取，未改变输入框或发送消息。",
+                              "当前工作范围已变化，未切换补充目标。",
                             );
                           setViewing(null);
+                          // Selecting the exact loaded Thread is local. Never page
+                          // old messages just to open its supplement draft.
                           // Let native-modal focus restoration finish before the shared
                           // composer takes focus. The command only associates; never sends.
                           requestAnimationFrame(() => {
                             const boot = client.getSnapshot();
                             if (
                               request === supplementRequest.current &&
+                              currentView.current === null &&
                               boot &&
                               `${boot.centerId}:${boot.principalId}:${boot.actantId}` ===
                                 identity

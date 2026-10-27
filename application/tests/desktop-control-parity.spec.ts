@@ -349,6 +349,88 @@ test("a rejected control cannot displace header hit targets; supplement works wi
   });
 });
 
+test("ordinary supplement from the goal viewer never hydrates history before the Thread input is editable", async ({
+  page,
+}) => {
+  const x = await fixture(page);
+  x.runtime.activity!.objectives![0]!.generation = 1;
+  Object.assign(x.thread.continuation, {
+    objective: { id: "TEST-goal", generation: 1 },
+  });
+  let olderReads = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(
+    /\/api\/platform\/projects\/[^/]+\/conversations\/[^/]+\/history(?:\?.*)?$/,
+    async (route) => {
+      if (new URL(route.request().url()).searchParams.has("beforeId")) {
+        olderReads++;
+        await held;
+        await route.fulfill({
+          json: {
+            inputs: [
+              x.f.input(
+                x.thread.inputId,
+                "TEST 原始旧消息",
+                "2025-01-01T00:00:00Z",
+              ),
+            ],
+            nextCursor: null,
+            runtime: x.runtime,
+          },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          inputs: [x.f.input("TEST-newest-input", "TEST 最新一页消息", stamp)],
+          nextCursor: { id: "TEST-earlier-page", createdAt: stamp },
+          runtime: x.runtime,
+        },
+      });
+    },
+  );
+  try {
+    await page.goto("/");
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: "对话", exact: true })
+      .click();
+    const input = await openInput(page);
+    await input.fill("TEST 保留已有输入");
+    await expect(
+      page.getByText("TEST 最新一页消息", { exact: true }),
+    ).toBeVisible();
+    await openExecutionPanel(page);
+    await page
+      .locator(".subject-objectives")
+      .getByRole("button", { name: "查看目标", exact: true })
+      .click();
+    const goal = page.getByRole("dialog", { name: "目标", exact: true });
+    const supplement = goal.getByRole("button", {
+      name: "补充目标",
+      exact: true,
+    });
+    await expect(supplement).toBeEnabled();
+    await supplement.click();
+    await expect(
+      page.getByRole("group", { name: "补充目标", exact: true }),
+    ).toBeVisible();
+    await expect(goal).toHaveCount(0);
+    await expect(input).toBeEnabled();
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue("TEST 保留已有输入");
+    expect(olderReads).toBe(0);
+    expect(x.calls).toHaveLength(0);
+    await input.fill("TEST 已可继续输入");
+    await expect(input).toHaveValue("TEST 已可继续输入");
+  } finally {
+    release();
+  }
+});
+
 test("Objective shortcut and native Schedule actions operate on original objects; opening/cancelling editors never writes", async ({
   page,
 }) => {
