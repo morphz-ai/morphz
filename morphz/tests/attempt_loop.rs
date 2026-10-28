@@ -8187,12 +8187,14 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let tool_entered = Arc::new(tokio::sync::Notify::new());
+    let completion_gate = Arc::new(tokio::sync::Notify::new());
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::clone(&routed_arguments),
         delay_ms: 0,
         completion_gate: Some(Arc::clone(&completion_gate)),
-        entered: None,
+        entered: Some(Arc::clone(&tool_entered)),
     }));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
     let orchestrator = new_test_orchestrator(
@@ -8206,14 +8208,18 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "causal-wake-session", "root A").await;
-    for _ in 0..80 {
-        if !routed_arguments.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), tool_entered.notified())
+        .await
+        .expect("root A's real tool must enter before the concurrent inquiry");
     assert_eq!(routed_arguments.lock().unwrap().len(), 1);
     publish_user(&bus, "causal-wake-session", "root B").await;
+    let inquiry_reply = wait_for_topic(&store, "chat/reply", "causal-wake-session").await;
+    assert_eq!(inquiry_reply.len(), 1);
+    assert_eq!(
+        inquiry_reply[0].payload.get("text"),
+        Some(&json!("root-b-reply"))
+    );
+    completion_gate.notify_one();
 
     let replies = wait_for_topic_count(&store, "chat/reply", "causal-wake-session", 2).await;
     assert!(replies

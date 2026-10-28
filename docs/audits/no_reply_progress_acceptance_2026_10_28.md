@@ -67,3 +67,33 @@ valid wait path.
 
 No full CI or GitHub push was part of this local Runtime repair. The acceptance
 covers this progress/control combination, not every provider or output shape.
+
+## Local main integration (2026-10-29)
+
+The repair was selectively integrated into local `main` as `f4eff3a2`, with
+source commit `d6e6bc37d93a2dbb9c26b061733cf0da08b22a9e` recorded in the
+cherry-pick provenance. The acceptance record was carried over as `edd6fd95`.
+This imports the repair without merging the development branch's other work.
+The provider formatting-only hunks were omitted, and the progress publication
+was placed at main's existing terminal handler without importing unrelated
+user-input handling.
+
+The first integration-test compilation exposed an existing main test fixture
+that referenced an undefined completion gate. The fixture now creates the gate,
+waits for the tool's actual entry signal, proves that the concurrent inquiry
+receives its own reply, and then releases the earlier tool. Original identity,
+reply and causal-isolation assertions remain in place.
+
+Local release-mode checks on the integrated sources passed: 9 library cases,
+3 no-reply attempt-loop cases, 2 conflicting-control cases, and the corrected
+causal-wake case on three consecutive runs. Formatting and whitespace checks
+passed. The existing uncommitted Desktop file-opening bridge also passed its
+2 focused regressions, and the website passed build, typecheck and all 108 tests.
+These are local scoped checks, not a claim that full GitHub CI ran.
+
+All 52 previously uncommitted main-worktree files were retained and committed
+by scope. Only trailing blank lines in the two historical research documents
+were normalized; the other original file contents were preserved exactly.
+Historical design prototypes and review images remain historical evidence,
+without renewed product or visual acceptance. No push, Runtime replacement,
+business-message send or task-control operation was performed.
