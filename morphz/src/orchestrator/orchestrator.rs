@@ -2925,7 +2925,7 @@ impl TerminalDecision {
 fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
         name: NO_REPLY_TOOL_NAME.to_string(),
-        description: format!("Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, open Thread Group owned by the current Thread generation, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only work/control call and cannot accompany a body; optional typed display metadata is communication, not work/control, and never requires another model turn."),
+        description: format!("End this Evaluation without a separate final reply, or yield for ongoing work. mode=silent ends the Evaluation. Accompanying ordinary text is preserved as a progress update. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, open Thread Group owned by the current Thread generation, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only work/control call; progress text may accompany it. Display metadata never requires another model turn."),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -2973,9 +2973,6 @@ fn classify_terminal_response(
     }
     if no_reply_calls.len() != 1 || response.tool_calls.len() != 1 {
         return Err("no_reply must be the only call in the response and appear once".to_string());
-    }
-    if !response.content.trim().is_empty() {
-        return Err("no_reply cannot be accompanied by ordinary text".to_string());
     }
     let arguments: serde_json::Value = serde_json::from_str(&no_reply_calls[0].arguments)
         .map_err(|error| format!("Invalid no_reply argument JSON: {error}"))?;
@@ -4146,7 +4143,7 @@ fn response_protocol_correction_prompt(
         "No independently replayable Provider-native reasoning continuation is available for this retry."
     };
     format!(
-        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action and frozen Session IO output definition. Choose exactly one valid work/return form:\n1. To reply: return the complete original body without work proposals.\n2. To act: propose the required work tool(s) in the frozen carrier, without no_reply.\n3. To send nothing: propose no_reply exactly once with mode=\"silent\" and no body.\n4. To yield for a Runtime-verifiable nonterminal event: propose no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no body.\nNever combine no_reply with ordinary text or another work/control tool; an unbounded wait is not supported. Native_v3 annotations belong to the SAME actual native work call; the original text/typed body is the native message, never an answer wrapper or companion call. Historical explicit outputs keep their frozen fields. Missing display metadata does not require a retry."
+        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action and frozen Session IO output definition. Choose exactly one valid work/return form:\n1. To reply: return the complete original body without work proposals.\n2. To act: propose the required work tool(s) in the frozen carrier, without no_reply.\n3. To send nothing: propose no_reply exactly once with mode=\"silent\"; optional ordinary text is progress.\n4. To yield for a Runtime-verifiable nonterminal event: propose no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with optional ordinary progress text.\nDo not combine no_reply with another work/control tool; an unbounded wait is not supported. Native_v3 annotations belong to the SAME actual native work call; the original text/typed body is the native message, never an answer wrapper or companion call. Historical explicit outputs keep their frozen fields. Missing display metadata does not require a retry."
     )
 }
 
@@ -16047,6 +16044,15 @@ impl Orchestrator {
         }
 
         if let Some(decision) = terminal_decision {
+            // A lifecycle control does not silence a progress explanation.
+            // Preserve the model's text as progress while the independently
+            // validated control decides waiting or non-delivery of a final reply.
+            if matches!(decision, TerminalDecision::NoReply(_))
+                && !response.content.trim().is_empty()
+            {
+                self.publish_progress(session_id, &attempt_id, response.content.clone())
+                    .await?;
+            }
             let active_root_tasks = self
                 .owed_background_jobs_for_thread(session_id, &activation.context_id, &thread)
                 .await?;
@@ -29706,7 +29712,10 @@ mod tests {
             content: "not silent".to_string(),
             tool_calls: no_reply.tool_calls,
         };
-        assert!(classify_terminal_response(&mixed, false).is_err());
+        assert_eq!(
+            classify_terminal_response(&mixed, false),
+            Ok(Some(TerminalDecision::NoReply(NoReplyMode::Silent)))
+        );
     }
 
     #[test]

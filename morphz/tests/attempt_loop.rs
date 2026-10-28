@@ -1083,12 +1083,20 @@ impl Client for InvalidProtocolContinuationClient {
             let _ = stream.send(ModelStreamEvent::Completed);
             return Ok(Response {
                 content,
-                tool_calls: vec![ToolCallRepr {
-                    id: "invalid-wait".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "no_reply".to_string(),
-                    arguments: json!({"mode":"wait"}).to_string(),
-                }],
+                tool_calls: vec![
+                    ToolCallRepr {
+                        id: "invalid-wait".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "no_reply".to_string(),
+                        arguments: json!({"mode":"wait"}).to_string(),
+                    },
+                    ToolCallRepr {
+                        id: "conflicting-silence".into(),
+                        r#type: "function".into(),
+                        func_name: "no_reply".into(),
+                        arguments: json!({"mode":"silent"}).to_string(),
+                    },
+                ],
             });
         }
         let response = text_reply_response("The response boundary is corrected.");
@@ -3840,6 +3848,40 @@ async fn test_no_reply_wait_without_pending_runtime_fact_is_corrected() {
 }
 
 #[tokio::test]
+async fn no_reply_progress_is_preserved_without_retry_or_work_execution() {
+    let session_id = "attempt_no_reply_progress";
+    let mut response = no_reply_response();
+    response.content = "读取任务转入后台执行，等待其完成事件。".into();
+    let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config_and_reply_mode(
+        vec![response.clone()],
+        morphz::config::OrchestratorConfig::default(),
+        false,
+    )
+    .await;
+    publish_user(&bus, session_id, "preserve the progress explanation").await;
+    wait_for_topic(&store, "chat/no_reply", session_id).await;
+    let progress = wait_for_topic(&store, "chat/progress", session_id).await;
+    assert_eq!(progress.len(), 1);
+    assert_eq!(progress[0].payload["text"], response.content);
+    assert_eq!(client.messages_seen().len(), 1);
+    for topic in [
+        "chat/reply",
+        "chat/tool_output",
+        "runtime/response_protocol_error",
+    ] {
+        let events = store
+            .query(QueryFilter {
+                session_id: Some(session_id.into()),
+                topic: Some(topic.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(events.is_empty(), "unexpected {topic}: {events:?}");
+    }
+}
+
+#[tokio::test]
 async fn native_invalid_terminal_preserves_rejection_without_repair_or_opaque_leak() {
     let session_id = "attempt_invalid_response_continuation";
     let tmp = TempDir::new().unwrap();
@@ -3890,7 +3932,7 @@ async fn native_invalid_terminal_preserves_rejection_without_repair_or_opaque_le
         errors[0].payload["response_content_preview"],
         "I will wait for the background process."
     );
-    assert_eq!(errors[0].payload["response_tool_call_count"], 1);
+    assert_eq!(errors[0].payload["response_tool_call_count"], 2);
     assert_eq!(
         errors[0].payload["response_tool_calls"][0]["name"],
         "no_reply"
@@ -3903,7 +3945,7 @@ async fn native_invalid_terminal_preserves_rejection_without_repair_or_opaque_le
     assert!(errors[0].payload["reason"]
         .as_str()
         .unwrap()
-        .contains("no_reply must be sole call with no ordinary content"));
+        .contains("no_reply must be the only work/control call"));
     assert_eq!(client.messages_seen.lock().unwrap().len(), 1);
     let events = store
         .query(QueryFilter {
@@ -3929,8 +3971,11 @@ async fn native_invalid_terminal_stops_once_without_consuming_repair_responses()
     let session_id = "attempt_response_protocol_fuse";
     let responses = (0..3)
         .map(|_| Response {
-            content: "no_reply cannot carry text".to_string(),
-            tool_calls: no_reply_response().tool_calls,
+            content: "Conflicting lifecycle controls must not execute.".to_string(),
+            tool_calls: vec![
+                no_reply_response().tool_calls.remove(0),
+                wait_response().tool_calls.remove(0),
+            ],
         })
         .collect();
     let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config_and_reply_mode(
@@ -3949,7 +3994,7 @@ async fn native_invalid_terminal_stops_once_without_consuming_repair_responses()
     assert_eq!(client.responses.lock().unwrap().len(), 2);
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].payload["response_capture"]["state"], "complete");
-    assert_eq!(errors[0].payload["response_tool_call_count"], 1);
+    assert_eq!(errors[0].payload["response_tool_call_count"], 2);
     assert_eq!(fused.len(), 1);
     assert_eq!(fused[0].payload["invalid_responses"], 1);
     assert_eq!(replies.len(), 1);

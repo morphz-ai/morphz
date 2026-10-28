@@ -788,8 +788,8 @@ fn terminal(
             && (!native_arguments
                 || crate::session_io::native::parse_tool_arguments(&c.arguments).is_ok())
     }) {
-        if response.tool_calls.len() != 1 || !response.content.trim().is_empty() {
-            return Err(error("no_reply must be sole call with no ordinary content"));
+        if response.tool_calls.len() != 1 {
+            return Err(error("no_reply must be the only work/control call"));
         }
         let args: Value = serde_json::from_str(&response.tool_calls[0].arguments)
             .map_err(|_| error("Malformed no_reply control JSON"))?;
@@ -2815,6 +2815,38 @@ mod tests {
             "metadata is never a substitute for an answer"
         );
     }
+    #[test]
+    fn no_reply_preserves_progress_without_changing_control_or_execution() {
+        for mode in [Protocol::On, Protocol::Off] {
+            let mut ctx = context();
+            ctx.protocol = mode;
+            for args in [
+                json!({"mode":"silent"}),
+                json!({"mode":"wait","wait_secs":120}),
+            ] {
+                let raw = Response {
+                    content: "读取任务转入后台执行，等待其完成事件。".into(),
+                    tool_calls: vec![call("wait", "no_reply", args)],
+                };
+                let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
+                assert_eq!(
+                    serde_json::to_value(normalized.execution_response).unwrap(),
+                    serde_json::to_value(raw).unwrap()
+                );
+                assert!(matches!(
+                    normalized.terminal_decision,
+                    Some(TerminalDecision::NoReply(_))
+                ));
+                assert!(normalized.records.is_empty());
+            }
+            let mixed = response(vec![
+                call("wait", "no_reply", json!({"mode":"wait"})),
+                call("work", "exec", json!({"command":"must-not-run"})),
+            ]);
+            assert!(normalize_fixture_parts(&mixed, &ctx).is_err());
+        }
+    }
+
     #[test]
     fn no_reply_bound_mode_and_u64_range_unchanged_no_annotations() {
         let default = normalize_fixture_parts(

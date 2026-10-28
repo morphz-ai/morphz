@@ -11292,10 +11292,10 @@ fn render_protocol() -> SExpr {
                     list(
                         "no-reply",
                         vec![
-                            pair("when", atom("the current Activation intentionally needs to send no message to the active Session")),
+                            pair("when", atom("the current Activation intentionally has no final reply yet, or needs to wait for ongoing work")),
                             pair("tool", atom("no_reply")),
-                            pair("exclusive", atom("no_reply is the only work/control call, carries exactly one mode and has no body; optional typed Session IO metadata is communication, not work/control")),
-                            pair("silent", atom("mode=silent intentionally ends the evaluation without sending a Session message")),
+                            pair("exclusive", atom("no_reply is the only work/control call and carries one mode; accompanying ordinary text is progress, not completion")),
+                            pair("silent", atom("mode=silent ends the Evaluation without a separate final reply; accompanying progress remains visible")),
                             pair("wait", atom("mode=wait yields only while the Runtime can verify a background task, schedule, or pending event; process its result after a terminal event arrives")),
                             pair("scope", atom("does not complete an Objective or cancel background work")),
                         ],
