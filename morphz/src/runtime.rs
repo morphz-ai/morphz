@@ -193,7 +193,9 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
                 .map(|(_, profile)| {
                     profile
                         .as_ref()
-                        .and_then(crate::config::ProviderModelConfig::prompt_token_limit)
+                        .and_then(|profile| {
+                            profile.prompt_token_limit_for_request(config.llm.max_output_tokens)
+                        })
                         .unwrap_or(fallback)
                 })
                 .min()
@@ -212,14 +214,18 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
                 .map(|(_, profile)| {
                     profile
                         .as_ref()
-                        .and_then(|profile| profile.max_output_tokens)
+                        .and_then(|profile| {
+                            profile.output_token_budget(config.llm.max_output_tokens)
+                        })
                         .or(config.llm.max_output_tokens.map(|value| value as usize))
                 })
                 .collect::<Option<Vec<_>>>();
             let configured = candidates.iter().any(|(_, profile)| {
                 profile
                     .as_ref()
-                    .and_then(crate::config::ProviderModelConfig::prompt_token_limit)
+                    .and_then(|profile| {
+                        profile.prompt_token_limit_for_request(config.llm.max_output_tokens)
+                    })
                     .is_some()
             });
             (
@@ -234,14 +240,15 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
                 },
             )
         } else {
-            let configured_prompt_token_limit =
-                legacy_profile.and_then(crate::config::ProviderModelConfig::prompt_token_limit);
+            let configured_prompt_token_limit = legacy_profile.and_then(|profile| {
+                profile.prompt_token_limit_for_request(config.llm.max_output_tokens)
+            });
             (
                 legacy_provider_id,
                 configured_prompt_token_limit.unwrap_or(fallback).max(1),
                 legacy_profile.and_then(|profile| profile.context_window_tokens),
                 legacy_profile
-                    .and_then(|profile| profile.max_output_tokens)
+                    .and_then(|profile| profile.output_token_budget(config.llm.max_output_tokens))
                     .or(config.llm.max_output_tokens.map(|value| value as usize)),
                 if configured_prompt_token_limit.is_some() {
                     "provider-model-config"
@@ -13704,6 +13711,64 @@ mod tests {
         assert_eq!(fallback.prompt_token_limit, 262_144);
         assert_eq!(fallback.context_window_tokens, None);
         assert_eq!(fallback.source, "runtime-default");
+    }
+
+    #[test]
+    fn physical_output_budget_matches_request_override_for_legacy_and_routed_models() {
+        let mut config = AppConfig::default();
+        config.llm.provider = Some("proxy".into());
+        let profile = ProviderModelConfig {
+            context_window_tokens: Some(262_144),
+            max_output_tokens: Some(131_072),
+            ..Default::default()
+        };
+        config.providers.insert(
+            "proxy".into(),
+            ProviderConfig {
+                base_url: "https://legacy-provider.invalid/v1".into(),
+                models: BTreeMap::from([("physical".into(), profile.clone())]),
+                ..Default::default()
+            },
+        );
+        config.auth_accounts.insert(
+            "test-account".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                ..Default::default()
+            },
+        );
+        config.provider_instances.insert(
+            "routed-provider".into(),
+            crate::config::ProviderInstanceConfig {
+                adapter: "protocol-compatible".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                accounts: vec!["test-account".into()],
+                models: BTreeMap::from([("physical".into(), profile)]),
+                ..Default::default()
+            },
+        );
+        config.model_routes.insert(
+            "route".into(),
+            crate::config::ModelRouteConfig {
+                candidates: vec![crate::config::ModelRouteCandidateConfig {
+                    provider: "routed-provider".into(),
+                    model: "physical".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        EffectiveProviderCatalog::from_config(&config)
+            .expect("valid physical-output-budget fixture");
+        for override_limit in [None, Some(32_768)] {
+            config.llm.max_output_tokens = override_limit;
+            for model in ["physical", "route"] {
+                let budget = resolve_model_context_capacity(&config, model);
+                let output = override_limit.unwrap_or(131_072) as usize;
+                assert_eq!(budget.max_output_tokens, Some(output));
+                assert_eq!(budget.prompt_token_limit, 262_144 - output, "{model}");
+            }
+        }
     }
 
     #[tokio::test]

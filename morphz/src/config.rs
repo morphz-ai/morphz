@@ -1304,7 +1304,8 @@ pub struct ProviderModelConfig {
     /// than deriving a ceiling from `context_window_tokens`.
     #[serde(deserialize_with = "deserialize_optional_positive_usize")]
     pub max_input_tokens: Option<usize>,
-    /// Output allowance reserved when deriving the physical prompt ceiling.
+    /// Per-model output allowance sent unless llm.max_output_tokens overrides
+    /// it, and reserved when deriving the physical prompt ceiling.
     #[serde(deserialize_with = "deserialize_optional_positive_usize")]
     pub max_output_tokens: Option<usize>,
     /// Exact maximum attachment count declared by this Provider/model. `None`
@@ -1321,13 +1322,29 @@ pub struct ProviderModelConfig {
 
 impl ProviderModelConfig {
     pub fn prompt_token_limit(&self) -> Option<usize> {
-        self.max_input_tokens.or_else(|| {
-            self.context_window_tokens.and_then(|window| {
-                window
-                    .checked_sub(self.max_output_tokens.unwrap_or_default())
-                    .filter(|limit| *limit > 0)
-            })
-        })
+        self.prompt_token_limit_for_request(None)
+    }
+
+    /// Request serialization and Context admission must reserve the same output
+    /// allowance. An explicit request setting overrides the per-model default.
+    pub fn output_token_budget(&self, request_limit: Option<u32>) -> Option<usize> {
+        request_limit
+            .map(|limit| limit as usize)
+            .or(self.max_output_tokens)
+    }
+
+    pub fn prompt_token_limit_for_request(&self, request_limit: Option<u32>) -> Option<usize> {
+        let window_input_limit = self.context_window_tokens.and_then(|window| {
+            window
+                .checked_sub(self.output_token_budget(request_limit).unwrap_or_default())
+                .filter(|limit| *limit > 0)
+        });
+        match (self.max_input_tokens, window_input_limit) {
+            (Some(input), Some(window)) => Some(input.min(window)),
+            (Some(input), None) if self.context_window_tokens.is_none() => Some(input),
+            (None, window) => window,
+            _ => None,
+        }
     }
 
     pub fn model_input_limits(&self) -> ModelInputLimits {
@@ -5149,6 +5166,31 @@ max_input_tokens = 0
             ..ProviderModelConfig::default()
         };
         assert_eq!(profile.prompt_token_limit(), None);
+    }
+
+    #[test]
+    fn physical_output_budget_uses_request_override_and_respects_both_input_ceilings() {
+        let profile = ProviderModelConfig {
+            context_window_tokens: Some(262_144),
+            max_input_tokens: Some(250_000),
+            max_output_tokens: Some(131_072),
+            ..ProviderModelConfig::default()
+        };
+        assert_eq!(profile.prompt_token_limit(), Some(131_072));
+        assert_eq!(
+            profile.prompt_token_limit_for_request(Some(32_768)),
+            Some(229_376)
+        );
+        assert_eq!(profile.output_token_budget(Some(32_768)), Some(32_768));
+        assert_eq!(profile.prompt_token_limit_for_request(Some(262_144)), None);
+        let input_only = ProviderModelConfig {
+            max_input_tokens: Some(100_000),
+            ..ProviderModelConfig::default()
+        };
+        assert_eq!(
+            input_only.prompt_token_limit_for_request(Some(32_768)),
+            Some(100_000)
+        );
     }
 
     #[test]
