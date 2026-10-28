@@ -1,0 +1,457 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-28",
+  "scope": "existing development Kimi K3 256K connection",
+  "repair_kind": "configuration only; existing catalog operations",
+  "native_actual_failed_projection_count": {
+    "count_only": true,
+    "model_inference_sent": false,
+    "tools_executed": false,
+    "http_status": 200,
+    "response": {
+      "input_tokens": 147912
+    }
+  },
+  "native_protocol_comparison": [
+    {
+      "case": "32k-words-responses",
+      "synthetic_only": true,
+      "output_cap": 1,
+      "local_text_tokens": 32024,
+      "local_tools_tokens": 1,
+      "local_serialized_tokens": 32085,
+      "http_status": 200,
+      "status": "incomplete",
+      "usage": {
+        "input_tokens": 32121,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 1024
+        },
+        "output_tokens": 4,
+        "output_tokens_details": {
+          "reasoning_tokens": 1
+        },
+        "total_tokens": 32125
+      },
+      "error": null,
+      "elapsed": 6.09
+    },
+    {
+      "case": "64k-words-responses",
+      "synthetic_only": true,
+      "output_cap": 1,
+      "local_text_tokens": 64024,
+      "local_tools_tokens": 1,
+      "local_serialized_tokens": 64085,
+      "http_status": 400,
+      "status": null,
+      "usage": null,
+      "error": {
+        "message": "Your request exceeded k3-256k model token limit: 262144",
+        "type": "invalid_authentication_error"
+      },
+      "elapsed": 0.63
+    },
+    {
+      "case": "64k-words-chat",
+      "synthetic_only": true,
+      "output_cap": 1,
+      "local_text_tokens": 64024,
+      "local_tools_tokens": 1,
+      "local_serialized_tokens": 64082,
+      "http_status": 200,
+      "status": null,
+      "usage": {
+        "prompt_tokens": 64122,
+        "completion_tokens": 4,
+        "total_tokens": 64126,
+        "cached_tokens": 32000,
+        "completion_tokens_details": {
+          "reasoning_tokens": 1
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 32000
+        }
+      },
+      "error": null,
+      "elapsed": 6.65
+    }
+  ],
+  "transport_isolation": [
+    {
+      "case": "direct-http1",
+      "synthetic_only": true,
+      "curl_exit": 0,
+      "http_status": 200,
+      "http_version": "1.1",
+      "elapsed": 10.17,
+      "stderr": "",
+      "events": 26,
+      "usage": {
+        "prompt_tokens": 151998,
+        "completion_tokens": 67,
+        "total_tokens": 152065,
+        "cached_tokens": 151998,
+        "completion_tokens_details": {
+          "reasoning_tokens": 64
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 151998
+        }
+      },
+      "finish_reasons": [
+        "length"
+      ]
+    },
+    {
+      "case": "system-proxy-http2",
+      "synthetic_only": true,
+      "curl_exit": 0,
+      "http_status": 200,
+      "http_version": "2",
+      "elapsed": 27.89,
+      "stderr": "",
+      "events": 29,
+      "usage": {
+        "prompt_tokens": 151998,
+        "completion_tokens": 67,
+        "total_tokens": 152065,
+        "cached_tokens": 151998,
+        "completion_tokens_details": {
+          "reasoning_tokens": 64
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 151998
+        }
+      },
+      "finish_reasons": [
+        "length"
+      ]
+    }
+  ],
+  "direct_http2_control": [
+    {
+      "case": "direct-http2",
+      "synthetic_only": true,
+      "curl_exit": 0,
+      "http_status": 200,
+      "http_version": "2",
+      "elapsed": 11.72,
+      "stderr": "",
+      "events": 19,
+      "usage": {
+        "prompt_tokens": 151998,
+        "completion_tokens": 55,
+        "total_tokens": 152053,
+        "cached_tokens": 151998,
+        "completion_tokens_details": {
+          "reasoning_tokens": 38
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 151998
+        }
+      },
+      "finish_reasons": [
+        "stop"
+      ]
+    }
+  ],
+  "account_network_change": {
+    "changed_keys": [
+      "proxy_url"
+    ],
+    "proxy_url": "http://127.0.0.1:2080",
+    "credential_fields_preserved": true,
+    "restarted_services": false,
+    "original_proxy_url_present": false,
+    "original_proxy_url": null
+  },
+  "catalog_change": {
+    "http_status": 200,
+    "changed_route": "kimi-k3-256k",
+    "protocol": "openai-chat",
+    "provider": "development-kimi-chat",
+    "account": "development-kimi-chat-default",
+    "existing_providers_unchanged": true,
+    "existing_accounts_unchanged": true,
+    "other_model_routes_unchanged": true,
+    "root_model_unchanged": true,
+    "model_profile": {
+      "prompt_cache_strategy": "auto",
+      "context_window_tokens": 262144,
+      "max_input_tokens": null,
+      "max_output_tokens": 32768,
+      "max_input_attachments": null,
+      "max_input_attachment_bytes": null,
+      "max_input_attachment_total_bytes": null
+    }
+  },
+  "post_fix_gateway_streams": [
+    {
+      "case": "large-stream-after-account-network-fix",
+      "synthetic_only": true,
+      "body_bytes": 964590,
+      "tools": 36,
+      "local_serialized_tokens": 151899,
+      "max_completion_tokens": 32768,
+      "reasoning_effort": "max",
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 151998,
+        "completion_tokens": 71,
+        "total_tokens": 152069,
+        "cached_tokens": 151998,
+        "completion_tokens_details": {
+          "reasoning_tokens": 54
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 151998
+        }
+      },
+      "events": 22,
+      "finish_reasons": [
+        "stop"
+      ],
+      "tool_calls": 0,
+      "answer": "OK",
+      "elapsed": 8.17
+    },
+    {
+      "case": "cold-ascii-contract",
+      "synthetic_only": true,
+      "body_bytes": 1195028,
+      "tools": 36,
+      "local_serialized_tokens": 151911,
+      "max_completion_tokens": 32768,
+      "reasoning_effort": "max",
+      "retries": 0,
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 151999,
+        "completion_tokens": 145,
+        "total_tokens": 152144,
+        "cached_tokens": 37888,
+        "completion_tokens_details": {
+          "reasoning_tokens": 128
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 37888
+        }
+      },
+      "events": 63,
+      "finish_reasons": [
+        "stop"
+      ],
+      "tool_calls": 0,
+      "answer": "OK",
+      "elapsed": 21.43,
+      "passed": true
+    },
+    {
+      "case": "near-window-chinese-contract",
+      "synthetic_only": true,
+      "body_bytes": 1087037,
+      "tools": 36,
+      "local_serialized_tokens": 207911,
+      "max_completion_tokens": 32768,
+      "reasoning_effort": "max",
+      "retries": 0,
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 208025,
+        "completion_tokens": 64,
+        "total_tokens": 208089,
+        "cached_tokens": 37888,
+        "completion_tokens_details": {
+          "reasoning_tokens": 47
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 37888
+        }
+      },
+      "events": 19,
+      "finish_reasons": [
+        "stop"
+      ],
+      "tool_calls": 0,
+      "answer": "OK",
+      "elapsed": 25.12,
+      "passed": true
+    }
+  ],
+  "live_runtime_diagnostic": {
+    "checked_at": "2026-10-28T07:02:59.473782Z",
+    "binding": {
+      "requested_alias": "kimi-k3-256k",
+      "route_id": "kimi-k3-256k",
+      "route_revision": "sha256:680b0c5dcc50a32cf5a8f5504c8dae695e4f4490dc4634559b58dd3e3a0f7a7f",
+      "provider_instance_id": "development-kimi-chat",
+      "auth_account_id": "development-kimi-chat-default",
+      "physical_model": "kimi-k3-256k",
+      "protocol": "openai-chat",
+      "provider_adapter": "protocol-compatible",
+      "provider_adapter_version": "1",
+      "endpoint": "http://localhost:8317/v1",
+      "capabilities": []
+    },
+    "elapsed_ms": 2392,
+    "health_verified": true
+  },
+  "original_desktop_acceptance": {
+    "existing_main_conversation": true,
+    "existing_long_context": true,
+    "test_input_local_time": "2026-10-28 15:05:46 Asia/Shanghai",
+    "reply_local_time": "2026-10-28 15:06:10 Asia/Shanghai",
+    "reply": "MORPHZ_OK",
+    "reply_metadata": {
+      "configured_reasoning_effort": "max",
+      "context_token_budget": {
+        "capacity_source": "provider-route-model-config",
+        "critical_token_limit": 200704,
+        "effective_hard_token_limit": 229376,
+        "maintenance_reserve_tokens": 28672,
+        "max_output_tokens": 32768,
+        "model": "kimi-k3-256k",
+        "physical_context_window_tokens": 262144,
+        "physical_prompt_token_limit": 229376,
+        "provider": "development-kimi-chat",
+        "requested_hard_token_limit": null,
+        "soft_token_limit": 172032,
+        "token_budget_revision": 0
+      }
+    },
+    "historical_failures_retained": true,
+    "previous_user_messages_resent": false,
+    "business_operations_requested": false,
+    "listener_same_job_running_with_fresh_heartbeat": true,
+    "runtime_pid_preserved": true,
+    "proxy_pid_preserved": true,
+    "listener_pid_preserved": true
+  },
+  "limitations": [
+    "Upstream Responses admission discrepancy remains upstream.",
+    "A working account proxy setting does not prove all direct HTTP/2 requests fail.",
+    "Multimodal inputs and other model routes were not retested.",
+    "The broad CI suite was not needed for this configuration-only repair."
+  ],
+  "pre_fix_gateway_probes": [
+    {
+      "case": "small-exact-runtime-output-field",
+      "synthetic_only": true,
+      "output_cap": 1,
+      "reasoning_effort": "max",
+      "stream": false,
+      "body_bytes": 9317,
+      "tools": 0,
+      "local_text_tokens": 1028,
+      "local_serialized_tokens": 1074,
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 1124,
+        "completion_tokens": 4,
+        "total_tokens": 1128,
+        "completion_tokens_details": {
+          "reasoning_tokens": 1
+        }
+      },
+      "error": null,
+      "finish_reasons": [
+        "length"
+      ],
+      "elapsed": 4.41
+    },
+    {
+      "case": "large-contract-max",
+      "synthetic_only": true,
+      "output_cap": 64,
+      "reasoning_effort": "max",
+      "stream": false,
+      "body_bytes": 1194948,
+      "tools": 36,
+      "local_text_tokens": 114028,
+      "local_serialized_tokens": 151889,
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 151987,
+        "completion_tokens": 23,
+        "total_tokens": 152010,
+        "cached_tokens": 37888,
+        "completion_tokens_details": {
+          "reasoning_tokens": 12
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 37888
+        }
+      },
+      "error": null,
+      "finish_reasons": [
+        "stop"
+      ],
+      "elapsed": 16.52
+    },
+    {
+      "case": "large-contract-max-stream",
+      "synthetic_only": true,
+      "output_cap": 64,
+      "reasoning_effort": "max",
+      "stream": true,
+      "body_bytes": 1194987,
+      "tools": 36,
+      "local_text_tokens": 114028,
+      "local_serialized_tokens": 151898,
+      "http_status": 500,
+      "error": {
+        "message": "Post \"https://api.kimi.com/coding/v1/chat/completions\": stream error: stream ID 5; PROTOCOL_ERROR; received from peer",
+        "type": "server_error",
+        "code": "internal_server_error"
+      },
+      "elapsed": 26.86
+    },
+    {
+      "case": "small-stream-after-transport-failure",
+      "synthetic_only": true,
+      "body_bytes": 9357,
+      "tools": 0,
+      "local_serialized_tokens": 1082,
+      "max_completion_tokens": 64,
+      "reasoning_effort": "max",
+      "http_status": 200,
+      "usage": {
+        "prompt_tokens": 1124,
+        "completion_tokens": 67,
+        "total_tokens": 1191,
+        "cached_tokens": 1124,
+        "completion_tokens_details": {
+          "reasoning_tokens": 64
+        },
+        "prompt_tokens_details": {
+          "cached_tokens": 1124
+        }
+      },
+      "events": 25,
+      "finish_reasons": [
+        "length"
+      ],
+      "tool_calls": 0,
+      "answer": "",
+      "elapsed": 9.49
+    },
+    {
+      "case": "large-mixed-contract-stream",
+      "synthetic_only": true,
+      "body_bytes": 964587,
+      "tools": 36,
+      "local_serialized_tokens": 151898,
+      "max_completion_tokens": 64,
+      "reasoning_effort": "max",
+      "http_status": 500,
+      "error": {
+        "message": "Post \"https://api.kimi.com/coding/v1/chat/completions\": stream error: stream ID 3; PROTOCOL_ERROR; received from peer",
+        "type": "server_error",
+        "code": "internal_server_error"
+      },
+      "elapsed": 24.21
+    }
+  ]
+}
