@@ -36,7 +36,8 @@ fn split_discovered_catalog(
     let mut models = Vec::with_capacity(catalog.len());
     let mut profiles = BTreeMap::new();
     for discovered in catalog {
-        let has_capacity = discovered.profile.context_window_tokens.is_some()
+        let has_capacity = discovered.profile.supported_reasoning_efforts.is_some()
+            || discovered.profile.context_window_tokens.is_some()
             || discovered.profile.max_input_tokens.is_some()
             || discovered.profile.max_output_tokens.is_some()
             || !discovered.profile.model_input_limits().is_unspecified();

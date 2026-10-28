@@ -475,7 +475,7 @@ fn global_args(locale: Locale) -> Vec<Arg> {
             locale.text("Set model reasoning effort", "设置模型推理强度"),
         )
         .value_parser([
-            "default", "auto", "none", "off", "low", "medium", "high", "max",
+            "default", "auto", "none", "off", "low", "medium", "high", "xhigh", "max",
         ]),
         value_arg(
             "agent",

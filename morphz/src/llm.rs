@@ -388,6 +388,7 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
+    XHigh,
     Max,
 }
 
@@ -427,12 +428,22 @@ pub enum ModelOutputEncoding {
 }
 
 impl ReasoningEffort {
+    pub const ALL: [Self; 6] = [
+        Self::Off,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+        Self::Max,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Off => "none",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
             Self::Max => "max",
         }
     }
@@ -443,6 +454,7 @@ impl ReasoningEffort {
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
             "max" | "maximum" => Some(Self::Max),
             _ => None,
         }

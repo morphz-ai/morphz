@@ -899,7 +899,9 @@ fn apply_cli_config(
         app_config.llm.reasoning_effort = match effort.trim().to_ascii_lowercase().as_str() {
             "default" | "auto" => None,
             value => Some(ReasoningEffort::parse(value).ok_or_else(|| {
-                format!("未知推理深度 '{effort}'；可用 default、none、low、medium、high、max")
+                format!(
+                    "未知推理深度 '{effort}'；可用 default、none、low、medium、high、xhigh、max"
+                )
             })?),
         };
     }

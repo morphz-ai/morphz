@@ -8,6 +8,7 @@ export type PromptCacheStrategy =
   | 'explicit-content-boundaries'
 
 export interface ProviderModelProfile {
+  supported_reasoning_efforts?: string[]
   prompt_cache_strategy?: PromptCacheStrategy
   context_window_tokens?: number
   max_input_tokens?: number
@@ -94,6 +95,7 @@ export interface DiscoveredModelRecord {
 }
 
 export interface AccountModelOption {
+  supportedReasoningEfforts?: string[]
   id: string
   enabled: boolean
   alias: string
@@ -107,6 +109,7 @@ export interface AccountModelOption {
 }
 
 export interface EnabledModelSelection {
+  supported_reasoning_efforts?: string[]
   id: string
   alias?: string
   prompt_cache_strategy: PromptCacheStrategy
@@ -287,6 +290,7 @@ export function buildAccountModelOptions(input: {
   return Array.from(discovered).sort().map(id => {
     const configured = input.configuredProfiles[id]
     const provider = discoveredProfiles[id]
+    const supportedReasoningEfforts = configured?.supported_reasoning_efforts ?? provider?.supported_reasoning_efforts
     const maxInputAttachments =
       configured?.max_input_attachments ?? provider?.max_input_attachments
     const maxInputAttachmentBytes =
@@ -296,6 +300,7 @@ export function buildAccountModelOptions(input: {
     return {
       id,
       enabled: enabled.has(id),
+      ...(supportedReasoningEfforts === undefined ? {} : { supportedReasoningEfforts }),
       alias: aliases.get(id) ?? '',
       promptCacheStrategy:
         configured?.prompt_cache_strategy ?? provider?.prompt_cache_strategy ?? 'auto',
@@ -350,6 +355,7 @@ export function buildEnabledModelSelections(options: AccountModelOption[]): Enab
     }
     return {
       id: option.id,
+      ...(option.supportedReasoningEfforts === undefined ? {} : { supported_reasoning_efforts: option.supportedReasoningEfforts }),
       alias: option.alias.trim() || undefined,
       prompt_cache_strategy: option.promptCacheStrategy ?? 'auto',
       context_window_tokens: contextWindow,

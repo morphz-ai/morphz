@@ -1038,7 +1038,7 @@ export function ConversationReadError({ message, onRetry }: { message: string; o
   )
 }
 
-type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
+type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type SandboxModeSetting = 'workspace-write' | 'danger-full-access'
 type PermissionModeSetting = 'request_approval' | 'auto_review' | 'full_access' | 'custom'
 
@@ -9970,6 +9970,7 @@ export default function App() {
                   {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
                   {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
                   {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
+                  {reasoningEffortOptions.includes('xhigh') && <option value="xhigh">{t('reasoning.xhigh')}</option>}
                   {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
                 </select>
               </label>

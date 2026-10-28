@@ -6,8 +6,48 @@ import { RuntimeBridge } from "../apps/service/src/runtime.js";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { commandSchema } from "../packages/core/src/model.js";
 import { workInputRequest } from "../apps/service/src/session-io.js";
-import { modelLabel } from "../packages/core/src/inference.js";
+import {
+  modelLabel,
+  reasoningEffortSchema,
+  reasoningLevels,
+  modelCatalogSchema,
+} from "../packages/core/src/inference.js";
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+
+test("xhigh 保持独立值，只在物理模型声明时成为可选档位", () => {
+  assert.equal(reasoningEffortSchema.parse("xhigh"), "xhigh");
+  const catalog = modelCatalogSchema.parse({
+    current: "gpt",
+    options: [
+      {
+        id: "gpt",
+        label: "GPT",
+        supported_reasoning_efforts: ["low", "medium", "high", "xhigh", "max"],
+      },
+      {
+        id: "deepseek",
+        label: "DeepSeek",
+        supported_reasoning_efforts: ["none", "low", "high", "max"],
+      },
+      { id: "unknown", label: "Unknown", supported_reasoning_efforts: null },
+    ],
+    reasoning: { current: "high", levels: reasoningEffortSchema.options },
+  });
+  assert.deepEqual(reasoningLevels(catalog, "gpt"), [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+  assert.deepEqual(reasoningLevels(catalog, "deepseek"), [
+    "none",
+    "low",
+    "high",
+    "max",
+  ]);
+  assert.equal(reasoningLevels(catalog, "unknown").includes("xhigh"), false);
+});
 
 test("模型来源只公开名称；强度按模型能力校验，默认不伪造限制", async () => {
   const server = createServer((request, response) => {
@@ -130,7 +170,7 @@ test("推理强度独立于正文持久化，每次输入固定；默认和旧�
           {
             id: "primary",
             label: "主用",
-            supported_reasoning_efforts: ["high"],
+            supported_reasoning_efforts: ["high", "xhigh"],
           },
         ],
       }),
@@ -159,7 +199,7 @@ test("推理强度独立于正文持久化，每次输入固定；默认和旧�
       }).success,
       false,
     );
-    for (const reasoningEffort of ["high", undefined] as const) {
+    for (const reasoningEffort of ["high", "xhigh", undefined] as const) {
       const receipt = await fixture.session().platformMessage({
         commandId: randomUUID(),
         operation: {

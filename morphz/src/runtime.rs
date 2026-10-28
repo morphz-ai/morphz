@@ -95,10 +95,7 @@ use crate::provider::control::{
     ProviderAccountControlAction, ProviderAccountControlRecord, ProviderControlSnapshot,
 };
 use crate::provider::routing::EffectiveProviderCatalog;
-use crate::provider::{
-    build_configured_client, normalize_reasoning_effort_for_model,
-    supported_reasoning_efforts_for_model,
-};
+use crate::provider::{build_configured_client, normalize_reasoning_effort_for_model};
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
@@ -913,29 +910,9 @@ pub struct InferenceModelOption {
 }
 
 fn common_supported_reasoning_efforts(
-    capabilities: &[Option<&'static [ReasoningEffort]>],
+    capabilities: &[Option<Vec<ReasoningEffort>>],
 ) -> Option<Vec<String>> {
-    if capabilities.is_empty() || capabilities.iter().any(Option::is_none) {
-        return None;
-    }
-    let canonical = [
-        ReasoningEffort::Off,
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-        ReasoningEffort::Max,
-    ];
-    Some(
-        canonical
-            .into_iter()
-            .filter(|effort| {
-                capabilities
-                    .iter()
-                    .all(|supported| supported.is_some_and(|levels| levels.contains(effort)))
-            })
-            .map(|effort| effort.as_str().to_string())
-            .collect(),
-    )
+    crate::provider::common_reasoning_efforts(capabilities)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -4163,6 +4140,8 @@ impl MorphzRuntime {
                     )
                     .into());
                 }
+            } else if effort == "xhigh" {
+                return Err(format!("reasoning effort 'xhigh' is not declared supported by model '{effective_model}'").into());
             }
         }
         Ok(selection)
@@ -4328,9 +4307,11 @@ impl MorphzRuntime {
             let reasoning_capabilities = available_candidates
                 .iter()
                 .map(|(candidate, provider)| {
-                    supported_reasoning_efforts_for_model(
+                    crate::provider::model_reasoning_efforts(
                         provider.adapter.as_str(),
+                        provider.protocol,
                         candidate.model.as_str(),
+                        provider.models.get(&candidate.model),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -4374,7 +4355,23 @@ impl MorphzRuntime {
                 label: model.to_string(),
                 physical_models: vec![model.to_string()],
                 aliases: Vec::new(),
-                supported_reasoning_efforts: None,
+                supported_reasoning_efforts: config
+                    .providers
+                    .get(config.llm.provider.as_deref().unwrap_or_default())
+                    .and_then(|provider| {
+                        crate::provider::model_reasoning_efforts(
+                            "openai-compatible",
+                            provider.protocol,
+                            model,
+                            provider.models.get(model),
+                        )
+                        .map(|levels| {
+                            levels
+                                .into_iter()
+                                .map(|level| level.as_str().to_string())
+                                .collect()
+                        })
+                    }),
                 source: "manual".to_string(),
             });
         }
@@ -12363,6 +12360,11 @@ impl SessionHandle {
                         ),
                     )));
                 }
+            } else if parsed == ReasoningEffort::XHigh {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    format!("reasoning effort 'xhigh' is not declared supported by model '{effective_model}'"),
+                )));
             }
             Some(parsed.as_str().to_string())
         } else {

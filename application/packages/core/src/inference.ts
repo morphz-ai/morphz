@@ -6,6 +6,7 @@ export const reasoningEffortSchema = z.enum([
   "low",
   "medium",
   "high",
+  "xhigh",
   "max",
 ]);
 export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
@@ -24,6 +25,7 @@ export const reasoningLabels: Record<ReasoningEffort, string> = {
   low: "low",
   medium: "medium",
   high: "high",
+  xhigh: "xhigh",
   max: "max",
 };
 export const modelOptionSchema = z.object({
@@ -52,7 +54,8 @@ export function reasoningLevels(catalog: ModelCatalog, model: string) {
   return (
     catalog.options.find((option) => option.id === (model || catalog.current))
       ?.supported_reasoning_efforts ??
-    catalog.reasoning?.levels ??
+    // Unspecified capabilities must not advertise the newly added level.
+    catalog.reasoning?.levels.filter((level) => level !== "xhigh") ??
     []
   );
 }

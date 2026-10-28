@@ -659,7 +659,7 @@ where
     }
     ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
         serde::de::Error::custom(
-            "reasoning_effort supports only default, none, low, medium, high, or max",
+            "reasoning_effort supports only default, none, low, medium, high, xhigh, or max",
         )
     })
 }
@@ -1290,6 +1290,11 @@ impl<'de> Deserialize<'de> for ModelRouteConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderModelConfig {
+    /// Native, distinct reasoning levels for this exact endpoint/model pair.
+    /// None leaves capability knowledge unspecified; [] explicitly disables
+    /// the dial. This is endpoint metadata, never a task's selected effort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_reasoning_efforts: Option<Vec<ReasoningEffort>>,
     /// Physical prompt-cache capability for this exact Provider/model pair.
     pub prompt_cache_strategy: PromptCacheStrategy,
     /// Total model context window, including input and generated output.
@@ -3861,7 +3866,7 @@ impl AppConfig {
             } else {
                 Some(ReasoningEffort::parse(value).ok_or_else(|| {
                     format!(
-                        "MORPHZ_LLM_REASONING_EFFORT supports only default, none, low, medium, high, and max: {value}"
+                        "MORPHZ_LLM_REASONING_EFFORT supports only default, none, low, medium, high, xhigh, and max: {value}"
                     )
                 })?)
             };
@@ -4889,7 +4894,9 @@ mod tests {
         assert_eq!(max.llm.reasoning_effort, Some(ReasoningEffort::Max));
         let default = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='default'\n").unwrap();
         assert_eq!(default.llm.reasoning_effort, None);
-        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").is_err());
+        let xhigh = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").unwrap();
+        assert_eq!(xhigh.llm.reasoning_effort, Some(ReasoningEffort::XHigh));
+        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='unknown'\n").is_err());
     }
 
     #[test]

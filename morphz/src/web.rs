@@ -465,6 +465,7 @@ struct PutProviderAccountModelsRequest {
 #[derive(serde::Deserialize)]
 struct ProviderAccountModelSelection {
     id: String,
+    supported_reasoning_efforts: Option<Vec<ReasoningEffort>>,
     alias: Option<String>,
     prompt_cache_strategy: Option<crate::config::PromptCacheStrategy>,
     context_window_tokens: Option<usize>,
@@ -2790,6 +2791,7 @@ async fn handle_put_provider_account_models(
         models.insert(
             id,
             ProviderModelConfig {
+                supported_reasoning_efforts: selection.supported_reasoning_efforts,
                 prompt_cache_strategy,
                 context_window_tokens: selection.context_window_tokens,
                 max_input_tokens: selection.max_input_tokens,
@@ -3745,12 +3747,10 @@ async fn handle_update_inference(
         Some(value) if value.is_empty() || value.eq_ignore_ascii_case("default") => None,
         Some(value) => match ReasoningEffort::parse(value) {
             Some(effort) => Some(effort),
-            None => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "reasoning_effort supports only default, none, low, medium, high, or max",
-                )
-            }
+            None => return error_response(
+                StatusCode::BAD_REQUEST,
+                "reasoning_effort supports only default, none, low, medium, high, xhigh, or max",
+            ),
         },
     };
     if let Some(effort) = effort {
@@ -3758,7 +3758,9 @@ async fn handle_update_inference(
             if option
                 .supported_reasoning_efforts
                 .as_ref()
-                .is_some_and(|supported| !supported.iter().any(|level| level == effort.as_str()))
+                .map_or(effort == ReasoningEffort::XHigh, |supported| {
+                    !supported.iter().any(|level| level == effort.as_str())
+                })
             {
                 let supported = option
                     .supported_reasoning_efforts
@@ -8194,6 +8196,9 @@ async fn handle_update_session(
                         ),
                     );
                 }
+            } else if reasoning == "xhigh" {
+                return error_response(StatusCode::BAD_REQUEST,
+                    format!("reasoning effort 'xhigh' is not declared supported by model '{effective_model}'"));
             }
         }
     }
@@ -15616,6 +15621,10 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    supported_reasoning_efforts: Some(vec![
+                        ReasoningEffort::High,
+                        ReasoningEffort::XHigh,
+                    ]),
                     prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: None,
@@ -15633,6 +15642,17 @@ mod tests {
         assert_eq!(saved.status(), StatusCode::OK);
 
         let after_enablement = runtime.inference_model_options().await.unwrap();
+        assert_eq!(
+            after_enablement
+                .iter()
+                .find(|option| option
+                    .physical_models
+                    .iter()
+                    .any(|model| model == "physical-subscription-model"))
+                .unwrap()
+                .supported_reasoning_efforts,
+            Some(vec!["high".to_string(), "xhigh".to_string()]),
+        );
         let physical = after_enablement
             .iter()
             .find(|option| option.label == "physical-subscription-model")
@@ -15650,6 +15670,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    supported_reasoning_efforts: None,
                     prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: Some("fast-subscription".to_string()),
@@ -15701,6 +15722,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    supported_reasoning_efforts: None,
                     prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: None,
@@ -16976,6 +16998,7 @@ account = "xai-account"
             Json(PutProviderAccountModelsRequest {
                 models: vec![
                     ProviderAccountModelSelection {
+                        supported_reasoning_efforts: None,
                         prompt_cache_strategy: None,
                         id: "model-a".to_string(),
                         alias: Some("primary-local".to_string()),
@@ -16987,6 +17010,7 @@ account = "xai-account"
                         max_input_attachment_total_bytes: Some(192 * 1024 * 1024),
                     },
                     ProviderAccountModelSelection {
+                        supported_reasoning_efforts: None,
                         prompt_cache_strategy: None,
                         id: "model-b".to_string(),
                         alias: None,

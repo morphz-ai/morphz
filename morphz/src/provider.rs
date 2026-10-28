@@ -30,7 +30,9 @@ pub(crate) mod gemini_schema;
 mod native_message_tests;
 #[cfg(test)]
 mod native_output_tests;
+mod reasoning;
 mod refresh_diagnostics;
+pub(crate) use reasoning::{common_reasoning_efforts, model_reasoning_efforts};
 pub mod routing;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
@@ -120,6 +122,21 @@ fn positive_usize(value: Option<&Value>) -> Option<usize> {
 }
 
 fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderModelConfig {
+    let supported_reasoning_efforts = row
+        .get("supported_reasoning_efforts")
+        .or_else(|| row.get("supported_reasoning_levels"))
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| {
+                    level
+                        .as_str()
+                        .or_else(|| level.get("effort").and_then(Value::as_str))
+                        .and_then(ReasoningEffort::parse)
+                })
+                .collect()
+        });
     let context_window_tokens = ["context_window_tokens", "context_window", "context_length"]
         .into_iter()
         .find_map(|field| positive_usize(row.get(field)))
@@ -148,6 +165,7 @@ fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderMod
     let max_input_attachment_total_bytes =
         positive_usize(row.get("max_input_attachment_total_bytes"));
     ProviderModelConfig {
+        supported_reasoning_efforts,
         prompt_cache_strategy: PromptCacheStrategy::Auto,
         context_window_tokens,
         max_input_tokens,
@@ -1432,6 +1450,29 @@ impl ProtocolClient {
         record_current_boundary: bool,
     ) -> Result<Vec<Message>, ProviderError> {
         let protocol = self.protocol_for_model(model);
+        let effort = self.request_reasoning_effort(model, reasoning_override);
+        let capabilities = model_reasoning_efforts(
+            &self.adapter,
+            protocol,
+            model,
+            self.model_profiles.get(model),
+        );
+        if let Some(effort) = effort {
+            let unsupported = capabilities
+                .as_ref()
+                .map_or(effort == ReasoningEffort::XHigh, |levels| {
+                    !levels.contains(&effort)
+                });
+            if unsupported {
+                return Err(boxed_model_failure(ModelFailure::new(
+                    ModelFailureKind::InvalidModelOrRequest,
+                    format!(
+                        "reasoning effort '{}' is not declared supported by model '{model}'",
+                        effort.as_str()
+                    ),
+                )));
+            }
+        }
         let mut messages = if matches!(
             protocol,
             ModelProtocol::OpenaiChat | ModelProtocol::OpenaiResponses

@@ -96,7 +96,7 @@ impl ModelSelection {
                 "provider_default".to_string()
             } else {
                 ReasoningEffort::parse(effort)
-                    .ok_or("reasoning_effort must be provider_default, none, low, medium, high, or max")?
+                    .ok_or("reasoning_effort must be provider_default, none, low, medium, high, xhigh, or max")?
                     .as_str()
                     .to_string()
             };
@@ -118,7 +118,7 @@ impl ModelSelection {
 pub(crate) fn reasoning_effort_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "string",
-        "enum": ["provider_default", "none", "low", "medium", "high", "max"],
+        "enum": ["provider_default", "none", "low", "medium", "high", "xhigh", "max"],
         "description": "Task-scoped thinking depth; omit to inherit. provider_default explicitly uses the selected Provider/model default."
     })
 }
@@ -207,6 +207,7 @@ mod tests {
             ("off", "none"),
             ("maximum", "max"),
             ("HIGH", "high"),
+            (" XHIGH ", "xhigh"),
             ("default", "provider_default"),
         ] {
             let mut choice = ModelSelection {

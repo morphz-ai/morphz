@@ -73,6 +73,64 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("xhigh 在支持模型上独立选择，切换到 DeepSeek 或未知模型不伪造档位且保留草稿", async ({
+  page,
+}) => {
+  const f = await prepare(page, (route) =>
+    route.fulfill({
+      json: {
+        ...catalog,
+        options: [
+          {
+            ...catalog.options[0],
+            supported_reasoning_efforts: [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+            ],
+          },
+          {
+            id: "deepseek-route",
+            label: "TEST DeepSeek",
+            supported_reasoning_efforts: ["none", "low", "high", "max"],
+          },
+          {
+            id: "unknown-route",
+            label: "TEST 未声明",
+            supported_reasoning_efforts: null,
+          },
+        ],
+        reasoning: {
+          current: "high",
+          levels: ["none", "low", "medium", "high", "xhigh", "max"],
+        },
+      },
+    }),
+  );
+  await expect(f.slider).toHaveAttribute(
+    "data-efforts",
+    "low,medium,high,xhigh,max",
+  );
+  await chooseReasoning(f.slider, "xhigh");
+  await expect(f.control).toHaveAttribute("data-state", "explicit");
+  const model = f.settings.getByLabel("本次输入模型", { exact: true });
+  await model.selectOption("deepseek-route");
+  await expect(f.slider).toHaveAttribute("data-efforts", "none,low,high,max");
+  await expect(f.control).toHaveAttribute("data-state", "unsupported");
+  await expect(f.control).toContainText("xhigh · 不支持");
+  await f.reset.click();
+  await chooseReasoning(f.slider, "max");
+  await model.selectOption("unknown-route");
+  await expect(f.slider).toHaveAttribute(
+    "data-efforts",
+    "none,low,medium,high,max",
+  );
+  await expect(f.input).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
 test("真实滑块悬停居中放大、移开恢复，轨道和4px刻度不位移且不改变选择", async ({
   page,
 }, info) => {

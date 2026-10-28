@@ -1183,10 +1183,12 @@ impl UiState {
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
+            ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ] {
-            let native = supported_efforts
-                .is_none_or(|supported| supported.iter().any(|value| value == effort.as_str()));
+            let native = supported_efforts.map_or(effort != ReasoningEffort::XHigh, |supported| {
+                supported.iter().any(|value| value == effort.as_str())
+            });
             items.push(
                 ControlItem::new(
                     ControlAction::SetReasoningEffort(Some(effort)),
@@ -7985,6 +7987,31 @@ mod tests {
         assert!(matches!(key_action(&mut state, ctrl_p), UiAction::None));
         assert!(!state.show_control);
         assert_eq!(state.composer.text(), "unfinished thought");
+    }
+
+    #[test]
+    fn reasoning_control_requires_explicit_xhigh_capability() {
+        let mut state = test_state(Composer::new());
+        let xhigh = |items: Vec<ControlItem>| {
+            items
+                .into_iter()
+                .find(|item| {
+                    item.action == ControlAction::SetReasoningEffort(Some(ReasoningEffort::XHigh))
+                })
+                .unwrap()
+        };
+        assert!(!xhigh(state.control_items()).enabled);
+        state.model_options = vec![InferenceModelOption {
+            id: state.model.clone(),
+            label: "TEST declared model".into(),
+            physical_models: vec![],
+            aliases: vec![],
+            supported_reasoning_efforts: Some(vec!["high".into(), "xhigh".into()]),
+            source: "configured".into(),
+        }];
+        assert!(xhigh(state.control_items()).enabled);
+        state.model_options[0].supported_reasoning_efforts = Some(vec!["high".into()]);
+        assert!(!xhigh(state.control_items()).enabled);
     }
 
     #[test]

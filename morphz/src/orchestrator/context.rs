@@ -1696,23 +1696,49 @@ impl ContextEngine {
             let known = route
                 .candidates
                 .iter()
-                .filter_map(|candidate| {
+                .map(|candidate| {
                     let provider = config.provider_instances.get(&candidate.provider)?;
-                    crate::provider::supported_reasoning_efforts_for_model(
+                    crate::provider::model_reasoning_efforts(
                         &provider.adapter,
+                        provider.protocol,
                         &candidate.model,
+                        provider.models.get(&candidate.model),
                     )
                 })
                 .collect::<Vec<_>>();
-            if let Some(first) = known.first() {
-                let levels = first
-                    .iter()
-                    .filter(|effort| known.iter().all(|levels| levels.contains(effort)))
-                    .map(|effort| effort.as_str().to_string())
-                    .collect::<Vec<_>>();
+            if let Some(levels) = crate::provider::common_reasoning_efforts(&known) {
                 capabilities.insert(name.clone(), levels.clone());
                 for alias in &route.aliases {
                     capabilities.insert(alias.clone(), levels.clone());
+                }
+            }
+        }
+        for model in config
+            .llm
+            .models
+            .iter()
+            .chain(std::iter::once(&config.llm.model))
+        {
+            if capabilities.contains_key(model) {
+                continue;
+            }
+            if let Some(provider) = config
+                .providers
+                .get(config.llm.provider.as_deref().unwrap_or_default())
+            {
+                if let Some(levels) = crate::provider::model_reasoning_efforts(
+                    "openai-compatible",
+                    provider.protocol,
+                    model,
+                    provider.models.get(model),
+                ) {
+                    capabilities.insert(
+                        model.clone(),
+                        levels
+                            .into_iter()
+                            .map(|level| level.as_str().to_string())
+                            .collect(),
+                    );
                 }
             }
         }
@@ -1741,9 +1767,10 @@ impl ContextEngine {
             .task_model_capabilities
             .read()
             .unwrap_or_else(|p| p.into_inner());
-        if capabilities
-            .get(model)
-            .is_some_and(|levels| !levels.iter().any(|level| level == effort))
+        if (effort == "xhigh" && !capabilities.contains_key(model))
+            || capabilities
+                .get(model)
+                .is_some_and(|levels| !levels.iter().any(|level| level == effort))
         {
             return Err(format!(
                 "reasoning effort '{effort}' is not supported by model '{model}'"
