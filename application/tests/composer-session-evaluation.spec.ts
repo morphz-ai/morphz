@@ -124,18 +124,27 @@ async function fixture(page: Page, host: Host, missing = false) {
             inputTokens: state.missing
               ? null
               : Math.min(
-                  requestedCapacity ?? 262144,
-                  policy.defaults.model === other ? 65536 : 262144,
+                  requestedCapacity ??
+                    (policy.defaults.model === other ? 114688 : 229376),
+                  policy.defaults.model === other ? 114688 : 229376,
                 ),
-            windowTokens: state.missing ? null : 393216,
-            outputTokens: state.missing ? null : 131072,
+            windowTokens: state.missing
+              ? null
+              : policy.defaults.model === other
+                ? 131072
+                : 262144,
+            outputTokens: state.missing
+              ? null
+              : policy.defaults.model === other
+                ? 16384
+                : 32768,
             model: policy.defaults.model,
             capacitySource: "provider-route-model-config",
             contextId: "TEST-context",
             runtimeSessionId: "TEST-session",
             requestedTokens: requestedCapacity,
             physicalInputTokens:
-              policy.defaults.model === other ? 65536 : 262144,
+              policy.defaults.model === other ? 114688 : 229376,
             revision: capacityRevision,
             canUpdate: !state.missing,
             usage: state.missing
@@ -145,7 +154,7 @@ async function fixture(page: Page, host: Host, missing = false) {
                   sessionId: "TEST-session",
                   model: policy.defaults.model ?? model,
                   physicalModel: policy.defaults.model ?? model,
-                  inputTokens: 209715,
+                  inputTokens: policy.defaults.model === other ? 32768 : 209715,
                   accuracy: "heuristic-estimate",
                   measuredAt: "2026-10-28T00:00:00Z",
                   sequence: 1,
@@ -191,18 +200,19 @@ async function fixture(page: Page, host: Host, missing = false) {
             scope: policy.scope,
             source: "runtime",
             inputTokens: Math.min(
-              requestedCapacity ?? 262144,
-              policy.defaults.model === other ? 65536 : 262144,
+              requestedCapacity ??
+                (policy.defaults.model === other ? 114688 : 229376),
+              policy.defaults.model === other ? 114688 : 229376,
             ),
-            windowTokens: 393216,
-            outputTokens: 131072,
+            windowTokens: policy.defaults.model === other ? 131072 : 262144,
+            outputTokens: policy.defaults.model === other ? 16384 : 32768,
             model: policy.defaults.model,
             capacitySource: "provider-route-model-config",
             contextId: "TEST-context",
             runtimeSessionId: "TEST-session",
             requestedTokens: requestedCapacity,
             physicalInputTokens:
-              policy.defaults.model === other ? 65536 : 262144,
+              policy.defaults.model === other ? 114688 : 229376,
             revision: capacityRevision,
             canUpdate: true,
             usage: {
@@ -210,7 +220,7 @@ async function fixture(page: Page, host: Host, missing = false) {
               sessionId: "TEST-session",
               model: policy.defaults.model ?? model,
               physicalModel: policy.defaults.model ?? model,
-              inputTokens: 209715,
+              inputTokens: policy.defaults.model === other ? 32768 : 209715,
               accuracy: "heuristic-estimate",
               measuredAt: "2026-10-28T00:00:00Z",
               sequence: 1,
@@ -612,8 +622,11 @@ test("上下文容量随会话模型更新，独立慢读不阻塞正文，也�
     name: "上下文容量",
     exact: true,
   });
-  await expect(capacity).toContainText("256K");
-  await expect(capacity).toContainText("80%");
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute(
+    "aria-description",
+    /256K.*80%.*预留 32K/,
+  );
   f.state.holdCapacity();
   const settings = await openComposerSettings(page);
   await settings.getByLabel("会话模型", { exact: true }).selectOption(other);
@@ -626,8 +639,9 @@ test("上下文容量随会话模型更新，独立慢读不阻塞正文，也�
     page.getByText("正在读取当前上下文…", { exact: true }),
   ).toBeVisible();
   f.state.releaseCapacity();
-  await expect(capacity).toContainText("64K");
-  await expect(page.getByText("留给回答", { exact: true })).toBeVisible();
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /128K/);
+  await expect(page.getByText("预留 16K", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("capacity-light.png") });
   await page.keyboard.press("Escape");
   const reads = f.state.calls.filter(
@@ -667,7 +681,7 @@ test("容量读取失败只影响容量入口，重读不改模型、正文或�
     name: "上下文容量",
     exact: true,
   });
-  await expect(capacity).toHaveText("上下文");
+  await expect(capacity).toHaveText("");
   await f.input.fill("TEST 容量暂不可读时保留正文");
   await capacity.click();
   await expect(
@@ -675,7 +689,8 @@ test("容量读取失败只影响容量入口，重读不改模型、正文或�
   ).toBeVisible();
   f.state.failCapacity = false;
   await page.getByRole("button", { name: "重新读取", exact: true }).click();
-  await expect(capacity).toContainText("64K");
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /128K/);
   await page.keyboard.press("Escape");
   await expect(f.input).toHaveValue("TEST 容量暂不可读时保留正文");
   expect(f.writes()).toHaveLength(1);
@@ -692,7 +707,8 @@ test("用量沿现有事件流更新；容量可调、可恢复自动，回车�
     name: "上下文容量",
     exact: true,
   });
-  await expect(capacity).toContainText("80%");
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /80%/);
   const reads = f.state.calls.filter(
     (c) => c.method === "session-context-budget.read",
   ).length;
@@ -722,7 +738,8 @@ test("用量沿现有事件流更新；容量可调、可恢复自动，回车�
       },
     ]);
   }, model);
-  await expect(capacity).toContainText("90%");
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /256K.*90%/);
   expect(
     f.state.calls.filter((c) => c.method === "session-context-budget.read"),
   ).toHaveLength(reads);
@@ -744,8 +761,12 @@ test("用量沿现有事件流更新；容量可调、可恢复自动，回车�
         ).length,
     )
     .toBe(1);
-  await expect(capacity).toContainText("180%");
-  await expect(capacity).toContainText("128K");
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /128K.*180%/);
+  expect(
+    f.state.calls.filter((c) => c.method === "session-context-budget.update")[0]
+      ?.params,
+  ).toMatchObject({ requestedTokens: 98304 });
   await settleTransitions(page);
   await page.screenshot({
     path: info.outputPath("capacity-configurable-light.png"),
@@ -753,7 +774,7 @@ test("用量沿现有事件流更新；容量可调、可恢复自动，回车�
   await page.getByRole("button", { name: "自动", exact: true }).focus();
   await page.getByRole("button", { name: "自动", exact: true }).press("Enter");
   await page.getByRole("button", { name: "应用", exact: true }).click();
-  await expect(capacity).toContainText("256K");
+  await expect(capacity).toHaveAttribute("aria-description", /256K/);
   await expect(
     page.getByRole("button", { name: "应用", exact: true }),
   ).toBeDisabled();

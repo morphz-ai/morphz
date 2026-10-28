@@ -69,9 +69,11 @@ Do not infer other routes' capacity merely from their display name.
 binding. It reads the selected Session's budget plus at most 32 latest indexed
 model-attempt metadata events, never a full conversation or reconstructed Context.
 Subsequent numeric measurements arrive on the existing authorized event stream.
-The composer shows estimated used/input ceiling and a ring percentage; a compact
-editor uses the same Context budget CAS as Dashboard. Total model window and
-reserved output remain separate. A change affects later requests, with a visible
+The composer shows only a segmented ring; its popover shows estimated input /
+total capacity and the declared output reservation as a separate segment. An
+editable total converts back to an input ceiling before using the same Context
+budget CAS as Dashboard. Total model window and reserved output remain separate.
+A change affects later requests, with a visible
 shared-Context scope. Conflicts or unknown receipts require rereading, not replay.
 Scope/model changes and an explicit open refresh the metadata. There is no healthy
 polling loop. Unknown, not-started and failed reads do not manufacture a count or

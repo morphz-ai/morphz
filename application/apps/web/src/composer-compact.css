@@ -87,10 +87,11 @@
 .app .composer-capacity-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: 5px 6px;
+  width: 32px;
+  height: 32px;
+  padding: 7px;
   border: 0;
   border-radius: 8px;
   color: var(--text-secondary);
@@ -112,8 +113,8 @@
   padding: 14px;
 }
 .app .composer-capacity-trigger .composer-capacity-ring {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke-width: 2;
 }
@@ -123,16 +124,15 @@
 .capacity-ring-fill {
   stroke: var(--accent);
   stroke-linecap: round;
-  transform: rotate(-90deg);
-  transform-origin: center;
-  transition: stroke-dashoffset 180ms ease;
+  transition: stroke-dasharray 180ms ease;
+}
+.capacity-ring-reserved {
+  stroke: var(--text-secondary);
+  opacity: 0.65;
+  stroke-linecap: round;
 }
 .composer-capacity-ring[data-pressure="high"] .capacity-ring-fill {
   stroke: var(--danger);
-}
-.composer-capacity-ceiling {
-  color: var(--muted);
-  font-size: 11px;
 }
 .composer-capacity-percent {
   font-variant-numeric: tabular-nums;
@@ -154,6 +154,7 @@
   font-size: 13px;
 }
 .composer-capacity-bar {
+  position: relative;
   height: 4px;
   overflow: hidden;
   border-radius: 4px;
@@ -167,8 +168,57 @@
   border-radius: inherit;
   transition: width 180ms ease;
 }
-.composer-capacity-bar[data-pressure="high"] > span {
+.composer-capacity-bar[data-pressure="high"] > .capacity-bar-used {
   background: var(--danger);
+}
+.composer-capacity-bar > .capacity-bar-reserved {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: var(--text-secondary);
+  opacity: 0.65;
+  border-left: 2px solid var(--paper);
+  border-radius: 0 4px 4px 0;
+}
+.composer-capacity-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.composer-capacity-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.composer-capacity-legend i {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.capacity-key-used {
+  background: var(--accent);
+}
+.capacity-key-reserved {
+  background: var(--text-secondary);
+  opacity: 0.65;
+}
+.capacity-key-free {
+  border: 1px solid var(--line);
+}
+.composer-capacity-bar[data-pressure="high"]
+  + .composer-capacity-legend
+  .capacity-key-used {
+  background: var(--danger);
+}
+.composer-capacity-details .composer-capacity-overflow {
+  font-size: 11px;
+  color: var(--danger);
 }
 .composer-capacity-editor {
   border-top: 1px solid var(--line);

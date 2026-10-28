@@ -16,7 +16,10 @@ import {
   sessionEvaluationUpdateSchema,
   type SessionEvaluationDefaults,
 } from "../packages/core/src/session-evaluation.js";
-import { formatContextCapacity } from "../packages/core/src/session-context-budget.js";
+import {
+  contextCapacityPresentation,
+  formatContextCapacity,
+} from "../packages/core/src/session-context-budget.js";
 
 type Policy = {
   id: string;
@@ -269,6 +272,42 @@ async function fixture() {
     },
   };
 }
+
+test("容量环以总容量为分母，保留回答区段；上限编辑仍转换成原输入预算", () => {
+  const budget = {
+    inputTokens: 224 * 1024,
+    windowTokens: 256 * 1024,
+    outputTokens: 32 * 1024,
+    physicalInputTokens: 224 * 1024,
+  };
+  const measured = contextCapacityPresentation(budget, 204800);
+  assert.equal(measured.totalTokens, 256 * 1024);
+  assert.equal(measured.maxTotalTokens, 256 * 1024);
+  assert.equal(measured.inputRatio, 0.78125);
+  assert.equal(measured.reservedRatio, 0.125);
+  assert.equal(measured.remainingTokens, 24576);
+  const overflow = contextCapacityPresentation(budget, 232738);
+  assert.equal(overflow.usedArcRatio, 0.875);
+  assert.equal(overflow.reservedRatio, 0.125);
+  assert.equal(overflow.overflowTokens, 3362);
+  assert.equal(overflow.remainingTokens, 0);
+  assert(overflow.inputRatio! > overflow.usedArcRatio!);
+  const reduced = contextCapacityPresentation(
+    { ...budget, inputTokens: 96 * 1024 },
+    64 * 1024,
+  );
+  assert.equal(reduced.totalTokens, 128 * 1024);
+  assert.equal(reduced.inputRatio, 0.5);
+  assert.equal(reduced.reservedRatio, 0.25);
+  assert.equal(reduced.totalTokens! - reduced.reservedTokens, 96 * 1024);
+  const unknown = contextCapacityPresentation(
+    { ...budget, outputTokens: null },
+    null,
+  );
+  assert.equal(unknown.inputRatio, null);
+  assert.equal(unknown.remainingTokens, null);
+  assert.equal(unknown.reservedRatio, 0);
+});
 
 test("context capacity uses the authorized Session budget and never creates a Session", async () => {
   const t = await fixture();

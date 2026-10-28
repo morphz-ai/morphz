@@ -56,6 +56,53 @@ export function formatContextCapacity(tokens: number) {
   return `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 }).format(value)}K`;
 }
 
+/** Presentation adds the declared answer reservation to the input budget.
+ * Runtime's stored Context ceiling remains an input-token limit. */
+export function contextCapacityPresentation(
+  budget: Pick<
+    SessionContextBudgetSnapshot,
+    "inputTokens" | "windowTokens" | "outputTokens" | "physicalInputTokens"
+  >,
+  usedTokens: number | null,
+) {
+  const reservedTokens = budget.outputTokens ?? 0;
+  const totalTokens =
+    budget.inputTokens === null ? null : budget.inputTokens + reservedTokens;
+  const maxTotalTokens =
+    budget.physicalInputTokens === null
+      ? null
+      : Math.min(
+          budget.physicalInputTokens + reservedTokens,
+          budget.windowTokens ?? Number.MAX_SAFE_INTEGER,
+        );
+  const inputRatio =
+    usedTokens === null || !totalTokens ? null : usedTokens / totalTokens;
+  const reservedRatio = totalTokens ? reservedTokens / totalTokens : 0;
+  return {
+    totalTokens,
+    maxTotalTokens,
+    reservedTokens,
+    inputRatio,
+    reservedRatio,
+    usedArcRatio:
+      inputRatio === null
+        ? null
+        : Math.min(inputRatio, Math.max(0, 1 - reservedRatio)),
+    remainingTokens:
+      usedTokens === null || budget.inputTokens === null
+        ? null
+        : Math.max(0, budget.inputTokens - usedTokens),
+    overflowTokens:
+      usedTokens === null || budget.inputTokens === null
+        ? 0
+        : Math.max(0, usedTokens - budget.inputTokens),
+    highPressure:
+      usedTokens !== null &&
+      !!budget.inputTokens &&
+      usedTokens / budget.inputTokens >= 0.875,
+  };
+}
+
 /** Only numeric, Runtime-authored full-request measurements enter the UI.
  * Body text, quoted errors, billing totals and unrelated scopes are excluded. */
 export function contextUsageFromEvent(

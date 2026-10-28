@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
+  contextCapacityPresentation,
   formatContextCapacity,
   latestContextUsage,
   sessionContextBudgetSnapshotSchema,
@@ -112,7 +113,6 @@ export function ComposerContextCapacity({
   const actual = state.key === key ? state.value : undefined;
   const loading = online && (state.key !== key || state.loading);
   const inputTokens = actual?.inputTokens;
-  const amount = inputTokens ? formatContextCapacity(inputTokens) : null;
   const usage =
     actual?.contextId && actual.runtimeSessionId && actual.model
       ? latestContextUsage([actual.usage, ...liveUsages], {
@@ -121,7 +121,19 @@ export function ComposerContextCapacity({
           model: actual.model,
         })
       : null;
-  const ratio = usage && inputTokens ? usage.inputTokens / inputTokens : null;
+  const capacity = contextCapacityPresentation(
+    actual ?? {
+      inputTokens: null,
+      windowTokens: null,
+      outputTokens: null,
+      physicalInputTokens: null,
+    },
+    usage?.inputTokens ?? null,
+  );
+  const amount = capacity.totalTokens
+    ? formatContextCapacity(capacity.totalTokens)
+    : null;
+  const ratio = capacity.inputRatio;
   const percent = ratio === null ? null : Math.round(ratio * 100);
   const estimated = usage?.accuracy !== "exact";
   const editKey = JSON.stringify([key, actual?.revision, actual?.model]);
@@ -131,20 +143,22 @@ export function ComposerContextCapacity({
       : {
           key: editKey,
           automatic: actual?.requestedTokens === null,
-          kilo: String((actual?.requestedTokens ?? inputTokens ?? 0) / 1024),
+          kilo: String((capacity.totalTokens ?? 0) / 1024),
         };
   const requested = draft.automatic
     ? null
-    : Math.round(Number(draft.kilo) * 1024);
-  const maxTokens = actual?.physicalInputTokens ?? 0;
+    : Math.round(Number(draft.kilo) * 1024) - capacity.reservedTokens;
+  const maxTokens = capacity.maxTotalTokens ?? 0;
   const valid =
     draft.automatic ||
     (!!draft.kilo.trim() &&
       requested !== null &&
       Number.isSafeInteger(requested) &&
       requested > 0 &&
-      requested <= maxTokens);
-  const dirty = !!actual && requested !== actual.requestedTokens;
+      requested <= (actual?.physicalInputTokens ?? 0) &&
+      requested + capacity.reservedTokens <= maxTokens);
+  const dirty =
+    edit?.key === editKey && !!actual && requested !== actual.requestedTokens;
   const blocked = writeFailure?.key === key;
   const editable =
     !!actual?.canUpdate && online && !loading && !saving && !blocked;
@@ -184,6 +198,11 @@ export function ComposerContextCapacity({
         result.scope.conversationId !== scope.conversationId
       )
         throw new Error("容量写入回执的会话范围不匹配。");
+      if (
+        result.outputTokens !== actual.outputTokens ||
+        (requested !== null && result.inputTokens !== requested)
+      )
+        throw new Error("模型容量或预留已变化，请重新读取确认实际设置。");
       setState({ key: expected, value: result, loading: false });
       setEdit(undefined);
       setWriteFailure(undefined);
@@ -202,10 +221,6 @@ export function ComposerContextCapacity({
     }
   }
   if (!scope) return null;
-  const meterText =
-    percent === null
-      ? (amount ?? "上下文")
-      : (estimated ? "≈" : "") + percent + "%";
   const description =
     usage && inputTokens
       ? "输入" +
@@ -213,48 +228,57 @@ export function ComposerContextCapacity({
         formatContextCapacity(usage.inputTokens) +
         " / " +
         amount +
-        "，占用 " +
+        " 总容量，占用 " +
         percent +
-        "%"
+        "%" +
+        (actual?.outputTokens
+          ? "，回答预留 " + formatContextCapacity(actual.outputTokens)
+          : "")
       : "查看并调整当前上下文容量";
   return (
     <ComposerOptions
       label="上下文容量"
       menuLabel="上下文容量"
       description={description}
+      triggerTitle="上下文容量"
       initialFocus="panel"
       triggerClassName="composer-capacity-trigger"
       menuClassName="composer-capacity-menu"
       options={[]}
       onOpenChange={onOpenChange}
       triggerIcon={
-        <>
-          <svg
-            className="composer-capacity-ring"
-            data-pressure={
-              ratio !== null && ratio >= 0.875 ? "high" : undefined
-            }
-            viewBox="0 0 20 20"
-            aria-hidden="true"
-          >
+        <svg
+          className="composer-capacity-ring"
+          data-pressure={capacity.highPressure ? "high" : undefined}
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+        >
+          <g transform="rotate(-90 10 10)">
             <circle className="capacity-ring-track" cx="10" cy="10" r="7.5" />
-            {ratio !== null && (
+            {capacity.usedArcRatio !== null && capacity.usedArcRatio > 0 && (
               <circle
                 className="capacity-ring-fill"
                 cx="10"
                 cy="10"
                 r="7.5"
                 pathLength="100"
-                strokeDasharray="100"
-                strokeDashoffset={100 - Math.min(1, Math.max(0, ratio)) * 100}
+                strokeDasharray={`${Math.max(0, capacity.usedArcRatio * 100 - 2.5)} 100`}
+                strokeDashoffset="-1.25"
               />
             )}
-          </svg>
-          <span>{meterText}</span>
-          {percent !== null && amount && (
-            <span className="composer-capacity-ceiling">· {amount}</span>
-          )}
-        </>
+            {capacity.reservedRatio > 0 && (
+              <circle
+                className="capacity-ring-reserved"
+                cx="10"
+                cy="10"
+                r="7.5"
+                pathLength="100"
+                strokeDasharray={`${Math.max(0, capacity.reservedRatio * 100 - 2.5)} 100`}
+                strokeDashoffset={-(100 - capacity.reservedRatio * 100 + 1.25)}
+              />
+            )}
+          </g>
+        </svg>
       }
       content={() => (
         <div
@@ -299,18 +323,43 @@ export function ComposerContextCapacity({
               percent === null ? undefined : Math.min(percent, 100)
             }
             aria-valuetext={usage ? description : "暂无当前模型的输入估算"}
-            data-pressure={
-              ratio !== null && ratio >= 0.875 ? "high" : undefined
-            }
+            data-pressure={capacity.highPressure ? "high" : undefined}
           >
             <span
+              className="capacity-bar-used"
               style={{
                 width:
-                  (ratio === null
+                  (capacity.usedArcRatio === null
                     ? 0
-                    : Math.min(100, Math.max(0, ratio * 100))) + "%",
+                    : Math.max(0, capacity.usedArcRatio * 100)) + "%",
               }}
             />
+            {capacity.reservedRatio > 0 && (
+              <span
+                className="capacity-bar-reserved"
+                style={{ width: capacity.reservedRatio * 100 + "%" }}
+              />
+            )}
+          </div>
+          <div className="composer-capacity-legend">
+            <span>
+              <i className="capacity-key-used" />
+              已用
+            </span>
+            <span>
+              <i className="capacity-key-reserved" />
+              预留{" "}
+              {actual?.outputTokens
+                ? formatContextCapacity(actual.outputTokens)
+                : "未声明"}
+            </span>
+            <span>
+              <i className="capacity-key-free" />
+              剩余{" "}
+              {capacity.remainingTokens === null
+                ? "—"
+                : formatContextCapacity(capacity.remainingTokens)}
+            </span>
           </div>
           <p className="composer-capacity-measured">
             {usage
@@ -324,6 +373,12 @@ export function ComposerContextCapacity({
                 })
               : "发送请求后显示输入估算"}
           </p>
+          {capacity.overflowTokens > 0 && (
+            <p className="composer-capacity-overflow">
+              最近输入超出可用空间{" "}
+              {formatContextCapacity(capacity.overflowTokens)}
+            </p>
+          )}
           {actual?.source === "runtime" && (
             <section
               className="composer-capacity-editor"
@@ -351,11 +406,14 @@ export function ComposerContextCapacity({
                 <input
                   type="range"
                   aria-label="最大上下文滑块"
-                  min="1"
+                  min={Math.min(
+                    maxTokens / 1024,
+                    Math.floor(capacity.reservedTokens / 1024) + 1,
+                  )}
                   max={Math.max(1, maxTokens / 1024)}
                   value={
                     draft.automatic
-                      ? (inputTokens ?? 0) / 1024
+                      ? (capacity.totalTokens ?? 0) / 1024
                       : Number(draft.kilo) || 1
                   }
                   disabled={!editable}
@@ -367,7 +425,7 @@ export function ComposerContextCapacity({
                     aria-label="最大上下文 K"
                     type="number"
                     inputMode="decimal"
-                    min="0.001"
+                    min={(capacity.reservedTokens + 1) / 1024}
                     step="any"
                     max={maxTokens / 1024}
                     value={draft.kilo}
@@ -378,24 +436,11 @@ export function ComposerContextCapacity({
                 </span>
               </div>
               <p className="composer-capacity-limit">
-                当前模型可用上限 {formatContextCapacity(maxTokens)}
+                当前模型上限 {formatContextCapacity(maxTokens)}
+                {actual.windowTokens && actual.windowTokens !== maxTokens
+                  ? ` · 总容量 ${formatContextCapacity(actual.windowTokens)}`
+                  : ""}
               </p>
-              {(actual.windowTokens || actual.outputTokens) && (
-                <dl>
-                  {actual.windowTokens && (
-                    <div>
-                      <dt>模型总容量</dt>
-                      <dd>{formatContextCapacity(actual.windowTokens)}</dd>
-                    </div>
-                  )}
-                  {actual.outputTokens && (
-                    <div>
-                      <dt>留给回答</dt>
-                      <dd>{formatContextCapacity(actual.outputTokens)}</dd>
-                    </div>
-                  )}
-                </dl>
-              )}
               {(blocked || state.error) && (
                 <p className="composer-capacity-error" role="alert">
                   {blocked ? writeFailure.message : state.error}
