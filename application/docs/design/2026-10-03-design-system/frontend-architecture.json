@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "前端职责与依赖 · 提案",
+    "locale": "zh-CN",
+    "animation": "none",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "frontend": { "label": "界面与设计基础" },
+        "backend": { "label": "前端状态与数据层" },
+        "security": { "label": "访问边界" },
+        "external": { "label": "事实权威" }
+      }
+    }
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 3,
+    "origin": [70, 70],
+    "cellW": 230,
+    "cellH": 84,
+    "gapX": 80,
+    "gapY": 88
+  },
+  "components": [
+    {
+      "id": "shell",
+      "type": "frontend",
+      "label": "窗口宿主",
+      "sublabel": "导航 · 画布 · 主体栏",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "features",
+      "type": "frontend",
+      "label": "领域画布",
+      "sublabel": "事项 · 内容 · 专业应用",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "exchange",
+      "type": "frontend",
+      "label": "交流与活动界面",
+      "sublabel": "消息和活动分别消费事实",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "controllers",
+      "type": "backend",
+      "label": "宿主控制器",
+      "sublabel": "工作面 · 导航 · scoped 草稿",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "data",
+      "type": "backend",
+      "label": "范围化数据访问",
+      "sublabel": "query · command · 事件失效",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "presentation",
+      "type": "backend",
+      "label": "只读展示投影",
+      "sublabel": "五类权威状态 · 可选注解",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "design",
+      "type": "frontend",
+      "label": "设计基础与公共控件",
+      "sublabel": "tokens · role · 图标 · 动效",
+      "row": 2,
+      "col": 0
+    },
+    {
+      "id": "gateway",
+      "type": "security",
+      "label": "已有逻辑业务网关",
+      "sublabel": "Web HTTP / Desktop 受限 IPC",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "authority",
+      "type": "external",
+      "label": "Runtime / Platform",
+      "sublabel": "权限 · 持久事实 · 真实回执",
+      "row": 2,
+      "col": 2
+    }
+  ],
+  "connections": [
+    { "from": "shell", "to": "controllers" },
+    { "from": "features", "to": "data" },
+    { "from": "exchange", "to": "presentation" },
+    { "from": "controllers", "to": "data" },
+    { "from": "data", "to": "gateway" },
+    { "from": "gateway", "to": "authority", "label": "已有契约" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "图中箭头",
+      "items": [
+        "只列主要调用依赖，不是时序或完整数据流",
+        "只读投影只接收事实，不发网络请求",
+        "设计基础供所有界面复用，省略重复连线"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "状态边界",
+      "items": [
+        "事实决定状态，注解只填可选文字槽",
+        "后台没有回复也能显示真实活动"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "迁移边界",
+      "items": [
+        "目标职责，不宣称当前文件已拆分",
+        "保留共享 transport、Session 流及原数据"
+      ]
+    }
+  ]
+}

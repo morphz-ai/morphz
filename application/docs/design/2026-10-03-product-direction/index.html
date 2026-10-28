@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-CN" data-direction="lumen">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Morphz · 历史视觉探索（非设计规范）</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="review-bar">
+      <div class="review-label">
+        <span class="review-dot"></span>历史视觉探索<span
+          class="review-boundary"
+          >非设计规范 · 示例不连接 Runtime</span
+        >
+      </div>
+      <div class="direction-picker" role="group" aria-label="视觉方向">
+        <button data-direction="lumen" aria-pressed="true">
+          <span>A</span> 暗色探索
+        </button>
+        <button data-direction="editorial" aria-pressed="false">
+          <span>B</span> 亮色探索
+        </button>
+      </div>
+      <label class="state-picker"
+        >状态演示
+        <select id="state-picker" aria-label="执行状态演示">
+          <option value="running">执行中</option>
+          <option value="done">执行结束</option>
+          <option value="attention">需要处理</option>
+        </select></label
+      >
+    </header>
+    <div class="workspace" id="workspace">
+      <aside class="navigation" aria-label="整体导航">
+        <a class="brand" href="#dialogue" aria-label="Morphz 对话"
+          ><svg viewBox="0 0 96 96" aria-hidden="true">
+            <path
+              d="M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z"
+            /></svg
+          ><span>Morphz</span></a
+        >
+        <button class="search-entry" data-action="search">
+          <span data-icon="search"></span><span>搜索工作内容</span
+          ><kbd>⌘ K</kbd>
+        </button>
+        <nav class="primary-nav" aria-label="页面">
+          <button data-page="dialogue" aria-current="page">
+            <span data-icon="chat"></span>对话
+          </button>
+          <button data-page="tasks">
+            <span data-icon="circle-check"></span>事项<span class="nav-count"
+              >4</span
+            >
+          </button>
+          <button data-page="library">
+            <span data-icon="files"></span>内容库
+          </button>
+          <button data-page="workbench">
+            <span data-icon="grid"></span>工作台
+          </button>
+        </nav>
+        <button
+          class="icon-button compact-projects"
+          data-action="projects"
+          aria-label="项目目录"
+          title="项目目录"
+        >
+          <span data-icon="files"></span>
+        </button>
+        <div class="project-heading">项目<span>02</span></div>
+        <div class="project-row">
+          <button class="project-entry" data-action="project">
+            <span class="project-square"></span>领证前夜</button
+          ><button
+            class="icon-button project-draft"
+            data-action="draft"
+            aria-label="在领证前夜起草新对话"
+            title="新对话草稿"
+          >
+            <span data-icon="square-pen"></span>
+          </button>
+        </div>
+        <div class="project-row">
+          <button class="project-entry" data-action="product-project">
+            <span class="project-square violet"></span>产品实验室</button
+          ><button
+            class="icon-button project-draft"
+            data-action="draft-product"
+            aria-label="在产品实验室起草新对话"
+            title="新对话草稿"
+          >
+            <span data-icon="square-pen"></span>
+          </button>
+        </div>
+        <button class="account-entry" data-action="account">
+          <span class="human-avatar">S</span
+          ><span>个人空间<small>本地视觉演示</small></span
+          ><span data-icon="chevron-down"></span>
+        </button>
+      </aside>
+      <main class="main-surface" id="main-surface">
+        <header class="page-bar">
+          <div class="page-identity">
+            <span id="page-title">对话</span
+            ><span class="page-scope" id="page-scope">个人空间</span>
+          </div>
+          <div class="page-actions" id="page-actions"></div>
+          <button
+            class="icon-button inspector-toggle"
+            data-action="inspector"
+            aria-label="隐藏 Morphz 信息"
+            aria-expanded="true"
+            title="Morphz 信息"
+          >
+            <span data-icon="panel"></span>
+          </button>
+        </header>
+        <div class="canvas" id="canvas"></div>
+        <div class="exchange-region" id="exchange-region">
+          <section
+            class="reading-panel"
+            id="reading-panel"
+            aria-label="当前交流记录"
+            hidden
+          >
+            <div class="reading-toolbar">
+              <span>当前交流</span
+              ><button
+                class="icon-button"
+                data-action="history"
+                aria-label="收起交流记录"
+              >
+                <span data-icon="chevron-down"></span>
+              </button>
+            </div>
+            <div class="reading-content">
+              <p class="reading-user">保留轻喜剧的外壳，但冲突不要靠误会。</p>
+              <div class="reading-agent">
+                <span class="mini-brand">M</span>
+                <p>
+                  我会把冲突放在两个人对「承诺」的不同理解上。人物动机、转折和五场节奏一起调整，已有内容继续保留。
+                </p>
+              </div>
+            </div>
+          </section>
+          <div class="exchange-bridge" id="exchange-bridge">
+            <div class="app-dock" role="group" aria-label="应用快捷入口">
+              <button
+                class="dock-button app-document"
+                data-app="document"
+                aria-label="文档"
+                title="文档"
+              >
+                <span data-icon="book"></span>
+              </button>
+              <button
+                class="dock-button app-script"
+                data-app="script"
+                aria-label="剧本"
+                title="剧本"
+              >
+                <span data-icon="film"></span>
+              </button>
+              <button
+                class="dock-button app-browser"
+                data-app="browser"
+                aria-label="浏览器"
+                title="浏览器"
+              >
+                <span data-icon="globe"></span>
+              </button>
+              <button
+                class="dock-button app-all"
+                data-page="workbench"
+                aria-label="全部应用"
+                title="全部应用"
+              >
+                <span data-icon="grid"></span>
+              </button>
+            </div>
+            <div class="exchange-tools" role="group" aria-label="交流面板控制">
+              <button
+                class="icon-button"
+                id="history-button"
+                data-action="history"
+                aria-label="展开当前交流"
+                aria-pressed="false"
+                title="当前交流"
+              >
+                <span data-icon="chat-lines"></span>
+              </button>
+              <button
+                class="icon-button"
+                data-action="full-history"
+                aria-label="打开完整对话"
+                title="完整对话"
+              >
+                <span data-icon="expand"></span>
+              </button>
+              <button
+                class="icon-button"
+                id="pin-button"
+                data-action="pin"
+                aria-label="固定输入"
+                aria-pressed="false"
+                title="固定输入"
+              >
+                <span data-icon="pin"></span>
+              </button>
+              <button
+                class="icon-button"
+                data-action="hide-input"
+                aria-label="收起输入"
+                title="收起输入"
+              >
+                <span data-icon="chevron-down"></span>
+              </button>
+            </div>
+          </div>
+          <div class="composer" id="composer">
+            <div class="composer-context" id="composer-context" hidden>
+              <span data-icon="link"></span><span>领证前夜 · 当前内容</span
+              ><button
+                class="icon-button"
+                data-action="clear-context"
+                aria-label="移除当前内容引用"
+              >
+                <span data-icon="x"></span>
+              </button>
+            </div>
+            <textarea
+              id="intent-input"
+              rows="1"
+              aria-label="向 Morphz 表达想法"
+              placeholder="提出想法，或让工作继续…"
+            ></textarea>
+            <div class="composer-bottom">
+              <button
+                class="icon-button attach-button"
+                data-action="attachments"
+                aria-label="附件与目录授权"
+                title="附件与目录授权"
+              >
+                <span data-icon="plus"></span></button
+              ><span class="input-hint">与 Morphz 一起继续</span>
+              <div class="input-settings">
+                <button
+                  class="model-control"
+                  data-action="model"
+                  aria-label="模型与请求设定"
+                >
+                  gpt-6.1-sol <span class="setting-divider">/</span> 最高
+                  <span data-icon="chevron-down"></span></button
+                ><button
+                  class="icon-button"
+                  data-action="voice"
+                  aria-label="语音输入"
+                  title="语音输入"
+                >
+                  <span data-icon="mic"></span></button
+                ><button
+                  class="send-button"
+                  data-action="send"
+                  aria-label="演示发送，不发起真实请求"
+                  title="仅演示，不发送真实请求"
+                >
+                  <span data-icon="arrow-up"></span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button
+          class="reopen-input"
+          id="reopen-input"
+          data-action="show-input"
+          hidden
+        >
+          <span data-icon="chat"></span>继续交流<kbd>⌘ ↵</kbd>
+        </button>
+      </main>
+      <aside class="inspector" id="inspector" aria-label="Morphz 主体信息">
+        <header class="subject-heading">
+          <div class="subject-mark">
+            <svg viewBox="0 0 96 96" aria-hidden="true">
+              <path
+                d="M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z"
+              />
+            </svg>
+          </div>
+          <div>
+            <strong>Morphz</strong
+            ><span class="subject-state" id="subject-state"
+              >正在推进 1 项工作</span
+            >
+          </div>
+          <button
+            class="icon-button"
+            data-action="subject-menu"
+            aria-label="主体选项"
+            title="主体选项"
+          >
+            <span data-icon="more"></span></button
+          ><button
+            class="icon-button compact-close"
+            data-action="inspector"
+            aria-label="关闭 Morphz 信息"
+          >
+            <span data-icon="x"></span>
+          </button>
+        </header>
+        <div class="subject-tabs" role="tablist" aria-label="主体信息分类">
+          <button
+            role="tab"
+            aria-selected="true"
+            data-tab="activity"
+            id="tab-activity"
+            aria-controls="inspector-body"
+          >
+            <span data-icon="activity"></span>活动</button
+          ><button
+            role="tab"
+            aria-selected="false"
+            data-tab="authority"
+            id="tab-authority"
+            aria-controls="inspector-body"
+            aria-label="授权"
+            title="授权"
+          >
+            <span data-icon="shield"></span></button
+          ><button
+            role="tab"
+            aria-selected="false"
+            data-tab="schedule"
+            id="tab-schedule"
+            aria-controls="inspector-body"
+            aria-label="安排"
+            title="安排"
+          >
+            <span data-icon="clock"></span></button
+          ><button
+            role="tab"
+            aria-selected="false"
+            data-tab="profile"
+            id="tab-profile"
+            aria-controls="inspector-body"
+            aria-label="设定"
+            title="设定"
+          >
+            <span data-icon="sliders"></span>
+          </button>
+        </div>
+        <div
+          class="inspector-body"
+          id="inspector-body"
+          role="tabpanel"
+          aria-labelledby="tab-activity"
+        ></div>
+        <footer class="inspector-footer">
+          <span class="sample-mark"></span>示例活动 · 非实时数据
+        </footer>
+      </aside>
+    </div>
+    <div class="toast" id="toast" role="status" hidden></div>
+    <dialog id="preview-dialog">
+      <div class="dialog-heading">
+        <h2 id="dialog-title"></h2>
+        <button
+          class="icon-button"
+          data-action="close-dialog"
+          aria-label="关闭"
+        >
+          <span data-icon="x"></span>
+        </button>
+      </div>
+      <div id="dialog-content"></div>
+      <p class="dialog-boundary">
+        视觉与交互演示，不发送、不保存、不连接真实服务。
+      </p>
+    </dialog>
+  </body>
+</html>
