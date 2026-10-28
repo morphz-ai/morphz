@@ -5,7 +5,7 @@ Clicking it reveals used input / total capacity, percentage, measurement time,
 reserved answer space, remaining input space and an editable total maximum.
 The continuous bar runs left to right as reserved → used → remaining, with the
 same clockwise order starting at the top of the icon ring. The legend follows
-that order. Remaining space uses a visible neutral track, without white gaps or
+that order. Remaining space uses a visible pale theme track, without white gaps or
 a reservation pinned after free space. The range and K-value field edit a local
 draft; Apply commits it, and Auto removes the explicit ceiling. K means 1024
 tokens. Usage estimates are marked with ≈ and are not billing or account quota.
@@ -73,3 +73,18 @@ uses the same order without gaps. The corresponding rendered geometry regression
 checks left-edge reservation, adjacency of used space and a free tail. Both
 palettes, narrow and 200% layouts, numeric alignment and the flat range control
 were inspected. This was a frontend-only update with Runtime left running.
+
+Color roles share a deliberate tonal palette in the current accent: used is the
+full accent, reserved is a softer 60% accent/surface mix, and free space uses an
+18% accent/surface mix. The same roles apply to bar, legend and ring in all four
+accent themes and both appearances. High utilization alone does not turn the
+whole meter red; the existing danger color is reserved for a measured input
+that actually exceeds its usable ceiling. That condition is also shown in text.
+
+The tonal follow-up was viewed in the original light Desktop and isolated light /
+dark fixtures. The current 78% estimate uses the selected accent, a softer
+reservation and a pale free tail, with matching legend and icon roles. The normal
+Desktop restart recovered a blank renderer reload; Runtime stayed at the same PID.
+Nine focused browser regressions passed, including four palettes in both schemes
+and the distinct overflow-only danger presentation. This is not a full-app
+accessibility audit or a fix for the unrelated intermittent history read failure.

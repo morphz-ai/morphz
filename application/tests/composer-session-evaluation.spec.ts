@@ -698,6 +698,49 @@ test("上下文容量随会话模型更新，独立慢读不阻塞正文，也�
   await page.screenshot({ path: info.outputPath("capacity-dark-narrow.png") });
 });
 
+test("三段配色随主题统一；未超限保留主题色，明暗模式均可区分", async ({
+  page,
+  messageHost,
+}, info) => {
+  const f = await fixture(page, messageHost);
+  await page.keyboard.press("Escape");
+  const capacity = page.getByRole("button", {
+    name: "上下文容量",
+    exact: true,
+  });
+  await expect(capacity).toHaveAttribute("aria-description", /80%/);
+  await capacity.click();
+  const bar = page.getByRole("progressbar", {
+    name: "已用上下文",
+    exact: true,
+  });
+  await expect(bar).not.toHaveAttribute("data-pressure");
+  await expect(capacity.locator("svg")).not.toHaveAttribute("data-pressure");
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      await page.locator(".app").evaluate((node, accent) => {
+        (node as HTMLElement).dataset.accent = accent;
+      }, accent);
+      await settleTransitions(page);
+      const colors = await bar.evaluate((node) => [
+        getComputedStyle(node.querySelector(".capacity-bar-reserved")!)
+          .backgroundColor,
+        getComputedStyle(node.querySelector(".capacity-bar-used")!)
+          .backgroundColor,
+        getComputedStyle(node).backgroundColor,
+      ]);
+      expect(new Set(colors).size).toBe(3);
+      if (accent === "cyan")
+        await page.screenshot({
+          path: info.outputPath(`capacity-color-${scheme}.png`),
+        });
+    }
+  }
+  expect(f.messages()).toHaveLength(0);
+  expect(f.writes()).toHaveLength(0);
+});
+
 test("容量读取失败只影响容量入口，重读不改模型、正文或发送消息", async ({
   page,
   messageHost,
@@ -793,6 +836,9 @@ test("用量沿现有事件流更新；容量可调、可恢复自动，回车�
     .toBe(1);
   await expect(capacity).toHaveText("");
   await expect(capacity).toHaveAttribute("aria-description", /128K.*180%/);
+  await expect(
+    page.getByRole("progressbar", { name: "已用上下文", exact: true }),
+  ).toHaveAttribute("data-pressure", "over");
   expect(
     f.state.calls.filter((c) => c.method === "session-context-budget.update")[0]
       ?.params,

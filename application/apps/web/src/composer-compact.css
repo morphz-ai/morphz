@@ -108,6 +108,12 @@
   background: var(--soft);
   color: var(--ink);
 }
+.composer-capacity-trigger,
+.composer-capacity-menu {
+  --capacity-used: var(--accent);
+  --capacity-reserved: color-mix(in srgb, var(--accent) 60%, var(--paper));
+  --capacity-free: color-mix(in srgb, var(--accent) 18%, var(--paper));
+}
 .app .composer-capacity-menu {
   width: min(294px, calc(100vw - 24px));
   padding: 14px;
@@ -119,15 +125,15 @@
   stroke-width: 2;
 }
 .capacity-ring-track {
-  stroke: var(--line);
+  stroke: var(--capacity-free);
 }
 .capacity-ring-fill {
-  stroke: var(--accent);
+  stroke: var(--capacity-used);
 }
 .capacity-ring-reserved {
-  stroke: color-mix(in srgb, var(--text-secondary) 70%, var(--paper));
+  stroke: var(--capacity-reserved);
 }
-.composer-capacity-ring[data-pressure="high"] .capacity-ring-fill {
+.composer-capacity-ring[data-pressure="over"] .capacity-ring-fill {
   stroke: var(--danger);
 }
 .composer-capacity-percent {
@@ -160,20 +166,20 @@
   height: 6px;
   overflow: hidden;
   border-radius: 4px;
-  background: var(--line);
+  background: var(--capacity-free);
   margin-top: 10px;
 }
 .composer-capacity-bar > span {
   flex: 0 0 auto;
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--capacity-used);
 }
-.composer-capacity-bar[data-pressure="high"] > .capacity-bar-used {
+.composer-capacity-bar[data-pressure="over"] > .capacity-bar-used {
   background: var(--danger);
 }
 .composer-capacity-bar > .capacity-bar-reserved {
-  background: color-mix(in srgb, var(--text-secondary) 70%, var(--paper));
+  background: var(--capacity-reserved);
 }
 .composer-capacity-legend {
   display: flex;
@@ -197,15 +203,15 @@
   border-radius: 50%;
 }
 .capacity-key-used {
-  background: var(--accent);
+  background: var(--capacity-used);
 }
 .capacity-key-reserved {
-  background: color-mix(in srgb, var(--text-secondary) 70%, var(--paper));
+  background: var(--capacity-reserved);
 }
 .capacity-key-free {
-  background: var(--line);
+  background: var(--capacity-free);
 }
-.composer-capacity-bar[data-pressure="high"]
+.composer-capacity-bar[data-pressure="over"]
   + .composer-capacity-legend
   .capacity-key-used {
   background: var(--danger);

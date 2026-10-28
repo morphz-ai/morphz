@@ -268,7 +268,7 @@ export function ComposerContextCapacity({
       triggerIcon={
         <svg
           className="composer-capacity-ring"
-          data-pressure={capacity.highPressure ? "high" : undefined}
+          data-pressure={capacity.overflowTokens > 0 ? "over" : undefined}
           viewBox="0 0 20 20"
           aria-hidden="true"
         >
@@ -341,7 +341,7 @@ export function ComposerContextCapacity({
               percent === null ? undefined : Math.min(percent, 100)
             }
             aria-valuetext={usage ? description : "暂无当前模型的输入估算"}
-            data-pressure={capacity.highPressure ? "high" : undefined}
+            data-pressure={capacity.overflowTokens > 0 ? "over" : undefined}
           >
             {capacity.reservedRatio > 0 && (
               <span
