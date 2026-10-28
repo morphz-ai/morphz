@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   contextCapacityPresentation,
   formatContextCapacity,
@@ -149,6 +156,18 @@ export function ComposerContextCapacity({
     ? null
     : Math.round(Number(draft.kilo) * 1024) - capacity.reservedTokens;
   const maxTokens = capacity.maxTotalTokens ?? 0;
+  const rangeMax = maxTokens / 1024;
+  const rangeMin = Math.min(
+    rangeMax,
+    Math.floor(capacity.reservedTokens / 1024) + 1,
+  );
+  const rangeValue = draft.automatic
+    ? (capacity.totalTokens ?? 0) / 1024
+    : Number(draft.kilo) || rangeMin;
+  const rangeProgress = Math.min(
+    100,
+    Math.max(0, ((rangeValue - rangeMin) / (rangeMax - rangeMin || 1)) * 100),
+  );
   const valid =
     draft.automatic ||
     (!!draft.kilo.trim() &&
@@ -255,17 +274,6 @@ export function ComposerContextCapacity({
         >
           <g transform="rotate(-90 10 10)">
             <circle className="capacity-ring-track" cx="10" cy="10" r="7.5" />
-            {capacity.usedArcRatio !== null && capacity.usedArcRatio > 0 && (
-              <circle
-                className="capacity-ring-fill"
-                cx="10"
-                cy="10"
-                r="7.5"
-                pathLength="100"
-                strokeDasharray={`${Math.max(0, capacity.usedArcRatio * 100 - 2.5)} 100`}
-                strokeDashoffset="-1.25"
-              />
-            )}
             {capacity.reservedRatio > 0 && (
               <circle
                 className="capacity-ring-reserved"
@@ -273,8 +281,18 @@ export function ComposerContextCapacity({
                 cy="10"
                 r="7.5"
                 pathLength="100"
-                strokeDasharray={`${Math.max(0, capacity.reservedRatio * 100 - 2.5)} 100`}
-                strokeDashoffset={-(100 - capacity.reservedRatio * 100 + 1.25)}
+                strokeDasharray={`${capacity.reservedRatio * 100} 100`}
+              />
+            )}
+            {capacity.usedArcRatio !== null && capacity.usedArcRatio > 0 && (
+              <circle
+                className="capacity-ring-fill"
+                cx="10"
+                cy="10"
+                r="7.5"
+                pathLength="100"
+                strokeDasharray={`${capacity.usedArcRatio * 100} 100`}
+                strokeDashoffset={-capacity.reservedRatio * 100}
               />
             )}
           </g>
@@ -306,10 +324,10 @@ export function ComposerContextCapacity({
           </div>
           <div className="composer-capacity-usage">
             <strong>
-              {usage
-                ? (estimated ? "≈ " : "") +
-                  formatContextCapacity(usage.inputTokens)
-                : "—"}
+              {usage && estimated && (
+                <small className="composer-capacity-estimate">≈</small>
+              )}
+              {usage ? formatContextCapacity(usage.inputTokens) : "—"}
             </strong>
             <span>/ {amount ?? "—"}</span>
           </div>
@@ -325,6 +343,12 @@ export function ComposerContextCapacity({
             aria-valuetext={usage ? description : "暂无当前模型的输入估算"}
             data-pressure={capacity.highPressure ? "high" : undefined}
           >
+            {capacity.reservedRatio > 0 && (
+              <span
+                className="capacity-bar-reserved"
+                style={{ width: capacity.reservedRatio * 100 + "%" }}
+              />
+            )}
             <span
               className="capacity-bar-used"
               style={{
@@ -334,24 +358,18 @@ export function ComposerContextCapacity({
                     : Math.max(0, capacity.usedArcRatio * 100)) + "%",
               }}
             />
-            {capacity.reservedRatio > 0 && (
-              <span
-                className="capacity-bar-reserved"
-                style={{ width: capacity.reservedRatio * 100 + "%" }}
-              />
-            )}
           </div>
           <div className="composer-capacity-legend">
-            <span>
-              <i className="capacity-key-used" />
-              已用
-            </span>
             <span>
               <i className="capacity-key-reserved" />
               预留{" "}
               {actual?.outputTokens
                 ? formatContextCapacity(actual.outputTokens)
                 : "未声明"}
+            </span>
+            <span>
+              <i className="capacity-key-used" />
+              已用
             </span>
             <span>
               <i className="capacity-key-free" />
@@ -406,17 +424,15 @@ export function ComposerContextCapacity({
                 <input
                   type="range"
                   aria-label="最大上下文滑块"
-                  min={Math.min(
-                    maxTokens / 1024,
-                    Math.floor(capacity.reservedTokens / 1024) + 1,
-                  )}
-                  max={Math.max(1, maxTokens / 1024)}
-                  value={
-                    draft.automatic
-                      ? (capacity.totalTokens ?? 0) / 1024
-                      : Number(draft.kilo) || 1
-                  }
+                  min={rangeMin}
+                  max={Math.max(1, rangeMax)}
+                  value={rangeValue}
                   disabled={!editable}
+                  style={
+                    {
+                      "--capacity-range-progress": `${rangeProgress}%`,
+                    } as CSSProperties
+                  }
                   onChange={(event) => change(event.target.value)}
                 />
                 <span className="composer-capacity-number">

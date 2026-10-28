@@ -123,13 +123,9 @@
 }
 .capacity-ring-fill {
   stroke: var(--accent);
-  stroke-linecap: round;
-  transition: stroke-dasharray 180ms ease;
 }
 .capacity-ring-reserved {
-  stroke: var(--text-secondary);
-  opacity: 0.65;
-  stroke-linecap: round;
+  stroke: color-mix(in srgb, var(--text-secondary) 70%, var(--paper));
 }
 .composer-capacity-ring[data-pressure="high"] .capacity-ring-fill {
   stroke: var(--danger);
@@ -149,36 +145,35 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.composer-capacity-usage .composer-capacity-estimate {
+  margin-right: 5px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
 .composer-capacity-usage > span {
   color: var(--text-secondary);
   font-size: 13px;
 }
 .composer-capacity-bar {
-  position: relative;
-  height: 4px;
+  display: flex;
+  height: 6px;
   overflow: hidden;
   border-radius: 4px;
-  background: var(--soft);
+  background: var(--line);
   margin-top: 10px;
 }
 .composer-capacity-bar > span {
+  flex: 0 0 auto;
   display: block;
   height: 100%;
   background: var(--accent);
-  border-radius: inherit;
-  transition: width 180ms ease;
 }
 .composer-capacity-bar[data-pressure="high"] > .capacity-bar-used {
   background: var(--danger);
 }
 .composer-capacity-bar > .capacity-bar-reserved {
-  position: absolute;
-  top: 0;
-  right: 0;
-  background: var(--text-secondary);
-  opacity: 0.65;
-  border-left: 2px solid var(--paper);
-  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--text-secondary) 70%, var(--paper));
 }
 .composer-capacity-legend {
   display: flex;
@@ -205,11 +200,10 @@
   background: var(--accent);
 }
 .capacity-key-reserved {
-  background: var(--text-secondary);
-  opacity: 0.65;
+  background: color-mix(in srgb, var(--text-secondary) 70%, var(--paper));
 }
 .capacity-key-free {
-  border: 1px solid var(--line);
+  background: var(--line);
 }
 .composer-capacity-bar[data-pressure="high"]
   + .composer-capacity-legend
@@ -255,13 +249,58 @@
   margin-top: 4px;
 }
 .composer-capacity-input-row > input[type="range"] {
+  appearance: none;
   flex: 1;
   min-width: 0;
   width: 0;
   height: 30px;
   margin: 0;
   padding: 0;
-  accent-color: var(--accent);
+  border: 0;
+  background: transparent;
+}
+.composer-capacity-input-row
+  > input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0 var(--capacity-range-progress),
+    var(--line) var(--capacity-range-progress) 100%
+  );
+}
+.composer-capacity-input-row > input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 1px solid var(--paper);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 3px #0002;
+}
+.composer-capacity-input-row
+  > input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.composer-capacity-input-row > input[type="range"]::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--line);
+}
+.composer-capacity-input-row > input[type="range"]::-moz-range-progress {
+  height: 4px;
+  border-radius: 4px;
+  background: var(--accent);
+}
+.composer-capacity-input-row > input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--paper);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 1px 3px #0002;
 }
 .composer-capacity-number {
   display: inline-flex;
@@ -275,6 +314,7 @@
   font-size: 12px;
 }
 .app .composer-capacity-number input {
+  appearance: textfield;
   border: 0;
   outline: none;
   box-shadow: none;
@@ -286,6 +326,11 @@
   font-size: 12px;
   color: var(--ink);
   background: transparent;
+}
+.composer-capacity-number input::-webkit-inner-spin-button,
+.composer-capacity-number input::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
 }
 .composer-capacity-number:focus-within {
   border-color: var(--accent);
@@ -339,6 +384,7 @@
   gap: 16px;
   color: var(--text-secondary);
   font-size: 12px;
+  font-weight: 500;
 }
 .composer-capacity-heading strong {
   color: var(--ink);

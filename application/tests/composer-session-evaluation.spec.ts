@@ -642,6 +642,36 @@ test("上下文容量随会话模型更新，独立慢读不阻塞正文，也�
   await expect(capacity).toHaveText("");
   await expect(capacity).toHaveAttribute("aria-description", /128K/);
   await expect(page.getByText("预留 16K", { exact: true })).toBeVisible();
+  const bar = page.getByRole("progressbar", {
+    name: "已用上下文",
+    exact: true,
+  });
+  const reservedBounds = await bar
+    .locator(".capacity-bar-reserved")
+    .boundingBox();
+  const usedBounds = await bar.locator(".capacity-bar-used").boundingBox();
+  const barBounds = await bar.boundingBox();
+  expect(reservedBounds).not.toBeNull();
+  expect(usedBounds).not.toBeNull();
+  expect(barBounds).not.toBeNull();
+  expect(Math.abs(reservedBounds!.x - barBounds!.x)).toBeLessThan(1);
+  expect(
+    Math.abs(usedBounds!.x - reservedBounds!.x - reservedBounds!.width),
+  ).toBeLessThan(1);
+  expect(reservedBounds!.width / barBounds!.width).toBeCloseTo(0.125, 2);
+  expect(usedBounds!.width / barBounds!.width).toBeCloseTo(0.25, 2);
+  expect(
+    barBounds!.x + barBounds!.width - usedBounds!.x - usedBounds!.width,
+  ).toBeGreaterThan(16);
+  await expect(
+    page.locator(".composer-capacity-legend > span").nth(0),
+  ).toContainText("预留");
+  await expect(
+    page.locator(".composer-capacity-legend > span").nth(1),
+  ).toHaveText("已用");
+  await expect(
+    page.locator(".composer-capacity-legend > span").nth(2),
+  ).toContainText("剩余");
   await page.screenshot({ path: info.outputPath("capacity-light.png") });
   await page.keyboard.press("Escape");
   const reads = f.state.calls.filter(

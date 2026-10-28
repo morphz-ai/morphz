@@ -3,7 +3,10 @@
 Desktop's input bar uses only a segmented ring, without visible numbers or text.
 Clicking it reveals used input / total capacity, percentage, measurement time,
 reserved answer space, remaining input space and an editable total maximum.
-The ring and bar distinguish used, reserved and remaining space. The range and K-value field edit a local
+The continuous bar runs left to right as reserved → used → remaining, with the
+same clockwise order starting at the top of the icon ring. The legend follows
+that order. Remaining space uses a visible neutral track, without white gaps or
+a reservation pinned after free space. The range and K-value field edit a local
 draft; Apply commits it, and Auto removes the explicit ceiling. K means 1024
 tokens. Usage estimates are marked with ≈ and are not billing or account quota.
 Absent measurements stay unknown rather than becoming zero. The count describes
@@ -62,3 +65,11 @@ window and final dark/narrow/zoom fixtures were inspected for ring legibility,
 segment separation, Chinese type, control alignment and density. Repeated total
 and reservation rows were removed. Runtime PID and budget were unchanged by
 this frontend refresh; no real message was sent or business ceiling edited.
+
+The follow-up order/polish review verified the continuous reserved → used →
+remaining bar in the original Desktop, including a 32K reservation before a
+199.8K measurement and 24.2K free at the end of the 256K window. The icon ring
+uses the same order without gaps. The corresponding rendered geometry regression
+checks left-edge reservation, adjacency of used space and a free tail. Both
+palettes, narrow and 200% layouts, numeric alignment and the flat range control
+were inspected. This was a frontend-only update with Runtime left running.
