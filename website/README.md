@@ -11,7 +11,7 @@
 
 The main site may link to these surfaces, but it must not present an official persona, a user's private Agent, and the open-source Runtime as the same product or workflow.
 
-`/experience` and `/en/experience` are the shared product entry. The official-persona and user-Web calls to action are deliberately inactive until their URLs are configured with `NEXT_PUBLIC_MORPHZ_OFFICIAL_PERSONA_URL` and `NEXT_PUBLIC_MORPHZ_USER_WEB_URL` at build time. Configure them only after the corresponding public service and its identity/data boundary have been verified. The owner-only private-Agent preview is not the user Web application and must not be configured as the latter.
+`/product` and `/en/product` are the shared product entry; the former `/experience` paths redirect there. Set `NEXT_PUBLIC_MORPHZ_OFFICIAL_PERSONA_URL` only for a verified persona deployment and `NEXT_PUBLIC_MORPHZ_USER_WEB_URL` only for the complete, publicly available user Web application. The restricted owner-only Agent preview is **not** that Web application: if linked for internal evaluation, configure it separately as `NEXT_PUBLIC_MORPHZ_USER_AGENT_PREVIEW_URL`, which receives an explicit preview label and access warning. An absent URL appears as plain status text, never as a disabled-looking button. Development builds alone may link to a local `.local` persona URL over HTTP.
 
 ## Content boundaries
 

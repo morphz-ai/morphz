@@ -9,20 +9,22 @@ import { SiteHeader } from "./SiteHeader";
 
 const copy = {
   zh: {
-    eyebrow: "MORPHZ / 产品体验",
-    title: "同一个技术起点，\n两种与 Agent 相处的方式。",
-    lead: "来认识持续存在、面向所有人的官方 Morphz；或者进入你自己的 Agent 工作空间。两者使用 Morphz 的技术，但身份、认知和数据边界彼此独立。",
-    publicNumber: "01 / 认识它",
+    eyebrow: "MORPHZ / 产品",
+    title: "与 Morphz 对话。\n让自己的 Agent 工作。",
+    lead: "Morphz 是已经可以运行的产品。官方人格与用户 Agent 是两种不同的使用方式：它们使用同一技术，身份、认知和数据边界却彼此独立。在线入口按实际开放状态提供。",
+    publicNumber: "01 / 官方人格",
     publicTitle: "与 Morphz 对话",
     publicBody: "这是一个面向所有访客的官方人格。不同人的会话连接到同一个 Morphz，它可以在共同经历中形成共享认识。因此，这里的对话不应被当作私人空间。",
     publicAction: "前往官方 Morphz",
-    publicUnavailable: "官方人格网站尚未开放入口",
+    publicUnavailable: "官方人格站尚未对外开放",
     publicBoundary: "一个官方人格 · 共享 Mind",
-    privateNumber: "02 / 拥有自己的 Agent",
+    privateNumber: "02 / 用户 Agent",
     privateTitle: "我的 Agent",
-    privateBody: "在独立的工作空间里与自己的 Agent 协作。你的身份、会话和工作数据不会并入官方 Morphz 的共享 Mind。Web 工作台正在与云端 Agent Cell 接合。",
+    privateBody: "在独立的工作空间里与自己的 Agent 协作。你的身份、会话和工作数据不会并入官方 Morphz 的共享 Mind。完整 Web 工作台正在接入云端 Agent Cell。",
     privateAction: "进入我的 Agent",
-    privateUnavailable: "Web 工作台接入中",
+    privatePreviewAction: "打开受限预览",
+    privatePreviewNote: "仅限已授权账号；这里不是完整的 Web 工作台。",
+    privateUnavailable: "完整 Web 工作台尚未开放",
     privateBoundary: "独立 Agent · 独立数据边界",
     boundaryLabel: "清晰的边界",
     boundaryTitle: "同一个 Morphz，\n不等于同一个 Agent。",
@@ -31,23 +33,25 @@ const copy = {
     buildTitle: "从源码启动 Morphz",
     buildBody: "如果你想先了解技术，可以在自己的机器上安装并运行开源 Runtime。官网的论文、文档和开放规范也在这里。",
     buildAction: "下载与运行",
-    note: "入口仅在对应服务完成部署和验证后开放。",
+    note: "Morphz 产品可以通过开源 Runtime 运行；在线服务各自按部署和开放状态提供入口。",
   },
   en: {
-    eyebrow: "MORPHZ / EXPERIENCES",
-    title: "One technology.\nTwo ways to live with an Agent.",
-    lead: "Meet the persistent, public Morphz, or work with an Agent of your own. Both use Morphz technology, but their identities, cognition, and data boundaries stay separate.",
-    publicNumber: "01 / MEET MORPHZ",
+    eyebrow: "MORPHZ / PRODUCT",
+    title: "Talk to Morphz.\nPut your own Agent to work.",
+    lead: "Morphz is a working product. The official persona and your own Agent are two ways to use it: they share the technology, but keep separate identities, cognition, and data. Online links reflect what is actually open.",
+    publicNumber: "01 / OFFICIAL PERSONA",
     publicTitle: "Talk to Morphz",
     publicBody: "The official persona meets every visitor. Its sessions connect to one Morphz, which can form shared understanding from common experience. Do not treat this as a private space.",
     publicAction: "Meet the official Morphz",
-    publicUnavailable: "The official persona site is not open yet",
+    publicUnavailable: "The official persona site is not publicly open yet",
     publicBoundary: "One official persona · shared Mind",
-    privateNumber: "02 / YOUR OWN AGENT",
+    privateNumber: "02 / YOUR AGENT",
     privateTitle: "My Agent",
-    privateBody: "Work with your own Agent in an independent workspace. Your identity, sessions, and work data do not become part of the official Morphz's shared Mind. The Web workspace is being connected to cloud Agent Cells.",
+    privateBody: "Work with your own Agent in an independent workspace. Your identity, sessions, and work data do not become part of the official Morphz's shared Mind. The full Web workspace is being connected to cloud Agent Cells.",
     privateAction: "Open My Agent",
-    privateUnavailable: "Web workspace integration in progress",
+    privatePreviewAction: "Open restricted preview",
+    privatePreviewNote: "Authorized accounts only; this is not the full Web workspace.",
+    privateUnavailable: "The full Web workspace is not open yet",
     privateBoundary: "Independent Agent · separate data boundary",
     boundaryLabel: "THE BOUNDARY",
     boundaryTitle: "The same Morphz technology\nis not the same Agent.",
@@ -56,7 +60,7 @@ const copy = {
     buildTitle: "Run Morphz from source",
     buildBody: "To explore the technology first, install the open-source Runtime on your own machine. The paper, documentation, and open standards are here too.",
     buildAction: "Download and run",
-    note: "An entry opens only after its service is deployed and verified.",
+    note: "You can run Morphz through the open-source Runtime; online services link only to available deployments.",
   },
 } as const;
 
@@ -88,7 +92,7 @@ export function ExperiencePage({ locale }: { locale: Locale }) {
             <h2>{t.privateTitle}</h2>
             <p>{t.privateBody}</p>
             <small>{t.privateBoundary}</small>
-            {surfaces.userWeb ? <a className="experience-card__action" href={surfaces.userWeb}>{t.privateAction}<b aria-hidden="true">↗</b></a> : <span className="experience-card__status">{t.privateUnavailable}</span>}
+            {surfaces.userWeb ? <a className="experience-card__action" href={surfaces.userWeb}>{t.privateAction}<b aria-hidden="true">↗</b></a> : surfaces.userPreview ? <><a className="experience-card__action" href={surfaces.userPreview}>{t.privatePreviewAction}<b aria-hidden="true">↗</b></a><span className="experience-card__preview-note">{t.privatePreviewNote}</span></> : <span className="experience-card__status">{t.privateUnavailable}</span>}
           </article>
         </div>
         <section className="experience-boundary">

@@ -7,7 +7,7 @@ import { BrandMark } from "./BrandMark";
 
 const copy = {
   zh: {
-    experience: "体验",
+    experience: "产品",
     essay: "文章",
     paper: "论文",
     standards: "规范",
@@ -22,7 +22,7 @@ const copy = {
     theme: "切换明暗主题",
   },
   en: {
-    experience: "Experience",
+    experience: "Product",
     essay: "Articles",
     paper: "Paper",
     standards: "Standards",
@@ -50,7 +50,7 @@ export function SiteHeader({
   const t = copy[locale];
   const home = sitePath(locale, "/");
   const essay = sitePath(locale, "/blog");
-  const experience = sitePath(locale, "/experience");
+  const experience = sitePath(locale, "/product");
   const paper = sitePath(locale, "/paper");
   const standards = sitePath(locale, "/standards");
   const docs = sitePath(locale, "/docs");

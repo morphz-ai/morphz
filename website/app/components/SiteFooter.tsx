@@ -8,7 +8,7 @@ const copy = {
     statement: "让一个智能体在同一认知上下文中维护认知，并发推进多个目标。",
     maintained: "由新变元创造并维护。",
     technical: "产品与研究",
-    experience: "体验方式",
+    experience: "产品",
     experiences: "认识官方 Morphz · 我的 Agent",
     ecosystem: "开源项目",
     essay: "技术文章",
@@ -22,7 +22,7 @@ const copy = {
     statement: "One Agent maintains cognition and advances concurrent objectives inside one Context.",
     maintained: "Created and maintained by Newvar.",
     technical: "Product and research",
-    experience: "Experience",
+    experience: "Product",
     experiences: "Meet Morphz · My Agent",
     ecosystem: "Open source",
     essay: "Technical articles",
@@ -53,7 +53,7 @@ export function SiteFooter({ locale }: { locale: Locale }) {
       <div className="site-footer__index">
         {onlineExperiencePublished() && <section>
           <span>{t.experience}</span>
-          <div className="site-footer__links"><Link href={sitePath(locale, "/experience")}>{t.experiences}</Link></div>
+          <div className="site-footer__links"><Link href={sitePath(locale, "/product")}>{t.experiences}</Link></div>
         </section>}
         <section>
           <span>{t.technical}</span>
