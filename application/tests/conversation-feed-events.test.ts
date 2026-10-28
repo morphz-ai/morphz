@@ -163,6 +163,47 @@ test("健康连接不再每1.2秒查history，WS变化直接呈现，变更hint�
   }
 });
 
+test("上下文用量复用授权WS，不额外拉取历史，拒绝其他会话并保留最后一次测量", async () => {
+  const f = await fixture();
+  const measured = (sequence: number, session = "owned"): StreamEvent => ({
+    ...reply("capacity-" + sequence, sequence, session),
+    topic: "runtime/model_attempt_state",
+    payload: {
+      context_id: "context",
+      session_id: session,
+      context_token_budget: { model: "model" },
+      pressure: {
+        token_scope: "full-work-prompt",
+        estimated_tokens: sequence * 100,
+        token_model: "physical-model",
+        token_accuracy: "heuristic-estimate",
+      },
+      detail: "private model prompt",
+    },
+  });
+  try {
+    const reads = f.requests.length;
+    const send = (e: StreamEvent) => {
+      for (const ws of f.sockets.clients) ws.send(JSON.stringify(e));
+    };
+    send(measured(10));
+    await wait(() => f.snapshot().contextUsages?.[0]?.inputTokens === 1000);
+    send(measured(9));
+    send(measured(11, "foreign"));
+    send({ ...measured(12), payload: { session_id: "owned", terminal: true } });
+    send(reply("usage-fence", 13));
+    await wait(() =>
+      f.snapshot().messages.some((m) => m.text === "usage-fence"),
+    );
+    assert.equal(f.snapshot().contextUsages?.length, 1);
+    assert.equal(f.snapshot().contextUsages?.[0]?.inputTokens, 1000);
+    assert.equal(f.requests.length, reads);
+    assert.doesNotMatch(JSON.stringify(f.snapshot()), /private model prompt/);
+  } finally {
+    await f.close();
+  }
+});
+
 test("真实WS与持久补读使用同一等待投影，不输出no_reply假工具且保留拒绝原因", async () => {
   const f = await fixture();
   let sequence = 0;
@@ -509,11 +550,21 @@ test("原生消息阶段更正使用同一 IO 完整前缀，提交后晚到快�
     };
     f.durable.push(committed);
     await f.feed.sync();
-    await wait(() => f.snapshot().messages.some((m) => m.text === "真正正文" && !m.streaming));
-    f.ioSend({ ...draft, type: "output.delta", delta_seq: 4, text: "过期更正" });
+    await wait(() =>
+      f.snapshot().messages.some((m) => m.text === "真正正文" && !m.streaming),
+    );
+    f.ioSend({
+      ...draft,
+      type: "output.delta",
+      delta_seq: 4,
+      text: "过期更正",
+    });
     await pause(80);
     assert.deepEqual(
-      f.snapshot().messages.filter((m) => m.kind !== "tool").map((m) => m.text),
+      f
+        .snapshot()
+        .messages.filter((m) => m.kind !== "tool")
+        .map((m) => m.text),
       ["真正正文"],
     );
   } finally {

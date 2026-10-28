@@ -52,6 +52,13 @@ model-token-limit form and a positive numeric limit. It retains the original
 status/type/message; it does not convert an authentication type generally or
 apply this exception to 401/403, rate limits, or arbitrary quoted text.
 
+The deployed K3-256k profile instead uses a 32768 output allowance, matching the
+existing Runtime reserve while leaving 229376 tokens (224K) for input within
+the confirmed 262144 total window. The 131072 probe above validates support for
+an explicit output allowance; it is not a claim about the omitted default or a
+requirement to reserve half the window. This configuration change is scoped to
+that provider/model, with other profiles and Session defaults preserved.
+
 [Kimi Code model contracts](https://www.kimi.com/code/docs/en/kimi-code/models.html)
 distinguish the fixed 256K model from models whose capacity depends on the plan.
 Do not infer other routes' capacity merely from their display name.
@@ -59,9 +66,14 @@ Do not infer other routes' capacity merely from their display name.
 ## Desktop presentation
 
 `session-context-budget.read` reuses the existing authorized Session/principal
-binding and reads only that Session's budget. It does not create a Session,
-retrieve history, update Context policy, or gate input admission. The composer
-shows a compact capacity entry; its local popover distinguishes available input,
-total window and reserved output where declared. Scope/model changes and an
-explicit open refresh this display. There is no healthy polling loop. Unknown,
-not-started and failed reads do not manufacture a capacity or block typing.
+binding. It reads the selected Session's budget plus at most 32 latest indexed
+model-attempt metadata events, never a full conversation or reconstructed Context.
+Subsequent numeric measurements arrive on the existing authorized event stream.
+The composer shows estimated used/input ceiling and a ring percentage; a compact
+editor uses the same Context budget CAS as Dashboard. Total model window and
+reserved output remain separate. A change affects later requests, with a visible
+shared-Context scope. Conflicts or unknown receipts require rereading, not replay.
+Scope/model changes and an explicit open refresh the metadata. There is no healthy
+polling loop. Unknown, not-started and failed reads do not manufacture a count or
+block typing, create a Session or send a message. See the application contract in
+[`composer-context-capacity.md`](../application/docs/composer-context-capacity.md).

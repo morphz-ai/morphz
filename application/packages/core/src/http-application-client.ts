@@ -751,6 +751,13 @@ export class HttpApplicationClient {
       case "session-evaluation.read":
         path = "/api/session-evaluation?" + query(fields(params));
         break;
+      case "session-context-budget.read":
+        path = "/api/session-context-budget?" + query(fields(params));
+        break;
+      case "session-context-budget.update":
+        path = "/api/session-context-budget/update";
+        post(params);
+        break;
       case "session-evaluation.update":
         path = "/api/session-evaluation/update";
         post(params);

@@ -31,6 +31,13 @@ import { join } from "node:path";
 import { z } from "zod";
 import { executionModelSchema } from "../../core/src/inference.js";
 import {
+  sessionContextBudgetSnapshotSchema,
+  sessionContextBudgetUpdateSchema,
+  contextUsageFromEvent,
+  latestContextUsage,
+  type SessionContextBudgetUpdate,
+} from "../../core/src/session-context-budget.js";
+import {
   sessionEvaluationScopeSchema,
   sessionEvaluationDefaultsSchema,
   sessionEvaluationUpdateSchema,
@@ -1193,6 +1200,193 @@ export class RuntimeBridge {
       active();
       return result;
     });
+  }
+  /** Independent read: capacity display never gates input or changes policy. */
+  async readSessionContextBudget(
+    raw: SessionEvaluationScope,
+    access: AccessContext,
+    active: () => void = () => {},
+  ) {
+    const scope = sessionEvaluationScopeSchema.parse(raw);
+    active();
+    // Reuse the established Session/principal binding checks, including team
+    // read grants. This read remains separate from model edits and input.
+    const policy = await this.readSessionEvaluation(scope, access, active);
+    if (!policy.runtimeSessionId) {
+      return sessionContextBudgetSnapshotSchema.parse({
+        scope: policy.scope,
+        source: "not_started",
+        inputTokens: null,
+        windowTokens: null,
+        outputTokens: null,
+        model: null,
+        capacitySource: null,
+        contextId: null,
+        runtimeSessionId: null,
+        requestedTokens: null,
+        physicalInputTokens: null,
+        revision: null,
+        canUpdate: false,
+        usage: null,
+      });
+    }
+    const sessionId = policy.runtimeSessionId;
+    const shared = policy.scope.kind === "global";
+    const contextId = this.contextId(
+      shared ? scope.conversationId : scope.projectId,
+    );
+    active();
+    const budget = z
+      .object({
+        context_id: z.literal(contextId),
+        effective_hard_token_limit: z.number().int().positive().safe(),
+        physical_context_window_tokens: z
+          .number()
+          .int()
+          .positive()
+          .safe()
+          .nullable(),
+        max_output_tokens: z.number().int().positive().safe().nullable(),
+        model: z.string().min(1),
+        capacity_source: z.string(),
+        requested_hard_token_limit: z
+          .number()
+          .int()
+          .positive()
+          .safe()
+          .nullable(),
+        physical_prompt_token_limit: z.number().int().positive().safe(),
+        token_budget_revision: z.number().int().nonnegative().safe(),
+      })
+      .parse(
+        await this.request(
+          `/api/contexts/${contextId}/token-budget?session_id=${encodeURIComponent(sessionId)}`,
+          "GET",
+          undefined,
+          access,
+        ),
+      );
+    // One bounded indexed metadata read. Never build Context or page through
+    // dialogue history merely to draw a meter. Subsequent usage arrives on
+    // the existing authorized conversation stream.
+    let usage: ReturnType<typeof latestContextUsage> = null;
+    try {
+      const query = new URLSearchParams({
+        session_id: sessionId,
+        topic: "runtime/model_attempt_state",
+        limit: "32",
+      });
+      const history = z
+        .object({ events: z.array(z.unknown()).max(32) })
+        .parse(
+          await this.request(
+            `/api/contexts/${contextId}/events?${query}`,
+            "GET",
+            undefined,
+            access,
+          ),
+        );
+      usage = latestContextUsage(history.events.map(contextUsageFromEvent), {
+        contextId,
+        sessionId,
+        model: budget.model,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof UpstreamError) ||
+        ![404, 502, 503, 504].includes(error.status)
+      )
+        throw error;
+    }
+    const current = await this.permissionScope(scope, access);
+    active();
+    if (current.id !== sessionId || current.shared !== shared)
+      throw new DomainError("forbidden", "上下文容量的会话范围已变化。");
+    return sessionContextBudgetSnapshotSchema.parse({
+      scope: policy.scope,
+      source: "runtime",
+      inputTokens: budget.effective_hard_token_limit,
+      windowTokens: budget.physical_context_window_tokens,
+      outputTokens: budget.max_output_tokens,
+      model: budget.model,
+      capacitySource: budget.capacity_source,
+      contextId,
+      runtimeSessionId: sessionId,
+      requestedTokens: budget.requested_hard_token_limit,
+      physicalInputTokens: budget.physical_prompt_token_limit,
+      revision: budget.token_budget_revision,
+      canUpdate: policy.canUpdate,
+      usage,
+    });
+  }
+  async updateSessionContextBudget(
+    raw: SessionContextBudgetUpdate,
+    access: AccessContext,
+    authorizeWrite: () => Promise<void>,
+    active: () => void = () => {},
+  ) {
+    const request = sessionContextBudgetUpdateSchema.parse(raw);
+    const scope = {
+      projectId: request.projectId,
+      conversationId: request.conversationId,
+    };
+    await authorizeWrite();
+    const before = await this.readSessionContextBudget(scope, access, active);
+    if (!before.canUpdate || !before.contextId || before.revision === null)
+      throw new DomainError("forbidden", "此处无法调整共享上下文容量。");
+    if (
+      before.model !== request.expectedModel ||
+      before.revision !== request.expectedRevision
+    )
+      throw new DomainError(
+        "conflict",
+        "容量或模型已变化，请重新读取后再调整。",
+      );
+    if (
+      request.requestedTokens !== null &&
+      request.requestedTokens > before.physicalInputTokens!
+    )
+      throw new DomainError("invalid", "所选容量超过当前模型可用的输入上限。");
+    await authorizeWrite();
+    const receipt = z
+      .object({
+        outcome: z.literal("updated"),
+        budget: z.object({
+          context_id: z.literal(before.contextId),
+          requested_hard_token_limit: z.number().nullable(),
+          token_budget_revision: z.number().int().nonnegative(),
+        }),
+      })
+      .parse(
+        await this.request(
+          `/api/contexts/${before.contextId}/token-budget`,
+          "PATCH",
+          {
+            requested_hard_token_limit: request.requestedTokens,
+            expected_revision: request.expectedRevision,
+          },
+          access,
+        ),
+      );
+    if (
+      receipt.budget.requested_hard_token_limit !== request.requestedTokens ||
+      receipt.budget.token_budget_revision !== request.expectedRevision + 1
+    )
+      throw new DomainError(
+        "conflict",
+        "容量写入回执不匹配，请重新读取；不会自动重试。",
+      );
+    await authorizeWrite();
+    const actual = await this.readSessionContextBudget(scope, access, active);
+    if (
+      actual.requestedTokens !== request.requestedTokens ||
+      actual.revision !== receipt.budget.token_budget_revision
+    )
+      throw new DomainError(
+        "conflict",
+        "容量已再次变化，请重新读取；不会覆盖后来的设置。",
+      );
+    return actual;
   }
   private async readEvaluationPolicy(
     scope: SessionEvaluationScope,

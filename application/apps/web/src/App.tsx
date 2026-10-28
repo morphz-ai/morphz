@@ -50,6 +50,7 @@ import {
   type TerminalContext,
 } from "./features/terminal/terminal-context.js";
 import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
+import { ComposerContextCapacity } from "./ComposerContextCapacity.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
@@ -4068,6 +4069,29 @@ function WorkspaceApp({
                           >
                             {speechRecording ? <Square /> : <Mic />}
                           </button>
+                        }
+                        capacity={
+                          !draft.continuation &&
+                          sessionEvaluation.enabled && (
+                            <ComposerContextCapacity
+                              liveUsages={stream.contextUsages}
+                              identityGeneration={client.boot!.csrfToken}
+                              online={
+                                client.online && client.boot!.runtime.connected
+                              }
+                              policyFingerprint={
+                                sessionEvaluation.snapshot?.fingerprint
+                              }
+                              scope={
+                                selectedDraft
+                                  ? undefined
+                                  : {
+                                      projectId: project.id,
+                                      conversationId,
+                                    }
+                              }
+                            />
+                          )
                         }
                         settings={
                           <ComposerExecutionSettings

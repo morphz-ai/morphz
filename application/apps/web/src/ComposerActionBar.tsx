@@ -6,6 +6,7 @@ export function ComposerActionBar({
   media,
   scope,
   status,
+  capacity,
   settings,
   microphone,
   send,
@@ -13,6 +14,7 @@ export function ComposerActionBar({
   media: ReactNode;
   scope?: ReactNode;
   status?: ReactNode;
+  capacity?: ReactNode;
   settings?: ReactNode;
   microphone: ReactNode;
   send: ReactNode;
@@ -25,6 +27,7 @@ export function ComposerActionBar({
         {status}
       </div>
       <div className="composer-action-trailing">
+        {capacity}
         {settings}
         {microphone}
         {send}

@@ -29,6 +29,7 @@ import {
   sessionEvaluationScopeSchema,
   sessionEvaluationUpdateSchema,
 } from "../../core/src/session-evaluation.js";
+import { sessionContextBudgetUpdateSchema } from "../../core/src/session-context-budget.js";
 import {
   sessionPermissionsReadSchema,
   sessionPermissionsUpdateSchema,
@@ -2894,6 +2895,53 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async readSessionContextBudget(raw: unknown) {
+    this.active();
+    const scope = sessionEvaluationScopeSchema.parse(raw);
+    const runtime = this.runtime();
+    const result = await runtime.as(this.access, () =>
+      runtime.readSessionContextBudget(scope, this.access, () => this.active()),
+    );
+    this.active();
+    return result;
+  }
+  async updateSessionContextBudget(raw: unknown) {
+    this.active();
+    const request = sessionContextBudgetUpdateSchema.parse(raw);
+    const runtime = this.runtime();
+    if (
+      this.options.identity ||
+      runtime.teamIdentity ||
+      this.access.principalId !== localAccess.principalId ||
+      this.access.actantId !== localAccess.actantId
+    )
+      throw new DomainError(
+        "forbidden",
+        "共享上下文容量只能由本机本人调整；团队与远端为只读。",
+      );
+    const authorizeWrite = async () => {
+      this.active();
+      await this.work((service, actor) =>
+        service.authorizeLocalDirectory(
+          actor,
+          request.projectId,
+          request.conversationId,
+          true,
+        ),
+      );
+      this.active();
+    };
+    const result = await runtime.as(this.access, () =>
+      runtime.updateSessionContextBudget(
+        request,
+        this.access,
+        authorizeWrite,
+        () => this.active(),
+      ),
+    );
+    this.active();
+    return result;
+  }
   async updateSessionEvaluation(raw: unknown) {
     this.active();
     const request = sessionEvaluationUpdateSchema.parse(raw);
@@ -4178,6 +4226,10 @@ export function invokeApplication(
       return session.updateSessionPermissions(params);
     case "session-evaluation.read":
       return session.readSessionEvaluation(params);
+    case "session-context-budget.read":
+      return session.readSessionContextBudget(params);
+    case "session-context-budget.update":
+      return session.updateSessionContextBudget(params);
     case "session-evaluation.update":
       return session.updateSessionEvaluation(params);
     case "asset.add":

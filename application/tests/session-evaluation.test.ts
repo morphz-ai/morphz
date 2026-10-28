@@ -16,6 +16,7 @@ import {
   sessionEvaluationUpdateSchema,
   type SessionEvaluationDefaults,
 } from "../packages/core/src/session-evaluation.js";
+import { formatContextCapacity } from "../packages/core/src/session-context-budget.js";
 
 type Policy = {
   id: string;
@@ -53,6 +54,9 @@ async function fixture() {
   let onCatalog: (() => void) | undefined;
   let initialCapability = true;
   let loseCreation = false;
+  let requestedBudget: number | null = null,
+    budgetRevision = 0;
+  let budgetWrite: "normal" | "lost" | "conflict" = "normal";
   const attach = () => {
     (f.runtime as unknown as typeof internal).runtimeFetch = async (
       url,
@@ -97,6 +101,77 @@ async function fixture() {
           throw new Error("isolated lost atomic creation response");
         }
         return Response.json(record, { status: 201 });
+      }
+      if (path.endsWith("/token-budget")) {
+        if (method === "PATCH") {
+          if (
+            budgetWrite === "conflict" ||
+            body.expected_revision !== budgetRevision
+          )
+            return Response.json({ outcome: "conflict" }, { status: 409 });
+          requestedBudget = body.requested_hard_token_limit;
+          budgetRevision++;
+          if (budgetWrite === "lost")
+            throw new Error("TEST lost budget receipt");
+          return Response.json({
+            outcome: "updated",
+            budget: {
+              context_id: path.split("/")[3],
+              requested_hard_token_limit: requestedBudget,
+              token_budget_revision: budgetRevision,
+            },
+          });
+        }
+        const session = records.get(
+          new URL(url).searchParams.get("session_id")!,
+        );
+        if (!session) return Response.json({}, { status: 404 });
+        return Response.json({
+          context_id: session.context_id,
+          effective_hard_token_limit: Math.min(
+            requestedBudget ?? 131072,
+            131072,
+          ),
+          physical_context_window_tokens: 262144,
+          max_output_tokens: 131072,
+          model: session.model_alias ?? "isolated-model",
+          capacity_source: "provider-route-model-config",
+          requested_hard_token_limit: requestedBudget,
+          physical_prompt_token_limit: 131072,
+          token_budget_revision: budgetRevision,
+        });
+      }
+      if (path.startsWith("/api/contexts/") && path.endsWith("/events")) {
+        const params = new URL(url).searchParams;
+        assert.equal(params.get("limit"), "32");
+        assert.equal(params.get("topic"), "runtime/model_attempt_state");
+        const sessionId = params.get("session_id")!;
+        const session = records.get(sessionId);
+        assert.ok(session);
+        return Response.json({
+          events: [
+            {
+              id: "TEST-pressure",
+              topic: "runtime/model_attempt_state",
+              timestamp: "2026-10-28T00:00:00Z",
+              sequence: 7,
+              payload: {
+                context_id: session.context_id,
+                session_id: sessionId,
+                context_token_budget: {
+                  model: session.model_alias ?? "isolated-model",
+                },
+                pressure: {
+                  token_scope: "full-work-prompt",
+                  token_model: session.model_alias ?? "isolated-model",
+                  token_accuracy: "heuristic-estimate",
+                  estimated_tokens: 104858,
+                },
+                detail: "TEST private request body must not enter capacity UI",
+              },
+            },
+          ],
+        });
       }
       const id = path.split("/")[3]!;
       const record = records.get(id);
@@ -186,8 +261,147 @@ async function fixture() {
     set onCatalog(value: typeof onCatalog) {
       onCatalog = value;
     },
+    set budgetWrite(value: typeof budgetWrite) {
+      budgetWrite = value;
+    },
+    get budgetState() {
+      return { requestedBudget, budgetRevision };
+    },
   };
 }
+
+test("context capacity uses the authorized Session budget and never creates a Session", async () => {
+  const t = await fixture();
+  try {
+    const initial = await t.f.session().readSessionContextBudget(t.scope);
+    assert.equal(initial.source, "not_started");
+    assert.equal(initial.inputTokens, null);
+    assert.ok(!t.calls.some((c) => c.path.endsWith("/token-budget")));
+    await t.seed();
+    const actual = await t.f.session().readSessionContextBudget(t.scope);
+    assert.equal(actual.inputTokens, 131072);
+    assert.equal(actual.windowTokens, 262144);
+    assert.equal(actual.outputTokens, 131072);
+    assert.equal(actual.usage?.inputTokens, 104858);
+    assert.equal(actual.usage?.accuracy, "heuristic-estimate");
+    assert.doesNotMatch(JSON.stringify(actual), /private request body/);
+    assert.equal(actual.scope.conversationId, t.scope.conversationId);
+    assert.deepEqual(
+      t.calls.filter((c) => c.method !== "GET"),
+      [],
+    );
+    assert.equal(formatContextCapacity(actual.inputTokens!), "128K");
+    assert.equal(formatContextCapacity(actual.windowTokens!), "256K");
+    const host = new LocalApplicationConnection(t.f.application);
+    try {
+      const boot = await host.invoke({
+        id: randomUUID(),
+        method: "platform.bootstrap",
+      });
+      assert.equal(boot.ok, true);
+      const generation = (boot as { ok: true; value: { csrfToken: string } })
+        .value.csrfToken;
+      const reply = await host.invoke({
+        id: randomUUID(),
+        method: "session-context-budget.read",
+        params: t.scope,
+        identityGeneration: generation,
+      });
+      assert.equal(reply.ok, true);
+      const command = {
+        ...t.scope,
+        requestedTokens: 65536,
+        expectedRevision: actual.revision!,
+        expectedModel: actual.model!,
+      };
+      const denied = await host.invoke({
+        id: randomUUID(),
+        method: "session-context-budget.update",
+        params: command,
+        identityGeneration: "old-generation",
+      });
+      assert.equal(denied.ok, false);
+      assert.ok(!t.calls.some((c) => c.method === "PATCH"));
+      const changed = await host.invoke({
+        id: randomUUID(),
+        method: "session-context-budget.update",
+        params: command,
+        identityGeneration: generation,
+      });
+      assert.equal(changed.ok, true);
+      assert.equal(
+        (changed as { ok: true; value: { requestedTokens: number } }).value
+          .requestedTokens,
+        65536,
+      );
+      assert.equal(
+        (
+          await host.invoke({
+            id: randomUUID(),
+            method: "session-context-budget.read",
+            params: t.scope,
+            identityGeneration: "old-generation",
+          })
+        ).ok,
+        false,
+      );
+    } finally {
+      host.close();
+    }
+  } finally {
+    await t.f.close();
+  }
+});
+
+test("capacity edits use the shared Context CAS; conflict or lost receipts never replay", async () => {
+  const t = await fixture();
+  try {
+    await t.seed();
+    const before = await t.f.session().readSessionContextBudget(t.scope);
+    const command = {
+      ...t.scope,
+      requestedTokens: 65536,
+      expectedRevision: before.revision!,
+      expectedModel: before.model!,
+    };
+    const changed = await t.f.session().updateSessionContextBudget(command);
+    assert.equal(changed.inputTokens, 65536);
+    assert.equal(changed.requestedTokens, 65536);
+    assert.equal(changed.revision, 1);
+    await assert.rejects(
+      t.f.session().updateSessionContextBudget(command),
+      /变化/,
+    );
+    assert.equal(t.calls.filter((c) => c.method === "PATCH").length, 1);
+    await assert.rejects(
+      t.f.session().updateSessionContextBudget({
+        ...command,
+        expectedRevision: 1,
+        requestedTokens: 262144,
+      }),
+      /上限/,
+    );
+    t.budgetWrite = "lost";
+    await assert.rejects(
+      t.f.session().updateSessionContextBudget({
+        ...command,
+        expectedRevision: 1,
+        requestedTokens: null,
+      }),
+    );
+    assert.deepEqual(t.budgetState, {
+      requestedBudget: null,
+      budgetRevision: 2,
+    });
+    assert.equal(t.calls.filter((c) => c.method === "PATCH").length, 2);
+    const actual = await t.f.session().readSessionContextBudget(t.scope);
+    assert.equal(actual.requestedTokens, null);
+    assert.equal(actual.inputTokens, 131072);
+    assert.equal(t.calls.filter((c) => c.method === "PATCH").length, 2);
+  } finally {
+    await t.f.close();
+  }
+});
 const denied = (e: unknown) =>
   e instanceof DomainError && e.code === "forbidden";
 const conflicted = (e: unknown) =>
@@ -750,6 +964,15 @@ test("内嵌Session模型方法受identity generation保护；HTTP adapter保持
       "/api/session-evaluation/update",
     );
     assert.equal(requests[1]!.init!.method, "POST");
+    await client.call("session-context-budget.read", t.scope);
+    assert.equal(
+      new URL(requests[2]!.url).pathname,
+      "/api/session-context-budget",
+    );
+    assert.equal(
+      new URL(requests[2]!.url).searchParams.get("conversationId"),
+      t.scope.conversationId,
+    );
   } finally {
     host.close();
     await t.f.close();
@@ -781,6 +1004,19 @@ test("真实HTTP会话模型只读且拒绝额外scope字段，有效CSRF也不�
     );
     assert.equal(snapshot.canUpdate, false);
     assert.equal(snapshot.readOnlyReason, "local_only");
+    const capacity = await fetch(
+      `${origin}/api/session-context-budget?${query}`,
+    );
+    assert.equal(capacity.status, 200);
+    assert.equal((await capacity.json()).inputTokens, 131072);
+    assert.equal(
+      (
+        await fetch(
+          `${origin}/api/session-context-budget?${query}&sessionId=forged`,
+        )
+      ).status,
+      400,
+    );
     assert.equal(
       (
         await fetch(
@@ -806,6 +1042,24 @@ test("真实HTTP会话模型只读且拒绝额外scope字段，有效CSRF也不�
       }),
     });
     assert.equal(update.status, 403);
+    const capacityUpdate = await fetch(
+      `${origin}/api/session-context-budget/update`,
+      {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "X-Morphz-Token": bootstrap.csrfToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...t.scope,
+          requestedTokens: 65536,
+          expectedRevision: 0,
+          expectedModel: "test-model",
+        }),
+      },
+    );
+    assert.equal(capacityUpdate.status, 403);
     assert.ok(!t.calls.some((c) => c.method === "PATCH"));
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
