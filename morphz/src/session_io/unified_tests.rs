@@ -303,7 +303,18 @@ fn no_reply_and_ordinary_business_publications_keep_their_distinct_meanings() {
             .func_name,
         "no_reply"
     );
-    assert!(decode_value(json!({"body":"answer","effects":[waiting]}), true).is_err());
+    let progress = decode_value(
+        json!({"body":"等待后台任务完成。","effects":[waiting.clone()]}),
+        true,
+    )
+    .unwrap();
+    assert_eq!(progress.response.content, "等待后台任务完成。");
+    assert_eq!(progress.response.tool_calls[0].func_name, "no_reply");
+    assert!(decode_value(
+        json!({"body":"等待后台任务完成。","effects":[waiting,read(Value::Null)]}),
+        true
+    )
+    .is_err());
     for arguments in [
         json!({"delivery_id":bound(true).delivery_id}),
         json!({"delivery_id":"other","message":{"format":{"id":"morphz.response.annotations"}}}),

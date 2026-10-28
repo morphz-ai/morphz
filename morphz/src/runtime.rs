@@ -14955,6 +14955,7 @@ mod tests {
 
     struct DetachedExecClient {
         calls: AtomicU64,
+        completion_gate: Option<std::path::PathBuf>,
     }
 
     struct LongLivedProcessReplyClient {
@@ -18117,7 +18118,10 @@ mod tests {
                             r#type: "function".to_string(),
                             func_name: "exec".to_string(),
                             arguments: json!({
-                                "command": "sleep 0.2; printf detached-done",
+                                "command": self.completion_gate.as_ref().map(|path| format!(
+                                    "while [ ! -e '{}' ]; do sleep 0.01; done; printf detached-done",
+                                    path.to_string_lossy().replace('\'', "'\"'\"'")
+                                )).unwrap_or_else(|| "sleep 0.2; printf detached-done".into()),
                                 "wait_ms": 1
                             })
                             .to_string(),
@@ -18133,8 +18137,13 @@ mod tests {
                     // model request is still in flight. The completion Event
                     // must fence the pending no_reply instead of being lost
                     // behind a prematurely terminal Execution Thread.
-                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
-                    Ok(wait_response("detached-yield"))
+                    let mut response = wait_response("detached-yield");
+                    if self.completion_gate.is_some() {
+                        response.content = "读取任务转入后台执行，等待其完成事件。".into();
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                    }
+                    Ok(response)
                 }
                 2 => {
                     let transcript = serde_json::to_string(&messages)?;
@@ -21587,6 +21596,15 @@ mod tests {
 
     #[tokio::test]
     async fn detached_execution_delivers_exactly_once_after_completion_inbox_wake() {
+        detached_execution_delivery(false).await;
+    }
+
+    #[tokio::test]
+    async fn no_reply_progress_waits_and_resumes_the_same_background_job_without_retry() {
+        detached_execution_delivery(true).await;
+    }
+
+    async fn detached_execution_delivery(progress_wait: bool) {
         let database = TempSqliteDb::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
@@ -21599,7 +21617,17 @@ mod tests {
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         let client = Arc::new(DetachedExecClient {
             calls: AtomicU64::new(0),
+            completion_gate: progress_wait.then(|| artifacts.path().join("complete-background")),
         });
+        struct ReleaseCompletionGate(Option<std::path::PathBuf>);
+        impl Drop for ReleaseCompletionGate {
+            fn drop(&mut self) {
+                if let Some(path) = &self.0 {
+                    let _ = std::fs::write(path, "release even if an assertion fails");
+                }
+            }
+        }
+        let _gate_cleanup = ReleaseCompletionGate(client.completion_gate.clone());
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -21622,6 +21650,8 @@ mod tests {
             .await
             .unwrap();
         let mut replies = runtime.subscribe("chat/reply", 4);
+        let mut progress = runtime.subscribe("chat/progress", 4);
+        let mut waiting = runtime.subscribe("runtime/thread_waiting", 4);
         session
             .send(
                 "run this past the synchronous budget",
@@ -21630,6 +21660,23 @@ mod tests {
             )
             .await
             .unwrap();
+        if let Some(gate) = &client.completion_gate {
+            let note = tokio::time::timeout(std::time::Duration::from_secs(15), progress.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                note.payload["text"],
+                "读取任务转入后台执行，等待其完成事件。"
+            );
+            let wait = tokio::time::timeout(std::time::Duration::from_secs(15), waiting.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(wait.payload["model_disposition"], "wait");
+            assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+            std::fs::write(gate, "complete").unwrap();
+        }
         let reply =
             match tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv()).await {
                 Ok(Some(reply)) => reply,

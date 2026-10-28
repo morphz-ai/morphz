@@ -1377,8 +1377,14 @@ impl ProtocolClient {
         request_context: BTreeMap<String, String>,
     ) -> Result<Self, ProviderError> {
         for (model, profile) in &provider.models {
-            if profile.max_output_tokens.is_some_and(|limit| u32::try_from(limit).is_err()) {
-                return Err(format!("model '{model}' output allowance exceeds the request token-limit range").into());
+            if profile
+                .max_output_tokens
+                .is_some_and(|limit| u32::try_from(limit).is_err())
+            {
+                return Err(format!(
+                    "model '{model}' output allowance exceeds the request token-limit range"
+                )
+                .into());
             }
         }
         if provider.models.get(&model).is_some_and(|profile| {
@@ -1480,7 +1486,9 @@ impl ProtocolClient {
     ) -> Result<Vec<Message>, ProviderError> {
         if self.model_profiles.get(model).is_some_and(|profile| {
             profile.context_window_tokens.is_some()
-                && profile.prompt_token_limit_for_request(self.max_output_tokens).is_none()
+                && profile
+                    .prompt_token_limit_for_request(self.max_output_tokens)
+                    .is_none()
         }) {
             return Err(boxed_model_failure(ModelFailure::new(
                 ModelFailureKind::InvalidModelOrRequest,
@@ -1636,7 +1644,8 @@ impl ProtocolClient {
     ) -> Value {
         let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
         let max_output_tokens = self.max_output_tokens.or_else(|| {
-            self.model_profiles.get(model)
+            self.model_profiles
+                .get(model)
                 .and_then(|profile| profile.max_output_tokens)
                 .and_then(|limit| u32::try_from(limit).ok())
         });

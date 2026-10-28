@@ -406,8 +406,8 @@ pub fn decode(raw: &Response, binding: &ReturnBinding, attempt: &str) -> IoResul
                 "Body and annotations belong to this value, not a delivery effect",
             ));
         }
-        if name == "no_reply" && (effects.len() != 1 || !text.is_empty()) {
-            return Err(fail("no_reply must stand alone without body or other work"));
+        if name == "no_reply" && effects.len() != 1 {
+            return Err(fail("no_reply must be the only work/control call"));
         }
         if attempt.is_empty() {
             return Err(fail("Work has no Runtime attempt identity"));

@@ -161,8 +161,18 @@ fn no_reply_metadata_never_relaxes_mode_wait_exclusivity_or_a_frozen_unadvertise
             }],
         };
         let mut with_body = response.clone();
-        with_body.content = "不能一边等待一边最终回复".into();
-        assert!(normalize(&with_body, &binding, &context(&binding)).is_err());
+        with_body.content = "读取任务转入后台执行，等待其完成事件。".into();
+        let normalized = normalize(&with_body, &binding, &context(&binding)).unwrap();
+        assert_eq!(normalized.execution_response.content, with_body.content);
+        assert!(matches!(
+            normalized.terminal_decision,
+            Some(TerminalDecision::NoReply(
+                crate::response_annotations::NoReplyMode::Wait {
+                    wait_secs: 90,
+                    explicitly_requested: true,
+                }
+            ))
+        ));
         let mut mixed = response.clone();
         mixed.tool_calls.push(call("work", r#"{"path":"file"}"#));
         assert!(normalize(&mixed, &binding, &context(&binding)).is_err());
