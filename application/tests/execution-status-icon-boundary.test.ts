@@ -85,16 +85,17 @@ const glyphs = [
   "CircleX",
   "Clock3",
   "Pause",
+  "ShieldAlert",
 ];
 const expectedIcon = `
-import { CircleCheck, CircleHelp, CircleSlash, CircleX, Clock3, Pause } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleSlash, CircleX, Clock3, Pause, ShieldAlert } from "lucide-react";
 import type { ActivityStatus } from "./execution-activity.js";
 import { RunningActivityIcon } from "./RunningActivityIcon.js";
 export function ExecutionStatusIcon({kind, size}: Readonly<{
   kind: ActivityStatus["kind"] | undefined; size: 18 | 19;
 }>) {
   if (kind === "running") return <RunningActivityIcon />;
-  const Icon = { waiting: Clock3, paused: Pause, ended: CircleCheck,
+  const Icon = { waiting: Clock3, approval: ShieldAlert, paused: Pause, ended: CircleCheck,
     failed: CircleX, cancelled: CircleSlash, unknown: CircleHelp }[kind ?? "unknown"];
   return <Icon size={size} aria-hidden="true" />;
 }`;
@@ -234,13 +235,27 @@ const templates = parse({
     "scope={scope}",
     "thread={currentThread}",
     "disabled={!client.online || !runtime.connected || !activityAvailable || !executionActivityThreadAvailable(currentThread, runtime)}",
-    "onControl={async (action) => { await client.controlExecution({ scope, action }); await client.refreshView(); }}",
+    "onNotice={setControlNotice}",
+    "onControl={async (action) => { try { await client.controlExecution({ scope, action }); } catch (cause) { void client.refreshView().catch(() => {}); throw cause; } await client.refreshView(); }}",
     "/>;",
   ].join("\n"),
   SidebarCurrentControlState:
     "const [showOther, setShowOther] = useState(false);",
   SidebarOriginalControlState:
     "const [showOther, setShowOther] = useState(false), [stopRequested, setStopRequested] = useState(false);",
+  SidebarControlNoticeState:
+    'const [controlNotice, setControlNotice] = useState("");',
+  SidebarControlNotice: `const notice = <>{controlNotice && (
+    <div className="execution-control-feedback">
+      <p role="alert">{controlNotice}</p>
+      {onRefresh && (<button data-size="sm" disabled={refreshing} onClick={() => void refresh()}>刷新</button>)}
+    </div>
+  )}</>;`,
+  SidebarApprovalFacts: `
+    const threadStatus = thread ? executionActivityGroupStatus(thread, activityThreads, (value) => client.online && !!currentThread && executionActivityThreadAvailable(value, runtime), client.online ? runtime.attention : undefined) : undefined;
+    const status = executionActivityGroupStatus(t, activityThreads, (value) => client.online && executionActivityThreadAvailable(value, runtime), client.online ? runtime.attention : undefined);
+    const summary = status.kind === "approval" ? status.label : needsInput ? "等待你的输入" : executionActivitySummary(t, client.online && executionActivityThreadAvailable(t, runtime));
+    const marker = <span data-approval={status.kind === "approval" || undefined} />;`,
   SidebarQuestionFacts: `
     const needsInput = !!t.userInputRequest && t.lifecycle === "open" && t.controlState !== "paused" && client.online && executionActivityThreadAvailable(t, runtime);
     const threadNeedsInput = !!thread?.userInputRequest && thread.lifecycle === "open" && thread.controlState !== "paused" && client.online && !!currentThread && executionActivityThreadAvailable(thread, runtime);
@@ -398,6 +413,44 @@ function imported(parsed: Parsed, path: string, name: string) {
   const symbol = parsed.symbols.get(matches[0]!);
   assert.notEqual(symbol, undefined);
   return symbol;
+}
+
+/** The approved 6f8ba889 approval projection adds one exact attention argument,
+ * label branch and marker. Check them before restoring the earlier immutable
+ * glyph contract; never replace its hashes with a digest of current source. */
+function withoutReviewedApprovals(parsed: Parsed): string {
+  let source = parsed.source.getText();
+  const facts = templates.get("SidebarApprovalFacts")!;
+  for (const [name, original] of [
+    ["threadStatus", "SidebarDetailFacts"],
+    ["status", "SidebarRowFacts"],
+    ["summary", "SidebarQuestionFacts"],
+  ]) {
+    const actual = parsed.nodes
+      .filter(isVariableDeclaration)
+      .filter((node) => node.name.getText() === name);
+    const expected = facts.nodes
+      .filter(isVariableDeclaration)
+      .find((node) => node.name.getText() === name)!;
+    const previous = templates
+      .get(original!)!
+      .nodes.filter(isVariableDeclaration)
+      .find((node) => node.name.getText() === name)!;
+    assert.equal(actual.length, 1);
+    assert.deepEqual(syntax(actual[0]!), syntax(expected));
+    const before = actual[0]!.initializer!.getText();
+    assert.equal(source.split(before).length, 2);
+    source = source.replace(before, previous.initializer!.getText());
+  }
+  const markers = parsed.nodes
+    .filter(isJsxAttribute)
+    .filter((node) => node.name.getText() === "data-approval");
+  assert.equal(markers.length, 1);
+  assert.deepEqual(
+    syntax(markers[0]!),
+    syntax(facts.nodes.find(isJsxAttribute)!),
+  );
+  return source.replace(markers[0]!.getText(), "");
 }
 
 /** Verify the one question supplement seam, then restore the exact
@@ -571,13 +624,55 @@ function withoutReviewedThreadControls(parsed: Parsed): string {
       ),
     false,
   );
+  const noticeState = parsed.nodes
+    .filter(isVariableStatement)
+    .filter((node) =>
+      node.declarationList.declarations.some(
+        (declaration) =>
+          declaration.name.getText() === "[controlNotice, setControlNotice]",
+      ),
+    );
+  assert.equal(noticeState.length, 1);
+  assert.deepEqual(
+    syntax(noticeState[0]!),
+    syntax(
+      templates
+        .get("SidebarControlNoticeState")!
+        .nodes.find(isVariableStatement)!,
+    ),
+  );
+  const notices = parsed.nodes
+    .filter(isJsxExpression)
+    .filter((node) =>
+      node.expression?.getText().startsWith("controlNotice &&"),
+    );
+  assert.equal(notices.length, 1);
+  // Only the reviewed feedback fragment normalizes JSX text-edge whitespace.
+  // All nodes, literal text, controls and callbacks remain structurally exact;
+  // the historical row/hook serializer and its hashes are unchanged.
+  const noticeSyntax = (node: Node) => {
+    const textEdges = (value: unknown): unknown => {
+      if (!Array.isArray(value)) return value;
+      if (value[0] === SyntaxKind.JsxText && typeof value[1] === "string")
+        return [value[0], value[1].trim()];
+      return value.map(textEdges);
+    };
+    return textEdges(syntax(node));
+  };
+  assert.deepEqual(
+    noticeSyntax(notices[0]!),
+    noticeSyntax(
+      templates.get("SidebarControlNotice")!.nodes.find(isJsxExpression)!,
+    ),
+  );
   return parsed.source
     .getText()
     .replace(control.getText(), "null")
     .replace(
       state[0]!.getText(),
       templates.get("SidebarOriginalControlState")!.source.getText(),
-    );
+    )
+    .replace(noticeState[0]!.getText(), "");
 }
 function inspect(sources: Sources) {
   const failures: string[] = [],
@@ -590,6 +685,14 @@ function inspect(sources: Sources) {
       failures.push(name);
     }
   }
+  rule("Sidebar-exact-approved-attention-projection", () => {
+    parsed.set(
+      "Sidebar",
+      parse({
+        Sidebar: withoutReviewedApprovals(parsed.get("Sidebar")!),
+      }).get("Sidebar")!,
+    );
+  });
   rule("Sidebar-exact-shared-thread-control-seam", () => {
     parsed.set(
       "Sidebar",
@@ -831,6 +934,7 @@ test("new Thread controls retain exact source, revision owner, freshness and acc
     ["thread={currentThread}", "thread={thread}"],
     ["!activityAvailable", "false"],
     ["!runtime.connected", "false"],
+    ["onNotice={setControlNotice}", "onNotice={() => onClose()}"],
     [
       "await client.controlExecution({ scope, action });",
       "void client.controlExecution({ scope, action });",
@@ -846,6 +950,24 @@ test("new Thread controls retain exact source, revision owner, freshness and acc
       inspect({ ...source, Sidebar: variant }).includes(
         "Sidebar-exact-shared-thread-control-seam",
       ),
+    );
+  }
+});
+test("approval projection preserves conditional attention and the exact label and marker", () => {
+  for (const [before, after] of [
+    ["client.online ? runtime.attention : undefined", "runtime.attention"],
+    ['status.kind === "approval"', 'status.kind === "running"'],
+    [
+      'data-approval={status.kind === "approval" || undefined}',
+      "data-approval={true}",
+    ],
+  ]) {
+    assert.ok(source.Sidebar.includes(before!));
+    assert.ok(
+      inspect({
+        ...source,
+        Sidebar: source.Sidebar.replace(before!, after!),
+      }).includes("Sidebar-exact-approved-attention-projection"),
     );
   }
 });
