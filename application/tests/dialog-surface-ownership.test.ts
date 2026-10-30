@@ -115,10 +115,13 @@ const rootClasses = new Set([
   "script-dialog-compact",
   "browser-bookmarks-dialog",
 ]);
-function compoundPaintsSurface(compound: string): boolean {
+function compoundPaintsSurface(
+  compound: string,
+  implicitSubject = true,
+): boolean {
   let plain = "";
   let restrictiveFunction = false;
-  let functionalRoot = false;
+  const functionalSubjects: string[] = [];
   for (let index = 0; index < compound.length;) {
     const match = /^:([\w-]+)\(/.exec(compound.slice(index));
     if (!match) {
@@ -139,25 +142,35 @@ function compoundPaintsSurface(compound: string): boolean {
     }
     if (match[1] === "is" || match[1] === "where") {
       restrictiveFunction = true;
-      functionalRoot ||= paintsSurface(compound.slice(begin, end - 1));
+      functionalSubjects.push(compound.slice(begin, end - 1));
     }
     // :has/:not/nth-* do not make their argument the painted subject.
     index = end;
   }
   const withoutAttributes = plain.replace(/\[[^\]]*\]/g, "");
   if (/::(?!backdrop\b)[\w-]+/.test(withoutAttributes)) return false;
-  if (functionalRoot) return true;
   const classes = [
     ...plain.matchAll(
       /\[class\s*(?:~=|=)\s*(?:(["'])(.*?)\1|([^\s\]]+))\s*\]/gi,
     ),
   ].flatMap((match) => (match[2] ?? match[3]!).split(/\s+/));
   if (classes.some((name) => rootClasses.has(name))) return true;
+  // Functional state selectors intersect the surrounding subject. An
+  // attribute branch cannot turn a classed control into an implicit dialog.
+  // Explicit dialog/root branches remain protected, including nested :is.
+  const anchored = classes.length > 0 || /[.#]|^[\w|]+/.test(withoutAttributes);
+  if (
+    functionalSubjects.some((subject) =>
+      paintsSurface(subject, implicitSubject && !anchored),
+    )
+  )
+    return true;
   plain = withoutAttributes;
   // Attribute-only and exclusion/relational-only terminal subjects have an
   // implicit universal subject and may paint a native dialog. This deliberately
   // conservative finite restriction does not apply to typed/classed children.
   if (
+    implicitSubject &&
     !restrictiveFunction &&
     !classes.length &&
     (plain === "" || plain === "::backdrop")
@@ -169,10 +182,12 @@ function compoundPaintsSurface(compound: string): boolean {
     rootClasses.has(match[1]!),
   );
 }
-function paintsSurface(selector: string): boolean {
+function paintsSurface(selector: string, implicitSubject = true): boolean {
   return postcss.list
     .comma(decode(selector))
-    .some((branch) => compoundPaintsSurface(terminal(branch.trim())));
+    .some((branch) =>
+      compoundPaintsSurface(terminal(branch.trim()), implicitSubject),
+    );
 }
 
 function filesIn(directory: string): string[] {
@@ -1048,4 +1063,21 @@ test("the approved action-surface carrier preserves actual value source and phas
     "    <App />\n    <NextSurfaceContent />",
   );
   validate(growth);
+});
+
+test("functional state branches retain their surrounding control subject while dialog branches stay protected", () => {
+  for (const selector of [
+    '.app .composer-capacity-trigger:is(:hover,[aria-expanded="true"])',
+    ".independent-control:where([open],:hover)",
+    ".independent-control:is(:where([open]))",
+  ])
+    assert.equal(paintsSurface(selector), false, selector);
+  for (const selector of [
+    ":is([open])",
+    "dialog:is([open])",
+    ".create-dialog:where([open])",
+    ".qualified:is(dialog,[open])",
+    ".qualified:is(:where(dialog))",
+  ])
+    assert.equal(paintsSurface(selector), true, selector);
 });

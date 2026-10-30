@@ -947,7 +947,8 @@ test(
         for (const page of p.pages) {
           assert.equal(
             await page
-              .locator('.execution-approval button:has-text("仅允许这一次")')
+              .locator(".execution-approval")
+              .getByRole("button", { name: "仅允许这一次", exact: true })
               .isDisabled(),
             true,
           );

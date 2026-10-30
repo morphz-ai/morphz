@@ -126,10 +126,10 @@ function terminal(selector: string) {
   }
   return selector.slice(start).trim();
 }
-function compoundPaints(compound: string): boolean {
+function compoundPaints(compound: string, implicitSubject = true): boolean {
   let plain = "",
-    restrictive = false,
-    functionalRoot = false;
+    restrictive = false;
+  const functionalSubjects: string[] = [];
   for (let at = 0; at < compound.length;) {
     const match = /^:([\w-]+)\(/.exec(compound.slice(at));
     if (!match) {
@@ -150,13 +150,12 @@ function compoundPaints(compound: string): boolean {
     }
     if (match[1] === "is" || match[1] === "where") {
       restrictive = true;
-      functionalRoot ||= paintsSurface(compound.slice(start, end - 1));
+      functionalSubjects.push(compound.slice(start, end - 1));
     }
     // :has/:not do not turn an argument into the painted subject.
     at = end;
   }
   if (/::[\w-]+/.test(plain.replace(/\[[^\]]*\]/g, ""))) return false;
-  if (functionalRoot) return true;
   const classes = [
     ...plain.matchAll(
       /\[class\s*(?:~=|=)\s*(?:(["'])(.*?)\1|([^\s\]]+))\s*\]/gi,
@@ -164,18 +163,29 @@ function compoundPaints(compound: string): boolean {
   ].flatMap((match) => (match[2] ?? match[3]!).split(/\s+/));
   if (classes.some((name) => roots.has(name))) return true;
   if (/\[popover(?:\s|[=\]])/i.test(plain)) return true;
-  plain = plain.replace(/\[[^\]]*\]/g, "");
+  const withoutAttributes = plain.replace(/\[[^\]]*\]/g, "");
+  // State branches intersect their outer control subject. Explicit popover
+  // attributes and named surface branches still remain protected.
+  const anchored = classes.length > 0 || /[.#]|^[\w|]+/.test(withoutAttributes);
+  if (
+    functionalSubjects.some((subject) =>
+      paintsSurface(subject, implicitSubject && !anchored),
+    )
+  )
+    return true;
+  plain = withoutAttributes;
   // Implicit universal/attribute-only roots can paint the actual popover too.
-  if (!restrictive && !classes.length && plain === "") return true;
+  if (implicitSubject && !restrictive && !classes.length && plain === "")
+    return true;
   if (/^\*(?=[.#[:]|$)/.test(plain)) return true;
   return [...plain.matchAll(/\.([\w-]+)/g)].some((match) =>
     roots.has(match[1]!),
   );
 }
-function paintsSurface(selector: string): boolean {
+function paintsSurface(selector: string, implicitSubject = true): boolean {
   return postcss.list
     .comma(decode(selector))
-    .some((branch) => compoundPaints(terminal(branch.trim())));
+    .some((branch) => compoundPaints(terminal(branch.trim()), implicitSubject));
 }
 function actualSources(): Sources {
   const css = new Map<string, string>(),
@@ -1330,4 +1340,19 @@ test("Topbar composition handoff maps only whole C03 and requires all three comp
     'import "./shell/./workspace-topbar-composition.css";',
   );
   validate(alias);
+});
+
+test("popover state branches cannot change an anchored control subject or hide an explicit popover", () => {
+  for (const selector of [
+    '.app .composer-capacity-trigger:is(:hover,[aria-expanded="true"])',
+    ".independent-control:where([open],:hover)",
+    ".independent-control:is(:where([open]))",
+  ])
+    assert.equal(paintsSurface(selector), false, selector);
+  for (const selector of [
+    ":is([open])",
+    ".qualified:is([popover],[open])",
+    ".qualified:is(:where([popover]))",
+  ])
+    assert.equal(paintsSurface(selector), true, selector);
 });

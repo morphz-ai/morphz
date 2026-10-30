@@ -296,6 +296,23 @@ export function pdfReadingCssViolations(css: ReadonlyMap<string, string>) {
   // immutable; this exact shared control recipe is not a second PDF owner.
   const primitiveFacts = [
     ...fixedPdfPrimitiveRefinements,
+    // b8450407 added compact text actions alongside the reviewed icon role.
+    // Keep their PDF-relevant properties exact; do not exempt the metrics file.
+    {
+      file: "ui/controls/metrics.css",
+      raw: `.app button[data-size="sm"] {
+        min-height: 32px;
+        padding: 5px 10px;
+        font-size: 12px;
+        line-height: 20px;
+      }`,
+    },
+    {
+      file: "ui/controls/metrics.css",
+      raw: `@media (pointer: coarse) {
+        .app button[data-size="sm"] { min-height: 44px; min-width: 44px; }
+      }`,
+    },
     {
       file: "ui/controls/metrics.css",
       raw: `.app .icon-button[data-size="icon-xs"] {

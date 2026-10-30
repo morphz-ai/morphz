@@ -991,3 +991,17 @@ test("unrelated domain, primitive, compound-local, JSX/comments/type imports and
   );
   validate(carried);
 });
+
+test("reviewed compact text actions preserve PDF-relevant shared refinements", () => {
+  for (const [before, after] of [
+    ["padding: 5px 10px;", "padding: 6px 10px;"],
+    ["font-size: 12px;", "font-size: 13px;"],
+    [
+      "min-height: 44px;\n    min-width: 44px;",
+      "min-height: 44px;\n    min-width: 43px;",
+    ],
+  ])
+    reject("pdf-reading:global-native-competitor", (sources) =>
+      replace(sources, "ui/controls/metrics.css", before!, after!),
+    );
+});
