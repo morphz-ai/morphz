@@ -53,3 +53,25 @@ test("Miniflare's exact vulnerable pin cannot reintroduce undici on a fresh inst
     }
   }
 });
+
+// Keep both patched paths fixed on a fresh lockfile install. The 0.7 branch
+// patch retains the existing fflate API used by the font parser.
+test("SVG rendering and font ZIP dependencies retain their security fixes", () => {
+  for (const [path, dependency] of lockedPackages("satori")) {
+    assert.ok(atLeast(dependency.version, "0.33.5"), `${path} must clear GHSA-wx4j-mvgx-mqwp`);
+  }
+  const floors = new Map([[0, new Map([[7, "0.7.5"], [8, "0.8.3"]])]]);
+  for (const [path, dependency] of lockedPackages("fflate")) {
+    const [major, minor] = release(dependency.version);
+    const minimum = floors.get(major)?.get(minor);
+    assert.ok(minimum, `Review the fflate security floor for ${path}`);
+    assert.ok(atLeast(dependency.version, minimum), `${path} must clear GHSA-px8p-9vwx-vf98`);
+  }
+});
+
+test("Node prerender cannot silently access Cloudflare bindings", async () => {
+  const workers = await import("cloudflare:workers");
+  assert.equal(workers.tracing, undefined);
+  assert.throws(() => workers.env.MORPHZ_MEDIA, /Cloudflare bindings are unavailable/);
+  assert.throws(() => workers.waitUntil(Promise.resolve()), /Cloudflare waitUntil is unavailable/);
+});
