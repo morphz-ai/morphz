@@ -64,6 +64,12 @@ class ReleaseCiTests(unittest.TestCase):
         self.assertEqual(CI.select_run([{"workflow_runs": [current]}], REPOSITORY, COMMIT, BRANCH), current)
         CI.verify_jobs(pages(jobs()), current, "ci.yml")
 
+    def test_stable_main_admission_does_not_borrow_release_branch_checks(self):
+        current = run(head_branch="main")
+        self.assertEqual(CI.select_run([{"workflow_runs": [current]}], REPOSITORY, COMMIT, "main"), current)
+        with self.assertRaises(CI.AdmissionError):
+            CI.select_run([{"workflow_runs": [run()]}], REPOSITORY, COMMIT, "main")
+
     def test_old_green_cannot_mask_new_failed_pending_or_cancelled_run(self):
         for status, conclusion in [("completed", "failure"), ("in_progress", None),
                                    ("completed", "cancelled"), ("queued", None)]:

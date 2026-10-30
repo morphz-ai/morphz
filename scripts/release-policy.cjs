@@ -23,7 +23,11 @@ function releasePolicy(packageVersion, tag) {
     tag,
     prerelease: String(prerelease),
     make_latest: String(!prerelease),
-    release_branch: `release/${parsed.major}.${parsed.minor}.${parsed.patch}`,
+    // Stable releases are cut from the integrated main line. RC isolation
+    // must not strand the final version and its fixes on a release branch.
+    release_branch: prerelease
+      ? `release/${parsed.major}.${parsed.minor}.${parsed.patch}`
+      : "main",
   };
 }
 

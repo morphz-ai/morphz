@@ -17,11 +17,21 @@ test("RC is explicitly a prerelease and can never become latest", () => {
 
 test("final versions are stable and all SemVer prereleases stay isolated", () => {
   assert.equal(releasePolicy("0.1.4", "v0.1.4").make_latest, "true");
+  assert.equal(releasePolicy("0.1.4", "v0.1.4").release_branch, "main");
   for (const value of ["0.1.4-alpha.1", "0.1.4-beta", "0.1.4-rc.2+build.37"]) {
     assert.equal(releasePolicy(value, `v${value}`).prerelease, "true");
     assert.equal(releasePolicy(value, `v${value}`).make_latest, "false");
+    assert.equal(releasePolicy(value, `v${value}`).release_branch, "release/0.1.4");
   }
   assert.equal(releasePolicy("0.1.4+build.37", "v0.1.4+build.37").prerelease, "false");
+});
+
+test("0.1.5 stable requires main while its RC keeps release-branch isolation", () => {
+  assert.deepEqual(releasePolicy("0.1.5", "v0.1.5"), {
+    version: "0.1.5", tag: "v0.1.5", prerelease: "false",
+    make_latest: "true", release_branch: "main",
+  });
+  assert.equal(releasePolicy("0.1.5-rc.1", "v0.1.5-rc.1").release_branch, "release/0.1.5");
 });
 
 test("invalid, coerced, noncanonical and output-injection versions fail closed", () => {
