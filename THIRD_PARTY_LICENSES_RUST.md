@@ -365,7 +365,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `proc-macro2 1.0.106` | `MIT OR Apache-2.0` | L065, L185 |
 | `psl-types 2.0.11` | `MIT/Apache-2.0` | L067, L206 |
 | `publicsuffix 2.3.0` | `MIT/Apache-2.0` | L206, L274 |
-| `pulldown-cmark 0.13.4` | `MIT` | L261 |
+| `pulldown-cmark 0.13.6` | `MIT` | L261 |
 | `pxfm 0.1.30` | `BSD-3-Clause OR Apache-2.0` | L058, L180 |
 | `quick-error 2.0.1` | `MIT/Apache-2.0` | L147, L294 |
 | `quick-xml 0.41.0` | `MIT` | L021 |
@@ -15563,7 +15563,7 @@ SOFTWARE.
 
 ### L261
 
-Applies to: `pulldown-cmark 0.13.4`
+Applies to: `pulldown-cmark 0.13.6`
 
 ~~~~text
 The MIT License

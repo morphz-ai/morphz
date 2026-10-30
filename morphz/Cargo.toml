@@ -91,7 +91,7 @@ unicode-normalization = "0.1"
 # Runtime segments text itself and the physical index only splits on
 # whitespace. `compiled_data` keeps the dictionaries in the binary.
 icu_segmenter = "2.2"
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.5", default-features = false }
 portable-pty = "0.9.0"
 vt100 = "0.16.2"
 clap = "4.5"
