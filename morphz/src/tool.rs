@@ -17630,8 +17630,26 @@ Body
                 Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
             }),
         );
-        let (background_scheduler, _database, store) =
-            start_test_background_scheduler(Arc::clone(&bus)).await;
+        let database = TempSqliteDb::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let background_scheduler = Arc::new(
+            BackgroundTaskScheduler::new(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&timers),
+            )
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+        );
+        background_scheduler.register_timer_handler().unwrap();
+        // This is a rearming/lifecycle contract, not an OS scheduling benchmark.
+        // Drive the real persisted Timer claim and owner dispatch explicitly;
+        // the independent engine test covers the background clock loop.
+
         store
             .ensure_agent(NewAgent {
                 id: "wait-rearm-agent".to_string(),
@@ -17688,9 +17706,9 @@ Body
                 trigger_sequence: 1,
             });
         }
-        let check_tool = CheckTaskAfterTool::new(background_scheduler, 10);
+        let check_tool = CheckTaskAfterTool::new(Arc::clone(&background_scheduler), 10);
 
-        for _ in 0..2 {
+        for generation in 1..=2 {
             let result: serde_json::Value = serde_json::from_str(
                 &check_tool
                     .execute(
@@ -17707,10 +17725,57 @@ Body
             assert_eq!(result["waiting"], true);
             assert_eq!(result["check_after_secs"], 1);
 
-            let event = tokio::time::timeout(tokio::time::Duration::from_secs(2), receiver.recv())
+            let timer = store
+                .get_runtime_timer(&background_wake_timer_id(&task_id))
                 .await
                 .unwrap()
                 .unwrap();
+            assert_eq!(timer.generation, generation);
+            assert_eq!(timer.payload["check_after_secs"], 1);
+            assert_eq!(
+                get_tasks_map().get(&task_id).unwrap().next_wakeup_at,
+                Some(timer.due_at)
+            );
+            let claim_token = format!("test-rearm-{generation}");
+            let claimed = store
+                .claim_due_runtime_timers(
+                    timer.due_at,
+                    &claim_token,
+                    timer.due_at + chrono::Duration::seconds(30),
+                    1,
+                )
+                .await
+                .unwrap();
+            assert_eq!(claimed.len(), 1);
+            assert_eq!(claimed[0].id, timer.id);
+            assert_eq!(claimed[0].generation, generation);
+            // Advance this memory-only fixture's semantic clock to the due
+            // checkpoint. The Store claim above uses its explicit clock input.
+            get_tasks_map().get_mut(&task_id).unwrap().next_wakeup_at =
+                Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+            assert_eq!(
+                Arc::clone(&background_scheduler)
+                    .dispatch_timer(claimed[0].clone())
+                    .await
+                    .unwrap(),
+                TimerDisposition::Complete
+            );
+            assert!(store
+                .complete_runtime_timer(&timer.id, generation, &claim_token)
+                .await
+                .unwrap());
+            let event = receiver.try_recv().unwrap();
+            assert!(store
+                .claim_due_runtime_timers(
+                    timer.due_at,
+                    &claim_token,
+                    timer.due_at + chrono::Duration::seconds(30),
+                    1,
+                )
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(receiver.try_recv().is_err());
             assert_eq!(event.payload["event"], "background_task_check_due");
             assert_eq!(event.payload["check_after_secs"], 1);
             assert!(event.payload["text"]

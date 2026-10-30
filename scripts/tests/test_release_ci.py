@@ -158,6 +158,17 @@ class ReleaseCiTests(unittest.TestCase):
         self.assertIn("/runs/10/attempts/2/jobs?per_page=100", calls[1])
         self.assertIn(f"head_sha={COMMIT}&event=push&per_page=100", calls[0])
 
+    def test_full_verifier_admits_main_and_checks_exact_main_runs(self):
+        def fetch(endpoint):
+            if "/workflows/" in endpoint:
+                workflow = endpoint.split("/workflows/")[1].split("/")[0]
+                return [{"workflow_runs": [run(10 if workflow == "ci.yml" else 20, head_branch="main")]}]
+            workflow = "ci.yml" if "/runs/10/" in endpoint else "application.yml"
+            return pages(jobs(workflow, run(10 if workflow == "ci.yml" else 20, head_branch="main")))
+        self.assertEqual(len(CI.verify(REPOSITORY, COMMIT, "main", fetch)), 2)
+        with self.assertRaisesRegex(CI.AdmissionError, "No push CI run"):
+            CI.verify(REPOSITORY, COMMIT, "main", lambda _: [{"workflow_runs": [run()]}])
+
     def test_concurrent_rerun_invalidates_previous_green_evidence(self):
         calls = 0
         def fetch(endpoint):
@@ -175,7 +186,8 @@ class ReleaseCiTests(unittest.TestCase):
             self.fail("Invalid identity must fail before contacting GitHub")
         for repository, commit, branch in [("bad/repo/extra", COMMIT, BRANCH),
                                            (REPOSITORY, "short", BRANCH),
-                                           (REPOSITORY, COMMIT, "main"),
+                                           (REPOSITORY, COMMIT, "feature/0.1.5"),
+                                           (REPOSITORY, COMMIT, "main\n"),
                                            (REPOSITORY, COMMIT, "release/0.1.4\n")]:
             with self.assertRaises(CI.AdmissionError):
                 CI.verify(repository, commit, branch, never)

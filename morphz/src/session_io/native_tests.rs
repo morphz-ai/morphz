@@ -970,15 +970,23 @@ fn reserved_collisions_duplicate_identity_and_companion_deliveries_are_rejected(
         arguments: r#"{"mode":"silent"}"#.into(),
         ..call("silent", "{}")
     };
-    assert!(normalize(
+    // Ordinary progress is retained; the separately validated control owns
+    // silence. Companion deliveries above remain an actual conflict.
+    let progress = "正在等待后台任务完成。";
+    let normalized = normalize(
         &Response {
-            content: "不能同时回复".into(),
-            tool_calls: vec![no_reply.clone()]
+            content: progress.into(),
+            tool_calls: vec![no_reply.clone()],
         },
         &binding,
-        &context(&binding)
+        &context(&binding),
     )
-    .is_err());
+    .unwrap();
+    assert_eq!(normalized.execution_response.content, progress);
+    assert!(matches!(
+        normalized.terminal_decision,
+        Some(TerminalDecision::NoReply(_))
+    ));
     assert!(matches!(
         normalize(
             &Response {

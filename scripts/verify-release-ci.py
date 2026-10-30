@@ -104,8 +104,8 @@ def verify(repository: str, commit: str, branch: str, fetch=github_pages) -> lis
         raise AdmissionError("Invalid repository identity")
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise AdmissionError("Release CI requires a complete lowercase commit SHA")
-    if not re.fullmatch(r"release/[0-9]+\.[0-9]+\.[0-9]+", branch):
-        raise AdmissionError("Release CI must come from the corresponding release branch")
+    if not re.fullmatch(r"(?:main|release/[0-9]+\.[0-9]+\.[0-9]+)", branch):
+        raise AdmissionError("Release CI must come from main or the corresponding release branch")
     receipts = []
     for workflow in REQUIRED_WORKFLOWS:
         endpoint = f"repos/{repository}/actions/workflows/{workflow}/runs?head_sha={commit}&event=push&per_page=100"

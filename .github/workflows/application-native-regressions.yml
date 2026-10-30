@@ -146,7 +146,9 @@ jobs:
 
   linux-native-regressions:
     name: Isolated Linux native and timing regression diagnosis
-    runs-on: ubuntu-latest
+    # PostgreSQL 16 packages are part of this tested LTS image. The moving
+    # ubuntu-latest alias now selects 26.04, which no longer supplies them.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:

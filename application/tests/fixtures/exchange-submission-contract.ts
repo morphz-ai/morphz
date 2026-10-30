@@ -395,9 +395,10 @@ export function verifySubmissionCommands(
     }
     // The Git9122 send witness stays immutable. Supplement intentionally no
     // longer requires its original message in the visible history window.
-    // Pin that reviewed algorithm separately; the negative mutation matrix
+    // Pin that reviewed current algorithm separately; historical operands still
+    // compare to their complete immutable Git9122 algorithm. The mutation matrix
     // and owner/route/draft behavior tests still reject any unreviewed change.
-    if (algorithms && name === "supplement")
+    if (algorithms && name === "supplement" && profile === "cognitive")
       assert.equal(
         createHash("sha256")
           .update(

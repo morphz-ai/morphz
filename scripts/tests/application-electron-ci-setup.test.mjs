@@ -171,3 +171,18 @@ test("complete macOS inventory leaves bounded room for native validation and cle
   ])
     assert.throws(() => verifyBudget(workflow.replace(desktop, changed)));
 });
+
+function verifyPostgres16Runner(source, job) {
+  const body = jobSource(source, job);
+  assert.match(body, /runs-on: ubuntu-24\.04(?:\s|$)/);
+  assert.match(body, /apt-get install -y postgresql-16 postgresql-client-16/);
+}
+
+test("PostgreSQL 16 inventories keep their proven Ubuntu image instead of a moving alias", () => {
+  const native = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  for (const [source, job] of [[workflow, "storage-postgres"], [native, "linux-native-regressions"]]) {
+    verifyPostgres16Runner(source, job);
+    const body = jobSource(source, job);
+    assert.throws(() => verifyPostgres16Runner(source.replace(body, body.replace("runs-on: ubuntu-24.04", "runs-on: ubuntu-latest")), job));
+  }
+});

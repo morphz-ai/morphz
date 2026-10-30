@@ -134,7 +134,9 @@ jobs:
 
   storage-postgres:
     name: Application storage (PostgreSQL)
-    runs-on: ubuntu-latest
+    # PostgreSQL 16 packages are part of this tested LTS image. The moving
+    # ubuntu-latest alias now selects 26.04, which no longer supplies them.
+    runs-on: ubuntu-24.04
     # This is the complete Node inventory plus live PostgreSQL/S3, not a small
     # storage subset. Bound file scheduling below; keep every case and its own
     # deadline. The old 60m job cap cancelled the still-running full inventory.
