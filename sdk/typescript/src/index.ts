@@ -1,6 +1,14 @@
 /** Stable Morphz HTTP client surface for Session Service v1. */
 
 export { objectiveIsTerminal } from "./runtime-state.ts";
+export { userInputAnswerText } from "./user-input.ts";
+export type {
+  PendingUserInputRequest,
+  UserInputAnswer,
+  UserInputDestination,
+  UserInputOption,
+  UserInputQuestion,
+} from "./user-input.ts";
 
 export interface MorphzPrincipal {
   id: string;
@@ -236,7 +244,8 @@ export interface CreateMessageAttachmentStageInput {
 export interface SendMessageOptions {
   input_destination?:
     | { kind: 'thread'; thread_id: string; generation: number }
-    | { kind: 'objective'; objective_id: string; generation: number; reply_to_request_id?: string };
+    | { kind: 'objective'; objective_id: string; generation: number; reply_to_request_id?: string }
+    | import('./user-input.ts').UserInputDestination;
   attachments?: Array<{
     name: string;
     media_type: string;

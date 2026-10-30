@@ -269,6 +269,9 @@ test("目标行的展开与查看紧邻，密度有上界而不是只检查按�
       const action = element
         .querySelector<HTMLElement>(".subject-objective-view")!
         .getBoundingClientRect();
+      const control = element
+        .querySelector<HTMLElement>('[aria-label="暂停目标"]')!
+        .getBoundingClientRect();
       const row = element
         .querySelector(".subject-objective-row")!
         .getBoundingClientRect();
@@ -280,6 +283,12 @@ test("目标行的展开与查看紧邻，密度有上界而不是只检查按�
           (action.left + action.right - arrow.left - arrow.right) / 2 / scale,
         actionWidth: action.width / scale,
         actionHeight: action.height / scale,
+        controlGap: (control.left - action.right) / scale,
+        controlVerticalGap: (control.top - action.bottom) / scale,
+        controlLeftOffset: (control.left - action.left) / scale,
+        controlTopOffset: (control.top - action.top) / scale,
+        controlWidth: control.width / scale,
+        controlHeight: control.height / scale,
         rowHeight: row.height / scale,
         metadataGap: (metadata.top - text.bottom) / scale,
         padding:
@@ -288,15 +297,56 @@ test("目标行的展开与查看紧邻，密度有上界而不是只检查按�
         overflow: element.scrollWidth > element.clientWidth + 1,
       };
     });
+    await info.attach(`objective-row-geometry-${width}-${zoom}.json`, {
+      body: JSON.stringify({ width, zoom, ...geometry }),
+      contentType: "application/json",
+    });
     expect(geometry.centerGap).toBeGreaterThan(0);
     expect(geometry.centerGap).toBeLessThanOrEqual(26);
     expect(geometry.actionWidth).toBeCloseTo(24, 0);
     expect(geometry.actionHeight).toBeCloseTo(24, 0);
+    expect(
+      (geometry.controlGap >= 0 &&
+        geometry.controlGap <= 4 &&
+        Math.abs(geometry.controlTopOffset) <= 1) ||
+        (geometry.controlVerticalGap >= 0 &&
+          geometry.controlVerticalGap <= 4 &&
+          Math.abs(geometry.controlLeftOffset) <= 1),
+      "the quick control stays beside or immediately below View without overlap",
+    ).toBe(true);
+    expect(geometry.controlWidth).toBeCloseTo(24, 0);
+    expect(geometry.controlHeight).toBeCloseTo(24, 0);
     expect(geometry.padding).toBeLessThanOrEqual(8);
     expect(geometry.metadataGap).toBeLessThanOrEqual(3);
     expect(geometry.overflow).toBe(false);
     if (width === 1440 && zoom === 1)
       expect(geometry.rowHeight).toBeLessThanOrEqual(72);
+    if (width === 1440 && zoom === 1) {
+      // Recreate the rejected extra action between expansion and viewing in
+      // this synthetic DOM only. The unchanged 26px bound must still reject
+      // that layout even after the responsive layout has fully settled.
+      const rejectedGap = await goal.evaluate((element) => {
+        const view = element.querySelector<HTMLElement>(
+          ".subject-objective-view",
+        )!;
+        const control = element.querySelector<HTMLElement>(
+          '[aria-label="暂停目标"]',
+        )!;
+        const parent = control.parentNode!,
+          next = control.nextSibling;
+        try {
+          parent.insertBefore(control, view);
+          const arrow = element
+            .querySelector(".subject-objective-heading > svg:last-child")!
+            .getBoundingClientRect();
+          const action = view.getBoundingClientRect();
+          return (action.left + action.right - arrow.left - arrow.right) / 2;
+        } finally {
+          parent.insertBefore(control, next);
+        }
+      });
+      expect(rejectedGap).toBeGreaterThan(26);
+    }
     await f.panel.screenshot({
       path: info.outputPath(`objective-row-compact-${width}-${zoom}.png`),
     });
@@ -307,6 +357,10 @@ test("目标行的展开与查看紧邻，密度有上界而不是只检查按�
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(view).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(
+    goal.getByRole("button", { name: "暂停目标", exact: true }),
+  ).toBeFocused();
   await expect(await openInput(page)).toHaveValue(f.draft);
   expect(f.writes).toEqual([]);
 });

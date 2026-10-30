@@ -1,18 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  ArrowLeft,
-  ChevronRight,
-  MessageSquarePlus,
-  Square,
-} from "lucide-react";
+import { observeSupplementAttention } from "./supplement-attention.js";
+import { ArrowLeft, ChevronRight, MessageSquarePlus } from "lucide-react";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
+import { ExecutionControlActions } from "./features/execution/ExecutionControlActions.js";
 import { StopResponse, ToolMessage } from "./Conversation.js";
 import { useConversationStream } from "./useConversationStream.js";
 import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
-import { ApprovalCard } from "./ApprovalCard.js";
 import type { ComposerOption } from "./ComposerOptions.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import { activeExecutionThreads } from "../../../packages/core/src/conversation.js";
@@ -34,6 +30,7 @@ import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ExecutionProgress } from "./ExecutionProgress.js";
 import { Tooltip } from "./ui/Tooltip.js";
+import { UserInputPreview } from "./UserInputPreview.js";
 import {
   executionModelLabel,
   executionModelDescription,
@@ -47,6 +44,7 @@ export function ExecutionSidebar({
   onClose,
   onSelect,
   onSupplement,
+  onReply,
   onOpen,
   onOpenScript,
   viewOptions,
@@ -62,6 +60,7 @@ export function ExecutionSidebar({
   onClose: () => void;
   onSelect: (scope: ExecutionReadScope) => void;
   onSupplement?: (target: InputContinuation) => void;
+  onReply?: (thread: ActivityThread) => void;
   onOpen: (id: string, revision?: number) => void;
   onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
@@ -77,8 +76,8 @@ export function ExecutionSidebar({
   const [stopping, setStopping] = useState(false),
     [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [showOther, setShowOther] = useState(false),
-    [stopRequested, setStopRequested] = useState(false);
+  const [controlNotice, setControlNotice] = useState("");
+  const [showOther, setShowOther] = useState(false);
   const threads = runtime.activity?.threads ?? [];
   const currentThread = threads.find((t) => t.id === scope.threadId);
   const [initialThread] = useState(currentThread);
@@ -145,8 +144,16 @@ export function ExecutionSidebar({
           client.online &&
           !!currentThread &&
           executionActivityThreadAvailable(value, runtime),
+        client.online ? runtime.attention : undefined,
       )
     : undefined;
+  const threadNeedsInput =
+    !!thread?.userInputRequest &&
+    thread.lifecycle === "open" &&
+    thread.controlState !== "paused" &&
+    client.online &&
+    !!currentThread &&
+    executionActivityThreadAvailable(thread, runtime);
   const summaryRef = useRef<HTMLParagraphElement>(null);
   const [summaryVisible, setSummaryVisible] = useState(true);
   useEffect(() => {
@@ -170,7 +177,8 @@ export function ExecutionSidebar({
   const supplementAction = supplementTarget && onSupplement && (
     <Tooltip label="补充要求">
       <button
-        className="icon-button execution-supplement"
+        className={`icon-button execution-supplement${thread?.userInputRequest ? " needs-input" : ""}`}
+        ref={thread?.userInputRequest ? observeSupplementAttention : undefined}
         aria-label="补充"
         disabled={
           !client.online || !runtime.connected || !runtime.activity?.available
@@ -210,72 +218,51 @@ export function ExecutionSidebar({
       setStopping(false);
     }
   }
-  async function stopThread() {
-    if (
-      readOnly ||
-      !currentThread ||
-      currentThread.lifecycle !== "open" ||
-      !activityAvailable ||
-      !client.online
-    )
-      return;
-    setStopping(true);
-    setError("");
-    try {
-      await client.controlExecution({
-        scope,
-        action: {
-          type: "cancel-thread",
-          threadId: currentThread.id,
-          revision: currentThread.revision,
-        },
-      });
-      setStopRequested(true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setStopping(false);
-    }
-  }
   const detailStatus = scope.threadId && (
     <span
       className="execution-origin-status"
+      title={
+        threadNeedsInput
+          ? "等待你的输入"
+          : (threadStatus?.label ?? "此分支不在当前快照中")
+      }
       data-status={threadStatus?.kind ?? "unknown"}
     >
       <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
-      {threadStatus?.label ?? "此分支不在当前快照中"}
+      <span className="execution-status-label">
+        {threadNeedsInput
+          ? "等待你的输入"
+          : (threadStatus?.label ?? "此分支不在当前快照中")}
+      </span>
     </span>
   );
   const detailActions = (
     <div className="execution-origin-actions">
       {supplementAction}
-      {scope.threadId && !readOnly && currentThread?.lifecycle === "open" && (
-        <Tooltip
-          label={
-            stopping
-              ? "正在请求停止"
-              : stopRequested
-                ? "停止请求已发送"
-                : "停止当前执行"
+      {scope.threadId && currentThread?.lifecycle === "open" && (
+        <ExecutionControlActions
+          key={`${client.boot!.csrfToken}:${JSON.stringify(scope)}`}
+          scope={scope}
+          thread={currentThread}
+          disabled={
+            !client.online ||
+            !runtime.connected ||
+            !activityAvailable ||
+            !executionActivityThreadAvailable(currentThread, runtime)
           }
-        >
-          <button
-            className="icon-button execution-stop-thread"
-            aria-label="停止"
-            aria-busy={stopping}
-            disabled={
-              stopping || stopRequested || !activityAvailable || !client.online
+          onNotice={setControlNotice}
+          onControl={async (action) => {
+            try {
+              await client.controlExecution({ scope, action });
+            } catch (cause) {
+              // One failed command may reconcile the current bounded head;
+              // never retry a Human's control with a newer revision.
+              void client.refreshView().catch(() => {});
+              throw cause;
             }
-            onClick={stopThread}
-          >
-            <Square aria-hidden="true" />
-          </button>
-        </Tooltip>
-      )}
-      {(stopping || stopRequested) && scope.threadId && (
-        <span className="sr-only" role="status">
-          {stopping ? "正在请求停止" : "停止请求已发送"}
-        </span>
+            await client.refreshView();
+          }}
+        />
       )}
     </div>
   );
@@ -285,12 +272,24 @@ export function ExecutionSidebar({
       activityThreads,
       (value) =>
         client.online && executionActivityThreadAvailable(value, runtime),
+      client.online ? runtime.attention : undefined,
     );
     const children = executionActivityDescendants(t, activityThreads);
-    const summary = executionActivitySummary(
-      t,
-      client.online && executionActivityThreadAvailable(t, runtime),
-    );
+    const needsInput =
+      !!t.userInputRequest &&
+      t.lifecycle === "open" &&
+      t.controlState !== "paused" &&
+      client.online &&
+      executionActivityThreadAvailable(t, runtime);
+    const summary =
+      status.kind === "approval"
+        ? status.label
+        : needsInput
+          ? "等待你的输入"
+          : executionActivitySummary(
+              t,
+              client.online && executionActivityThreadAvailable(t, runtime),
+            );
     const origin = executionActivityOrigin(
       t,
       state,
@@ -308,85 +307,114 @@ export function ExecutionSidebar({
       .filter(Boolean)
       .join(" · ");
     return (
-      <button
-        className="execution-activity-row"
-        key={t.id}
-        data-thread-id={t.id}
-        data-root-id={t.rootId}
-        aria-label={[
-          t.title || "执行事项",
-          status.label,
-          summary,
-          origin,
-          executionActivityClock(t),
-          model,
-        ]
-          .filter(Boolean)
-          .join(" · ")}
-        onClick={() => onSelect(executionActivityScope(t, state))}
-      >
-        <span
-          className="execution-activity-icon"
-          data-status={status.kind}
-          title={status.label}
+      <div key={t.id} className="execution-activity-entry">
+        <button
+          className="execution-activity-row"
+          data-thread-id={t.id}
+          data-root-id={t.rootId}
+          aria-label={[
+            t.title || "执行事项",
+            needsInput ? "等待你的输入" : status.label,
+            needsInput ? "" : summary,
+            origin,
+            executionActivityClock(t),
+            model,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+          onClick={() => onSelect(executionActivityScope(t, state))}
         >
-          <ExecutionStatusIcon kind={status.kind} size={19} />
-        </span>
-        <span className="execution-activity-body">
-          <strong title={t.title}>{t.title || "执行事项"}</strong>
-          {summary && (
-            <span className="execution-activity-summary" title={summary}>
-              {summary}
-            </span>
-          )}
-          <span className="execution-activity-meta" title={metadata}>
-            <time
-              dateTime={
-                t.outcome?.terminalKind === t.lifecycle
-                  ? t.outcome.createdAt
-                  : t.updatedAt
-              }
-            >
-              {executionActivityClock(t)}
-            </time>
-            {t.executionModel && (
-              <>
-                {" · "}
-                <span
-                  className="execution-model-meta"
-                  title={executionModelDescription(t.executionModel)}
-                >
-                  {model}
-                </span>
-              </>
-            )}
-            {origin && (
-              <>
-                {" · "}
-                <span className="execution-activity-project" title={origin}>
-                  {origin}
-                </span>
-              </>
-            )}
-            {children.length > 0 && (
-              <>
-                {" · "}
-                {children.length} 个子任务
-              </>
-            )}
+          <span
+            className="execution-activity-icon"
+            data-status={status.kind}
+            title={needsInput ? "等待你的输入" : status.label}
+          >
+            <ExecutionStatusIcon kind={status.kind} size={19} />
           </span>
-        </span>
-        <ChevronRight size={14} aria-hidden="true" />
-      </button>
+          <span className="execution-activity-body">
+            <strong title={t.title}>{t.title || "执行事项"}</strong>
+            {summary && (
+              <span
+                className="execution-activity-summary"
+                data-user-input={needsInput || undefined}
+                data-approval={status.kind === "approval" || undefined}
+                title={summary}
+              >
+                {summary}
+              </span>
+            )}
+            <span className="execution-activity-meta" title={metadata}>
+              <time
+                dateTime={
+                  t.outcome?.terminalKind === t.lifecycle
+                    ? t.outcome.createdAt
+                    : t.updatedAt
+                }
+              >
+                {executionActivityClock(t)}
+              </time>
+              {t.executionModel && (
+                <>
+                  {" · "}
+                  <span
+                    className="execution-model-meta"
+                    title={executionModelDescription(t.executionModel)}
+                  >
+                    {model}
+                  </span>
+                </>
+              )}
+              {origin && (
+                <>
+                  {" · "}
+                  <span className="execution-activity-project" title={origin}>
+                    {origin}
+                  </span>
+                </>
+              )}
+              {children.length > 0 && (
+                <>
+                  {" · "}
+                  {children.length} 个子任务
+                </>
+              )}
+            </span>
+          </span>
+          <ChevronRight size={14} aria-hidden="true" />
+        </button>
+        <UserInputPreview
+          thread={t}
+          onReply={onReply}
+          disabled={
+            !client.online || !executionActivityThreadAvailable(t, runtime)
+          }
+        />
+      </div>
     );
   };
   const content = (
     <div className="execution-sidebar-scroll">
       {embedded && detail && (
         <div className="execution-detail-header">
-          {headerLeading}
-          {detailStatus}
+          <div className="execution-header-context">
+            {headerLeading}
+            {detailStatus}
+          </div>
           {detailActions}
+        </div>
+      )}
+      {controlNotice && (
+        <div className="execution-control-feedback">
+          <p role="alert">{controlNotice}</p>
+          {onRefresh && (
+            <button
+              data-size="sm"
+              disabled={refreshing}
+              onClick={() => void refresh()}
+            >
+              刷新
+            </button>
+          )}
         </div>
       )}
       {!detail && (
@@ -423,7 +451,7 @@ export function ExecutionSidebar({
       {runtime.connected &&
         runtime.activity?.available &&
         runtime.activity.readScopes?.some(
-          (value) => !value.historyAvailable,
+          (value) => !value.historyAvailable && !value.historyRetained,
         ) && (
           <p className="execution-activity-notice" role="status">
             <span>历史记录刷新失败，当前活动状态可用。</span>
@@ -438,33 +466,6 @@ export function ExecutionSidebar({
         <p className="delivery-error" role="alert">
           {error}
         </p>
-      )}
-      {!detail && runtime.attention && (
-        <section className="execution-attention" aria-label="需要处理的审批">
-          {!runtime.attention.available && (
-            <p className="muted" role="status">
-              审批状态暂不可用，请刷新后核对。
-            </p>
-          )}
-          {runtime.attention.approvals.map((entry) => (
-            <ApprovalCard
-              key={
-                entry.approval.request.approval_id + entry.approval.fingerprint
-              }
-              entry={entry}
-              client={client}
-              available={
-                client.online &&
-                runtime.connected &&
-                runtime.attention!.available
-              }
-              origin={projectDisplayLabel(
-                state.projects.find((p) => p.id === entry.scope.projectId),
-              )}
-              onInspect={() => onSelect(entry.scope)}
-            />
-          ))}
-        </section>
       )}
       {!detail && runtime.activity?.delegationsAvailable === false && (
         <p className="muted" role="status">

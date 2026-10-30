@@ -702,7 +702,7 @@ impl CognitiveCoordinationNetworkService {
             .get(url)
             .send()
             .await
-            .map_err(|error| coordination_transport_error(&peer.base_url, error.to_string()))?;
+            .map_err(|error| coordination_request_error(&peer.base_url, error))?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
@@ -1056,7 +1056,7 @@ impl CognitiveCoordinationNetworkService {
             .json(&envelope)
             .send()
             .await
-            .map_err(|error| coordination_transport_error(&peer.base_url, error.to_string()))?;
+            .map_err(|error| coordination_request_error(&peer.base_url, error))?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
@@ -1133,6 +1133,53 @@ impl CognitiveCoordinationNetworkService {
             heartbeat_started: AtomicBool::new(false),
         }
     }
+}
+
+fn coordination_error_sources(error: &(dyn std::error::Error + 'static)) -> Value {
+    const MAX_SOURCE_DEPTH: usize = 8;
+    let mut source = Some(error);
+    let mut depth = 0;
+    let mut io_errors = Vec::new();
+    while let Some(current) = source.filter(|_| depth < MAX_SOURCE_DEPTH) {
+        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+            io_errors.push(json!({
+                "depth": depth,
+                "kind": format!("{:?}", error.kind()),
+                "raw_os_error": error.raw_os_error(),
+            }));
+        }
+        depth += 1;
+        source = current.source();
+    }
+    // Never format a source error: arbitrary transport sources can contain
+    // private URLs, headers, bodies or credentials in Display/Debug output.
+    json!({
+        "source_depth": depth,
+        "source_depth_limited": source.is_some(),
+        "io_errors": io_errors,
+    })
+}
+
+fn coordination_request_error(base_url: &str, error: reqwest::Error) -> String {
+    let diagnostics = json!({
+        "is_connect": error.is_connect(),
+        "is_timeout": error.is_timeout(),
+        "is_builder": error.is_builder(),
+        "is_redirect": error.is_redirect(),
+        "is_status": error.is_status(),
+        "is_request": error.is_request(),
+        "is_body": error.is_body(),
+        "is_decode": error.is_decode(),
+        "is_upgrade": error.is_upgrade(),
+        "sources": coordination_error_sources(&error),
+    });
+    // Retain Reqwest's classification text, but not an attached request URL.
+    // The existing outer message already identifies the configured peer.
+    let message = format!(
+        "{} [transport diagnostics: {diagnostics}]",
+        error.without_url()
+    );
+    coordination_transport_error(base_url, message)
 }
 
 fn coordination_transport_error(base_url: &str, message: String) -> String {
@@ -1596,6 +1643,110 @@ mod tests {
             message,
             "peer returned HTTP 401 Unauthorized: reverse identity probe failed"
         );
+    }
+
+    #[test]
+    fn coordination_transport_sources_report_errno_without_private_display() {
+        #[derive(Debug)]
+        struct PrivateSource(std::io::Error);
+
+        impl std::fmt::Display for PrivateSource {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("credential=private-source-display; body=private-response")
+            }
+        }
+
+        impl std::error::Error for PrivateSource {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        let error = PrivateSource(std::io::Error::from_raw_os_error(13));
+        let diagnostics = coordination_error_sources(&error);
+        assert_eq!(diagnostics["source_depth"], 2);
+        assert_eq!(diagnostics["source_depth_limited"], false);
+        assert_eq!(diagnostics["io_errors"][0]["depth"], 1);
+        assert_eq!(
+            diagnostics["io_errors"][0]["kind"],
+            format!("{:?}", error.0.kind())
+        );
+        assert_eq!(diagnostics["io_errors"][0]["raw_os_error"], 13);
+        assert!(!diagnostics.to_string().contains("private-"));
+
+        let private_io = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "credential=private-io-message",
+        );
+        let diagnostics = coordination_error_sources(&private_io);
+        assert_eq!(diagnostics["io_errors"][0]["kind"], "PermissionDenied");
+        assert!(diagnostics["io_errors"][0]["raw_os_error"].is_null());
+        assert!(!diagnostics.to_string().contains("private-"));
+    }
+
+    #[test]
+    fn coordination_transport_sources_bound_cyclic_error_chains() {
+        #[derive(Debug)]
+        struct CyclicSource;
+
+        impl std::fmt::Display for CyclicSource {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("a private source Display must never be called")
+            }
+        }
+
+        impl std::error::Error for CyclicSource {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+
+        let diagnostics = coordination_error_sources(&CyclicSource);
+        assert_eq!(diagnostics["source_depth"], 8);
+        assert_eq!(diagnostics["source_depth_limited"], true);
+        assert_eq!(diagnostics["io_errors"], json!([]));
+    }
+
+    #[test]
+    fn coordination_transport_request_flags_do_not_add_private_request_data() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for method in [reqwest::Method::GET, reqwest::Method::POST] {
+            let error = client
+                .request(
+                    method,
+                    "http://peer.local:8080/private-url?token=private-token",
+                )
+                .header("x-test", "private-header\ninvalid")
+                .body("private-body")
+                .build()
+                .unwrap_err()
+                .with_url(
+                    reqwest::Url::parse(
+                        "http://private-user:private-password@peer.local:8080/private-url?token=private-token",
+                    )
+                    .unwrap(),
+                );
+            assert!(error.to_string().contains("private-url"));
+            let message = coordination_request_error("http://peer.local:8080", error);
+            assert!(message.starts_with(
+                "coordination request to 'http://peer.local:8080' failed: builder error"
+            ));
+            assert!(message.contains("\"is_builder\":true"));
+            for flag in [
+                "is_connect",
+                "is_timeout",
+                "is_redirect",
+                "is_status",
+                "is_request",
+                "is_body",
+                "is_decode",
+                "is_upgrade",
+            ] {
+                assert!(message.contains(&format!("\"{flag}\":false")));
+            }
+            assert!(message.contains("\"source_depth_limited\":false"));
+            assert!(!message.contains("private-"));
+        }
     }
 
     #[derive(Clone)]

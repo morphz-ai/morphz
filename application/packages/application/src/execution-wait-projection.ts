@@ -7,8 +7,10 @@ import {
 } from "./execution-thread-tree.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { threadWaitProjection } from "./thread-wait-projection.js";
+import { pendingUserInputRequestSchema } from "../../core/src/user-input.js";
 
 const schedulerThreadSchema = z.object({
+  user_input_request: pendingUserInputRequestSchema.nullish(),
   thread: z.object({
     id: z.string(),
     kind: z.string().optional(),
@@ -75,6 +77,8 @@ const schedulerObjectiveSchema = z.object({
         owner_id: z.string(),
         owner_generation: z.number(),
         dependency_kind: z.string(),
+        dependency_id: z.string().optional(),
+        metadata: z.record(z.string(), z.unknown()).optional(),
         required: z.boolean(),
         status: z.string(),
       }),

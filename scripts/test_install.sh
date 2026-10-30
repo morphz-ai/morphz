@@ -40,7 +40,7 @@ esac
 
 asset="morphz-$platform-$architecture.tar.gz"
 mkdir -p "$temporary/release" "$temporary/arm-release" "$temporary/bundle" "$temporary/bin" "$temporary/home" "$temporary/mock-bin"
-printf '%s\n' '#!/bin/sh' 'printf "%s" "morphz installer fixture"' 'for argument in "$@"; do printf " %s" "$argument"; done' 'printf "\n"' > "$temporary/bundle/morphz"
+printf '%s\n' '#!/bin/sh' 'if [ "${1:-}" = "--version" ]; then printf "%s\n" "morphz 0.1.3 (git fixture-source)"; exit 0; fi' 'printf "%s" "morphz installer fixture"' 'for argument in "$@"; do printf " %s" "$argument"; done' 'printf "\n"' > "$temporary/bundle/morphz"
 chmod 0755 "$temporary/bundle/morphz"
 tar -czf "$temporary/release/$asset" -C "$temporary/bundle" morphz
 tar -czf "$temporary/arm-release/morphz-linux-aarch64.tar.gz" -C "$temporary/bundle" morphz
@@ -208,3 +208,53 @@ else
   test_posix_profile bash .bashrc
 fi
 test_posix_profile sh .profile
+
+test_stage="stable channel rejects an RC before modifying the installation"
+mkdir -p "$temporary/rc-release" "$temporary/rc-bundle"
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" "morphz 0.1.4-rc.1 (git abc-source)"' > "$temporary/rc-bundle/morphz"
+chmod 0755 "$temporary/rc-bundle/morphz"
+tar -czf "$temporary/rc-release/$asset" -C "$temporary/rc-bundle" morphz
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd "$temporary/rc-release" && sha256sum "$asset" > "$asset.sha256")
+else
+  (cd "$temporary/rc-release" && shasum -a 256 "$asset" > "$asset.sha256")
+fi
+cp "$temporary/bin/morphz" "$temporary/previous-morphz"
+if MORPHZ_INSTALL_DIR="$temporary/bin" \
+  MORPHZ_RELEASE_BASE_URL="file://$temporary/rc-release" \
+  sh "$repository_root/scripts/install.sh" >"$temporary/rc-rejected-output" 2>&1; then
+  printf '%s\n' 'stable installer accepted an RC release' >&2
+  exit 1
+fi
+grep -F 'stable installation rejected prerelease 0.1.4-rc.1' "$temporary/rc-rejected-output" >/dev/null
+cmp "$temporary/previous-morphz" "$temporary/bin/morphz"
+
+test_stage="explicit RC opt-in"
+MORPHZ_VERSION=v0.1.4-rc.1 \
+MORPHZ_INSTALL_DIR="$temporary/rc-bin" \
+MORPHZ_RELEASE_BASE_URL="file://$temporary/rc-release" \
+  sh "$repository_root/scripts/install.sh" >"$temporary/rc-optin-output" 2>&1
+[ "$("$temporary/rc-bin/morphz" --version)" = 'morphz 0.1.4-rc.1 (git abc-source)' ]
+
+test_stage="requested version mismatch cannot change channels"
+if MORPHZ_VERSION=v0.1.4-rc.2 \
+  MORPHZ_INSTALL_DIR="$temporary/bin" \
+  MORPHZ_RELEASE_BASE_URL="file://$temporary/rc-release" \
+  sh "$repository_root/scripts/install.sh" >"$temporary/rc-mismatch-output" 2>&1; then
+  printf '%s\n' 'installer accepted a different version than the explicit request' >&2
+  exit 1
+fi
+grep -F 'does not match requested version' "$temporary/rc-mismatch-output" >/dev/null
+cmp "$temporary/previous-morphz" "$temporary/bin/morphz"
+
+test_stage="unavailable RC cannot fall back to stable"
+if MORPHZ_VERSION=v0.1.4-rc.1 \
+  MORPHZ_INSTALL_DIR="$temporary/bin" \
+  MORPHZ_RELEASE_BASE_URL="file://$temporary/missing-release" \
+  sh "$repository_root/scripts/install.sh" >"$temporary/rc-missing-output" 2>&1; then
+  printf '%s\n' 'installer silently fell back after an unavailable release' >&2
+  exit 1
+fi
+cmp "$temporary/previous-morphz" "$temporary/bin/morphz"
+
+printf '%s\n' "installer tests passed ($platform/$architecture)"

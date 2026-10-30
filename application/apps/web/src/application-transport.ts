@@ -249,6 +249,9 @@ export function subscribeConversation(
   const lost = () => {
     current = {
       connected: false,
+      ...(current.contextUsages
+        ? { contextUsages: current.contextUsages }
+        : {}),
       messages: current.messages.map((m) =>
         m.streaming === undefined ? m : { ...m, streaming: false },
       ),
@@ -275,6 +278,11 @@ export function subscribeConversation(
     current = {
       connected: value.connected,
       messages: [...disconnectedPrefixes.values(), ...value.messages],
+      ...(value.contextUsages
+        ? { contextUsages: value.contextUsages }
+        : current.contextUsages
+          ? { contextUsages: current.contextUsages }
+          : {}),
     };
     update(current);
   };
@@ -334,6 +342,11 @@ export function subscribeConversation(
         {
           connected: value.connected,
           messages: [...messages.values()],
+          ...(value.contextUsages
+            ? { contextUsages: value.contextUsages }
+            : current.contextUsages
+              ? { contextUsages: current.contextUsages }
+              : {}),
         },
         value.removed,
       );

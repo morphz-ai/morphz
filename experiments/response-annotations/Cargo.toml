@@ -18,6 +18,7 @@ sqlx-core = { path = "../../third_party/sqlx-core-0.8.6" }
 # must preserve Morphz's audited Windows protocol-only boundary too; otherwise
 # its lockfile resolves Codex's unused proxy, DNS and telemetry implementations.
 [patch."https://github.com/openai/codex"]
+codex-http-client = { path = "../../third_party/codex-http-client-types" }
 codex-otel = { path = "../../third_party/codex-otel-stub" }
 codex-network-proxy = { path = "../../third_party/codex-network-proxy-stub" }
 codex-utils-absolute-path = { path = "../../third_party/codex-utils-absolute-path" }

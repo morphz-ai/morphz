@@ -32,6 +32,7 @@ async function fixture() {
   const domains = await openApplicationDomainsHost(directory, store);
   const sessions = new Map<string, any>(),
     threads = new Map<string, any>(),
+    objectives = new Map<string, any>(),
     accepted = new Map<string, any>();
   const attempts: any[] = [];
   const roots = new Map<string, { sessionId: string; event: any }>();
@@ -55,6 +56,10 @@ async function fixture() {
       res.end(JSON.stringify(value));
     };
     if (path === "/api/status") return send(200, { model: "fixture" });
+    if (path.startsWith("/api/objectives/")) {
+      const objective = objectives.get(path.split("/").at(-1)!);
+      return send(objective ? 200 : 404, { objective });
+    }
     if (path === "/api/session-io/capabilities") {
       const directedInput = supportsDirectedInput;
       const gate = capabilityResponseGate;
@@ -69,6 +74,7 @@ async function fixture() {
         directed_input: directedInput,
         formats: [
           { definition: { id: "morphz.application.input", version: "4" } },
+          { definition: { id: "morphz.application.input", version: "15" } },
         ],
       });
     }
@@ -119,6 +125,7 @@ async function fixture() {
       return send(t ? 200 : 404, {
         snapshot: {
           thread: t,
+          user_input_request: t?.userInputRequest,
           source: t
             ? (t.sourceProjection ?? {
                 event_id: t.root_turn_id,
@@ -143,6 +150,11 @@ async function fixture() {
           return send(409, { message: "thread closed" });
         if (target.generation !== destination.generation)
           return send(409, { message: "generation changed" });
+        if (destination.kind === "user_input") {
+          if (target.userInputRequest?.request_id !== destination.request_id)
+            return send(409, { message: "question is no longer pending" });
+          delete target.userInputRequest;
+        }
       } else {
         threads.set("thread-" + body.client_message_id, {
           id: "thread-" + body.client_message_id,
@@ -271,11 +283,16 @@ async function fixture() {
   return {
     store,
     threads,
+    objectives,
     accepted,
     attempts,
     send,
     ordinary,
     supplement,
+    readQuestion: (value: unknown) =>
+      connection.call("user-input.read", value, {
+        identityGeneration: boot.csrfToken,
+      }),
     async runtime() {
       return (
         await bridge.platformConversationHistory(
@@ -582,6 +599,14 @@ test("跨 root、陈旧代次、他人身份、扩大目录或模型权限均拒
     ]).runtime.activity!;
     assert.ok(ownerActivity.threads.length > 0);
     assert.deepEqual(ownerActivity.threads[0]!.continuation, targets[0]);
+    assert.deepEqual(ownerActivity.threads[0]!.continuationSource, {
+      inputId: targets[0]!.inputId,
+      projectId: "first-project",
+      conversationId: "first-project",
+      targetActantId: "morphz-agent",
+      artifactId: null,
+      artifactRevision: null,
+    });
     assert.equal(
       f.bridge.platformNavigationSnapshot(
         {
@@ -590,6 +615,13 @@ test("跨 root、陈旧代次、他人身份、扩大目录或模型权限均拒
         },
         ["first-project"],
       ).runtime.activity!.threads[0]!.continuation,
+      undefined,
+    );
+    assert.equal(
+      f.bridge.platformNavigationSnapshot(
+        { principalId: "local-owner", actantId: "morphz-agent" },
+        ["first-project"],
+      ).runtime.activity!.threads[0]!.continuationSource,
       undefined,
     );
     await assert.rejects(
@@ -644,6 +676,226 @@ test("Objective 主线程用监督代次，custom 分支不假装可直接补充
   )!;
   assert.deepEqual(target.objective, { id: "objective", generation: 3 });
   assert.equal(continuationInputFormat.version, "4");
+});
+
+function pendingQuestion(
+  thread: any,
+  requestId = "user_input_original_question",
+) {
+  return {
+    request_id: requestId,
+    thread_id: thread.id,
+    thread_generation: thread.generation,
+    session_id: thread.session_id,
+    context_id: thread.context_id,
+    requested_at: new Date().toISOString(),
+    questions: [
+      {
+        id: "preview",
+        question: "是否保留当前设置？",
+        multi_select: false,
+        options: [
+          { id: "keep", label: "保留当前设置" },
+          { id: "change", label: "修改设置" },
+        ],
+      },
+    ],
+  };
+}
+
+test("question reads resolve the original source directly without another input or history hydration", async () => {
+  const f = await fixture();
+  try {
+    const original = await f.send(f.ordinary("原来的预览任务"));
+    await f.waitForRoot(original.entityId);
+    const target = f.target(original.entityId);
+    const thread = f.threads.get(target.threadId);
+    const originalRoot = thread.root_turn_id;
+    thread.root_turn_id = "question-child-root";
+    thread.sourceProjection = {
+      event_id: originalRoot,
+      root_turn_id: originalRoot,
+      session_id: thread.session_id,
+      context_id: thread.context_id,
+      activation_id: null,
+    };
+    thread.userInputRequest = pendingQuestion(thread);
+    const before = f.attempts.length;
+    const value = (await f.readQuestion({
+      projectId: "first-project",
+      conversationId: "first-project",
+      continuation: target,
+      requestId: thread.userInputRequest.request_id,
+    })) as any;
+    assert.equal(
+      f.attempts.length,
+      before,
+      "reading a question cannot submit a Human message",
+    );
+    assert.equal(value.source.inputId, original.entityId);
+    assert.equal(value.source.targetActantId, "morphz-agent");
+    assert.equal(value.source.artifactId, null);
+    assert.equal(value.continuation.threadId, thread.id);
+    assert.deepEqual(value.request, thread.userInputRequest);
+  } finally {
+    await f.close();
+  }
+});
+
+test("legacy question reads expose their exact wait without inventing a body, and reject changed or structured questions", async () => {
+  const f = await fixture();
+  try {
+    const original = await f.send(f.ordinary("TEST old human wait"));
+    await f.waitForRoot(original.entityId);
+    const base = f.target(original.entityId),
+      thread = f.threads.get(base.threadId);
+    thread.supervision = {
+      supervisor_kind: "objective",
+      supervisor_id: "TEST-goal",
+      generation: 2,
+      origin_evaluation_id: null,
+    };
+    const target = f.target(original.entityId);
+    const objective = {
+      id: "TEST-goal",
+      generation: 2,
+      revision: 7,
+      status: "active",
+      coordinator_session_id: thread.session_id,
+      wait_condition: {
+        kind: "user_input",
+        session_id: thread.session_id,
+        request_id: "old:question:1",
+      },
+    };
+    f.objectives.set(objective.id, objective);
+    const read = {
+      projectId: "first-project",
+      conversationId: "first-project",
+      continuation: target,
+      legacy: true,
+      requestId: "old:question:1",
+    };
+    const before = f.attempts.length;
+    const result = (await f.readQuestion(read)) as any;
+    assert.equal(result.legacyRequestId, "old:question:1");
+    assert.equal(result.request, undefined);
+    assert.equal(result.source.inputId, original.entityId);
+    assert.equal(f.attempts.length, before);
+    thread.userInputRequest = pendingQuestion(thread);
+    await assert.rejects(f.readQuestion(read), /保存具体问题/);
+    thread.userInputRequest = undefined;
+    objective.wait_condition.request_id = "old:question:2";
+    await assert.rejects(f.readQuestion(read), /待答状态已变化/);
+    assert.equal(f.attempts.length, before);
+  } finally {
+    await f.close();
+  }
+});
+
+test("structured replies retain the asking child Thread and command identity after acceptance", async () => {
+  const f = await fixture();
+  try {
+    const original = await f.send(f.ordinary("原来的预览任务"));
+    await f.waitForRoot(original.entityId);
+    const target = f.target(original.entityId),
+      thread = f.threads.get(target.threadId);
+    const root = thread.root_turn_id;
+    thread.sourceProjection = {
+      event_id: root,
+      root_turn_id: root,
+      session_id: thread.session_id,
+      context_id: thread.context_id,
+      activation_id: null,
+    };
+    thread.root_turn_id = "question-child-root";
+    thread.userInputRequest = pendingQuestion(thread);
+    const read = (await f.readQuestion({
+      projectId: "first-project",
+      conversationId: "first-project",
+      continuation: target,
+      requestId: thread.userInputRequest.request_id,
+    })) as any;
+    const answers = [
+      {
+        question_id: "preview",
+        selected_option_ids: ["keep"],
+        text: "仅用合成数据",
+      },
+    ];
+    const command = f.supplement(
+      {
+        ...read.continuation,
+        mode: "reply",
+        reply: {
+          kind: "question",
+          requestId: read.request.request_id,
+          answers,
+        },
+      },
+      "保留当前设置\n仅用合成数据",
+    );
+    const receipt = await f.send(command);
+    const submitted = f.attempts.find(
+      (value) => value.client_message_id === command.commandId,
+    );
+    assert.equal(submitted.message.format.version, "15");
+    assert.deepEqual(submitted.activation.input_destination, {
+      kind: "user_input",
+      request_id: read.request.request_id,
+      thread_id: thread.id,
+      generation: thread.generation,
+      answers,
+    });
+    assert.equal(submitted.message.content.value.continuation.mode, "reply");
+    assert.equal(submitted.activation.dispatch_mode, "parallel");
+    const count = f.attempts.length;
+    assert.deepEqual(await f.send(command), receipt);
+    assert.equal(f.attempts.length, count);
+    const delivery = (f.store.runtimeState() as any).deliveries.find(
+      (value: any) => value.inputId === receipt.entityId,
+    );
+    assert.equal(delivery.supplement, "delivered");
+    assert.equal(
+      delivery.rootId,
+      null,
+      "the answer must not create another execution root",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("question reads reject a replaced question and a different initiating Principal", async () => {
+  const f = await fixture();
+  try {
+    const original = await f.send(f.ordinary("原来的预览任务"));
+    await f.waitForRoot(original.entityId);
+    const target = f.target(original.entityId),
+      thread = f.threads.get(target.threadId);
+    thread.userInputRequest = pendingQuestion(thread);
+    const read = {
+      projectId: "first-project",
+      conversationId: "first-project",
+      continuation: target,
+      requestId: "not-the-current-question",
+    };
+    await assert.rejects(
+      f.readQuestion(read),
+      (error: any) => error.code === "conflict",
+    );
+    thread.initiating_principal_id = "another-person";
+    await assert.rejects(
+      f.readQuestion({
+        ...read,
+        requestId: thread.userInputRequest.request_id,
+      }),
+      (error: any) => error.code === "forbidden",
+    );
+    assert.equal(f.attempts.length, 1);
+  } finally {
+    await f.close();
+  }
 });
 
 test("Objective synthetic root accepts only Runtime-confirmed original provenance without loosening Human or generation checks", async () => {

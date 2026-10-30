@@ -7,6 +7,113 @@ use axum::{
     routing::post, Json, Router,
 };
 
+#[tokio::test]
+async fn xhigh_reasoning_reaches_both_actual_wires_and_unsupported_models_send_nothing() {
+    for (protocol, adapter) in [
+        (ModelProtocol::OpenaiResponses, "openai-compatible"),
+        (ModelProtocol::OpenaiChat, "openai-compatible"),
+        (ModelProtocol::OpenaiResponses, "openai-codex"),
+    ] {
+        let requests = Arc::new(Mutex::new(vec![]));
+        let path = if protocol == ModelProtocol::OpenaiResponses {
+            "/responses"
+        } else {
+            "/chat/completions"
+        };
+        let app = Router::new()
+            .route(path, post(endpoint))
+            .with_state(Upstream {
+                requests: requests.clone(),
+                rejection: false,
+                protocol,
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for model in [
+            "gpt-6.1-sol",
+            "TEST-declared",
+            "TEST-unknown",
+            "deepseek-flash",
+        ] {
+            let client = ProtocolClient::new_with_adapter(
+                &ProviderConfig {
+                    protocol,
+                    base_url: format!("http://{address}"),
+                    models: BTreeMap::from([(
+                        "TEST-declared".into(),
+                        ProviderModelConfig {
+                            supported_reasoning_efforts: Some(vec![
+                                ReasoningEffort::High,
+                                ReasoningEffort::XHigh,
+                            ]),
+                            ..Default::default()
+                        },
+                    )]),
+                    ..Default::default()
+                },
+                adapter,
+                model.into(),
+                None,
+                &LlmConfig {
+                    reasoning_effort: Some(ReasoningEffort::High),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let binding = binding(&client).await;
+            let before = requests.lock().unwrap().len();
+            let (stream, _receiver) = tokio::sync::mpsc::unbounded_channel();
+            let result = client
+                .create_completion_bound_stream_with_options(
+                    &binding,
+                    prompt(),
+                    vec![],
+                    None,
+                    stream,
+                    ModelRequestOptions {
+                        reasoning_effort: Some(Some(ReasoningEffort::XHigh)),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            let packets = requests.lock().unwrap();
+            if model == "TEST-unknown" || model == "deepseek-flash" {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not declared supported"));
+                assert_eq!(
+                    packets.len(),
+                    before,
+                    "unsupported depth must fail before HTTP"
+                );
+            } else {
+                assert!(result.is_ok(), "{model}: {result:?}");
+                assert_eq!(packets.len(), before + 1);
+                let packet = packets.last().unwrap();
+                assert_eq!(packet["model"], model);
+                if protocol == ModelProtocol::OpenaiResponses {
+                    assert_eq!(packet["reasoning"]["effort"], "xhigh");
+                    assert!(packet.get("reasoning_effort").is_none());
+                    if adapter == "openai-codex" {
+                        assert_eq!(packet["store"], false);
+                    }
+                } else {
+                    assert_eq!(packet["reasoning_effort"], "xhigh");
+                    assert!(packet.get("reasoning").is_none());
+                }
+                assert_eq!(
+                    client.reasoning_effort(),
+                    Some(ReasoningEffort::High),
+                    "one attempt does not mutate defaults"
+                );
+            }
+        }
+        server.abort();
+    }
+}
+
 fn prompt() -> Vec<Message> {
     vec![Message {
         role: "user".into(),

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   workflow_dispatch:
     inputs:
       conversation_profile:
@@ -34,6 +34,12 @@ jobs:
   session-io:
     uses: ./.github/workflows/session-io.yml
 
+  native-regressions:
+    uses: ./.github/workflows/application-native-regressions.yml
+
+  linux-sandbox-service:
+    uses: ./.github/workflows/linux-sandbox-service.yml
+
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
@@ -54,6 +60,16 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p test_prune_cargo_target.py -v
       - name: Verify required PostgreSQL library coverage
         run: python3 -m unittest discover -s scripts/tests -p test_runtime_postgres_ci.py -v
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Verify release isolation and exact-commit CI admission
+        run: |
+          npm ci --prefix dashboard --ignore-scripts
+          node --test scripts/tests/release-policy.test.cjs
+          python3 -B -m unittest discover -s scripts/tests -p 'test_release_*.py' -v
       - name: Verify deterministic Linux policy and exact installed-test inventory
         run: python3 -B -m unittest discover -s tools/linux-sandbox -p 'test_*.py' -v
       - name: Audit Rust dependency advisories
@@ -127,7 +143,7 @@ jobs:
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/workspace-test-artifacts.jsonl" --workspace --install-service
           sudo systemctl daemon-reload
           sudo systemctl start morphz-sandbox.service
-          for attempt in $(seq 1 100); do
+          for _ in $(seq 1 100); do
             if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
             sleep 0.1
           done
@@ -141,6 +157,14 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
         run: ./scripts/cargo-dev.sh test --locked --all --verbose --no-fail-fast -- --test-threads=1
+      - name: Require five complete native question cold-restart passes
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'Native question cold-restart pass %s/5\n' "$round"
+            cargo test --locked -p morphz --test user_input_runtime -- --test-threads=1
+          done
       - name: Require ignored PostgreSQL approval, input and terminal contracts
         # A default-suite failure must remain a failure without suppressing the
         # independent database contracts. The runner rejects zero-test passes.
@@ -148,6 +172,15 @@ jobs:
         env:
           MORPHZ_TEST_RUNTIME_LIB: /usr/local/libexec/morphz-runtime-ci/lib
         run: python3 scripts/test_runtime_postgres_lib.py
+      - name: Require five complete PostgreSQL statement-budget passes
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'PostgreSQL statement-budget pass %s/5\n' "$round"
+            cargo test --locked -p morphz --test postgres_storage_statement_budget -- --test-threads=1 --nocapture
+          done
       - name: Preserve installed sandbox diagnostics
         if: failure()
         run: sudo journalctl -u morphz-sandbox.service --no-pager
@@ -194,7 +227,11 @@ jobs:
 
   native-sandbox-macos:
     name: Native Sandbox (macOS)
-    runs-on: macos-latest
+    # The long arm64 job also failed allocation before executing any step
+    # (40342793588 / 121641670890). Run every native Rust case on the same
+    # macOS 26 standard Intel fleet as the full application inventory; the
+    # dedicated Reader/GUI jobs retain actual Apple Silicon execution.
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -279,7 +316,7 @@ jobs:
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/native-test-artifacts.jsonl" --install-service
           sudo systemctl daemon-reload
           sudo systemctl start morphz-sandbox.service
-          for attempt in $(seq 1 100); do
+          for _ in $(seq 1 100); do
             if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
             sleep 0.1
           done
@@ -322,6 +359,9 @@ jobs:
           toolchain: 1.97.1
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Verify real Windows stable and RC installer behavior
+        shell: pwsh
+        run: ./scripts/test_install.ps1
       - name: Build Morphz-branded Windows sandbox helpers
         shell: pwsh
         run: |

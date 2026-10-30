@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 # These are the actual native Runtime test images that exercise command/PTY
@@ -65,8 +66,14 @@ def main(log, workspace=False, install_service=False):
     os.chmod(destination / "manifest.json", 0o444)
     if install_service:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from install import install
-        install([entry["installed"] for entry in entries.values()])
+        from package import stage
+        source_root = Path("/usr/local/libexec/morphz-sandbox-source-ci")
+        source_root.mkdir(mode=0o755)
+        source = stage(source_root)
+        arguments = ["/usr/bin/python3", "-I", "-B", str(source / "install.py")]
+        for entry in entries.values():
+            arguments.extend(["--runtime", entry["installed"]])
+        subprocess.run(arguments, check=True, timeout=90)
     print(json.dumps({"installed_native_tests": sorted(artifacts)}))
 
 

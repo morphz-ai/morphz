@@ -1,4 +1,5 @@
 import { useExecutionInspection } from "./features/execution/useExecutionInspection.js";
+import { ExecutionControlActions } from "./features/execution/ExecutionControlActions.js";
 import { ExecutionJobCard } from "./features/execution/ExecutionJobCard.js";
 import { ExecutionDataView } from "./features/execution/ExecutionDataView.js";
 import { Tooltip } from "./ui/Tooltip.js";
@@ -8,11 +9,11 @@ import {
   executionResultSummary,
 } from "./execution-presentation.js";
 import { useRef } from "react";
-import { X, RefreshCw, Square, Check, FileText } from "lucide-react";
+import { X, RefreshCw, FileText } from "lucide-react";
 import { executionThreadGroups } from "./execution-thread-groups.js";
 import { executionActivityStatus } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
-import { ApprovalDetails } from "./ApprovalCard.js";
+import { ApprovalDetails, ApprovalActions } from "./ApprovalCard.js";
 import { type ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import {
@@ -109,7 +110,9 @@ export function ExecutionDialog({
             <ApprovalDetails approval={approval} />
             {!readOnly && (
               <div className="execution-actions">
-                <button
+                <ApprovalActions
+                  approval={approval}
+                  jobs={snapshot.jobs}
                   disabled={
                     !!busy ||
                     !!error ||
@@ -119,44 +122,13 @@ export function ExecutionDialog({
                       approval.fingerprint,
                     )
                   }
-                  onClick={() =>
-                    void control(
-                      {
-                        type: "deny",
-                        approvalId: approval.request.approval_id,
-                        fingerprint: approval.fingerprint,
-                      },
+                  onDecide={(action) =>
+                    control(
+                      action,
                       grouped ? approval.request.thread_id : undefined,
                     )
                   }
-                >
-                  拒绝
-                </button>
-                <button
-                  className="primary"
-                  disabled={
-                    !!busy ||
-                    !!error ||
-                    !client.online ||
-                    client.approvalSubmitted(
-                      approval.request.approval_id,
-                      approval.fingerprint,
-                    )
-                  }
-                  onClick={() =>
-                    void control(
-                      {
-                        type: "allow-once",
-                        approvalId: approval.request.approval_id,
-                        fingerprint: approval.fingerprint,
-                      },
-                      grouped ? approval.request.thread_id : undefined,
-                    )
-                  }
-                >
-                  <Check />
-                  仅允许这一次
-                </button>
+                />
               </div>
             )}
           </section>
@@ -218,28 +190,28 @@ export function ExecutionDialog({
                   {group.thread.summary}
                 </p>
               )}
-              {grouped &&
-                !readOnly &&
-                group.depth > 0 &&
-                group.thread?.lifecycle === "open" && (
-                  <div className="execution-actions">
-                    <button
-                      disabled={!!busy || !!error || !client.online}
-                      onClick={() =>
-                        void control(
-                          {
-                            type: "cancel-thread",
-                            threadId: group.thread!.id,
-                            revision: group.thread!.revision,
-                          },
-                          group.thread!.id,
-                        )
-                      }
-                    >
-                      <Square />
-                      停止此子任务
-                    </button>
-                  </div>
+              {group.thread?.lifecycle === "open" &&
+                (!embedded || group.depth > 0) &&
+                !(
+                  "runtime" in scope &&
+                  scope.runtime.delegation &&
+                  group.depth > 0
+                ) && (
+                  <ExecutionControlActions
+                    key={`${client.boot!.csrfToken}:${group.thread.id}`}
+                    scope={{ ...scope, threadId: group.thread.id }}
+                    stopLabel={group.depth > 0 ? "停止此子任务" : "停止"}
+                    compact={group.depth === 0}
+                    thread={group.thread}
+                    disabled={!!busy || !!error || !client.online}
+                    onControl={async (action) => {
+                      await client.controlExecution({
+                        scope: { ...scope, threadId: group.thread!.id },
+                        action,
+                      });
+                      await refresh();
+                    }}
+                  />
                 )}
               <div
                 className={grouped ? "execution-thread-timeline" : undefined}

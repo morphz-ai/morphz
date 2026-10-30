@@ -8,7 +8,11 @@ import {
 } from "./evaluation-result.js";
 import { providerRecoverySchema } from "./provider-recovery.js";
 import { executionAttentionSchema, delegationLinkSchema } from "./execution.js";
-import { continuationSchema } from "./continuation.js";
+import {
+  continuationSchema,
+  continuationSourceSchema,
+} from "./continuation.js";
+import { pendingUserInputRequestSchema } from "./user-input.js";
 export const artifactOutputSchema = z.object({
   commandId: z.string(),
   inputId: z.string(),
@@ -50,6 +54,8 @@ export const activitySchema = z.object({
         contextId: z.string().min(1),
         currentAvailable: z.boolean(),
         historyAvailable: z.boolean(),
+        /** Background reads may retain immutable terminal facts without rereading history. */
+        historyRetained: z.boolean().optional(),
       }),
     )
     .optional(),
@@ -85,6 +91,14 @@ export const activitySchema = z.object({
         controlAllowed: z.boolean().optional(),
         statusReason: z.string().nullable(),
         readiness: z.string(),
+        pendingUserInput: z
+          .object({
+            kind: z.enum(["question", "legacy"]),
+            requestId: z.string().min(1).max(256),
+            threadId: z.string().optional(),
+            threadGeneration: z.number().int().positive().optional(),
+          })
+          .optional(),
         waitKinds: z.array(z.string()).optional(),
         parentId: z.string().nullable(),
         threadIds: z.array(z.string()),
@@ -114,6 +128,7 @@ export const activitySchema = z.object({
       waitKinds: z.array(z.string()).optional(),
       /** Exact queued Schedule time, not a prediction or a parent goal's wait. */
       waitUntil: z.string().optional(),
+      userInputRequest: pendingUserInputRequestSchema.optional(),
       lifecycle: z.string(),
       controlState: z.string().optional(),
       createdAt: z.string().optional(),
@@ -131,6 +146,7 @@ export const activitySchema = z.object({
       revision: z.number(),
       updatedAt: z.string(),
       continuation: continuationSchema.optional(),
+      continuationSource: continuationSourceSchema.optional(),
     }),
   ),
 });

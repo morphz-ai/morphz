@@ -74,11 +74,15 @@ export async function runtimeChangeFixture(sessionIds = ["session-one"]) {
       else if (match?.[2] === "/events") {
         const after = Number(url.searchParams.get("after_sequence") ?? 0);
         const limit = Number(url.searchParams.get("limit") ?? 1000);
+        const history = events.get(id) ?? [];
         response.end(
           JSON.stringify({
-            events: (events.get(id) ?? [])
-              .filter((event) => event.sequence > after)
-              .slice(0, limit),
+            events: url.searchParams.has("after_sequence")
+              ? history
+                  .filter((event) => event.sequence > after)
+                  .slice(0, limit)
+              : history.slice(-limit),
+            latest_sequence: history.at(-1)?.sequence ?? null,
           }),
         );
       } else if (match?.[2] === "/typed-state")

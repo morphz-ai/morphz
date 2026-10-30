@@ -1,0 +1,511 @@
+/* Questions are a mode of the existing composer, never a second dialog.
+   Ordinary controls stay mounted, preserving their scoped drafts and attachments. */
+.question-composer-slot:empty {
+  display: none;
+}
+.composer:has(.composer-question) {
+  display: block;
+  flex: 0 1 auto;
+  height: auto;
+}
+.composer:has(.composer-question) > :not(.question-composer-slot) {
+  display: none;
+}
+.question-composer-slot {
+  min-width: 0;
+  width: 100%;
+}
+.composer-question {
+  --question-text: var(--ink, var(--text));
+  --question-surface: var(--paper, var(--surface));
+  --question-soft: var(--soft, var(--surface-strong));
+  color: var(--question-text);
+  font: inherit;
+  min-width: 0;
+}
+.composer-question > form {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.composer-question header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  min-height: 24px;
+}
+.composer-question header > svg {
+  flex: none;
+  color: var(--accent-strong);
+}
+.composer-question header > :last-child {
+  margin-left: auto;
+  flex: none;
+}
+.composer-question header button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+.composer-question header button:hover {
+  background: var(--question-soft);
+  color: var(--question-text);
+}
+.user-input-composer-target,
+.runtime-question-target {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+.user-input-composer-body,
+.runtime-question-body {
+  overflow-y: auto;
+  min-width: 0;
+  max-height: min(48dvh, 420px);
+  padding: 2px;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.composer-question fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.composer-question fieldset + fieldset {
+  margin-top: 20px;
+}
+.composer-question legend {
+  width: 100%;
+  padding: 0;
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 1.5;
+  color: var(--question-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.user-input-choices {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 0;
+}
+.user-input-choice,
+.runtime-question-choice {
+  display: grid;
+  position: relative;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+.user-input-choice:hover,
+.runtime-question-choice:hover {
+  background: var(--question-soft);
+}
+.user-input-choice[data-selected],
+.runtime-question-choice[data-selected] {
+  color: var(--accent-strong);
+  background: var(--tint, var(--accent-soft));
+}
+.user-input-choice-number,
+.runtime-question-number {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--question-surface);
+}
+.user-input-choice-copy,
+.runtime-question-choice > span:nth-child(2) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.user-input-choice-copy small,
+.runtime-question-choice small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.composer-question input[type="radio"],
+.composer-question input[type="checkbox"] {
+  accent-color: var(--accent-strong);
+  margin: 0;
+  width: 16px;
+  height: 16px;
+}
+.composer-question input[type="radio"] {
+  position: absolute;
+  right: 8px;
+  opacity: 0;
+}
+.composer-question
+  :is(.user-input-choice, .runtime-question-choice):has(input:focus-visible) {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 1px;
+}
+.user-input-text-heading,
+.runtime-question-text-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.composer-question .question-input-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.user-input-text-heading:has(.question-input-label:only-child),
+.runtime-question-text-label:has(.question-input-label:only-child) {
+  height: 0;
+}
+.user-input-text-heading:has(button),
+.runtime-question-text-label:has(button) {
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+.question-answer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.user-input-clear,
+.runtime-question-text-label button {
+  padding: 0;
+  min-height: 24px;
+  color: var(--accent-strong);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+}
+:is(.app, .page-shell) .composer .composer-question textarea {
+  width: 100%;
+  min-height: 32px;
+  max-height: min(96px, 16dvh);
+  height: auto;
+  field-sizing: content;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 0;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--question-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  caret-color: var(--accent-strong);
+}
+:is(.app, .page-shell) .composer .composer-question textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+.composer-question textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.composer-question fieldset:disabled {
+  opacity: 0.65;
+}
+.user-input-task,
+.runtime-question-task {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.user-input-task > summary,
+.runtime-question-task > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+}
+.user-input-task > summary > span:first-child,
+.runtime-question-task > summary > span:first-child {
+  flex: none;
+  white-space: nowrap;
+}
+.user-input-task > summary > span:last-child,
+.runtime-question-task > summary > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.user-input-task > p,
+.runtime-question-task > p {
+  white-space: pre-wrap;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.composer-question footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+.composer-question footer > :first-child {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.composer-question footer p {
+  margin: 0;
+}
+.composer-question footer:has(> div:empty):not(:has(> button)) {
+  display: none;
+}
+.composer-question [role="alert"] {
+  color: var(--danger, var(--red));
+}
+.composer-question footer > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--on-accent);
+  background: var(--accent-strong);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+.composer-question footer > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.composer-question .question-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+.composer-question .question-send:disabled {
+  background: var(--question-soft);
+  color: var(--muted);
+  opacity: 1;
+  cursor: default;
+}
+.composer-question .question-send.is-recheck {
+  width: auto;
+  gap: 6px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 12px;
+}
+.composer-question :is(button, summary, input):focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+.user-input-preview,
+.runtime-question-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0;
+}
+.user-input-reply,
+.runtime-question-reply {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: var(--accent-strong);
+  background: transparent;
+}
+/* Accepted neutral-base halo: only the accent edge breathes.
+   Keep the original action, icon, hit target and task-scoped composer. */
+:is(.app, .page-shell) button.needs-input {
+  position: relative;
+  isolation: isolate;
+  overflow: visible;
+  border: 1px solid var(--line);
+  color: var(--ink, var(--text));
+  background: light-dark(#fff, #101010);
+}
+:is(.app, .page-shell) button.needs-input > svg {
+  position: relative;
+  z-index: 1;
+  color: var(--ink, var(--text));
+  opacity: 1;
+}
+:is(.app, .page-shell) button.needs-input::before,
+:is(.app, .page-shell) button.needs-input::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: transparent;
+  pointer-events: none;
+  opacity: 0.2;
+  animation: supplement-breathe 2.8s cubic-bezier(0.42, 0, 0.32, 1) -0.55s
+    infinite paused;
+}
+:is(.app, .page-shell) button.needs-input::before {
+  border: 1.25px solid var(--accent);
+}
+:is(.app, .page-shell) button.needs-input::after {
+  box-shadow:
+    0 0 6px 1px color-mix(in srgb, var(--accent) 50%, transparent),
+    0 0 13px 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+:is(.app, .page-shell)
+  button.needs-input[data-attention-motion="on"]:not(:disabled)::before,
+:is(.app, .page-shell)
+  button.needs-input[data-attention-motion="on"]:not(:disabled)::after {
+  animation-play-state: running;
+}
+:is(.app, .page-shell) button.needs-input:hover:not(:disabled) {
+  color: var(--ink, var(--text));
+  background: light-dark(#fff, #101010);
+}
+:is(.app, .page-shell) button.needs-input:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 3px;
+}
+button.objective-steering-button.is-waiting.needs-input > svg {
+  color: var(--ink, var(--text));
+}
+.execution-activity-summary[data-user-input] {
+  color: var(--accent-strong);
+}
+@keyframes supplement-breathe {
+  0%,
+  100% {
+    opacity: 0.14;
+  }
+  48%,
+  54% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is(.app, .page-shell) button.needs-input::before,
+  :is(.app, .page-shell) button.needs-input::after {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+[data-motion="reduce"] :is(.app, .page-shell) button.needs-input::before,
+[data-motion="reduce"] :is(.app, .page-shell) button.needs-input::after {
+  animation: none;
+  opacity: 0.7;
+}
+@media (forced-colors: active) {
+  button.needs-input {
+    outline: 1px solid Highlight;
+  }
+  button.needs-input::before,
+  button.needs-input::after {
+    display: none;
+  }
+}
+.execution-activity-entry:has(> .user-input-preview) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 4px;
+}
+.execution-activity-entry:has(> .user-input-preview) > .execution-activity-row {
+  min-width: 0;
+}
+.execution-activity-entry > .user-input-preview {
+  margin-right: 8px;
+}
+.runtime-question-recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+@media (pointer: coarse) {
+  .user-input-choice,
+  .runtime-question-choice {
+    min-height: 44px;
+  }
+  .user-input-reply,
+  .runtime-question-reply,
+  .composer-question header button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  :is(.app, .page-shell) .composer .composer-question textarea {
+    font-size: 16px;
+  }
+  .composer-question .question-send {
+    min-width: 44px;
+    width: 44px;
+    height: 44px;
+  }
+  .composer-question footer > button {
+    min-height: 44px;
+  }
+}

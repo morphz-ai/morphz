@@ -1983,15 +1983,22 @@ impl EdgeNodeWorker {
             .config()
             .edge_execution
             .capability_lease_ttl
-            .as_secs()
-            .max(1);
-        let expires_at =
-            Utc::now() + chrono::Duration::seconds(i64::try_from(ttl).unwrap_or(i64::MAX));
+            .as_secs();
         let approval_id = format!(
             "edge-local-approval:{}:{}",
             command.job_id, command.revision
         );
-        let lease_scope = requirement.requested_scope.lease_scope();
+        let lease_scope = if self
+            .runtime
+            .config()
+            .edge_execution
+            .capability_leases_enabled
+            && ttl > 0
+        {
+            requirement.requested_scope.lease_scope()
+        } else {
+            None
+        };
         let scope_id =
             match lease_scope {
                 Some(CapabilityLeaseScope::Thread) => Some(scope.thread_id.clone()),
@@ -2011,12 +2018,13 @@ impl EdgeNodeWorker {
                     thread_id: scope.thread_id.clone(),
                     scope: lease_scope,
                     scope_id,
+                    objective_id: scope.objective_id.clone(),
                     target_id: command.target_id.clone(),
                     capability: capability.clone(),
                     capabilities: capabilities.clone(),
                     requested: requirement.requested.clone(),
                     policy_digest: policy_digest.clone(),
-                    expires_at,
+                    duration_secs: ttl,
                 });
         let decision = self
             .runtime
@@ -2055,6 +2063,12 @@ impl EdgeNodeWorker {
                     "Edge-local Reviewer approved a Capability Lease when approval_scope=once",
                 )?;
                 let lease_scope = capability_lease_scope(&risk_tags, offer.scope);
+                let issued_at = Utc::now();
+                let duration = i64::try_from(offer.duration_secs).ok()
+                    .and_then(chrono::Duration::try_seconds)
+                    .ok_or("Edge Capability Lease duration is out of range")?;
+                let expires_at = issued_at.checked_add_signed(duration)
+                    .ok_or("Edge Capability Lease expiry is out of range")?;
                 let scope_id = match lease_scope {
                     CapabilityLeaseScope::Thread => scope.thread_id.clone(),
                     CapabilityLeaseScope::Objective => scope
@@ -2087,7 +2101,7 @@ impl EdgeNodeWorker {
                     capabilities,
                     requested: requirement.requested,
                     policy_digest,
-                    issued_at: Utc::now(),
+                    issued_at,
                     expires_at,
                     revoked_at: None,
                 };

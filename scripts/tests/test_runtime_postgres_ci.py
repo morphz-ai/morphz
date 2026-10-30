@@ -40,6 +40,28 @@ def job_source(workflow, name):
     return tail[:next_job.start()] if next_job else tail
 
 
+def verify_statement_budget_repeats(workflow):
+    job = job_source(workflow, "test")
+    steps = [step for step in job.split("\n      - ")
+             if "name: Require five complete PostgreSQL statement-budget passes" in step]
+    if len(steps) != 1:
+        raise AssertionError("Missing required complete PostgreSQL budget repetition")
+    step = steps[0]
+    command = "cargo test --locked -p morphz --test postgres_storage_statement_budget -- --test-threads=1 --nocapture"
+    if command not in step or "for round in 1 2 3 4 5; do" not in step:
+        raise AssertionError("Five complete budget passes cannot become selected cases or retries")
+    if "if: ${{ !cancelled() }}" not in step:
+        raise AssertionError("Unrelated failure cannot suppress budget diagnosis")
+    if re.search(r"continue-on-error|\|\|\s*true|--skip|--exact|--ignored", step):
+        raise AssertionError("Budget repetitions cannot omit cases or mask failures")
+    if "tools/linux-sandbox/run_runtime_test.py" not in step:
+        raise AssertionError("Budget repetitions must retain the installed native test image")
+    if "MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test" not in job:
+        raise AssertionError("Budget repetitions require the job-owned actual PostgreSQL service")
+    if "MORPHZ_TEST_POSTGRES_CONTEXT_P95_MS:" in job:
+        raise AssertionError("CI cannot raise the existing Context latency budget")
+
+
 def verify_coverage(cases, workflow, io_workflow):
     owned = {case.rsplit("::", 1)[1] for case in runner.CASES}
     io_cases = {name for name, source in cases.items() if "/session_io/" in source}
@@ -71,6 +93,26 @@ class PostgresCiTests(unittest.TestCase):
         self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         self.io_workflow = (ROOT / ".github/workflows/session-io.yml").read_text()
         self.cases = postgres_source_cases()
+
+    def test_complete_postgres_budget_file_repeats_five_times_on_actual_service(self):
+        verify_statement_budget_repeats(self.workflow)
+
+    def test_budget_repetition_cannot_be_filtered_optional_or_weakened(self):
+        command = "cargo test --locked -p morphz --test postgres_storage_statement_budget -- --test-threads=1 --nocapture"
+        for changed in [
+            self.workflow.replace("name: Require five complete PostgreSQL statement-budget passes", "name: omitted"),
+            self.workflow.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+            self.workflow.replace(command, command + " --exact selected_case"),
+            self.workflow.replace(command, command + " || true"),
+            self.workflow.replace(command, "echo omitted"),
+            self.workflow.replace("if: ${{ !cancelled() }}", "if: success()"),
+            self.workflow.replace("      - name: Require five complete PostgreSQL statement-budget passes",
+                                  "      - name: Require five complete PostgreSQL statement-budget passes\n        continue-on-error: true"),
+            self.workflow.replace("      CARGO_BUILD_JOBS: 2", "      CARGO_BUILD_JOBS: 2\n      MORPHZ_TEST_POSTGRES_CONTEXT_P95_MS: 5000"),
+        ]:
+            self.assertNotEqual(changed, self.workflow)
+            with self.assertRaises(AssertionError):
+                verify_statement_budget_repeats(changed)
 
     def test_every_explicitly_ignored_postgres_case_has_a_required_owner(self):
         verify_coverage(self.cases, self.workflow, self.io_workflow)

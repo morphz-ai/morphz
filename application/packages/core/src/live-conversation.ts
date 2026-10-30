@@ -6,6 +6,11 @@ import {
 import { internalModelOutput } from "./model-publication.js";
 import { modelActivitySchema } from "./model-activity.js";
 import {
+  contextUsageFromEvent,
+  sessionContextUsageSchema,
+  type SessionContextUsage,
+} from "./session-context-budget.js";
+import {
   evaluationResultSchema,
   evaluationSourceSchema,
   evaluationMessageId,
@@ -59,6 +64,7 @@ export type LiveMessage = z.infer<typeof liveMessageSchema>;
 export const conversationStreamSchema = z.object({
   connected: z.boolean(),
   messages: z.array(liveMessageSchema),
+  contextUsages: z.array(sessionContextUsageSchema).optional(),
 });
 export type ConversationStream = z.infer<typeof conversationStreamSchema>;
 export const conversationFrameSchema = conversationStreamSchema.extend({
@@ -111,6 +117,10 @@ const preview = (v: string) => v.slice(0, 12000);
 /** Transient model deltas and durable outcomes are separate, as in Dashboard.
  * No hidden reasoning or complete model request snapshots are exposed. */
 export class LiveConversationProjection {
+  private contextUsages = new Map<string, SessionContextUsage>();
+  latestContextUsages() {
+    return [...this.contextUsages.values()];
+  }
   private attempts = new Map<string, Attempt>();
   private messages = new Map<string, LiveMessage>();
   private seen = new Set<string>();
@@ -283,6 +293,26 @@ export class LiveConversationProjection {
     };
   }
   consume(e: StreamEvent) {
+    const usage = contextUsageFromEvent(e);
+    if (usage) {
+      const key = JSON.stringify([
+        usage.contextId,
+        usage.sessionId,
+        usage.model,
+      ]);
+      const previous = this.contextUsages.get(key);
+      if (
+        !previous ||
+        Date.parse(usage.measuredAt) > Date.parse(previous.measuredAt) ||
+        (usage.measuredAt === previous.measuredAt &&
+          (usage.sequence ?? 0) > (previous.sequence ?? 0))
+      ) {
+        this.contextUsages.delete(key);
+        this.contextUsages.set(key, usage);
+        if (this.contextUsages.size > 256)
+          this.contextUsages.delete(this.contextUsages.keys().next().value!);
+      }
+    }
     if (
       internalModelOutput(e) ||
       [

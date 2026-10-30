@@ -50,6 +50,7 @@ import {
   type TerminalContext,
 } from "./features/terminal/terminal-context.js";
 import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
+import { ComposerContextCapacity } from "./ComposerContextCapacity.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
@@ -83,6 +84,10 @@ import {
 import { quoteSource, revealTextQuote } from "./text-quote-dom.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
+import {
+  UserInputDialogHost,
+  type UserInputDialogHandle,
+} from "./UserInputDialogHost.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
 import { subjectLogoState } from "./subject-sidebar-model.js";
 import { SubjectLogo } from "./SubjectLogo.js";
@@ -422,6 +427,9 @@ function WorkspaceApp({
   host: NavigationHost;
   origin: NavigationOrigin;
 }) {
+  const questionDialogs = useRef<UserInputDialogHandle>(null);
+  const [questionComposerSlot, setQuestionComposerSlot] =
+    useState<HTMLDivElement | null>(null);
   const profile = useProfile(client);
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = host.storage;
@@ -2011,11 +2019,10 @@ function WorkspaceApp({
       showInput,
       setInteraction,
       requestConversationFocus,
-      scheduleSearchQuoteFocus: () =>
-        requestAnimationFrame(() => {
-          if (!exchange.current?.contains(document.activeElement))
-            input.current?.focus();
-        }),
+      scheduleSearchQuoteFocus: (id, generation) => {
+        if (!exchange.current?.contains(document.activeElement))
+          requestConversationFocus(id, generation);
+      },
       scheduleCommentComposerFocus: () =>
         requestAnimationFrame(() =>
           input.current?.focus({ preventScroll: true }),
@@ -2410,6 +2417,24 @@ function WorkspaceApp({
     client.boot!.workspace.actants.find((actor) => actor.kind === "agent")
       ?.name ??
     "Morphz";
+  function openQuestion(thread: Parameters<UserInputDialogHandle["open"]>[0]) {
+    showInput();
+    questionDialogs.current?.open(thread);
+  }
+  async function supplementOrReply(target: Parameters<typeof supplement>[0]) {
+    const asking = client.boot!.runtime.activity?.threads.find(
+      (thread) =>
+        thread.id === target.threadId &&
+        thread.continuation?.generation === target.generation &&
+        !!thread.userInputRequest,
+    );
+    if (asking) {
+      openQuestion(asking);
+      return;
+    }
+    questionDialogs.current?.close();
+    await supplement(target);
+  }
   // Both expanded and collapsed entries use the same admission and command.
   // A comment is already input; revealing the textarea is not a prerequisite.
   const sendLabel = draft.continuation
@@ -3300,9 +3325,10 @@ function WorkspaceApp({
                     positions={exchangePositions.current}
                     revealInputId={revealedInputs[conversationId] ?? null}
                     onInspect={inspectExecution}
+                    onReply={openQuestion}
                     onSupplement={
                       client.boot!.capabilities.directedInput
-                        ? supplement
+                        ? supplementOrReply
                         : undefined
                     }
                     state={state}
@@ -3424,6 +3450,10 @@ function WorkspaceApp({
                       aria-label="AI 输入"
                     >
                       <div
+                        className="question-composer-slot"
+                        ref={setQuestionComposerSlot}
+                      />
+                      <div
                         className="composer-attachment-slot"
                         ref={setAttachmentSlot}
                       />
@@ -3468,6 +3498,7 @@ function WorkspaceApp({
                                 ...draft,
                                 continuation: undefined,
                                 continuationLabel: undefined,
+                                continuationSource: undefined,
                                 continuationFailure: undefined,
                               });
                               setInputErrors((old) => ({
@@ -3617,6 +3648,7 @@ function WorkspaceApp({
                                   ...draft,
                                   continuation: undefined,
                                   continuationLabel: undefined,
+                                  continuationSource: undefined,
                                   continuationFailure: undefined,
                                   pendingSupplement: undefined,
                                 });
@@ -4038,6 +4070,29 @@ function WorkspaceApp({
                             {speechRecording ? <Square /> : <Mic />}
                           </button>
                         }
+                        capacity={
+                          !draft.continuation &&
+                          sessionEvaluation.enabled && (
+                            <ComposerContextCapacity
+                              liveUsages={stream.contextUsages}
+                              identityGeneration={client.boot!.csrfToken}
+                              online={
+                                client.online && client.boot!.runtime.connected
+                              }
+                              policyFingerprint={
+                                sessionEvaluation.snapshot?.fingerprint
+                              }
+                              scope={
+                                selectedDraft
+                                  ? undefined
+                                  : {
+                                      projectId: project.id,
+                                      conversationId,
+                                    }
+                              }
+                            />
+                          )
+                        }
                         settings={
                           <ComposerExecutionSettings
                             sessionIdentity={client.boot!.csrfToken}
@@ -4228,9 +4283,10 @@ function WorkspaceApp({
                   onResize={resizeInspector}
                   onClose={closeInspector}
                   onSelect={subjectInspector.selectExecution}
+                  onReply={openQuestion}
                   onSupplement={
                     client.boot!.capabilities.directedInput
-                      ? supplement
+                      ? supplementOrReply
                       : undefined
                   }
                   onOpen={openUser}
@@ -4247,9 +4303,14 @@ function WorkspaceApp({
                           : undefined
                       }
                       onSelect={subjectInspector.selectExecution}
+                      onReply={openQuestion}
+                      onReplyObjective={(goal, threads) => {
+                        showInput();
+                        questionDialogs.current?.openObjective(goal, threads);
+                      }}
                       onSupplement={
                         client.boot!.capabilities.directedInput
-                          ? supplement
+                          ? supplementOrReply
                           : undefined
                       }
                     />
@@ -4403,6 +4464,17 @@ function WorkspaceApp({
             onInsert={inputTools.transcriptInserted}
           />
         )}
+      <UserInputDialogHost
+        client={client}
+        ref={questionDialogs}
+        container={questionComposerSlot}
+        onEngage={showInput}
+        onRelease={() =>
+          requestAnimationFrame(() =>
+            input.current?.focus({ preventScroll: true }),
+          )
+        }
+      />
       {capture && (
         <CaptureDialog
           client={client}

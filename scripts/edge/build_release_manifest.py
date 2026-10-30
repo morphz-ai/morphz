@@ -51,10 +51,22 @@ def artifact(value: str) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", required=True)
+    parser.add_argument("--channel", choices=("stable", "prerelease"), default="stable")
     parser.add_argument("--signing-key", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--artifact", action="append", required=True, type=artifact)
     args = parser.parse_args()
+    # Release automation validates the full version with locked node-semver.
+    # This signer additionally refuses placing a SemVer prerelease into the
+    # stable manifest, including versions carrying build metadata.
+    is_prerelease = "-" in args.version.split("+", 1)[0]
+    if is_prerelease and args.channel != "prerelease":
+        parser.error("prerelease versions require --channel prerelease")
+    if args.channel == "prerelease":
+        if not is_prerelease:
+            parser.error("the prerelease channel requires a prerelease version")
+        if "prereleases" not in args.output.resolve().parts:
+            parser.error("prerelease manifests must be written under a prereleases directory")
     if not args.signing_key.is_file():
         parser.error("the release signing key does not exist")
     try:
@@ -74,6 +86,7 @@ def main() -> None:
     manifest = {
         "schema_version": 1,
         "version": args.version,
+        "channel": args.channel,
         "published_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "artifacts": sorted(
             args.artifact,

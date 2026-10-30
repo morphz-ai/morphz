@@ -1,6 +1,6 @@
 use super::domain::{
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
-    SchedulerDependencyRecord,
+    SchedulerDependencyRecord, SchedulerDependencyStatus,
 };
 use crate::event::Event;
 use serde_json::Value as JsonValue;
@@ -83,9 +83,39 @@ pub trait SchedulerDependencyStore: Send + Sync {
         Ok(records)
     }
 
+    /// Current pending question edges for an already authorized, bounded
+    /// Thread selection. Production backends join current generations in SQL.
+    async fn list_pending_user_input_dependencies(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .list_scheduler_dependencies_for_owners(
+                SchedulerDependencyOwnerKind::Thread,
+                thread_ids,
+            )
+            .await?
+            .into_iter()
+            .filter(|edge| {
+                edge.required
+                    && edge.status == SchedulerDependencyStatus::Pending
+                    && edge.dependency_kind == super::SchedulerDependencyKind::UserInput
+            })
+            .collect())
+    }
+
     /// Generation-fenced satisfaction. The immutable Event must already be
     /// part of the same Kernel transaction in business hot paths; this narrow
     /// method exists for external/manual facts and conformance testing.
+    /// Current question barriers for a bounded Objective selection. An
+    /// implementation without this capability returns no reply authority.
+    async fn list_active_objective_user_input_dependencies(
+        &self,
+        _objective_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
+
     async fn satisfy_scheduler_dependency(
         &self,
         id: &str,

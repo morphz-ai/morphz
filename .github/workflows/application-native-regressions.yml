@@ -1,8 +1,8 @@
 name: Application native regression diagnosis
 
 on:
-  # Keep isolated Electron diagnostics separate from Runtime's reusable,
-  # source-only workflow. Reusable workflows inherit their caller's event.
+  # CI calls native diagnostics explicitly, independently of Runtime's
+  # source-only workflow. No job selects its lane from the caller's event.
   push:
     branches: [fix/full-application-regressions-20261021]
     paths:
@@ -19,6 +19,9 @@ on:
       - application/apps/web/src/ModelSettings.tsx
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
+      - application/tests/platform-history-cache.spec.ts
+      - application/tests/search-panel.spec.ts
+      - application/tests/exchange-controller.spec.ts
       - application/tests/model-settings.spec.ts
       - application/tests/ui-consistency.spec.ts
       - application/tests/execution-ui-details.spec.ts
@@ -40,6 +43,10 @@ on:
       - application/tests/profile-actual-transport-fixture.ts
       - application/tests/runtime-listener-fixture.ts
       - application/tests/runtime-listener-fixture.test.ts
+      - application/tests/cognitive-notes-gui-package.test.ts
+      - application/tests/fixtures/cognitive-notes-gui-package.ts
+      - application/tests/connection-read-diagnostics-mounted.test.ts
+      - application/examples/cognitive-notes/gui/**
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
@@ -52,6 +59,7 @@ on:
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -101,7 +109,7 @@ jobs:
 
   macos-reader-regressions:
     name: Public pinned OCR acquisition and real Desktop reader
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 15
     defaults:
       run:
@@ -195,6 +203,14 @@ jobs:
             tests/message-work-footer.spec.ts \
             tests/exchange-resize.spec.ts \
             tests/exchange-floating-controls.spec.ts --trace on
+      - name: Require five consecutive timing and healthy-idle passes without retries
+        run: |
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
+            tests/conversation-performance.spec.ts \
+            tests/platform-history-cache.spec.ts \
+            tests/search-panel.spec.ts \
+            tests/exchange-controller.spec.ts \
+            --repeat-each=5 --forbid-only --output=test-results/timing-stability
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -204,7 +220,11 @@ jobs:
 
   macos-compose-regressions:
     name: Isolated macOS iframe, manager and native control diagnosis
-    runs-on: macos-latest
+    # Keep one ARM allocation eligible at a time while the two long Intel
+    # inventories run. Provider allocation cancellation must not consume the
+    # GUI job's entire queue budget behind the Reader's short ARM workload.
+    needs: macos-reader-regressions
+    runs-on: macos-26
     timeout-minutes: 20
     defaults:
       run:
@@ -222,6 +242,16 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: brew install postgresql@16
       - run: npx playwright install chromium
+      - name: Prepare exact independent author dependencies for early GUI stability
+        run: |
+          printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-notes-gui-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          MORPHZ_TEST_COGNITIVE_NPM_CACHE="$RUNNER_TEMP/morphz-notes-gui-cache" npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - name: Require five complete Notes GUI and connection resize passes without retries
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'Complete Notes GUI and connection resize pass %s/5\n' "$round"
+            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/cognitive-notes-gui-package.test.ts tests/connection-read-diagnostics-mounted.test.ts
+          done
       - name: Check actual iframe and application mounts with bounded diagnosis
         env:
           MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT: "1"

@@ -1,5 +1,37 @@
 # Provider 子系统测试矩阵
 
+## 2026-10-23：官方 DeepSeek Chat 输出上限参数适配
+
+修复 10 月 21 日登记的生产编码缺口，不再由测试网关改写请求：协议为
+OpenAI Chat 且物理 HTTPS 端点为官方 `api.deepseek.com` 时，输出限制写为
+`max_tokens`。其他 Chat 端点保留 `max_completion_tokens`，不按模型名猜测
+兼容网关行为。服务／旧 Provider 可显式声明
+`chat_token_limit_parameter = "max_tokens"` 或 `"max_completion_tokens"`；
+现代路由、配置序列化、实际调用和健康探针均保留此声明。Responses 的
+`max_output_tokens`、Anthropic 和 Gemini 编码不受影响，也不增加付费试探重试。
+依据为 [DeepSeek 官方 Chat API](https://api-docs.deepseek.com/api/create-chat-completion/)。
+
+本地真实 HTTP/SSE 经过生产编码器验证探针 64 token、流式带工具请求
+32 token，禁止同时发送旧字段；`finish_reason=length` 仍归类为输出上限，
+不是正常完整结束或 Provider backoff。额外路由集成分别解析旧／现代 TOML，
+绑定实际 model attempt 后发送，验证配置没有在路由转换中丢失。
+Provider 库 204 通过、0 失败、4 项既有专门环境用例未执行；路由集成 1/1
+通过，全部 tests／examples 的 release 编译检查及相关 Clippy（warnings=deny）
+通过；同步传递该配置字段的独立 response-annotations 实验也经其自身
+locked release 编译检查。未宣称本轮已重跑全部 Rust／跨平台 CI。
+
+官方实测使用原已配置官方连接和 native Secret Store，一个无用户 Context、
+无工具的合成 32 token 请求，在隔离存储中强制选择 Chat，未更改生产配置。
+API 实际返回 `QuotaExhausted`，因此**真实上限验收未通过**；不能用本地
+wire 成功替代官方遵守 32 token 的证明。探针要求单一目标、显式账号固定、
+已有 native 凭据，禁止账号／环境凭据回退，私有报告保留原失败，不自动
+充值、换账号或重试到通过。该官方连接不同于用户当前有额度的本地网关
+DeepSeek 连接，不能据此认定当前模型也无额度。
+
+原应用当前官方连接走 Responses，本轮只更新 Desktop/Host 的 Markdown
+与消息历史交接；新 Rust 参数适配尚未装入原 Runtime，也没有发布新版本。
+官方实测和正式发布门禁仍需完成，不能提前标记发布缺口全部关闭。
+
 ## 2026-10-22：绑定前失败与恢复资源身份（验证中）
 
 原应用的自然调度暴露了一个此前测试未覆盖的跨层缺口：Session 请求策略已选择模型 B，

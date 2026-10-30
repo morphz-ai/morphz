@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { HostFailureReporter } from "./host-diagnostics.js";
+import {
+  hostFailureDiagnostic,
+  type HostFailureReporter,
+} from "./host-diagnostics.js";
+import type { ConnectionReadFailure } from "../../core/src/connection.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { threadWaitProjection } from "./thread-wait-projection.js";
 import {
@@ -10,6 +14,8 @@ import {
 } from "./delegation-read.js";
 import { messageSourceSummary } from "../../core/src/message-source.js";
 import { objectiveControlSchema } from "../../core/src/objective-control.js";
+import { scheduleControlSchema } from "../../core/src/schedule-control.js";
+import { RuntimeScheduleControls } from "./runtime-schedule-controls.js";
 import {
   terminalCatalogSchema,
   terminalReceiptSchema,
@@ -24,6 +30,13 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { executionModelSchema } from "../../core/src/inference.js";
+import {
+  sessionContextBudgetSnapshotSchema,
+  sessionContextBudgetUpdateSchema,
+  contextUsageFromEvent,
+  latestContextUsage,
+  type SessionContextBudgetUpdate,
+} from "../../core/src/session-context-budget.js";
 import {
   sessionEvaluationScopeSchema,
   sessionEvaluationDefaultsSchema,
@@ -94,8 +107,17 @@ import {
 } from "./continuation.js";
 import {
   continuationSchema,
+  isDirectedContinuation,
   type InputContinuation,
 } from "../../core/src/continuation.js";
+import {
+  pendingUserInputRequestSchema,
+  userInputAnswerText,
+} from "../../core/src/user-input.js";
+import {
+  userInputTargetReadSchema,
+  userInputTargetSchema,
+} from "../../core/src/user-input-target.js";
 import {
   modelOptionSchema,
   reasoningEffortSchema,
@@ -108,7 +130,9 @@ import { RuntimeProfileClient } from "./runtime-profile-client.js";
 import { activityAnnotationFields } from "./response-annotations.js";
 import {
   authorizedExecutionThreadTree,
+  executionRecordThread,
   readExecutionRecords,
+  runtimeExecutionRecordsSchema,
 } from "./execution-thread-tree.js";
 import {
   DomainError,
@@ -120,10 +144,16 @@ import {
   type RecordedInput,
 } from "../../../packages/core/src/model.js";
 import { localAccess } from "../../../packages/core/src/model.js";
-import { ExecutionControls, approvalFingerprint } from "./execution.js";
+import {
+  ExecutionControls,
+  approvalFingerprint,
+  type RuntimeRequest,
+} from "./execution.js";
 import {
   approvalSchema,
   jobSchema,
+  executionControlSchema,
+  isExecutionThreadControl,
   type ExecutionControl,
   type ExecutionScope,
   type ExecutionReadScope,
@@ -1170,6 +1200,193 @@ export class RuntimeBridge {
       active();
       return result;
     });
+  }
+  /** Independent read: capacity display never gates input or changes policy. */
+  async readSessionContextBudget(
+    raw: SessionEvaluationScope,
+    access: AccessContext,
+    active: () => void = () => {},
+  ) {
+    const scope = sessionEvaluationScopeSchema.parse(raw);
+    active();
+    // Reuse the established Session/principal binding checks, including team
+    // read grants. This read remains separate from model edits and input.
+    const policy = await this.readSessionEvaluation(scope, access, active);
+    if (!policy.runtimeSessionId) {
+      return sessionContextBudgetSnapshotSchema.parse({
+        scope: policy.scope,
+        source: "not_started",
+        inputTokens: null,
+        windowTokens: null,
+        outputTokens: null,
+        model: null,
+        capacitySource: null,
+        contextId: null,
+        runtimeSessionId: null,
+        requestedTokens: null,
+        physicalInputTokens: null,
+        revision: null,
+        canUpdate: false,
+        usage: null,
+      });
+    }
+    const sessionId = policy.runtimeSessionId;
+    const shared = policy.scope.kind === "global";
+    const contextId = this.contextId(
+      shared ? scope.conversationId : scope.projectId,
+    );
+    active();
+    const budget = z
+      .object({
+        context_id: z.literal(contextId),
+        effective_hard_token_limit: z.number().int().positive().safe(),
+        physical_context_window_tokens: z
+          .number()
+          .int()
+          .positive()
+          .safe()
+          .nullable(),
+        max_output_tokens: z.number().int().positive().safe().nullable(),
+        model: z.string().min(1),
+        capacity_source: z.string(),
+        requested_hard_token_limit: z
+          .number()
+          .int()
+          .positive()
+          .safe()
+          .nullable(),
+        physical_prompt_token_limit: z.number().int().positive().safe(),
+        token_budget_revision: z.number().int().nonnegative().safe(),
+      })
+      .parse(
+        await this.request(
+          `/api/contexts/${contextId}/token-budget?session_id=${encodeURIComponent(sessionId)}`,
+          "GET",
+          undefined,
+          access,
+        ),
+      );
+    // One bounded indexed metadata read. Never build Context or page through
+    // dialogue history merely to draw a meter. Subsequent usage arrives on
+    // the existing authorized conversation stream.
+    let usage: ReturnType<typeof latestContextUsage> = null;
+    try {
+      const query = new URLSearchParams({
+        session_id: sessionId,
+        topic: "runtime/model_attempt_state",
+        limit: "32",
+      });
+      const history = z
+        .object({ events: z.array(z.unknown()).max(32) })
+        .parse(
+          await this.request(
+            `/api/contexts/${contextId}/events?${query}`,
+            "GET",
+            undefined,
+            access,
+          ),
+        );
+      usage = latestContextUsage(history.events.map(contextUsageFromEvent), {
+        contextId,
+        sessionId,
+        model: budget.model,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof UpstreamError) ||
+        ![404, 502, 503, 504].includes(error.status)
+      )
+        throw error;
+    }
+    const current = await this.permissionScope(scope, access);
+    active();
+    if (current.id !== sessionId || current.shared !== shared)
+      throw new DomainError("forbidden", "上下文容量的会话范围已变化。");
+    return sessionContextBudgetSnapshotSchema.parse({
+      scope: policy.scope,
+      source: "runtime",
+      inputTokens: budget.effective_hard_token_limit,
+      windowTokens: budget.physical_context_window_tokens,
+      outputTokens: budget.max_output_tokens,
+      model: budget.model,
+      capacitySource: budget.capacity_source,
+      contextId,
+      runtimeSessionId: sessionId,
+      requestedTokens: budget.requested_hard_token_limit,
+      physicalInputTokens: budget.physical_prompt_token_limit,
+      revision: budget.token_budget_revision,
+      canUpdate: policy.canUpdate,
+      usage,
+    });
+  }
+  async updateSessionContextBudget(
+    raw: SessionContextBudgetUpdate,
+    access: AccessContext,
+    authorizeWrite: () => Promise<void>,
+    active: () => void = () => {},
+  ) {
+    const request = sessionContextBudgetUpdateSchema.parse(raw);
+    const scope = {
+      projectId: request.projectId,
+      conversationId: request.conversationId,
+    };
+    await authorizeWrite();
+    const before = await this.readSessionContextBudget(scope, access, active);
+    if (!before.canUpdate || !before.contextId || before.revision === null)
+      throw new DomainError("forbidden", "此处无法调整共享上下文容量。");
+    if (
+      before.model !== request.expectedModel ||
+      before.revision !== request.expectedRevision
+    )
+      throw new DomainError(
+        "conflict",
+        "容量或模型已变化，请重新读取后再调整。",
+      );
+    if (
+      request.requestedTokens !== null &&
+      request.requestedTokens > before.physicalInputTokens!
+    )
+      throw new DomainError("invalid", "所选容量超过当前模型可用的输入上限。");
+    await authorizeWrite();
+    const receipt = z
+      .object({
+        outcome: z.literal("updated"),
+        budget: z.object({
+          context_id: z.literal(before.contextId),
+          requested_hard_token_limit: z.number().nullable(),
+          token_budget_revision: z.number().int().nonnegative(),
+        }),
+      })
+      .parse(
+        await this.request(
+          `/api/contexts/${before.contextId}/token-budget`,
+          "PATCH",
+          {
+            requested_hard_token_limit: request.requestedTokens,
+            expected_revision: request.expectedRevision,
+          },
+          access,
+        ),
+      );
+    if (
+      receipt.budget.requested_hard_token_limit !== request.requestedTokens ||
+      receipt.budget.token_budget_revision !== request.expectedRevision + 1
+    )
+      throw new DomainError(
+        "conflict",
+        "容量写入回执不匹配，请重新读取；不会自动重试。",
+      );
+    await authorizeWrite();
+    const actual = await this.readSessionContextBudget(scope, access, active);
+    if (
+      actual.requestedTokens !== request.requestedTokens ||
+      actual.revision !== receipt.budget.token_budget_revision
+    )
+      throw new DomainError(
+        "conflict",
+        "容量已再次变化，请重新读取；不会覆盖后来的设置。",
+      );
+    return actual;
   }
   private async readEvaluationPolicy(
     scope: SessionEvaluationScope,
@@ -2426,6 +2643,10 @@ export class RuntimeBridge {
       () => ({
         sessionId: ref.sessionId,
         contextId: session.context_id,
+        principalId: this.teamIdentity
+          ? this.principalId(access.principalId)
+          : (this.state.sessions[ref.sessionId]?.runtimePrincipalId ??
+            access.principalId),
         rootId: `client-schedule-${ref.scheduleId}`,
         threadId: ref.threadId,
         additionalRoot,
@@ -2464,6 +2685,8 @@ export class RuntimeBridge {
     string,
     { active?: unknown; history?: unknown }
   >();
+  private activityHistoryDirty = new Map<string, number>();
+  private lastReadFailure?: ConnectionReadFailure;
   private activityRootRoutes = new Map<
     string,
     {
@@ -2481,6 +2704,15 @@ export class RuntimeBridge {
   private executionObserver?: RuntimeChangeObserver;
   private executionObserverSessions = "";
   private executionChangeVersions = new Map<string, number>();
+  private started = false;
+  private wakeTimer?: ReturnType<typeof setTimeout>;
+  private retryTimer?: ReturnType<typeof setTimeout>;
+  private failedSessionReads = new Set<string>();
+  private retryAttempts = 0;
+  private changedSessions = new Set<string>();
+  private reconciliation?: Promise<void>;
+  private reconcilePending = false;
+  private reconcileSessions: Set<string> | null = new Set();
   // Finite startup work and committed-event wakeups, not a second polling
   // loop. Failed/unknown proofs leave the ledger intact and are not retried
   // until another actual Runtime change (or a fresh Host incarnation).
@@ -2488,6 +2720,17 @@ export class RuntimeBridge {
   /** Host-only wake-up for actual public Runtime projection changes. */
   observeWorkspaceChanges(listener: () => void): () => void {
     this.workspaceChangeListeners.add(listener);
+    this.ensureExecutionObserver();
+    return () => {
+      this.workspaceChangeListeners.delete(listener);
+      if (!this.workspaceChangeListeners.size && !this.started) {
+        this.executionObserver?.close();
+        this.executionObserver = undefined;
+        this.executionObserverSessions = "";
+      }
+    };
+  }
+  private ensureExecutionObserver() {
     if (!this.executionObserver && !this.stopped) {
       const access = this.teamIdentity
         ? { principalId: "morphz-service", actantId: "morphz-agent" }
@@ -2507,11 +2750,14 @@ export class RuntimeBridge {
         }),
         request: (path) =>
           this.request(path, "GET", undefined, access, undefined),
+        startAtHead: true,
         changed: (sessionId) => {
           this.executionChangeVersions.set(
             sessionId,
             (this.executionChangeVersions.get(sessionId) ?? 0) + 1,
           );
+          this.changedSessions.add(sessionId);
+          this.scheduleChangedSessions();
           this.publishWorkspaceChange();
         },
       });
@@ -2520,14 +2766,17 @@ export class RuntimeBridge {
         .sort()
         .join("\n");
     }
-    return () => {
-      this.workspaceChangeListeners.delete(listener);
-      if (!this.workspaceChangeListeners.size) {
-        this.executionObserver?.close();
-        this.executionObserver = undefined;
-        this.executionObserverSessions = "";
-      }
-    };
+  }
+  private scheduleChangedSessions() {
+    if (!this.started || this.stopped || this.wakeTimer) return;
+    // Coalesce committed event bursts, never a periodic data read.
+    this.wakeTimer = setTimeout(() => {
+      this.wakeTimer = undefined;
+      const changed = this.changedSessions;
+      this.changedSessions = new Set();
+      if (changed.size) void this.reconcile(changed);
+    }, 100);
+    this.wakeTimer.unref?.();
   }
   /** Ephemeral, authorization-scoped invalidation only. Neither a Runtime
    * cursor nor a token received over WebSocket is an execution-state receipt. */
@@ -2627,7 +2876,6 @@ export class RuntimeBridge {
   ) => Promise<PlatformReadGrant>;
   private messageAttachments?: MessageAttachmentService;
   private platformAgentScope?: (route: HostInvocation) => Promise<ToolScope>;
-  private timer?: ReturnType<typeof setInterval>;
   constructor(
     private store: WorkspaceStore,
     private config: RuntimeConfig,
@@ -2945,6 +3193,42 @@ export class RuntimeBridge {
   ) {
     if (scope.runtime.delegation)
       return this.platformDelegatedExecutionRead(scope, access, active);
+    const { request, records, selected, recheck } =
+      await this.platformOwnedExecutionProof(scope, access, active);
+    const viewer = new ExecutionControls(request, () => ({
+      ...scope.runtime,
+      rootId: selected.root_turn_id,
+      threadId: scope.threadId,
+      records,
+      additionalRoot: async (rootId, threadId) =>
+        records.threads.some(
+          (t) => t.id === threadId && t.root_turn_id === rootId,
+        ),
+    }));
+    return {
+      snapshot: async (): Promise<ExecutionSnapshot> => {
+        const value = await viewer.snapshot(scope, false);
+        await recheck();
+        return { ...value, approvals: [] };
+      },
+      result: async (jobId: string) => {
+        await recheck();
+        const value = await viewer.result(scope, jobId);
+        await recheck();
+        return value;
+      },
+    };
+  }
+
+  private async platformOwnedExecutionProof(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+    includeDescendants = true,
+    metadataOnly = false,
+  ) {
+    if (scope.runtime.delegation)
+      throw new DomainError("forbidden", "委派执行不属于普通线程控制。");
     const owner = this.teamIdentity
       ? this.principalId(access.principalId)
       : access.principalId;
@@ -2979,7 +3263,8 @@ export class RuntimeBridge {
     const records = await readExecutionRecords(request, {
       ...scope.runtime,
       threadId: scope.threadId,
-      includeDescendants: true,
+      includeDescendants,
+      metadataOnly,
     });
     if (records.threads.some((t) => t.initiating_principal_id !== owner))
       throw new DomainError("forbidden", "执行记录的所属身份已变化。");
@@ -3073,33 +3358,94 @@ export class RuntimeBridge {
     };
     await recheck();
     verify();
-    const viewer = new ExecutionControls(request, () => ({
-      ...scope.runtime,
-      rootId: selected.root_turn_id,
-      threadId: scope.threadId,
-      records,
-      additionalRoot: async (rootId, threadId) =>
-        records.threads.some(
-          (t) => t.id === threadId && t.root_turn_id === rootId,
-        ),
-    }));
-    return {
-      snapshot: async (): Promise<ExecutionSnapshot> => {
-        // Approval actions belong to exact Platform work, not inventory reads.
-        const value = await viewer.snapshot(scope, false);
-        await recheck();
-        return {
-          ...value,
-          approvals: [],
-        };
-      },
-      result: async (jobId: string) => {
-        await recheck();
-        const value = await viewer.result(scope, jobId);
-        await recheck();
+    return { request, records, selected, recheck, owner };
+  }
+
+  /** Explicit writes re-establish ownership and current access independently
+   * of a read reference. The existing read entry remains physically read-only. */
+  async platformRuntimeExecutionControl(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const control = executionControlSchema.parse(raw);
+    const { scope, action } = control;
+    if (!("runtime" in scope))
+      throw new DomainError("forbidden", "执行来源不匹配。");
+    if (action.type === "cancel-delegation")
+      return this.platformDelegationControl(scope, access, active);
+    if (!isExecutionThreadControl(action) || scope.runtime.delegation)
+      throw new DomainError("forbidden", "此执行来源不支持该控制动作。");
+    const proof = await this.platformOwnedExecutionProof(
+      scope,
+      access,
+      active,
+      false,
+      true,
+    );
+    const readPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/threads/${encodeURIComponent(scope.threadId)}`;
+    const recordsPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/execution-records?${new URLSearchParams({ limit: "100", thread_id: scope.threadId, metadata_only: "true" })}`;
+    const writePath = `/api/contexts/${encodeURIComponent(scope.runtime.contextId)}/threads/${encodeURIComponent(scope.threadId)}${action.type === "supersede-thread" ? "/supersede" : ""}`;
+    const request: RuntimeRequest = async (path, method = "GET", body) => {
+      active();
+      if (
+        method === "GET" &&
+        (path === readPath || path === recordsPath) &&
+        body === undefined
+      ) {
+        const value = await proof.request(path);
+        if (path === recordsPath) {
+          const records = runtimeExecutionRecordsSchema.parse(value);
+          if (
+            records.threads.some(
+              (thread) => thread.initiating_principal_id !== proof.owner,
+            )
+          )
+            throw new DomainError("forbidden", "执行记录的所属身份已变化。");
+        } else {
+          z.object({
+            snapshot: z.object({
+              thread: z.object({
+                initiating_principal_id: z.literal(proof.owner),
+              }),
+            }),
+          }).parse(value);
+        }
+        await proof.recheck();
         return value;
-      },
+      }
+      if (method !== "POST" || path !== writePath)
+        throw new DomainError("forbidden", "控制目标超出所选执行。");
+      const latest = await this.platformOwnedExecutionProof(
+        scope,
+        access,
+        active,
+        false,
+        true,
+      );
+      if (latest.selected.root_turn_id !== proof.selected.root_turn_id)
+        throw new DomainError("conflict", "执行来源已变化，未提交控制。");
+      const value = await this.request(path, method, body, access);
+      await latest.recheck();
+      active();
+      return value;
     };
+    const controls = new ExecutionControls(request, () => ({
+      sessionId: scope.runtime.sessionId,
+      contextId: scope.runtime.contextId,
+      rootId: proof.selected.root_turn_id,
+      threadId: scope.threadId,
+    }));
+    try {
+      return await controls.control(control);
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError("conflict", "执行控制未确认，请核对最新状态。");
+      throw error;
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
   }
 
   /** Cross-Session delegate reads follow the original durable request. The
@@ -3292,6 +3638,111 @@ export class RuntimeBridge {
     };
   }
 
+  private async platformDelegationControl(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const reference = scope.runtime.delegation;
+    if (!reference || !this.authorizePlatformRead)
+      throw new DomainError("forbidden", "缺少可核验的原始委派。");
+    const verify = async (requireLive: boolean) => {
+      active();
+      const proof = await this.delegationSource(reference, access);
+      const parent = {
+        projectId: proof.source.projectId,
+        conversationId: proof.source.conversationId,
+      };
+      const grant = await this.authorizePlatformRead!(parent, access);
+      if (
+        proof.record.child_session_id !== scope.runtime.sessionId ||
+        proof.record.child_context_id !== scope.runtime.contextId ||
+        !proof.record.initiating_principal_id ||
+        (this.teamIdentity &&
+          proof.record.initiating_principal_id !==
+            this.principalId(access.principalId)) ||
+        (!this.teamIdentity &&
+          this.state.sessions[proof.record.parent_session_id]
+            ?.runtimePrincipalId &&
+          proof.record.initiating_principal_id !==
+            this.state.sessions[proof.record.parent_session_id]
+              ?.runtimePrincipalId) ||
+        proof.source.author.principalId !== access.principalId ||
+        proof.source.author.actantId !== access.actantId ||
+        !this.platformSourceReadable(proof.source, parent, access, grant)
+      )
+        throw new DomainError("forbidden", "无权控制这项原始委派。");
+      if (requireLive && !["queued", "running"].includes(proof.record.status))
+        throw new DomainError("conflict", "子智能体已经结束，请核对最新状态。");
+      active();
+      return proof;
+    };
+    const initial = await verify(true);
+    const owner = initial.record.initiating_principal_id;
+    z.object({
+      snapshot: z.object({
+        thread: z.object({
+          id: z.literal(scope.threadId),
+          session_id: z.literal(scope.runtime.sessionId),
+          context_id: z.literal(scope.runtime.contextId),
+          initiating_principal_id: z.literal(owner),
+        }),
+      }),
+    }).parse(
+      await this.request(
+        `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/threads/${encodeURIComponent(scope.threadId)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+        "json",
+        true,
+      ),
+    );
+    const proof = await verify(true);
+    try {
+      const result = z
+        .object({
+          cancelled: z.literal(true),
+          delegation: delegationRecordSchema,
+        })
+        .parse(
+          await this.request(
+            `/api/delegations/${encodeURIComponent(reference.id)}/cancel`,
+            "POST",
+            undefined,
+            access,
+          ),
+        );
+      const record = result.delegation;
+      if (
+        record.id !== proof.record.id ||
+        record.parent_session_id !== proof.record.parent_session_id ||
+        record.parent_context_id !== proof.record.parent_context_id ||
+        record.child_session_id !== proof.record.child_session_id ||
+        record.child_context_id !== proof.record.child_context_id ||
+        record.initiating_principal_id !== owner ||
+        record.status !== "cancelled"
+      )
+        throw new DomainError(
+          "conflict",
+          "委派停止回执不匹配，请核对最新状态。",
+        );
+      await verify(false);
+      return { accepted: true, status: record.status };
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError(
+          "conflict",
+          "子智能体停止未确认，请核对最新状态。",
+        );
+      throw error;
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
+  }
+
   async platformObjectiveControl(
     raw: unknown,
     access: AccessContext,
@@ -3419,6 +3870,129 @@ export class RuntimeBridge {
     }
   }
 
+  async platformScheduleControl(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const control = scheduleControlSchema.parse(raw);
+    const authorize = this.authorizePlatformRead;
+    if (!authorize)
+      throw new DomainError("forbidden", "定时任务控制尚未接入。");
+    const conversation = {
+      projectId: control.scope.projectId,
+      conversationId: control.scope.conversationId,
+    };
+    active();
+    await authorize(conversation, access);
+    const row = this.state.activity?.schedules?.find(
+      (record) =>
+        record.scheduleId === control.scheduleId &&
+        record.threadId === control.scope.threadId &&
+        record.inputId === control.scope.inputId &&
+        record.projectId === conversation.projectId &&
+        record.conversationId === conversation.conversationId,
+    );
+    const hint = row && this.activitySources.get(row.inputId);
+    if (!row || !hint)
+      throw new DomainError(
+        "conflict",
+        "定时任务来源未核验，请重新读取后操作。",
+      );
+    const verifySource = async (source: PlatformInputSource) => {
+      active();
+      const grant = await authorize(conversation, access);
+      if (
+        source.projectId !== conversation.projectId ||
+        source.conversationId !== conversation.conversationId ||
+        source.author.principalId !== access.principalId ||
+        source.author.actantId !== access.actantId ||
+        this.contextId(source.projectId) !== row.contextId ||
+        this.objectSessionId(
+          source.projectId,
+          source.conversationId,
+          source.sharedDefault,
+        ) !== row.sessionId ||
+        !this.platformSourceReadable(source, conversation, access, grant)
+      )
+        throw new DomainError(
+          "forbidden",
+          "定时任务不属于当前有权控制的原始工作。",
+        );
+      active();
+    };
+    await verifySource(hint);
+    // The bounded inventory is only a locator. The immutable input Event is
+    // point-read again; no history traversal or renderer-provided Session.
+    const event = z
+      .object({ event: eventSchema })
+      .parse(
+        await this.request(
+          `/api/sessions/${encodeURIComponent(row.sessionId)}/events/${encodeURIComponent(row.sourceRootId)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+          "json",
+          true,
+        ),
+      ).event;
+    const source = platformSourceFromRuntimeRoot(
+      event,
+      row.sessionId,
+      row.inputId,
+      (id) => (this.teamIdentity ? this.principalId(id) : null),
+    );
+    if (
+      !source ||
+      event.id !== row.sourceRootId ||
+      payloadString(event, "session_id") !== row.sessionId ||
+      payloadString(event, "context_id") !== row.contextId ||
+      payloadString(event, "client_message_id") !== row.inputId
+    )
+      throw new DomainError("forbidden", "定时任务的原始输入不匹配。");
+    await verifySource(source);
+    const request: RuntimeRequest = async (path, method = "GET", body) => {
+      await verifySource(source);
+      const value = await this.request(
+        path,
+        method,
+        body,
+        access,
+        undefined,
+        "json",
+        method === "GET",
+      );
+      await verifySource(source);
+      return value;
+    };
+    try {
+      return await new RuntimeScheduleControls(request, {
+        sessionId: row.sessionId,
+        contextId: row.contextId,
+        threadId: row.threadId,
+        rootId: row.rootId,
+        sourceTurnId: row.sourceTurnId,
+        principalId: this.teamIdentity
+          ? this.principalId(access.principalId)
+          : (this.state.sessions[row.sessionId]?.runtimePrincipalId ??
+            access.principalId),
+      }).control(control);
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError(
+          error.status === 403 ? "forbidden" : "conflict",
+          error.status === 403
+            ? "当前身份无权调整这项定时任务。"
+            : "定时任务操作未确认，请核对最新状态。",
+        );
+      throw error;
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
+  }
+
   async platformExecutionControls(
     scope: ExecutionScope,
     access: AccessContext,
@@ -3537,6 +4111,10 @@ export class RuntimeBridge {
       viewer: new ExecutionControls(request, () => ({
         sessionId: entry.sessionId,
         contextId: entry.contextId,
+        principalId: this.teamIdentity
+          ? this.principalId(access.principalId)
+          : (this.state.sessions[entry.sessionId]?.runtimePrincipalId ??
+            access.principalId),
         ...(scope.inputId || scope.threadId
           ? { rootId: selectedTree?.selected.rootId ?? [...entry.roots][0] }
           : { rootsBySession: { [entry.sessionId]: [...entry.roots] } }),
@@ -3780,16 +4358,17 @@ export class RuntimeBridge {
       },
       control: async (control: ExecutionControl) => {
         const action = control.action;
-        const viewer =
-          action.type === "cancel-thread"
-            ? controls.length === 1 && scope.threadId === action.threadId
-              ? controls[0]!.viewer
-              : null
-            : await viewerFor(
-                action.type === "cancel-job"
-                  ? { jobId: action.jobId }
-                  : { approvalId: action.approvalId },
-              );
+        if (action.type === "cancel-delegation")
+          throw new DomainError("forbidden", "委派控制必须核验其原始请求。");
+        const viewer = isExecutionThreadControl(action)
+          ? controls.length === 1 && scope.threadId === action.threadId
+            ? controls[0]!.viewer
+            : null
+          : await viewerFor(
+              action.type === "cancel-job"
+                ? { jobId: action.jobId }
+                : { approvalId: action.approvalId },
+            );
         if (!viewer)
           throw new DomainError("forbidden", "执行不属于当前工作对话。");
         await recheck();
@@ -4031,7 +4610,7 @@ export class RuntimeBridge {
     }
   }
 
-  private runtimeReadUnavailable(error: unknown): boolean {
+  private async runtimeReadUnavailable(error: unknown): Promise<boolean> {
     if (
       !(error instanceof RuntimeTransportError) &&
       !(
@@ -4042,13 +4621,41 @@ export class RuntimeBridge {
       )
     )
       return false;
-    // Platform has independently authorized the current reader before these
-    // calls. Runtime transport/credential failure is not a failure of that
-    // data store and cannot grant access or restore accepted message history.
-    this.state.connected = false;
-    this.state.error =
-      error instanceof Error ? error.message : "Runtime 不可用。";
+    this.rememberReadFailure("conversation-history", error);
+    try {
+      this.host.reportFailure?.("runtime.conversation-history", error);
+    } catch {}
+    // A slow data query/5xx is not a health receipt. Confirm transport health
+    // independently on failure only; never erase all current work because one
+    // authorized history read failed, or claim that history is fresh.
+    if (error instanceof UpstreamError && [401, 403].includes(error.status)) {
+      this.state.connected = false;
+      this.state.error = error.message;
+    } else {
+      await this.confirmHealthAfterReadFailure();
+    }
     return true;
+  }
+  private healthConfirmation?: Promise<void>;
+  private confirmHealthAfterReadFailure() {
+    return (this.healthConfirmation ??= (async () => {
+      try {
+        const status = this.teamIdentity
+          ? (await this.observedRead("status", "/api/sessions"), null)
+          : z
+              .object({ model: z.string() })
+              .parse(await this.observedRead("status", "/api/status"));
+        this.state.connected = true;
+        if (status) this.state.model = status.model;
+        this.state.error = "";
+      } catch (error) {
+        this.state.connected = false;
+        this.state.error =
+          error instanceof Error ? error.message : "Runtime 不可用。";
+      }
+    })().finally(() => {
+      this.healthConfirmation = undefined;
+    }));
   }
 
   private async request(
@@ -4275,13 +4882,19 @@ export class RuntimeBridge {
     }
     return catalog;
   }
-  inspectConnection(signal?: AbortSignal) {
-    return inspectRuntimeConnection(
+  async inspectConnection(signal?: AbortSignal) {
+    const details = await inspectRuntimeConnection(
       this.config,
       signal,
       this.teamIdentity ? this.principalId("morphz-service") : undefined,
       (...args) => this.fetchRuntime(...args),
     );
+    return {
+      ...details,
+      ...(this.lastReadFailure
+        ? { lastReadFailure: { ...this.lastReadFailure } }
+        : {}),
+    };
   }
   validateConnection(config: RuntimeConfig) {
     if (
@@ -5216,6 +5829,20 @@ export class RuntimeBridge {
       scope.conversationId,
       grant.personalDefault,
     );
+    // Freeze the Host side's membership before reading Runtime history.
+    // A timeline response can predate input acceptance even when it arrives
+    // after dispatch has filled rootId. Reading the mutable outbox afterwards
+    // would then omit the input from both sides for one refresh. Capture the
+    // IDs, not just the array: dispatch updates rootId in place. Delivery
+    // status/errors can still reflect a dispatch which settled during the read.
+    const local = this.platformReadDeliveries(scope, access, grant).filter(
+      (delivery) => delivery.sessionId === sessionId,
+    );
+    const awaitingAcceptance = new Set(
+      local
+        .filter((delivery) => !delivery.rootId)
+        .map((delivery) => delivery.inputId),
+    );
     const limit = Math.min(Math.max(page.limit ?? 100, 1), 100);
     const accepted: HistoryEntry[] = [];
     const pageMessageSources = new Map<string, SessionTimelineItem>();
@@ -5253,7 +5880,7 @@ export class RuntimeBridge {
         );
       } catch (error) {
         if (error instanceof UpstreamError && error.status === 404) break;
-        if (this.runtimeReadUnavailable(error)) {
+        if (await this.runtimeReadUnavailable(error)) {
           if (page.requireAvailable)
             throw new RuntimeConversationHistoryUnavailable(error);
           // Do not present an incomplete scan or cached accepted history as a
@@ -5266,6 +5893,7 @@ export class RuntimeBridge {
         throw error;
       }
       const batch = sessionTimelinePageSchema.parse(raw);
+      this.readRecovered("conversation-history");
       for (const item of [...batch.entries].reverse()) {
         const mapped = this.platformTimelineEntry(
           item,
@@ -5295,12 +5923,9 @@ export class RuntimeBridge {
           before.entry_id,
         );
     }
-    const local = this.platformReadDeliveries(scope, access, grant).filter(
-      (delivery) => delivery.sessionId === sessionId,
-    );
     const pending: HistoryEntry[] = local.flatMap((delivery) => {
       const source = delivery.platformSource;
-      if (!source || delivery.rootId) return [];
+      if (!source || !awaitingAcceptance.has(delivery.inputId)) return [];
       const input: PlatformConversationHistory["inputs"][number] = {
         id: delivery.inputId,
         ...inputInferenceSelection(delivery.request.activation),
@@ -5411,7 +6036,7 @@ export class RuntimeBridge {
         } catch (error) {
           if (
             !(error instanceof UpstreamError && error.status === 404) &&
-            !this.runtimeReadUnavailable(error)
+            !(await this.runtimeReadUnavailable(error))
           )
             throw error;
           // Optional diagnostics becoming unavailable must not hide the failure
@@ -5429,6 +6054,15 @@ export class RuntimeBridge {
       throw new DomainError("forbidden", "对话读取授权已变化，请重试。");
     const visibleInputs = new Set(
       pageItems.filter((item) => item.kind === "input").map((item) => item.id),
+    );
+    // Pending Human work is not a message-page member. Keep its original
+    // authorized input reachable even after that input leaves the newest page.
+    const approvalInputs = new Set(
+      local
+        .filter((delivery) =>
+          current.projectIds.includes(delivery.platformSource!.projectId),
+        )
+        .map((delivery) => delivery.inputId),
     );
     const oldest = pageItems[0];
     return {
@@ -5449,7 +6083,7 @@ export class RuntimeBridge {
             (approval) =>
               readableProjects.has(approval.scope.projectId) &&
               !!approval.scope.inputId &&
-              visibleInputs.has(approval.scope.inputId),
+              approvalInputs.has(approval.scope.inputId),
           ),
         },
         ...(this.state.activity
@@ -5503,7 +6137,7 @@ export class RuntimeBridge {
   async platformConversationHead(
     scope: { projectId: string; conversationId: string },
     access: AccessContext,
-  ): Promise<{ sessionId: string; latestSequence: number }> {
+  ): Promise<{ sessionId: string; latestSequence: number | null }> {
     const authorize = this.authorizePlatformRead;
     if (!authorize)
       throw new DomainError("invalid", "Platform 对话读取尚未接入。");
@@ -5525,12 +6159,13 @@ export class RuntimeBridge {
             undefined,
           ),
         );
+      this.readRecovered("conversation-history");
       return { sessionId, latestSequence: page.latest_sequence ?? 0 };
     } catch (error) {
       if (error instanceof UpstreamError && error.status === 404)
         return { sessionId, latestSequence: 0 };
-      if (this.runtimeReadUnavailable(error))
-        return { sessionId, latestSequence: 0 };
+      if (await this.runtimeReadUnavailable(error))
+        return { sessionId, latestSequence: null };
       throw error;
     }
   }
@@ -5611,7 +6246,11 @@ export class RuntimeBridge {
       })
       .map((thread) => {
         if (thread.inputId && continuable.has(thread.inputId)) return thread;
-        const { continuation: _continuation, ...readOnly } = thread;
+        const {
+          continuation: _continuation,
+          continuationSource: _continuationSource,
+          ...readOnly
+        } = thread;
         return readOnly;
       });
   }
@@ -5830,11 +6469,60 @@ export class RuntimeBridge {
     );
   }
   private activityRefresh: Promise<void> | null = null;
+  private activityRefreshIncludesHistory = true;
+  private rememberReadFailure(
+    operation: ConnectionReadFailure["operation"],
+    error: unknown,
+  ) {
+    const diagnostic = hostFailureDiagnostic("runtime.read", error);
+    const timeout = diagnostic.errors.some((value) =>
+      ["TimeoutError", "AbortError"].includes(value.name),
+    );
+    const code = timeout
+      ? "TimeoutError"
+      : error instanceof UpstreamError
+        ? `HTTP_${error.status}`
+        : (diagnostic.errors.findLast((value) => value.code)?.code ??
+          (error instanceof z.ZodError || error instanceof SyntaxError
+            ? "ProtocolError"
+            : "UnexpectedError"));
+    this.lastReadFailure = {
+      operation,
+      code,
+      at: new Date().toISOString(),
+      timeoutMs: 8000,
+      ...(error instanceof UpstreamError ? { httpStatus: error.status } : {}),
+    };
+  }
+  private readRecovered(operation: ConnectionReadFailure["operation"]) {
+    if (
+      this.lastReadFailure?.operation === operation &&
+      !this.lastReadFailure.recoveredAt
+    )
+      this.lastReadFailure = {
+        ...this.lastReadFailure,
+        recoveredAt: new Date().toISOString(),
+      };
+  }
+  private async observedRead(
+    operation: ConnectionReadFailure["operation"],
+    path: string,
+  ) {
+    try {
+      const value = await this.request(path);
+      this.readRecovered(operation);
+      return value;
+    } catch (error) {
+      this.rememberReadFailure(operation, error);
+      throw error;
+    }
+  }
   private reportActivityReadFailure(
     scope: string,
     stage: "current" | "history" | "projection",
     error: unknown,
   ) {
+    this.rememberReadFailure(`activity-${stage}`, error);
     const cause = error instanceof RuntimeTransportError ? error.cause : error;
     const timeout =
       cause instanceof Error &&
@@ -5863,11 +6551,21 @@ export class RuntimeBridge {
       // Diagnostic failure is secondary, never a new business/read outcome.
     }
   }
-  private refreshActivity() {
-    if (!this.activityRefresh)
-      this.activityRefresh = this.refreshActivityNow().finally(() => {
-        this.activityRefresh = null;
-      });
+  private refreshActivity(includeHistory = true): Promise<void> {
+    if (
+      this.activityRefresh &&
+      includeHistory &&
+      !this.activityRefreshIncludesHistory
+    )
+      return this.activityRefresh.then(() => this.refreshActivity(true));
+    if (!this.activityRefresh) {
+      this.activityRefreshIncludesHistory = includeHistory;
+      this.activityRefresh = this.refreshActivityNow(includeHistory).finally(
+        () => {
+          this.activityRefresh = null;
+        },
+      );
+    }
     return this.activityRefresh;
   }
   /** An explicit inventory read never dispatches the outbox or creates work. */
@@ -5879,7 +6577,7 @@ export class RuntimeBridge {
       () => this.refreshActivity(),
     );
   }
-  private async refreshActivityNow() {
+  private async refreshActivityNow(includeHistory = true) {
     const activity: z.infer<typeof activitySchema> = {
       available: true,
       truncated: false,
@@ -6150,6 +6848,8 @@ export class RuntimeBridge {
                     owner_id: z.string(),
                     owner_generation: z.number(),
                     dependency_kind: z.string(),
+                    dependency_id: z.string().optional(),
+                    metadata: z.record(z.string(), z.unknown()).optional(),
                     required: z.boolean(),
                     status: z.string(),
                   }),
@@ -6167,6 +6867,13 @@ export class RuntimeBridge {
                 generation: z.number().int().positive().optional(),
                 status_reason: z.string().nullable(),
                 parent_objective_id: z.string().nullable(),
+                wait_condition: z
+                  .object({
+                    kind: z.string(),
+                    session_id: z.string().optional(),
+                    request_id: z.string().nullish(),
+                  })
+                  .nullish(),
                 updated_at: z.string(),
               }),
             }),
@@ -6176,6 +6883,7 @@ export class RuntimeBridge {
           z.object({
             source: runtimeSchedulerSourceSchema,
             response_annotations: z.unknown().optional(),
+            user_input_request: pendingUserInputRequestSchema.nullish(),
             execution_model: executionModelSchema.nullish(),
             intent: z.string().nullable().optional(),
             phase: z.string(),
@@ -6237,6 +6945,7 @@ export class RuntimeBridge {
         contextId: string;
         currentAvailable: boolean;
         historyAvailable: boolean;
+        historyRetained?: boolean;
         active: z.infer<typeof schema>;
         history: z.infer<typeof schema>;
       }[] = [];
@@ -6278,15 +6987,32 @@ export class RuntimeBridge {
       for (const contextId of contextIds) {
         const key = initialKeys.get(contextId)!;
         const cached = this.activitySnapshotCache.get(key);
+        const historyVersion = this.activityHistoryDirty.get(contextId);
+        // Current work is independent of the terminal-history page. The
+        // background tick rereads history only on startup or a committed
+        // terminal/Objective change; explicit Human refresh still reads it.
+        // A retained page is disclosed as retained, never fresh read evidence.
+        const readHistory =
+          includeHistory ||
+          !cached?.history ||
+          this.activityHistoryDirty.has(contextId);
         const read = async (terminal: boolean) => {
           try {
             const value = schema.parse(
               await this.request(
-                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=200`,
+                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=${terminal ? 50 : 200}`,
               ),
             );
             if (value.context_id !== undefined)
               z.literal(contextId).parse(value.context_id);
+            this.readRecovered(
+              terminal ? "activity-history" : "activity-current",
+            );
+            if (
+              terminal &&
+              this.activityHistoryDirty.get(contextId) === historyVersion
+            )
+              this.activityHistoryDirty.delete(contextId);
             return { value, denied: false };
           } catch (error) {
             this.reportActivityReadFailure(
@@ -6304,10 +7030,13 @@ export class RuntimeBridge {
             };
           }
         };
-        const [currentRead, historyRead] = await Promise.all([
-          read(false),
-          read(true),
-        ]);
+        // Prioritize the small current inventory; a large terminal aggregate
+        // must not monopolize the same SQLite-backed service beside it.
+        const currentRead = await read(false);
+        const historyRead =
+          readHistory && !currentRead.denied
+            ? await read(true)
+            : { value: undefined, denied: false };
         const changed = key !== readScopeKey(contextId, this.activeSessions());
         const denied = currentRead.denied || historyRead.denied || changed;
         if (changed)
@@ -6372,15 +7101,22 @@ export class RuntimeBridge {
           contextId,
           currentAvailable,
           historyAvailable,
+          ...(!readHistory && !denied ? { historyRetained: true } : {}),
           active,
           history,
         });
       }
       activity.readScopes = snapshots.map(
-        ({ contextId, currentAvailable, historyAvailable }) => ({
+        ({
           contextId,
           currentAvailable,
           historyAvailable,
+          historyRetained,
+        }) => ({
+          contextId,
+          currentAvailable,
+          historyAvailable,
+          ...(historyRetained ? { historyRetained } : {}),
         }),
       );
       activity.available = snapshots.every((value) => value.currentAvailable);
@@ -6595,6 +7331,9 @@ export class RuntimeBridge {
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
             ...threadWaitProjection(value),
+            ...(value.user_input_request
+              ? { userInputRequest: value.user_input_request }
+              : {}),
             lifecycle: t.lifecycle,
             controlState: t.control_state,
             createdAt: t.created_at,
@@ -6615,8 +7354,18 @@ export class RuntimeBridge {
               : {}),
             revision: t.revision,
             updatedAt: t.updated_at,
-            ...(source && delivery && this.state.directedInput
-              ? { continuation: target }
+            ...(source && delivery && target && this.state.directedInput
+              ? {
+                  continuation: target,
+                  continuationSource: {
+                    inputId: delivery.inputId,
+                    projectId: source.projectId,
+                    conversationId: source.conversationId,
+                    targetActantId: source.targetActantId,
+                    artifactId: source.artifactId ?? null,
+                    artifactRevision: source.artifactRevision ?? null,
+                  },
+                }
               : {}),
           });
         }
@@ -6650,6 +7399,46 @@ export class RuntimeBridge {
           }
           sources.set(route.inputId, route.source);
           const waitKinds = objectiveWaitKinds(value);
+          const questionEdges = value.dependencies?.filter(
+            (edge) =>
+              edge.owner_kind === "objective" &&
+              edge.owner_id === objective.id &&
+              edge.owner_generation === objective.generation &&
+              edge.dependency_kind === "user_input" &&
+              edge.required &&
+              edge.status === "pending" &&
+              value.readiness.dependency_ids?.includes(edge.id) &&
+              !edge.metadata?.accepted_answer_event_id,
+          );
+          const questionEdge =
+            questionEdges?.length === 1 ? questionEdges[0] : undefined;
+          const savedQuestion =
+            questionEdge?.metadata?.source === "request_user_input" &&
+            questionEdge.metadata.request_event_id ===
+              questionEdge.dependency_id &&
+            typeof questionEdge.metadata.thread_id === "string" &&
+            typeof questionEdge.metadata.thread_generation === "number";
+          const pendingUserInput =
+            questionEdge &&
+            objective.generation &&
+            (savedQuestion || objective.wait_condition?.kind === "user_input")
+              ? {
+                  requestId: savedQuestion
+                    ? questionEdge.dependency_id!
+                    : (objective.wait_condition?.request_id ??
+                      `legacy:${objective.id}:${objective.generation}:${objective.revision}`),
+                  kind: savedQuestion
+                    ? ("question" as const)
+                    : ("legacy" as const),
+                  ...(savedQuestion
+                    ? {
+                        threadId: questionEdge.metadata!.thread_id as string,
+                        threadGeneration: questionEdge.metadata!
+                          .thread_generation as number,
+                      }
+                    : {}),
+                }
+              : undefined;
           for (const thread of activity.threads)
             if (
               primaryObjectives.get(thread.id)?.id === objective.id &&
@@ -6675,6 +7464,7 @@ export class RuntimeBridge {
             controlAllowed: false,
             statusReason: objective.status_reason,
             readiness: value.readiness.state,
+            ...(pendingUserInput ? { pendingUserInput } : {}),
             ...(waitKinds === undefined ? {} : { waitKinds }),
             parentId: objective.parent_objective_id,
             threadIds: activity.threads
@@ -7082,6 +7872,19 @@ export class RuntimeBridge {
   }
   private async refreshAttention() {
     try {
+      const readKey = () =>
+        JSON.stringify([
+          this.config.url,
+          this.config.namespace,
+          this.actor(),
+          this.activeSessions().map((session) => [
+            session.id,
+            session.projectId,
+            session.conversationId,
+            session.sharedDefault,
+          ]),
+        ]);
+      const initialKey = readKey();
       const data = z
         .object({ approvals: z.array(approvalSchema) })
         .parse(await this.request("/api/approvals"));
@@ -7091,6 +7894,7 @@ export class RuntimeBridge {
       );
       const deliveries = this.activeDeliveries();
       const approvals: ExecutionAttention["approvals"] = [];
+      let complete = true;
       for (const approval of data.approvals) {
         const request = approval.request;
         const session = sessionsById.get(request.session_id);
@@ -7099,38 +7903,90 @@ export class RuntimeBridge {
           request.context_id !== this.contextId(session.projectId)
         )
           continue;
-        const thread = request.thread_id
+        let thread = request.thread_id
           ? this.state.threadBindings[request.thread_id]
           : undefined;
         if (
           thread &&
           (thread.sessionId !== session.id ||
+            (thread.contextId && thread.contextId !== request.context_id) ||
             (request.root_turn_id && thread.rootId !== request.root_turn_id))
-        )
+        ) {
+          complete = false;
           continue;
+        }
         const root = request.root_turn_id ?? thread?.rootId;
-        const delivery = root
+        let delivery = root
           ? deliveries.find(
-              (d) => d.sessionId === session.id && d.rootId === root,
+              (d) =>
+                d.sessionId === session.id &&
+                (d.rootId === root ||
+                  (!!thread &&
+                    d.inputId === thread.inputId &&
+                    d.platformSource!.projectId === thread.projectId &&
+                    d.platformSource!.conversationId ===
+                      thread.conversationId)),
             )
           : undefined;
+        if (!delivery && request.thread_id) {
+          // The current-work inventory is bounded. A pending approval is an
+          // exact locator into the same Runtime-owned source proof used by the
+          // inspector, never a reason to enumerate history or infer a parent
+          // from a synthetic root name.
+          const records = await readExecutionRecords(
+            (path) => this.request(path),
+            {
+              sessionId: session.id,
+              contextId: request.context_id,
+              threadId: request.thread_id,
+              metadataOnly: true,
+            },
+          );
+          const selected = records.threads[0]!;
+          if (readKey() !== initialKey)
+            throw new DomainError("forbidden", "审批读取范围已变化。");
+          if (root && selected.root_turn_id !== root) {
+            complete = false;
+            continue;
+          }
+          delivery = deliveries.find(
+            (d) =>
+              d.sessionId === session.id &&
+              !!records.source_root_id &&
+              d.rootId === records.source_root_id,
+          );
+          if (delivery) {
+            const source = delivery.platformSource!;
+            thread = {
+              ...executionRecordThread(selected),
+              inputId: delivery.inputId,
+              projectId: source.projectId,
+              conversationId: source.conversationId,
+            };
+            this.state.threadBindings[thread.id] = thread;
+          }
+        }
         const source = delivery?.platformSource;
-        // Shared default Sessions span work projects. Never infer ownership from
-        // the selected page or transport session when the receipt is missing.
-        if (session.sharedDefault && !source) continue;
-        const projectId = source?.projectId ?? session.projectId;
+        // A Session can span projects. Never infer ownership from the selected
+        // page or transport session when the original input proof is missing.
+        if (!source) {
+          complete = false;
+          continue;
+        }
         approvals.push({
           scope: {
-            projectId,
-            conversationId: source?.conversationId ?? discussionId(session),
-            artifactId: source?.artifactId ?? session.artifactId,
-            ...(source ? { inputId: delivery!.inputId } : {}),
+            projectId: source.projectId,
+            conversationId: source.conversationId,
+            artifactId: source.artifactId ?? null,
+            inputId: delivery!.inputId,
             ...(thread ? { threadId: thread.id } : {}),
           },
           approval: { ...approval, fingerprint: approvalFingerprint(approval) },
         });
       }
-      this.attention = { available: true, approvals };
+      if (readKey() !== initialKey)
+        throw new DomainError("forbidden", "审批读取范围已变化。");
+      this.attention = { available: complete, approvals };
     } catch {
       this.attention = { ...this.attention, available: false };
     }
@@ -7236,8 +8092,21 @@ export class RuntimeBridge {
     projectId: string,
     conversationId: string,
   ) {
-    if (target.mode !== "supplement")
+    if (!isDirectedContinuation(target))
       throw new DomainError("invalid", "此入口只接受运行中的工作补充。");
+    const original = await this.platformContinuationOrigin(
+      target,
+      projectId,
+      conversationId,
+    );
+    await this.validateContinuationThread(target, original, projectId);
+    return original;
+  }
+  private async platformContinuationOrigin(
+    target: InputContinuation,
+    projectId: string,
+    conversationId: string,
+  ) {
     const actor = this.actor();
     const original = this.state.deliveries.find(
       (delivery) =>
@@ -7262,13 +8131,61 @@ export class RuntimeBridge {
     const route = await authorize({ ...source, phase: "dispatch" });
     if (route.sharedDefault !== source.sharedDefault)
       throw new DomainError("conflict", "原对话归属已变化，未发送补充。");
-    await this.validateContinuationThread(target, original, source.projectId);
     return original;
+  }
+  async readPlatformUserInputTarget(raw: unknown) {
+    const read = userInputTargetReadSchema.parse(raw);
+    const original = await this.platformContinuationOrigin(
+      read.continuation,
+      read.projectId,
+      read.conversationId,
+    );
+    const proof = await this.validateContinuationThread(
+      read.legacy
+        ? {
+            ...read.continuation,
+            mode: "reply",
+            reply: { kind: "legacy", requestId: read.requestId },
+          }
+        : read.continuation,
+      original,
+      read.projectId,
+      read.legacy ? undefined : read.requestId,
+    );
+    if (!read.legacy && !proof.request)
+      throw new DomainError("conflict", "这个问题已不再待答。");
+    if (read.legacy && proof.request)
+      throw new DomainError(
+        "conflict",
+        "此任务已保存具体问题，请打开该问题后回复。",
+      );
+    await this.platformContinuationOrigin(
+      read.continuation,
+      read.projectId,
+      read.conversationId,
+    );
+    const source = original.platformSource!;
+    return userInputTargetSchema.parse({
+      title: source.body?.slice(0, 120) ?? "原工作",
+      ...(read.legacy
+        ? { legacyRequestId: read.requestId }
+        : { request: proof.request }),
+      continuation: proof.continuation,
+      source: {
+        inputId: original.inputId,
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+        targetActantId: source.targetActantId,
+        artifactId: source.artifactId ?? null,
+        artifactRevision: source.artifactRevision ?? null,
+      },
+    });
   }
   private async validateContinuationThread(
     target: InputContinuation,
     delivery: StoredDelivery,
     projectId: string,
+    readQuestionId?: string,
   ) {
     if (!this.supportsDirectedInput)
       throw new DomainError(
@@ -7289,6 +8206,7 @@ export class RuntimeBridge {
       .object({
         snapshot: z.object({
           source: runtimeSchedulerSourceSchema.optional(),
+          user_input_request: pendingUserInputRequestSchema.nullish(),
           thread: z
             .object({
               id: z.string(),
@@ -7312,6 +8230,17 @@ export class RuntimeBridge {
       snapshot.source?.root_turn_id === delivery.rootId &&
       snapshot.source.session_id === delivery.sessionId &&
       snapshot.source.context_id === this.contextId(projectId);
+    const questionId =
+      readQuestionId ??
+      (target.reply?.kind === "question" ? target.reply.requestId : undefined);
+    const questionRoot =
+      !!questionId &&
+      snapshot.user_input_request?.request_id === questionId &&
+      snapshot.user_input_request?.thread_id === thread.id &&
+      snapshot.user_input_request.thread_generation === target.generation &&
+      snapshot.source?.root_turn_id === delivery.rootId &&
+      snapshot.source.session_id === delivery.sessionId &&
+      snapshot.source.context_id === this.contextId(projectId);
     const expectedPrincipal = this.teamIdentity
       ? this.principalId(this.actor().principalId)
       : this.state.sessions[delivery.sessionId]?.runtimePrincipalId;
@@ -7319,7 +8248,7 @@ export class RuntimeBridge {
       thread.id !== target.threadId ||
       thread.session_id !== delivery.sessionId ||
       thread.context_id !== this.contextId(projectId) ||
-      (!originalRoot && !objectiveRoot) ||
+      (!originalRoot && !objectiveRoot && !questionRoot) ||
       !expectedPrincipal ||
       thread.initiating_principal_id !== expectedPrincipal
     )
@@ -7327,16 +8256,73 @@ export class RuntimeBridge {
     if (!current) throw new ContinuationConflict("closed");
     if (
       current.generation !== target.generation ||
-      current.objective?.id !== target.objective?.id ||
-      current.objective?.generation !== target.objective?.generation
+      (!questionId && current.objective?.id !== target.objective?.id) ||
+      (!questionId &&
+        current.objective?.generation !== target.objective?.generation)
     )
       throw new ContinuationConflict("changed");
+    if (questionId) {
+      const question = snapshot.user_input_request;
+      if (
+        !question ||
+        question.request_id !== questionId ||
+        question.thread_id !== thread.id ||
+        question.thread_generation !== current.generation ||
+        question.session_id !== delivery.sessionId ||
+        question.context_id !== thread.context_id ||
+        (target.reply?.kind === "question" &&
+          !userInputAnswerText(question.questions, target.reply.answers))
+      )
+        throw new DomainError(
+          "conflict",
+          "这个问题已回答、替换或失效。答案已保留，请核对当前问题。",
+        );
+    } else if (target.reply?.kind === "legacy") {
+      if (!target.objective) throw new ContinuationConflict("changed");
+      const raw = z
+        .object({
+          objective: z.object({
+            id: z.string(),
+            generation: z.number(),
+            revision: z.number(),
+            status: z.string(),
+            wait_condition: z
+              .object({
+                kind: z.string(),
+                session_id: z.string().optional(),
+                request_id: z.string().nullish(),
+              })
+              .nullish(),
+          }),
+        })
+        .parse(
+          await this.request(
+            `/api/objectives/${encodeURIComponent(target.objective.id)}`,
+          ),
+        ).objective;
+      const requestId =
+        raw.wait_condition?.request_id ??
+        `legacy:${raw.id}:${raw.generation}:${raw.revision}`;
+      if (
+        raw.id !== target.objective.id ||
+        raw.generation !== target.objective.generation ||
+        raw.status !== "active" ||
+        raw.wait_condition?.kind !== "user_input" ||
+        raw.wait_condition.session_id !== delivery.sessionId ||
+        requestId !== target.reply.requestId
+      )
+        throw new DomainError(
+          "conflict",
+          "这项旧任务的待答状态已变化，回复未发送。",
+        );
+    }
+    return { continuation: current, request: snapshot.user_input_request };
   }
   async confirmSupplement(inputId: string) {
     const initial = this.state.deliveries.find((d) => d.inputId === inputId);
     if (!initial?.supplement) return;
     const deadline = Date.now() + 12000;
-    if (initial.state === "queued") void this.tick();
+    if (initial.state === "queued") void this.reconcile();
     while (Date.now() < deadline) {
       const delivery = this.state.deliveries.find((d) => d.inputId === inputId);
       if (!delivery?.supplement) return;
@@ -7418,7 +8404,7 @@ export class RuntimeBridge {
       !coherentCognitiveAppInput(input) ||
       !coherentCognitiveAppApplicationInput(input) ||
       (input.continuation &&
-        (input.continuation.mode !== "supplement" ||
+        (!isDirectedContinuation(input.continuation) ||
           !!newConversation ||
           !!input.application ||
           !!input.browser ||
@@ -7582,7 +8568,7 @@ export class RuntimeBridge {
     // Authorization and uploads can await another admission of this command;
     // the first durable envelope still wins that race.
     previous ??= this.state.deliveries.find((d) => d.inputId === input.id);
-    if (previous && !input.model && input.continuation?.mode !== "supplement")
+    if (previous && !input.model && !isDirectedContinuation(input.continuation))
       // A retry belongs to its admitted request. Missing aliases stay missing
       // on retained requests, even when today's Runtime default has changed.
       model = z
@@ -7769,7 +8755,7 @@ export class RuntimeBridge {
       ...(initialEvaluation
         ? { initialSessionEvaluation: initialEvaluation }
         : {}),
-      ...(input.continuation?.mode === "supplement"
+      ...(isDirectedContinuation(input.continuation)
         ? { supplement: "pending" as const }
         : {}),
       ...(resourceUploads.length ? { resourceUploads } : {}),
@@ -7777,7 +8763,7 @@ export class RuntimeBridge {
       platformHeld: !!newConversation,
     });
     this.save(this.state.deliveries.at(-1)!);
-    if (!newConversation) void this.tick();
+    if (!newConversation) void this.reconcile();
     return input.id;
   }
   async releasePlatformInput(inputId: string) {
@@ -7802,7 +8788,7 @@ export class RuntimeBridge {
     if (delivery.platformHeld) {
       delivery.platformHeld = false;
       this.save(delivery);
-      void this.tick();
+      void this.reconcile();
     }
   }
   /** Retry only an unaccepted Platform input owned by this Human. The saved
@@ -7842,7 +8828,7 @@ export class RuntimeBridge {
       delivery.error = null;
       delivery.platformHeld = false;
       this.save(delivery);
-      void this.tick();
+      void this.reconcile();
       return;
     }
     if (
@@ -7858,7 +8844,7 @@ export class RuntimeBridge {
     delivery.state = "queued";
     delivery.error = null;
     this.save(delivery);
-    void this.tick();
+    void this.reconcile();
   }
   platformInputFingerprint(inputId: string) {
     const actor = this.actor();
@@ -8028,9 +9014,10 @@ export class RuntimeBridge {
     this.save();
   }
   start() {
+    if (this.started || this.stopped) return;
+    this.started = true;
+    this.ensureExecutionObserver();
     void this.tick();
-    this.timer = setInterval(() => void this.tick(), 1200);
-    this.timer.unref();
   }
   async cancelPlatformInput(inputId: string, access: AccessContext) {
     const delivery = this.state.deliveries.find((d) => d.inputId === inputId);
@@ -8078,7 +9065,7 @@ export class RuntimeBridge {
     delivery.cancelRequested = true;
     delivery.error = null;
     this.save(delivery);
-    void this.tick();
+    void this.reconcile();
   }
   private async processCancellations() {
     for (const delivery of this.activeDeliveries()) {
@@ -8479,22 +9466,47 @@ export class RuntimeBridge {
   }
   async stop() {
     this.stopped = true;
-    clearInterval(this.timer);
+    this.started = false;
+    clearTimeout(this.wakeTimer);
+    clearTimeout(this.retryTimer);
     this.executionObserver?.close();
     this.executionObserver = undefined;
     for (const feed of this.feeds) feed.close();
     this.feeds.clear();
+    await this.reconciliation;
     await this.busyCompletion;
   }
   async tick() {
-    return this.as(
-      this.teamIdentity
-        ? { principalId: "morphz-service", actantId: "morphz-agent" }
-        : localAccess,
-      () => this.tickAsService(),
-    );
+    // Explicit waiters join the current immutable pass. New work/events use
+    // reconcile() directly so only an actual mutation queues a later pass.
+    return this.reconciliation ?? this.reconcile();
   }
-  private async tickAsService() {
+  private reconcile(sessions?: ReadonlySet<string>): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    this.reconcilePending = true;
+    if (!sessions) this.reconcileSessions = null;
+    else if (this.reconcileSessions)
+      for (const id of sessions) this.reconcileSessions.add(id);
+    this.reconciliation ??= Promise.resolve()
+      .then(async () => {
+        while (this.reconcilePending && !this.stopped) {
+          this.reconcilePending = false;
+          const scope = this.reconcileSessions;
+          this.reconcileSessions = new Set();
+          await this.as(
+            this.teamIdentity
+              ? { principalId: "morphz-service", actantId: "morphz-agent" }
+              : localAccess,
+            () => this.tickAsService(scope ?? undefined),
+          );
+        }
+      })
+      .finally(() => {
+        this.reconciliation = undefined;
+      });
+    return this.reconciliation;
+  }
+  private async tickAsService(changedSessions?: ReadonlySet<string>) {
     if (this.stopped) return;
     // Enqueue wakes the loop immediately. A caller that then explicitly awaits
     // tick must await that same in-flight pass, not observe a false success
@@ -8507,11 +9519,12 @@ export class RuntimeBridge {
     });
     try {
       const status = this.teamIdentity
-        ? (await this.request("/api/sessions"), { model: "Runtime 默认模型" })
+        ? (await this.observedRead("status", "/api/sessions"),
+          { model: "Runtime 默认模型" })
         : z
             .object({ model: z.string() })
             .passthrough()
-            .parse(await this.request("/api/status"));
+            .parse(await this.observedRead("status", "/api/status"));
       this.state.connected = true;
       this.state.model = status.model;
       this.state.error = "";
@@ -8801,7 +9814,7 @@ export class RuntimeBridge {
                 this.teamIdentity ? author : undefined,
               ),
             );
-          if (delivery.platformSource.continuation?.mode === "supplement") {
+          if (isDirectedContinuation(delivery.platformSource.continuation)) {
             // This receipt identifies the steering event, NOT a new execution root.
             delivery.acceptedEventId = receipt.event_id;
             delivery.supplement = "delivered";
@@ -8873,24 +9886,61 @@ export class RuntimeBridge {
       const currentDeliveries = this.activeDeliveries();
       for (const session of this.activeSessions()) {
         if (this.stopped) break;
+        if (changedSessions && !changedSessions.has(session.id)) continue;
         if (
           !session.hasWork &&
           !currentDeliveries.some((d) => d.sessionId === session.id && d.rootId)
         )
           continue;
+        this.failedSessionReads.delete(session.id);
         // Durable cursor resumes after restart; do not filter out causal thread-result joins.
         for (let page = 0; page < 10; page++) {
-          const data = z
-            .object({ events: z.array(eventSchema) })
-            .parse(
-              await this.request(
-                `/api/sessions/${session.id}/events?after_sequence=${session.cursor}&limit=1000`,
-              ),
-            );
+          let data: { events: RuntimeEvent[] };
+          try {
+            data = z
+              .object({ events: z.array(eventSchema) })
+              .parse(
+                await this.observedRead(
+                  "session-events",
+                  `/api/sessions/${session.id}/events?after_sequence=${session.cursor}&limit=100`,
+                ),
+              );
+          } catch (error) {
+            // A single Session delta timeout does not disprove a successful
+            // Runtime health read or erase independently read current work.
+            // Keep its original durable cursor and retry only that read later.
+            this.rememberReadFailure("session-events", error);
+            try {
+              this.host.reportFailure?.("runtime.session-events", error);
+            } catch {}
+            if (
+              error instanceof UpstreamError &&
+              [401, 403].includes(error.status)
+            )
+              throw error;
+            this.failedSessionReads.add(session.id);
+            break;
+          }
+          const previousCursor = session.cursor;
           for (const event of data.events.sort(
             (a, b) => a.sequence - b.sequence,
           )) {
             if (event.sequence <= session.cursor) continue;
+            if (
+              terminal.has(event.topic) ||
+              event.topic.startsWith("objective/") ||
+              [
+                "runtime/thread_cancelled",
+                "runtime/thread_completed",
+                "runtime/thread_failed",
+              ].includes(event.topic)
+            ) {
+              const contextId = this.contextId(session.projectId);
+              this.activityHistoryDirty.set(
+                contextId,
+                (this.activityHistoryDirty.get(contextId) ?? 0) + 1,
+              );
+            }
             if (
               payloadString(event, "session_id") &&
               payloadString(event, "session_id") !== session.id
@@ -8914,7 +9964,16 @@ export class RuntimeBridge {
               session.events.push(event);
             session.cursor = event.sequence;
           }
-          if (data.events.length < 1000) break;
+          if (session.cursor > previousCursor)
+            this.executionObserver?.acknowledge(session.id, session.cursor);
+          if (data.events.length < 100) break;
+          if (page === 9) {
+            // A durable delivery cursor can have a larger *missed* gap after
+            // restart. Yield this bounded pass, then continue only that gap;
+            // do not rely on a healthy periodic scanner to finish recovery.
+            this.reconcilePending = true;
+            this.reconcileSessions?.add(session.id);
+          }
         }
         const scopedDeliveries = currentDeliveries.filter(
           (delivery) => delivery.sessionId === session.id && delivery.rootId,
@@ -9004,11 +10063,11 @@ export class RuntimeBridge {
         }
       }
       await this.processRootCancellationChecks();
-      await this.refreshActivity();
+      await this.refreshActivity(false);
       await this.refreshAttention();
     } catch (error) {
       try {
-        this.host.reportFailure?.("runtime.poll", error);
+        this.host.reportFailure?.("runtime.reconcile", error);
       } catch {
         // Preserve the original failure and all delivery/receipt semantics.
       }
@@ -9018,6 +10077,29 @@ export class RuntimeBridge {
           ? error.message
           : "暂时无法连接 Morphz，正在重连；消息和执行状态已保留。";
     } finally {
+      // Only failed transport / unconfirmed queued capabilities need retry.
+      // Successful idle state has no timer and performs no background reads.
+      clearTimeout(this.retryTimer);
+      const retryAll =
+        !this.state.connected ||
+        this.activeDeliveries().some(
+          (d) => d.state === "queued" && !d.platformHeld,
+        );
+      const retrySessions = new Set(
+        this.activeSessions()
+          .filter((session) => this.failedSessionReads.has(session.id))
+          .map((session) => session.id),
+      );
+      if (this.started && !this.stopped && (retryAll || retrySessions.size)) {
+        this.retryTimer = setTimeout(
+          () => {
+            this.retryTimer = undefined;
+            void this.reconcile(retryAll ? undefined : retrySessions);
+          },
+          Math.min(3000 * 2 ** this.retryAttempts++, 30000),
+        );
+        this.retryTimer.unref?.();
+      } else this.retryAttempts = 0;
       try {
         this.save();
       } finally {

@@ -313,7 +313,7 @@ test("Desktop and HTTP request one Platform task run without client-chosen Sessi
         taskId: configuredTaskId,
         expectedRevision: 1,
         modelId: "selected-model",
-        reasoningEffort: "high",
+        reasoningEffort: "xhigh",
         notBefore: "2026-10-02T12:00:00.000Z",
         everySeconds: 3600,
       },
@@ -331,9 +331,9 @@ test("Desktop and HTTP request one Platform task run without client-chosen Sessi
     const configuredAdmission = (await platform.pendingTaskRuns(tenantId)).find(
       (item) => item.eventId === configured.eventId,
     )!;
-    assert.deepEqual(validated, [["selected-model", "high"]]);
+    assert.deepEqual(validated, [["selected-model", "xhigh"]]);
     assert.equal(configuredAdmission.request.model_alias, "selected-model");
-    assert.equal(configuredAdmission.request.reasoning_effort, "high");
+    assert.equal(configuredAdmission.request.reasoning_effort, "xhigh");
     assert.equal(
       configuredAdmission.request.not_before,
       "2026-10-02T12:00:00.000Z",

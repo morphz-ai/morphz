@@ -1046,6 +1046,70 @@ test("legacy original destination and pending supplement retain exact saved iden
   assert.equal(op.conversationId, "original-project");
 });
 
+test("Thread routing projection submits without any original-message lookup and preserves the frozen retry", async () => {
+  const continuation = {
+    mode: "supplement" as const,
+    inputId: "original-input",
+    threadId: "original-thread",
+    generation: 7,
+  };
+  const source = {
+    inputId: continuation.inputId,
+    projectId: "original-project",
+    conversationId: "original-conversation",
+    targetActantId: "original-agent",
+    artifactId: "original-artifact",
+    artifactRevision: 3,
+  };
+  const f = fixture({ original: null });
+  f.ports.originalInput = () => {
+    throw new Error("must not read old messages");
+  };
+  await submitExchangeDraft(
+    draft({ continuation, continuationSource: source }),
+    false,
+    "interrupt",
+    context(),
+    f.ports,
+  );
+  const operation = onlyCall(f)[0];
+  assert.equal(operation.type, "record-input");
+  if (operation.type !== "record-input") assert.fail("supplement");
+  assert.deepEqual(operation.continuation, continuation);
+  assert.equal(operation.projectId, source.projectId);
+  assert.equal(operation.conversationId, source.conversationId);
+  assert.equal(operation.targetActantId, source.targetActantId);
+  assert.equal(f.errors.length, 0);
+  assert.equal(f.events.includes("flush"), false);
+
+  const frozen = f.supplements[0]!;
+  const retry = fixture({ original: null });
+  await submitExchangeDraft(
+    draft({ continuation, pendingSupplement: frozen }),
+    false,
+    "interrupt",
+    context(),
+    retry.ports,
+  );
+  assert.equal(onlyCall(retry)[0], frozen.operation);
+  assert.equal(onlyCall(retry)[3], frozen.commandId);
+  assert.equal(retry.errors.length, 0);
+
+  const mismatched = fixture({ original: null });
+  await submitExchangeDraft(
+    draft({
+      continuation,
+      continuationSource: { ...source, inputId: "other-input" },
+    }),
+    false,
+    "interrupt",
+    context(),
+    mismatched.ports,
+  );
+  assert.equal(mismatched.calls.length, 0);
+  assert.match(String(mismatched.errors[0]), /补充范围尚未确认/);
+});
+
 test("supplement admission and failed preservation never flush Profile or execute", async (t) => {
   const continuation = {
     mode: "supplement" as const,
@@ -1055,11 +1119,11 @@ test("supplement admission and failed preservation never flush Profile or execut
   };
   for (const item of [
     {
-      name: "missing original wins over capabilities",
+      name: "missing routing proof wins over capabilities",
       missing: true,
       directed: false,
       runtime: false,
-      expected: "Error: 原请求已不可用，草稿已保留。",
+      expected: "Error: 此执行的补充范围尚未确认，草稿已保留。",
     },
     {
       name: "directed unsupported",

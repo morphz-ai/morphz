@@ -15,36 +15,78 @@ env:
 
 jobs:
   session-io:
+    needs: [validate-tag, complete-ci]
     uses: ./.github/workflows/session-io.yml
 
   linux-sandbox:
+    needs: [validate-tag, complete-ci]
     uses: ./.github/workflows/linux-sandbox-service.yml
 
   validate-tag:
     name: Validate release ref
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.policy.outputs.version }}
+      tag: ${{ steps.policy.outputs.tag }}
+      prerelease: ${{ steps.policy.outputs.prerelease }}
+      make_latest: ${{ steps.policy.outputs.make_latest }}
+      release_branch: ${{ steps.policy.outputs.release_branch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Match tag to Cargo package version
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Prepare the locked SemVer parser
+        run: npm ci --prefix dashboard --ignore-scripts
+      - name: Match canonical SemVer tag to Cargo package version
+        id: policy
         shell: bash
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' morphz/Cargo.toml | head -n 1)"
-          test -n "$package_version"
-          if [[ "$RELEASE_EVENT" == "push" ]]; then
-            test "$RELEASE_TAG" = "v$package_version"
-          else
+          package_version="$(python3 -c 'import tomllib; print(tomllib.load(open("morphz/Cargo.toml", "rb"))["package"]["version"])')"
+          if [[ "$RELEASE_EVENT" != "push" ]]; then
             echo "dry-run release validation for v$package_version at $GITHUB_SHA"
+            RELEASE_TAG="v$package_version"
           fi
+          node scripts/release-policy.cjs "$package_version" "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  complete-ci:
+    name: Same-commit complete CI admission
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require latest successful full push CI from the release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ needs.validate-tag.outputs.release_branch }}
+        run: |
+          set -euo pipefail
+          python3 -B scripts/verify-release-ci.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch "$RELEASE_BRANCH" | tee release-ci-admission.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-ci-admission
+          path: release-ci-admission.json
+          if-no-files-found: error
 
   release-readiness:
     name: Release readiness
-    needs: validate-tag
+    needs: [validate-tag, complete-ci]
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 2
@@ -98,7 +140,7 @@ jobs:
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/release-test-artifacts.jsonl" --install-service
           sudo systemctl daemon-reload
           sudo systemctl start morphz-sandbox.service
-          for attempt in $(seq 1 100); do
+          for _ in $(seq 1 100); do
             if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
             sleep 0.1
           done
@@ -115,7 +157,7 @@ jobs:
 
   linux-bundles:
     name: ${{ matrix.asset }}
-    needs: validate-tag
+    needs: [validate-tag, complete-ci]
     strategy:
       fail-fast: false
       matrix:
@@ -194,6 +236,7 @@ jobs:
           fi
           install_root="$RUNNER_TEMP/morphz-install-smoke"
           MORPHZ_RELEASE_BASE_URL="file://$PWD/dist" \
+          MORPHZ_VERSION="${{ needs.validate-tag.outputs.tag }}" \
           MORPHZ_INSTALL_DIR="$install_root" \
           MORPHZ_NO_MODIFY_PATH=1 \
             sh scripts/install.sh
@@ -262,7 +305,7 @@ jobs:
           sudo systemctl daemon-reload
           sudo systemctl start morphz-sandbox.service
           echo "MORPHZ_PACKAGED_RUNTIME=$runtime_image/morphz" >> "$GITHUB_ENV"
-          for attempt in $(seq 1 100); do
+          for _ in $(seq 1 100); do
             if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
             sleep 0.1
           done
@@ -276,7 +319,7 @@ jobs:
 
   macos-bundles:
     name: ${{ matrix.asset }}
-    needs: validate-tag
+    needs: [validate-tag, complete-ci]
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
@@ -346,6 +389,7 @@ jobs:
             python3 scripts/test-session-io-release.py dist/morphz-bundle/morphz
             install_root="$RUNNER_TEMP/morphz-install-smoke"
             MORPHZ_RELEASE_BASE_URL="file://$PWD/dist" \
+            MORPHZ_VERSION="${{ needs.validate-tag.outputs.tag }}" \
             MORPHZ_INSTALL_DIR="$install_root" \
             MORPHZ_NO_MODIFY_PATH=1 \
               sh scripts/install.sh
@@ -365,7 +409,7 @@ jobs:
 
   windows-bundle:
     name: morphz-windows-x86_64
-    needs: validate-tag
+    needs: [validate-tag, complete-ci]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -377,6 +421,9 @@ jobs:
           toolchain: 1.97.1
       - name: Cache Cargo registry
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Verify real Windows stable and RC installer behavior
+        shell: pwsh
+        run: ./scripts/test_install.ps1
       - name: Build release binaries and sandbox helpers
         # Explicit bash stops on either Cargo failure; PowerShell's final native
         # exit code alone can hide a failed Runtime build behind successful helpers.
@@ -495,10 +542,11 @@ jobs:
   publish:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [release-readiness, session-io, linux-sandbox, linux-bundles, linux-bundle-sandbox, macos-bundles, windows-bundle]
+    needs: [validate-tag, complete-ci, release-readiness, session-io, linux-sandbox, linux-bundles, linux-bundle-sandbox, macos-bundles, windows-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -506,17 +554,29 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
+          pattern: morphz-*
           merge-multiple: true
       - name: Add installers
         run: |
           cp scripts/install.sh dist/install.sh
           cp scripts/install.ps1 dist/install.ps1
       - name: Publish release assets
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_PRERELEASE: ${{ needs.validate-tag.outputs.prerelease }}
+          RELEASE_MAKE_LATEST: ${{ needs.validate-tag.outputs.make_latest }}
+          RELEASE_BRANCH: ${{ needs.validate-tag.outputs.release_branch }}
         run: |
           set -euo pipefail
+          # Recheck after packaging too: neither a moved tag nor a subsequent
+          # failed/cancelled CI attempt may borrow the admission from hours ago.
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
+          python3 -B scripts/verify-release-ci.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$GITHUB_SHA" \
+            --branch "$RELEASE_BRANCH" > dist/release-ci-admission.json
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "release $RELEASE_TAG already exists; release assets are immutable" >&2
             exit 1
@@ -526,7 +586,17 @@ jobs:
           if [[ -f "$release_notes_path" ]]; then
             notes_args=(--notes-file "$release_notes_path")
           fi
-          gh release create "$RELEASE_TAG" dist/* \
+          channel_args=(--latest="$RELEASE_MAKE_LATEST")
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            channel_args+=(--prerelease)
+          fi
+          # A normal command must succeed before mapfile consumes its output.
+          # Process substitution would hide a failed producer's exit status.
+          python3 -B scripts/verify-release-assets.py dist > "$RUNNER_TEMP/release-assets.txt"
+          mapfile -t release_assets < "$RUNNER_TEMP/release-assets.txt"
+          test "${#release_assets[@]}" -eq 23
+          gh release create "$RELEASE_TAG" "${release_assets[@]}" \
             --verify-tag \
             --title "$RELEASE_TAG" \
+            "${channel_args[@]}" \
             "${notes_args[@]}"

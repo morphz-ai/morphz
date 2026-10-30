@@ -120,7 +120,7 @@ pub(super) async fn backfill_objective_wait_dependencies(pool: &PgPool) -> Resul
     Ok(())
 }
 
-fn dependency_from_row(row: &PgRow) -> Result<SchedulerDependencyRecord, StoreError> {
+pub(super) fn dependency_from_row(row: &PgRow) -> Result<SchedulerDependencyRecord, StoreError> {
     let owner_kind = row.get::<String, _>("owner_kind");
     let dependency_kind = row.get::<String, _>("dependency_kind");
     let status = row.get::<String, _>("status");
@@ -293,6 +293,30 @@ impl SchedulerDependencyStore for PostgresStore {
         }
         query.push(") ORDER BY created_at, id");
         let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(dependency_from_row).collect()
+    }
+
+    async fn list_pending_user_input_dependencies(
+        &self,
+        thread_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query("SELECT q.* FROM scheduler_dependencies q JOIN threads t ON t.id=q.owner_id AND t.generation=q.owner_generation WHERE q.owner_kind='thread' AND q.dependency_kind='user_input' AND q.status='pending' AND q.required AND t.status='open' AND q.owner_id=ANY($1) ORDER BY q.owner_id,q.id")
+            .bind(thread_ids).fetch_all(&self.pool).await?;
+        rows.iter().map(dependency_from_row).collect()
+    }
+
+    async fn list_active_objective_user_input_dependencies(
+        &self,
+        objective_ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
+        if objective_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query("SELECT q.* FROM scheduler_dependencies q JOIN objectives o ON o.id=q.owner_id AND o.generation=q.owner_generation WHERE q.owner_kind='objective' AND q.dependency_kind='user_input' AND q.status='pending' AND q.required AND o.status='active' AND q.owner_id=ANY($1) ORDER BY q.owner_id,q.id")
+            .bind(objective_ids).fetch_all(&self.pool).await?;
         rows.iter().map(dependency_from_row).collect()
     }
 

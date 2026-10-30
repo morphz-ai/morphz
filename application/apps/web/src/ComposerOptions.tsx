@@ -27,6 +27,7 @@ export function ComposerOptions({
   options,
   label = "更多输入选项",
   description,
+  triggerTitle,
   menuLabel = "输入选项",
   below = false,
   align = "end",
@@ -51,6 +52,7 @@ export function ComposerOptions({
   options: ComposerOption[];
   label?: string;
   description?: string;
+  triggerTitle?: string;
   menuLabel?: string;
   below?: boolean;
   /** Left-side input tools open towards the content, not over navigation. */
@@ -231,7 +233,9 @@ export function ComposerOptions({
         className={triggerClassName}
         aria-label={label}
         aria-description={description}
-        title={description ? `${label} · ${description}` : label}
+        title={
+          triggerTitle ?? (description ? `${label} · ${description}` : label)
+        }
         aria-controls={id}
         aria-expanded={open}
         aria-haspopup={singleChoice ? "menu" : undefined}

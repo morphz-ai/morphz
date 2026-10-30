@@ -8,6 +8,7 @@ import {
   readReplyReceipts,
   reconcileReplyReceipts,
   replyReceipts,
+  windowedConversationInputs,
 } from "../apps/web/src/conversation-read.js";
 import type { Workspace } from "../packages/core/src/model.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
@@ -25,6 +26,69 @@ const output = {
   revision: 1,
   createdAt: "2026-09-20T00:00:00Z",
 };
+
+test("old device-only failures join their original history window, without hiding current sends or deleting records", () => {
+  const make = (id: string, createdAt: string) =>
+    ({ id, createdAt }) as Workspace["inputs"][number];
+  const rows = [
+    make("old-failure", "2026-10-18T01:00:00.000Z"),
+    make("old-staged", "2026-10-23T01:00:00.000Z"),
+    make("new-failure", "2026-10-25T02:00:00.000Z"),
+    make("in-flight", "2026-10-24T01:00:00.000Z"),
+    make("accepted-awaiting-history", "2026-10-24T01:00:00.000Z"),
+    make("authoritative", "2026-10-17T01:00:00.000Z"),
+    make("same-millisecond", "2026-10-25T00:00:00.000Z"),
+  ];
+  const local = rows
+    .filter((row) => row.id !== "authoritative")
+    .map((row) => row.id);
+  const submissions = {
+    "old-failure": { state: "failed" as const },
+    "new-failure": { state: "failed" as const },
+    "in-flight": { state: "sending" as const },
+    "accepted-awaiting-history": { state: "accepted" as const },
+    "same-millisecond": { state: "failed" as const },
+  };
+  const original = JSON.stringify({ rows, local, submissions });
+  assert.deepEqual(
+    windowedConversationInputs(
+      rows,
+      local,
+      submissions,
+      "2026-10-25T00:00:00.000000001Z",
+    ).map((row) => row.id),
+    [
+      "new-failure",
+      "in-flight",
+      "accepted-awaiting-history",
+      "authoritative",
+      "same-millisecond",
+    ],
+  );
+  assert.deepEqual(
+    windowedConversationInputs(
+      rows,
+      local,
+      submissions,
+      "2026-10-18T00:00:00Z",
+    ),
+    rows,
+  );
+  assert.strictEqual(
+    windowedConversationInputs(rows, local, submissions),
+    rows,
+    "history end includes remaining older local records",
+  );
+  assert.strictEqual(
+    windowedConversationInputs(rows, [], submissions, "2026-10-25T00:00:00Z"),
+    rows,
+  );
+  assert.equal(
+    JSON.stringify({ rows, local, submissions }),
+    original,
+    "projection never mutates storage, dates, or retry state",
+  );
+});
 
 test("已读按实际消息保存：刷新、重排、移除和重新出现不制造未读", () => {
   const messages = [message("one"), message("two")];

@@ -2015,6 +2015,7 @@ impl DeliveryIngressStore for PostgresStore {
 
         let input_destination = crate::steering::destination(event)?;
         let mut directed = event.clone();
+        let mut prepared_user_input = None;
         let directed_thread = if let Some(destination) = input_destination.as_ref() {
             use crate::steering::InputDestination;
             let objective = match destination {
@@ -2028,6 +2029,18 @@ impl DeliveryIngressStore for PostgresStore {
                     .await?
                     .ok_or("Input destination Objective does not exist")?;
                     Some(super::objective_from_row(&row)?)
+                }
+                InputDestination::UserInput { .. } => {
+                    super::user_input::lock_reply_objective(
+                        &mut tx,
+                        &destination
+                            .user_input_reply()
+                            .expect("matched question destination"),
+                        event_context_id,
+                        event,
+                    )
+                    .await?;
+                    None
                 }
                 _ => None,
             };
@@ -2072,8 +2085,10 @@ impl DeliveryIngressStore for PostgresStore {
                     .await?;
                 super::thread::thread_from_row(&row)?
             } else {
-                let InputDestination::Thread { thread_id, .. } = destination else {
-                    unreachable!()
+                let thread_id = match destination {
+                    InputDestination::Thread { thread_id, .. }
+                    | InputDestination::UserInput { thread_id, .. } => thread_id,
+                    _ => unreachable!(),
                 };
                 let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
                     .bind(thread_id)
@@ -2082,14 +2097,36 @@ impl DeliveryIngressStore for PostgresStore {
                     .ok_or("Input destination Thread does not exist")?;
                 super::thread::thread_from_row(&row)?
             };
-            crate::steering::route(&mut directed, destination, &thread, objective.as_ref())?;
-            if let Some(request_id) = directed
-                .payload
-                .get("reply_to_request_id")
-                .and_then(JsonValue::as_str)
-            {
+            if let Some(reply) = destination.user_input_reply() {
+                prepared_user_input = Some(
+                    super::user_input::prepare_reply_in_tx(&mut tx, &mut directed, &reply, &thread)
+                        .await?,
+                );
+            } else {
+                if let InputDestination::Objective {
+                    reply_to_request_id: Some(request_id),
+                    ..
+                } = destination
+                {
+                    if sqlx::query_scalar::<_, i32>("SELECT 1 FROM events WHERE id=$1 AND context_id=$2 AND topic='runtime/user_input_requested'")
+                        .bind(request_id).bind(&thread.context_id).fetch_optional(&mut *tx).await?.is_some() {
+                        return Err(crate::steering::conflict("Saved questions require a structured answer to the exact asking Thread"));
+                    }
+                }
+                crate::steering::route(&mut directed, destination, &thread, objective.as_ref())?;
+            }
+            if let (Some(objective_id), Some(request_id)) = (
+                directed
+                    .payload
+                    .get("objective_id")
+                    .and_then(JsonValue::as_str),
+                directed
+                    .payload
+                    .get("reply_to_request_id")
+                    .and_then(JsonValue::as_str),
+            ) {
                 if sqlx::query_scalar::<_, i32>("SELECT 1 FROM events WHERE payload ->> 'objective_id' = $1 AND payload ->> 'reply_to_request_id' = $2 LIMIT 1")
-                    .bind(directed.payload["objective_id"].as_str()).bind(request_id)
+                    .bind(objective_id).bind(request_id)
                     .fetch_optional(&mut *tx).await?.is_some()
                 { return Err(crate::steering::conflict("This question already has an accepted reply")); }
             }
@@ -2172,6 +2209,9 @@ impl DeliveryIngressStore for PostgresStore {
                 claimed_event.id
             )
             .into());
+        }
+        if let Some(prepared) = prepared_user_input {
+            super::user_input::commit_reply_in_tx(&mut tx, &claimed_event, prepared).await?;
         }
         if let Some(thread) = directed_thread {
             append_direct_thread_signal_in_tx(&mut tx, &claimed_event, &thread.id).await?;

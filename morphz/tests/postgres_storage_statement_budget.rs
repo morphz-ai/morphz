@@ -12,9 +12,9 @@ use morphz::memory::{
 };
 use morphz::orchestrator::context::ContextEngine;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{Event as TracingEvent, Subscriber};
 use tracing_subscriber::layer::Context as LayerContext;
@@ -39,10 +39,45 @@ fn p95(samples: &mut [Duration]) -> Duration {
     samples[index]
 }
 
+/// Steady-state budgets start only after every physical connection has
+/// completed its writer fence and its asynchronous return to the idle pool.
+/// No statement is filtered out of the counter, including connection startup.
+async fn warm_all_postgres_connections(pool: &sqlx::PgPool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let maximum = pool.options().get_max_connections() as usize;
+        let mut connections = Vec::with_capacity(maximum);
+        for _ in 0..maximum {
+            connections.push(pool.acquire().await.unwrap());
+        }
+        drop(connections);
+        while pool.num_idle() != maximum {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("PostgreSQL benchmark pool must finish its bounded startup before measurement");
+}
+
 #[derive(Clone)]
 struct PostgresOperationCounter {
     statements: Arc<AtomicUsize>,
     pool_acquires: Arc<AtomicUsize>,
+    sql_summaries: Arc<Mutex<VecDeque<String>>>,
+}
+
+#[derive(Default)]
+struct SqlSummary(String);
+impl tracing::field::Visit for SqlSummary {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "summary" {
+            self.0 = value.chars().take(256).collect();
+        }
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "summary" {
+            self.0 = format!("{value:?}").chars().take(256).collect();
+        }
+    }
 }
 
 impl<S> Layer<S> for PostgresOperationCounter
@@ -53,6 +88,13 @@ where
         match event.metadata().target() {
             "sqlx::query" => {
                 self.statements.fetch_add(1, Ordering::Relaxed);
+                let mut summary = SqlSummary::default();
+                event.record(&mut summary);
+                let mut sql = self.sql_summaries.lock().unwrap();
+                sql.push_back(summary.0);
+                if sql.len() > 256 {
+                    sql.pop_front();
+                }
             }
             "sqlx::pool::acquire" => {
                 self.pool_acquires.fetch_add(1, Ordering::Relaxed);
@@ -75,11 +117,13 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         .unwrap();
     let statements = Arc::new(AtomicUsize::new(0));
     let pool_acquires = Arc::new(AtomicUsize::new(0));
+    let sql_summaries = Arc::new(Mutex::new(VecDeque::new()));
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry().with(
             PostgresOperationCounter {
                 statements: Arc::clone(&statements),
                 pool_acquires: Arc::clone(&pool_acquires),
+                sql_summaries: Arc::clone(&sql_summaries),
             }
             .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
                 matches!(metadata.target(), "sqlx::query" | "sqlx::pool::acquire")
@@ -90,6 +134,7 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
 
     runtime.block_on(async {
         let store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
+        warm_all_postgres_connections(store.pool()).await;
         let suffix = format!(
             "{}-{}",
             std::process::id(),
@@ -504,9 +549,34 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         );
         assert_eq!(pool_acquires.load(Ordering::Relaxed), 4);
 
+        // Deliberately include one cold connection to prove its writer-fence
+        // SQL is still counted. This was the intermittent 81st statement when
+        // the pool had not finished growing before the steady sample window.
+        let mut held_connections = Vec::new();
+        for _ in 0..store.pool().options().get_max_connections() {
+            held_connections.push(store.pool().acquire().await.unwrap());
+        }
+        held_connections.pop().unwrap().close().await.unwrap();
+        statements.store(0, Ordering::Relaxed);
+        pool_acquires.store(0, Ordering::Relaxed);
+        sql_summaries.lock().unwrap().clear();
+        engine
+            .build_context_encoding(&context_id, &session_id, &HashSet::new())
+            .await
+            .unwrap();
+        let cold_sql = sql_summaries.lock().unwrap().clone();
+        assert_eq!(statements.load(Ordering::Relaxed), 5,
+            "one cold connection must account for its bootstrap plus all four Context statements; SQL={cold_sql:?}");
+        assert_eq!(pool_acquires.load(Ordering::Relaxed), 4);
+        assert_eq!(cold_sql.iter().filter(|sql| sql.starts_with("SELECT set_config(")).count(), 1,
+            "connection initialization must remain visible to the physical statement counter");
+        drop(held_connections);
+        warm_all_postgres_connections(store.pool()).await;
         statements.store(0, Ordering::Relaxed);
         pool_acquires.store(0, Ordering::Relaxed);
         let mut context_samples = Vec::with_capacity(STEADY_CONTEXT_SAMPLES);
+        sql_summaries.lock().unwrap().clear();
+        let steady_pool_before = (store.pool().size(), store.pool().num_idle());
         for _ in 0..STEADY_CONTEXT_SAMPLES {
             let started_at = Instant::now();
             engine
@@ -515,10 +585,12 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
                 .unwrap();
             context_samples.push(started_at.elapsed());
         }
+        let steady_sql = sql_summaries.lock().unwrap().clone();
         assert_eq!(
             statements.load(Ordering::Relaxed),
             4 * STEADY_CONTEXT_SAMPLES,
-            "repeated PostgreSQL Context compilation must retain its exact statement budget"
+            "repeated PostgreSQL Context compilation must retain its exact statement budget; pool before={steady_pool_before:?}, after={:?}; SQL={:?}",
+            (store.pool().size(), store.pool().num_idle()), steady_sql
         );
         assert_eq!(
             pool_acquires.load(Ordering::Relaxed),
@@ -533,6 +605,14 @@ fn postgres_hot_path_statement_budgets_are_enforced_when_configured() {
         assert!(
             context_p95 <= context_p95_budget,
             "steady PostgreSQL Context p95 {context_p95:?} exceeded local smoke budget {context_p95_budget:?}"
+        );
+        println!(
+            "PostgreSQL Context: cold_statements=5, samples={}, steady_statements={}, pool_acquires={}, p95_ms={:.3}, budget_ms={}",
+            STEADY_CONTEXT_SAMPLES,
+            statements.load(Ordering::Relaxed),
+            pool_acquires.load(Ordering::Relaxed),
+            context_p95.as_secs_f64() * 1_000.0,
+            context_p95_budget.as_millis(),
         );
 
         let activation = store

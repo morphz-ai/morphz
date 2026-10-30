@@ -5,6 +5,7 @@ param(
   [string]$NodeName = $env:COMPUTERNAME,
   [int]$Workers = 0,
   [switch]$FullAccess,
+  [switch]$AllowPrerelease = ($env:MORPHZ_EDGE_ALLOW_PRERELEASE -eq "1"),
   [string]$ManifestUrl = $(if ($env:MORPHZ_EDGE_MANIFEST_URL) { $env:MORPHZ_EDGE_MANIFEST_URL } else { "https://morphz.ai/edge/releases/manifest.json" })
 )
 
@@ -54,6 +55,12 @@ try {
 
   $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
   if ($manifest.schema_version -ne 1) { throw "Unsupported release manifest schema." }
+  $manifestVersion = [System.Management.Automation.SemanticVersion]::Parse([string]$manifest.version)
+  $channel = if ($manifest.channel) { [string]$manifest.channel } else { "stable" }
+  if ($channel -notin @("stable", "prerelease")) { throw "Unsupported release channel." }
+  if (-not $AllowPrerelease -and ($channel -eq "prerelease" -or $manifestVersion.PreReleaseLabel)) {
+    throw "Stable installation rejected prerelease; pass -AllowPrerelease to opt in."
+  }
   $matches = @($manifest.artifacts | Where-Object { $_.platform -eq "windows" -and $_.architecture -eq $architecture })
   if ($matches.Count -ne 1) { throw "Release manifest does not contain exactly one Windows/$architecture artifact." }
   $artifactInfo = $matches[0]

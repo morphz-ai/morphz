@@ -751,6 +751,13 @@ export class HttpApplicationClient {
       case "session-evaluation.read":
         path = "/api/session-evaluation?" + query(fields(params));
         break;
+      case "session-context-budget.read":
+        path = "/api/session-context-budget?" + query(fields(params));
+        break;
+      case "session-context-budget.update":
+        path = "/api/session-context-budget/update";
+        post(params);
+        break;
       case "session-evaluation.update":
         path = "/api/session-evaluation/update";
         post(params);
@@ -822,6 +829,10 @@ export class HttpApplicationClient {
       case "execution.snapshot":
         path = "/api/executions?" + query(executionReadQuery(params));
         break;
+      case "user-input.read":
+        path = "/api/user-input/read";
+        post(params);
+        break;
       case "terminal.catalog":
         path = "/api/terminals?" + query(fields(params));
         break;
@@ -857,6 +868,10 @@ export class HttpApplicationClient {
         break;
       case "objective.control":
         path = "/api/objectives/control";
+        post(params);
+        break;
+      case "schedule.control":
+        path = "/api/schedules/control";
         post(params);
         break;
       case "task.snapshot":

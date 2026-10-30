@@ -528,6 +528,7 @@ pub enum NoReplyMode {
 pub enum TerminalDecision {
     Deliver(String),
     NoReply(NoReplyMode),
+    UserInput(crate::user_input::RequestUserInput),
 }
 #[derive(Clone, Debug)]
 pub struct NormalizedResponse {
@@ -783,6 +784,11 @@ fn terminal(
     response: &Response,
     native_arguments: bool,
 ) -> Result<Option<TerminalDecision>, ProtocolError> {
+    if let Some(request) = crate::user_input::classify(response, native_arguments)
+        .map_err(|message| error(&message))?
+    {
+        return Ok(Some(TerminalDecision::UserInput(request)));
+    }
     if response.tool_calls.iter().any(|c| {
         c.func_name == "no_reply"
             && (!native_arguments
@@ -1187,6 +1193,7 @@ pub(crate) fn normalize_parts(
                             .filter(|target| {
                                 target.func_name != "deliver_message"
                                     && target.func_name != "no_reply"
+                                    && target.func_name != crate::user_input::TOOL_NAME
                             });
                         if let Some(target) = target {
                             extraction.extract(

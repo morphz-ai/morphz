@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { executionModelSchema } from "./inference.js";
 import { id } from "./model.js";
+import { pendingUserInputRequestSchema } from "./user-input.js";
 export const executionScopeSchema = z
   .object({
     projectId: id,
@@ -72,6 +73,7 @@ export const jobSchema = z.object({
   exit_code: z.number().nullable().default(null),
   request: z.unknown(),
   result_event_id: z.string().nullable().default(null),
+  approval_ref: z.string().nullable().optional(),
   /** Runtime-verified display metadata; actual Job facts remain unchanged. */
   annotation: z
     .object({ intent: z.string().optional(), result: z.string().optional() })
@@ -88,6 +90,23 @@ export const approvalSchema = z.object({
     justification: z.string(),
     action: z.record(z.string(), z.unknown()),
     requested: z.record(z.string(), z.unknown()),
+    lease_offer: z
+      .object({
+        principal_id: z.string(),
+        agent_id: z.string(),
+        session_id: z.string(),
+        thread_id: z.string(),
+        scope: z.enum(["thread", "objective", "session"]),
+        scope_id: z.string(),
+        objective_id: z.string().optional(),
+        target_id: z.string(),
+        capability: z.string(),
+        capabilities: z.array(z.string()).default([]),
+        requested: z.record(z.string(), z.unknown()),
+        policy_digest: z.string(),
+        duration_secs: z.number().int().nonnegative(),
+      })
+      .optional(),
   }),
 });
 /** Authorized read projection of real Runtime Threads, not another activity
@@ -107,6 +126,8 @@ export const executionThreadSchema = z.object({
   /** Current, exact Runtime scheduler facts; absent means unknown. */
   waitKinds: z.array(z.string()).optional(),
   waitUntil: z.string().optional(),
+  /** Exact pending Runtime question, not text inferred from progress. */
+  userInputRequest: pendingUserInputRequestSchema.optional(),
   revision: z.number(),
   createdAt: z.string().optional(),
   updatedAt: z.string(),
@@ -132,13 +153,21 @@ export type ExecutionAttention = z.infer<typeof executionAttentionSchema>;
 export type ExecutionSnapshot = z.infer<typeof executionSnapshotSchema>;
 export const executionControlSchema = z
   .object({
-    scope: executionScopeSchema,
+    scope: executionReadScopeSchema,
     action: z.discriminatedUnion("type", [
       z
         .object({
-          type: z.literal("cancel-thread"),
+          type: z.enum(["cancel-thread", "pause-thread", "resume-thread"]),
           threadId: id,
           revision: z.number().int().positive(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("supersede-thread"),
+          threadId: id,
+          revision: z.number().int().positive(),
+          intent: z.string().trim().min(1).max(64000),
         })
         .strict(),
       z
@@ -150,15 +179,93 @@ export const executionControlSchema = z
         .strict(),
       z
         .object({
-          type: z.enum(["allow-once", "deny"]),
+          type: z.enum([
+            "allow-once",
+            "deny",
+            "allow-objective",
+            "allow-session",
+          ]),
           approvalId: id,
           fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
         })
         .strict(),
+      z.object({ type: z.literal("cancel-delegation") }).strict(),
     ]),
   })
-  .strict();
+  .strict()
+  .superRefine(({ scope, action }, context) => {
+    const runtime = "runtime" in scope;
+    const delegated = runtime && !!scope.runtime.delegation;
+    const threadAction = [
+      "cancel-thread",
+      "pause-thread",
+      "resume-thread",
+      "supersede-thread",
+    ].includes(action.type);
+    if (
+      (delegated && action.type !== "cancel-delegation") ||
+      (action.type === "cancel-delegation" && !delegated) ||
+      (runtime && !delegated && !threadAction)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["action"],
+        message: "控制动作与执行来源不匹配。",
+      });
+  });
 export type ExecutionControl = z.infer<typeof executionControlSchema>;
+export type ExecutionThreadControl = Extract<
+  ExecutionControl["action"],
+  { threadId: string }
+>;
+export function isExecutionThreadControl(
+  action: ExecutionControl["action"],
+): action is ExecutionThreadControl {
+  return "threadId" in action;
+}
+export type ExecutionApprovalControl = Extract<
+  ExecutionControl["action"],
+  { approvalId: string }
+>;
+export function isExecutionApprovalControl(
+  action: ExecutionControl["action"],
+): action is ExecutionApprovalControl {
+  return "approvalId" in action;
+}
+/** Reusable grants require an actual, finite Runtime offer. A displayed
+ * goal association is not proof of causal supervision of this approval. */
+export function reusableApprovalScopes(
+  approval: z.infer<typeof approvalSchema>,
+  jobs: z.infer<typeof jobSchema>[] = [],
+): ("objective" | "session")[] {
+  const request = approval.request,
+    offer = request.lease_offer;
+  if (
+    !offer ||
+    offer.session_id !== request.session_id ||
+    offer.thread_id !== request.thread_id ||
+    !(offer.duration_secs > 0)
+  )
+    return [];
+  const objective =
+    offer.scope === "objective" ||
+    !!offer.objective_id ||
+    jobs.some((job) => {
+      const value = job.request;
+      return (
+        job.approval_ref === request.approval_id &&
+        job.session_id === request.session_id &&
+        job.context_id === request.context_id &&
+        job.thread_id === request.thread_id &&
+        !!value &&
+        typeof value === "object" &&
+        "_morphz_capability_lease_objective_id" in value &&
+        typeof value._morphz_capability_lease_objective_id === "string" &&
+        !!value._morphz_capability_lease_objective_id
+      );
+    });
+  return objective ? ["objective", "session"] : ["session"];
+}
 export const jobStatusLabel: Record<
   z.infer<typeof jobSchema>["status"],
   string

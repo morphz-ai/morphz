@@ -299,23 +299,45 @@ export function createExchangeSubmissionCommands({
     }
     const original = state?.inputs.find((i) => i.id === target.inputId);
     if (
-      !original ||
-      original.author.principalId !== client.boot?.principalId ||
-      original.author.actantId !== client.boot.actantId
+      original &&
+      (original.author.principalId !== client.boot?.principalId ||
+        original.author.actantId !== client.boot.actantId)
     )
       return;
-    dictationControls.current?.interrupt();
     const branch = client.boot!.runtime.activity?.threads.find(
       (t) => t.id === target.threadId,
     );
-    const label =
-      branch?.kind === "execution" && branch.title !== original.body
+    const source =
+      branch?.continuation?.inputId === target.inputId &&
+      branch.continuation.generation === target.generation &&
+      branch.continuation.objective?.id === target.objective?.id &&
+      branch.continuation.objective?.generation ===
+        target.objective?.generation &&
+      branch.continuationSource?.inputId === target.inputId
+        ? branch.continuationSource
+        : undefined;
+    if (!original && !source) {
+      showInput();
+      setInputErrors((old) => ({
+        ...old,
+        [contextKey]:
+          "此执行的补充范围尚未确认，请刷新活动后重试。草稿已保留。",
+      }));
+      return;
+    }
+    dictationControls.current?.interrupt();
+    const label = original
+      ? branch?.kind === "execution" && branch.title !== original.body
         ? `${original.body.slice(0, 60)} · ${branch.title}`
-        : original.body;
+        : original.body
+      : branch!.title;
     setDraft(contextKey, {
       ...draft,
       continuation: target,
       continuationLabel: label,
+      ...(source || draft.continuationSource
+        ? { continuationSource: source }
+        : {}),
       continuationFailure: undefined,
     });
     setInputErrors((old) => ({ ...old, [contextKey]: "" }));

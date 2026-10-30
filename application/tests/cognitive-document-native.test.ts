@@ -4,7 +4,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { _electron, expect, type ElectronApplication } from "@playwright/test";
+import {
+  _electron,
+  expect,
+  type ElectronApplication,
+  type Page,
+} from "@playwright/test";
+import { nativeTestEnvironment } from "./fixtures/native-test-environment.js";
 import {
   cognitiveAppDocumentResourcePath,
   cognitiveAppDocumentResourceMime,
@@ -15,6 +21,157 @@ import {
   cognitiveDocumentBootstrapPolicy,
   createCognitiveDocumentBootstrap,
 } from "../packages/application/src/cognitive-document-bootstrap.js";
+
+async function waitForNativeDocumentPort(
+  owner: Page,
+  expected: "delivered-init" | "init-credit",
+  timeout = 10000,
+) {
+  // Native MessagePort delivery is not a visual condition. Electron may stop
+  // producing animation frames while the original Document/port remains live.
+  try {
+    await expect
+      .poll(
+        () =>
+          owner.evaluate((expected) => {
+            const report = Reflect.get(window, "nativeDocumentHost").report();
+            return expected === "delivered-init"
+              ? report.wires.some(
+                  (packet: { type?: string; kind?: string }) =>
+                    packet.type === "delivered" && packet.kind === "init",
+                )
+              : report.credits.length === 1;
+          }, expected),
+        { timeout, intervals: [25, 50, 100] },
+      )
+      .toBe(true);
+  } catch (error) {
+    console.error(
+      "[native document port observation]",
+      JSON.stringify({
+        expected,
+        report: await owner
+          .evaluate(() => Reflect.get(window, "nativeDocumentHost")?.report())
+          .catch(() => "owner unavailable"),
+      }),
+    );
+    throw error;
+  }
+}
+
+test(
+  "ACTUAL isolated Electron MessagePort delivery is observable without animation frames; the old RAF waiter only observes after its held frame is released",
+  { timeout: 30000 },
+  async (t) => {
+    const profile = await mkdtemp(
+      resolve(tmpdir(), "morphz-native-port-observation-"),
+    );
+    let electron: ElectronApplication | undefined;
+    t.after(async () => {
+      try {
+        await electron?.close();
+      } finally {
+        await rm(profile, { recursive: true, force: true });
+      }
+    });
+    electron = await _electron.launch({
+      args: [resolve("tests/fixtures/native-port-observation-entry.cjs")],
+      env: {
+        ...nativeTestEnvironment(),
+        MORPHZ_NATIVE_PORT_OBSERVATION_PROFILE: profile,
+      },
+      timeout: 10000,
+    });
+    const owner = await electron.firstWindow();
+    await expect
+      .poll(() =>
+        owner.evaluate(
+          () => typeof Reflect.get(window, "nativePortObservationControl"),
+        ),
+      )
+      .toBe("object");
+    let oldSettled = false;
+    let oldFailure: unknown;
+    const oldWaiter = owner
+      .waitForFunction(
+        () => {
+          Reflect.get(window, "nativePortObservationControl").oldCheck();
+          return Reflect.get(window, "nativeDocumentHost")
+            .report()
+            .wires.some(
+              (packet: { type?: string; kind?: string }) =>
+                packet.type === "delivered" && packet.kind === "init",
+            );
+        },
+        undefined,
+        { timeout: 10000 },
+      )
+      .then(
+        async (handle) => {
+          oldSettled = true;
+          await handle.dispose();
+        },
+        (error: unknown) => {
+          oldSettled = true;
+          oldFailure = error;
+        },
+      );
+    await expect
+      .poll(() =>
+        owner.evaluate(
+          () =>
+            Reflect.get(window, "nativePortObservationControl").observation()
+              .oldChecks,
+        ),
+      )
+      .toBe(1);
+    const delivered = waitForNativeDocumentPort(owner, "delivered-init");
+    const credited = waitForNativeDocumentPort(owner, "init-credit");
+    // Both new observers must first see the genuinely undelivered state.
+    await expect
+      .poll(() =>
+        owner.evaluate(() => {
+          const observation = Reflect.get(
+            window,
+            "nativePortObservationControl",
+          ).observation();
+          return (
+            observation.deliveredStateReads >= 2 &&
+            observation.creditStateReads >= 1
+          );
+        }),
+      )
+      .toBe(true);
+    await owner.evaluate(() =>
+      Reflect.get(window, "nativePortObservationControl").send(),
+    );
+    await Promise.all([delivered, credited]);
+    const withoutFrames = await owner.evaluate(() =>
+      Reflect.get(window, "nativePortObservationControl").observation(),
+    );
+    assert.equal(withoutFrames.executedFrames, 0);
+    assert.equal(withoutFrames.oldChecks, 1);
+    assert.equal(withoutFrames.delivered, 1);
+    assert.equal(withoutFrames.credited, 1);
+    assert.ok(withoutFrames.pendingFrames >= 1);
+    assert.equal(oldSettled, false);
+    await owner.evaluate(() =>
+      Reflect.get(window, "nativePortObservationControl").releaseFrames(),
+    );
+    await oldWaiter;
+    assert.equal(oldFailure, undefined);
+    assert.equal(oldSettled, true);
+    const afterRelease = await owner.evaluate(() =>
+      Reflect.get(window, "nativePortObservationControl").observation(),
+    );
+    assert.equal(afterRelease.oldChecks, 2);
+    assert.ok(afterRelease.executedFrames >= 1);
+    console.log(
+      "Actual isolated native nonvisual observation witness: " +
+        JSON.stringify({ withoutFrames, afterRelease }),
+    );
+  },
+);
 
 test(
   "ACTUAL isolated Electron production scheme/adapter and native Document origins; controlled typed document port/Host, not SQL, production SDK or original user window",
@@ -215,7 +372,29 @@ test(
           wires: [] as Record<string, unknown>[],
           credits: [] as number[],
           invalidPortPackets: [] as unknown[],
+          timing: {
+            mountedAt: performance.now(),
+            acceptedAt: null as number | null,
+            parserReadyAt: null as number | null,
+            deliveredInitAt: null as number | null,
+            initCreditAt: null as number | null,
+            visibility: [
+              { at: performance.now(), state: document.visibilityState },
+            ],
+          },
         };
+        const visibilityObserver = {
+          changed() {
+            report.timing.visibility.push({
+              at: performance.now(),
+              state: document.visibilityState,
+            });
+          },
+        };
+        document.addEventListener(
+          "visibilitychange",
+          visibilityObserver.changed,
+        );
         let peer: MessagePort | null = null;
         let received = 0;
         addEventListener("message", (event) => {
@@ -247,6 +426,7 @@ test(
             return;
           }
           report.accepted.push(packet);
+          report.timing.acceptedAt = performance.now();
           peer = event.ports[0]!;
           peer.onmessage = (event) => {
             const packet = event.data;
@@ -255,6 +435,7 @@ test(
               Object.keys(packet).length === 1
             ) {
               report.ready++;
+              report.timing.parserReadyAt = performance.now();
               peer!.postMessage({
                 kind: "wire",
                 text: JSON.stringify({
@@ -267,23 +448,35 @@ test(
               Object.keys(packet).length === 2 &&
               typeof packet.text === "string"
             ) {
-              report.wires.push(JSON.parse(packet.text));
+              const wire = JSON.parse(packet.text);
+              report.wires.push(wire);
+              if (wire.type === "delivered" && wire.kind === "init")
+                report.timing.deliveredInitAt = performance.now();
               peer!.postMessage({ kind: "credit", sequence: ++received });
             } else if (
               packet?.kind === "credit" &&
               Object.keys(packet).length === 2
-            )
+            ) {
               report.credits.push(packet.sequence);
-            else report.invalidPortPackets.push(packet);
+              if (packet.sequence === 1)
+                report.timing.initCreditAt = performance.now();
+            } else report.invalidPortPackets.push(packet);
           };
           peer.start();
         });
         Object.assign(window, {
           nativeDocumentHost: {
             report() {
-              return structuredClone(report);
+              return structuredClone({
+                ...report,
+                observedAt: performance.now(),
+              });
             },
             retire() {
+              document.removeEventListener(
+                "visibilitychange",
+                visibilityObserver.changed,
+              );
               peer?.close();
               carrier.remove();
             },
@@ -295,17 +488,7 @@ test(
       { path, proof, protocol: cognitiveDocumentBootstrapProtocol },
     );
     try {
-      await owner.waitForFunction(
-        () =>
-          Reflect.get(window, "nativeDocumentHost")
-            .report()
-            .wires.some(
-              (packet: { type?: string; kind?: string }) =>
-                packet.type === "delivered" && packet.kind === "init",
-            ),
-        undefined,
-        { timeout: 10000 },
-      );
+      await waitForNativeDocumentPort(owner, "delivered-init");
     } catch (error) {
       console.error(
         "[native document handshake]",
@@ -315,6 +498,16 @@ test(
             .catch(() => "owner unavailable"),
           frames: owner.frames().map((frame) => frame.url()),
           pageErrors: errors,
+          nativeWindows: await electron
+            .evaluate(({ BrowserWindow }) =>
+              BrowserWindow.getAllWindows().map((window) => ({
+                url: window.webContents.getURL(),
+                visible: window.isVisible(),
+                minimized: window.isMinimized(),
+                focused: window.isFocused(),
+              })),
+            )
+            .catch(() => "main process unavailable"),
           exitCode: nativeProcess.exitCode,
           signalCode: nativeProcess.signalCode,
           stderr: startupStderr,
@@ -361,10 +554,7 @@ test(
       ),
       { type: "delivered", kind: "init", marker: "native-original-owner" },
     );
-    await owner.waitForFunction(
-      () =>
-        Reflect.get(window, "nativeDocumentHost").report().credits.length === 1,
-    );
+    await waitForNativeDocumentPort(owner, "init-credit", 30000);
     assert.deepEqual(
       await owner.evaluate(
         () => Reflect.get(window, "nativeDocumentHost").report().credits,
@@ -412,6 +602,11 @@ test(
               Reflect.get(window, "nativeDocumentHost").report(),
             )
           ).credits,
+          timing: (
+            await owner.evaluate(() =>
+              Reflect.get(window, "nativeDocumentHost").report(),
+            )
+          ).timing,
           tcpAttempts: observed.tcpAttempts,
         }),
     );

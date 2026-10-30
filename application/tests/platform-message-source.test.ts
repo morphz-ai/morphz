@@ -4,8 +4,7 @@ import { sourceContainsSelection } from "../packages/application/src/platform-me
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Markdown from "react-markdown";
-import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
-import remarkGfm from "remark-gfm";
+import { markdownRemarkPlugins } from "../packages/core/src/markdown-parsing.js";
 
 test("Platform 引用校验保存的原文与 Markdown 可见选文", () => {
   assert.equal(sourceContainsSelection("普通原文", "普通原文"), true);
@@ -35,7 +34,7 @@ test("CJK-adjacent emphasis uses exactly the message UI's visible text", () => {
   assert.equal(
     renderToStaticMarkup(
       createElement(Markdown, {
-        remarkPlugins: [remarkCjkFriendly, remarkGfm],
+        remarkPlugins: markdownRemarkPlugins,
         children: source,
       }),
     ),
@@ -48,6 +47,22 @@ test("CJK-adjacent emphasis uses exactly the message UI's visible text", () => {
   );
   assert.equal(
     sourceContainsSelection("文字**不是完整 Markdown", "文字不是完整 Markdown"),
+    false,
+  );
+});
+
+test("repaired CJK-adjacent URL emphasis has the same quoted words as the actual renderer", () => {
+  const source =
+    "**https://github.com/shafreeck/24frames**：public，默认分支 `main`。";
+  const selected =
+    "https://github.com/shafreeck/24frames：public，默认分支 main。";
+  assert.equal(sourceContainsSelection(source, selected), true);
+  assert.equal(
+    sourceContainsSelection(source, selected.replace("public", "private")),
+    false,
+  );
+  assert.equal(
+    sourceContainsSelection(source, selected.replace("24frames", "other")),
     false,
   );
 });

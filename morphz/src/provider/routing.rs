@@ -36,7 +36,8 @@ fn split_discovered_catalog(
     let mut models = Vec::with_capacity(catalog.len());
     let mut profiles = BTreeMap::new();
     for discovered in catalog {
-        let has_capacity = discovered.profile.context_window_tokens.is_some()
+        let has_capacity = discovered.profile.supported_reasoning_efforts.is_some()
+            || discovered.profile.context_window_tokens.is_some()
             || discovered.profile.max_input_tokens.is_some()
             || discovered.profile.max_output_tokens.is_some()
             || !discovered.profile.model_input_limits().is_unspecified();
@@ -113,6 +114,7 @@ impl EffectiveProviderCatalog {
                         adapter: "protocol-compatible".to_string(),
                         protocol: provider.protocol,
                         base_url: provider.base_url.clone(),
+                        chat_token_limit_parameter: provider.chat_token_limit_parameter,
                         accounts,
                         models: provider.models.clone(),
                         headers: provider.headers.clone(),
@@ -651,6 +653,7 @@ impl RoutedClient {
         let physical = ProviderConfig {
             protocol: provider.protocol,
             base_url: provider.base_url.clone(),
+            chat_token_limit_parameter: provider.chat_token_limit_parameter,
             credential: None,
             models: provider.models.clone(),
             headers: provider.headers.clone(),
@@ -1595,6 +1598,7 @@ impl RoutedClient {
         let physical = ProviderConfig {
             protocol: provider.protocol,
             base_url: provider.base_url.clone(),
+            chat_token_limit_parameter: provider.chat_token_limit_parameter,
             credential: None,
             models: provider.models.clone(),
             headers,

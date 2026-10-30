@@ -29,6 +29,7 @@ import {
   sessionEvaluationScopeSchema,
   sessionEvaluationUpdateSchema,
 } from "../../core/src/session-evaluation.js";
+import { sessionContextBudgetUpdateSchema } from "../../core/src/session-context-budget.js";
 import {
   sessionPermissionsReadSchema,
   sessionPermissionsUpdateSchema,
@@ -79,6 +80,7 @@ import {
 } from "../../core/src/speech-stream.js";
 import { SpeechStreams } from "./speech-stream.js";
 import { ContinuationConflict, SupplementUnconfirmed } from "./continuation.js";
+import { isDirectedContinuation } from "../../core/src/continuation.js";
 import { PlatformStorageError } from "../../platform/src/store.js";
 import type { BrowserBookmarkService } from "./browser-bookmark-service.js";
 import type { HumanPlatformAuthority } from "./human-platform-authority.js";
@@ -958,9 +960,12 @@ export class ApplicationSession {
       historyVersion: undefined as string | undefined,
     };
     if (head)
-      value.historyVersion = createHash("sha256")
-        .update(JSON.stringify([value.historyVersion, head]))
-        .digest("hex");
+      value.historyVersion =
+        head.latestSequence === null
+          ? undefined
+          : createHash("sha256")
+              .update(JSON.stringify([value.historyVersion, head]))
+              .digest("hex");
     this.active();
     return { ...value, catalogVersion, revisions };
   }
@@ -2134,7 +2139,7 @@ export class ApplicationSession {
       );
     if (
       op.continuation &&
-      (op.continuation.mode !== "supplement" ||
+      (!isDirectedContinuation(op.continuation) ||
         !!op.newConversation ||
         !!op.application ||
         !!op.browser ||
@@ -2577,7 +2582,7 @@ export class ApplicationSession {
         runtime.releasePlatformInput(entityId),
       );
     }
-    if (op.continuation?.mode === "supplement")
+    if (isDirectedContinuation(op.continuation))
       await runtime.as(this.access, () => runtime.confirmSupplement(entityId));
     this.active();
     return { commandId: command.commandId, entityId };
@@ -2890,6 +2895,53 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async readSessionContextBudget(raw: unknown) {
+    this.active();
+    const scope = sessionEvaluationScopeSchema.parse(raw);
+    const runtime = this.runtime();
+    const result = await runtime.as(this.access, () =>
+      runtime.readSessionContextBudget(scope, this.access, () => this.active()),
+    );
+    this.active();
+    return result;
+  }
+  async updateSessionContextBudget(raw: unknown) {
+    this.active();
+    const request = sessionContextBudgetUpdateSchema.parse(raw);
+    const runtime = this.runtime();
+    if (
+      this.options.identity ||
+      runtime.teamIdentity ||
+      this.access.principalId !== localAccess.principalId ||
+      this.access.actantId !== localAccess.actantId
+    )
+      throw new DomainError(
+        "forbidden",
+        "共享上下文容量只能由本机本人调整；团队与远端为只读。",
+      );
+    const authorizeWrite = async () => {
+      this.active();
+      await this.work((service, actor) =>
+        service.authorizeLocalDirectory(
+          actor,
+          request.projectId,
+          request.conversationId,
+          true,
+        ),
+      );
+      this.active();
+    };
+    const result = await runtime.as(this.access, () =>
+      runtime.updateSessionContextBudget(
+        request,
+        this.access,
+        authorizeWrite,
+        () => this.active(),
+      ),
+    );
+    this.active();
+    return result;
+  }
   async updateSessionEvaluation(raw: unknown) {
     this.active();
     const request = sessionEvaluationUpdateSchema.parse(raw);
@@ -3136,6 +3188,17 @@ export class ApplicationSession {
       )
     ).open(commandId);
   }
+  async readUserInputTarget(raw: unknown) {
+    this.active();
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("追问尚未接入 Platform。");
+    const runtime = this.runtime();
+    const value = await runtime.as(this.access, () =>
+      runtime.readPlatformUserInputTarget(raw),
+    );
+    this.active();
+    return value;
+  }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
       scope = executionReadScopeSchema.parse(raw);
@@ -3205,9 +3268,24 @@ export class ApplicationSession {
       this.active(),
     );
   }
+  async scheduleControl(raw: unknown) {
+    this.active();
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("定时任务控制尚未接入 Platform。");
+    return this.runtime().platformScheduleControl(raw, this.access, () =>
+      this.active(),
+    );
+  }
   async executionControl(raw: unknown) {
     const runtime = this.runtime(),
       control = executionControlSchema.parse(raw);
+    if ("runtime" in control.scope) {
+      if (!this.options.platformWork)
+        throw new ApplicationUnavailable("执行控制尚未接入 Platform。");
+      return runtime.platformRuntimeExecutionControl(control, this.access, () =>
+        this.active(),
+      );
+    }
     if (control.scope.taskRun) {
       const { controls, recheck } = await this.platformTaskExecution(
         control.scope,
@@ -4148,6 +4226,10 @@ export function invokeApplication(
       return session.updateSessionPermissions(params);
     case "session-evaluation.read":
       return session.readSessionEvaluation(params);
+    case "session-context-budget.read":
+      return session.readSessionContextBudget(params);
+    case "session-context-budget.update":
+      return session.updateSessionContextBudget(params);
     case "session-evaluation.update":
       return session.updateSessionEvaluation(params);
     case "asset.add":
@@ -4174,6 +4256,8 @@ export function invokeApplication(
       return session.readingOcr(params);
     case "execution.snapshot":
       return session.executionSnapshot(params);
+    case "user-input.read":
+      return session.readUserInputTarget(params);
     case "terminal.catalog":
       return session.terminalCatalog(params);
     case "terminal.read":
@@ -4188,6 +4272,8 @@ export function invokeApplication(
       return session.executionControl(params);
     case "objective.control":
       return session.objectiveControl(params);
+    case "schedule.control":
+      return session.scheduleControl(params);
     case "task.snapshot":
       return session.taskSnapshot(params);
     case "task.run-history":

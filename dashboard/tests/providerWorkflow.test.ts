@@ -11,6 +11,22 @@ import {
   type AccountModelOption,
 } from '../src/app/providerWorkflow.ts'
 
+test('model enablement preserves exact declared reasoning levels including xhigh and an explicit empty list', () => {
+  const options = buildAccountModelOptions({
+    accountId: 'account-a', providerId: 'provider-a', routes: {}, catalog: [],
+    configuredProfiles: {}, additionallyDiscovered: ['custom-model'],
+    discoveredProfiles: { 'custom-model': { supported_reasoning_efforts: ['high', 'xhigh'] } },
+  }).map(option => ({ ...option, enabled: true }))
+  assert.deepEqual(buildEnabledModelSelections(options)[0]?.supported_reasoning_efforts, ['high', 'xhigh'])
+  const disabled = buildAccountModelOptions({
+    accountId: 'account-a', providerId: 'provider-a', routes: {}, catalog: [],
+    configuredProfiles: { 'custom-model': { supported_reasoning_efforts: [] } },
+    additionallyDiscovered: ['custom-model'],
+    discoveredProfiles: { 'custom-model': { supported_reasoning_efforts: ['high', 'xhigh'] } },
+  }).map(option => ({ ...option, enabled: true }))
+  assert.deepEqual(buildEnabledModelSelections(disabled)[0]?.supported_reasoning_efforts, [])
+})
+
 const modelOptions: AccountModelOption[] = [
   {
     id: 'claude-sonnet-4-5',

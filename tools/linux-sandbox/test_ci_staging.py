@@ -59,7 +59,10 @@ class CiStagingTests(unittest.TestCase):
         sandbox = (workflows / "linux-sandbox-service.yml").read_text()
         self.assertIn("  workflow_call:\n", sandbox)
         self.assertIn("group: linux-sandbox-service-${{ github.workflow }}-${{ github.ref }}", sandbox)
-        self.assertIn("needs: [release-readiness, session-io, linux-sandbox,", release)
+        publish = release.split("\n  publish:\n", 1)[1]
+        needs = publish.split("needs: [", 1)[1].split("]", 1)[0]
+        self.assertTrue({"validate-tag", "complete-ci", "release-readiness", "session-io", "linux-sandbox"}
+                        .issubset({item.strip() for item in needs.split(",")}))
         readiness = release.split("\n  release-readiness:\n", 1)[1].split("\n  linux-bundles:\n", 1)[0]
         self.assertIn("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: \"1\"", readiness)
         self.assertIn("MORPHZ_LINUX_SANDBOX_TEST=1", readiness)

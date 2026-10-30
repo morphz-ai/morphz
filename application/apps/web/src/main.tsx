@@ -26,6 +26,7 @@ import "./features/pdf/pdf-reading-adaptive.css";
 import "./features/exchange/exchange-controls.css";
 import "./exchange-layout.css";
 import "./inspector.css";
+import "./features/exchange/message-markdown.css";
 import "./task-list.css";
 import "./content-catalog.css";
 import "./browser-bookmarks.css";

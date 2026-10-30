@@ -60,6 +60,10 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    /// The exact currently pending question. Neither prose nor a generic wait
+    /// label is an alternative authority for its recipient or choices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_input_request: Option<crate::user_input::PendingUserInputRequest>,
     /// Latest physically bound request, never today's mutable default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_model: Option<crate::runtime::ExecutionModel>,

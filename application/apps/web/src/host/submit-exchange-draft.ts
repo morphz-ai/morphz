@@ -259,8 +259,26 @@ export async function submitExchangeDraft(
       );
     let result: ExchangeSubmissionResult;
     if (captured.continuation) {
-      const original = ports.originalInput(captured.continuation.inputId);
-      if (!original) throw new Error("原请求已不可用，草稿已保留。");
+      const original = captured.continuationSource
+        ? undefined
+        : ports.originalInput(captured.continuation.inputId);
+      const source =
+        captured.continuationSource ??
+        (original
+          ? {
+              inputId: original.id,
+              projectId: original.projectId,
+              conversationId: discussionId(original),
+              artifactId: original.artifactId,
+              artifactRevision: original.artifactRevision,
+              targetActantId: original.targetActantId,
+            }
+          : undefined);
+      if (
+        (!source || source.inputId !== captured.continuation.inputId) &&
+        !captured.pendingSupplement
+      )
+        throw new Error("此执行的补充范围尚未确认，草稿已保留。");
       if (!capabilities.directedInput || !capabilities.runtimeConfigured)
         throw new Error("当前连接不支持定向补充，草稿已保留。");
       const command = captured.pendingSupplement ?? {
@@ -268,16 +286,16 @@ export async function submitExchangeDraft(
         operation: {
           type: "record-input" as const,
           continuation: captured.continuation,
-          projectId: original.projectId,
-          conversationId: discussionId(original),
-          artifactId: original.artifactId,
-          artifactRevision: original.artifactRevision,
+          projectId: source!.projectId,
+          conversationId: source!.conversationId,
+          artifactId: source!.artifactId,
+          artifactRevision: source!.artifactRevision,
           selection: "",
           body: captured.body,
           ...(captured.textQuotes?.length
             ? { textQuotes: captured.textQuotes }
             : {}),
-          targetActantId: original.targetActantId,
+          targetActantId: source!.targetActantId,
           ...(captured.attachments?.length
             ? { attachments: captured.attachments }
             : {}),

@@ -53,7 +53,10 @@ function render(
   client: FixedInspectionOptions["client"],
   scope: FixedInspectionOptions["scope"],
 ) {
-  let captured: ReturnType<typeof useExecutionInspection> | undefined;
+  let captured:
+    | ReturnType<typeof useExecutionInspection>
+    | ReturnType<typeof useFixedExecutionInspection>
+    | undefined;
   function Probe() {
     // Original first native-dialog ref, followed by the actual controller hook.
     const dialog = useRef<HTMLDialogElement>(null);

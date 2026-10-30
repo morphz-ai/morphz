@@ -37,6 +37,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   MessageSquare,
+  MessageSquarePlus,
   Maximize2,
   Minimize2,
   Monitor,
@@ -83,6 +84,7 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
+  mergeSchedulerCurrentAndHistory,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
@@ -97,6 +99,9 @@ import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/
 import { buildOptimisticMessageRequest, mergeConversationTimeline, reconcileOptimisticMessages } from './app/optimisticMessages'
 import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
 import { SteeringTarget } from './pages/SteeringTarget'
+import { currentQuestion, questionAnswerAccepted } from './app/userInput'
+import { UserInputDialogHost, type UserInputDialogHandle } from './components/UserInputDialogHost'
+import { UserInputPreview } from './components/UserInputPreview'
 import { ObjectiveSteeringButton } from './pages/ObjectiveSteeringButton'
 import {
   clearSessionDraft,
@@ -1033,7 +1038,7 @@ export function ConversationReadError({ message, onRetry }: { message: string; o
   )
 }
 
-type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
+type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 type SandboxModeSetting = 'workspace-write' | 'danger-full-access'
 type PermissionModeSetting = 'request_approval' | 'auto_review' | 'full_access' | 'custom'
 
@@ -1740,6 +1745,8 @@ export const ExecutionToolCalls = memo(function ExecutionToolCalls({
 })
 
 export function DialogueActivityDock({
+  onReplyQuestion,
+  acceptedQuestionObjectiveIds,
   onSteerThread,
   onSteerObjective,
   open,
@@ -1783,6 +1790,8 @@ export function DialogueActivityDock({
   onThreadControl,
   onOpenDelegationContext,
 }: {
+  onReplyQuestion?: (snapshot: SchedulerThreadSnapshot) => void
+  acceptedQuestionObjectiveIds?: ReadonlySet<string>
   onSteerThread: (snapshot: SchedulerThreadSnapshot) => void
   onSteerObjective: (objective: ObjectiveRecord) => void
   open: boolean
@@ -1975,7 +1984,7 @@ export function DialogueActivityDock({
                     <strong title={objective.stated_objective}>{objective.stated_objective}</strong>
                     <div className="objective-card-footer">
                       <code className="dialogue-objective-id" title={objective.id}>{shortId(objective.id)}</code>
-                      <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} onClick={() => onSteerObjective(objective)} />
+                      <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} replyAccepted={acceptedQuestionObjectiveIds?.has(objective.id)} onClick={() => onSteerObjective(objective)} />
                     </div>
                     {expanded && (
                       <div className="objective-card-details">
@@ -2042,7 +2051,7 @@ export function DialogueActivityDock({
                         aria-expanded={expanded}
                         onClick={() => onThreadToggle(effective.thread.id)}
                       >
-                        <span className={`activity-status ${displayState}`} title={effective.phase === 'idle' && effective.thread.lifecycle === 'open' ? t('conversation.activity.idleThreadHint') : undefined}><i />{statusLabel(displayState, t)}</span>
+                        <span className={`activity-status ${displayState}`} title={effective.phase === 'idle' && effective.thread.lifecycle === 'open' ? t('conversation.activity.idleThreadHint') : undefined}><i />{effective.thread.control_state !== 'paused' && currentQuestion(effective) ? t('work.attention.waitingUser') : statusLabel(displayState, t)}</span>
                         <span className="dialogue-thread-identity">
                           <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
                           <span className="thread-assignment" title={threadAssignment(effective)}>{threadAssignment(effective) ?? t('steering.intentUnknown')}</span>
@@ -2061,7 +2070,9 @@ export function DialogueActivityDock({
                         </span>
                         {effective.thread.lifecycle === 'open' && (
                           <div className="dialogue-thread-card-actions">
-                            {canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.intervene')} onClick={() => onSteerThread(effective)}><MessageSquare size={12} /></button>}
+                            {currentQuestion(effective)
+                              ? <UserInputPreview snapshot={effective} onReply={onReplyQuestion} />
+                              : canSteerThread(effective) && <button type="button" title={t('steering.intervene')} aria-label={t('steering.supplement')} onClick={() => onSteerThread(effective)}><MessageSquarePlus size={12} /></button>}
                             {effective.thread.control_state === 'paused' ? (
                               <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
                             ) : (
@@ -2812,6 +2823,7 @@ export const Composer = memo(function Composer({
   sessionCandidates,
   currentAgentId,
   currentContextId,
+  questionContainerRef,
 }: {
   directedCandidates: InputSelection[]
   selectionRequest: InputSelection | null
@@ -2840,6 +2852,7 @@ export const Composer = memo(function Composer({
   sessionCandidates: SessionReferenceCandidate[]
   currentAgentId: string
   currentContextId: string
+  questionContainerRef?: (node: HTMLDivElement | null) => void
 }) {
   const [initialDraft] = useState(() => readSessionDraft(
     dashboardDraftStorage(),
@@ -3081,6 +3094,7 @@ export const Composer = memo(function Composer({
 
   return (
     <div
+      id="dashboard-composer"
       className={`composer ${draggingFiles ? 'dragging-files' : ''} ${readOnly ? 'read-only' : ''} ${inputSelection ? 'has-steering' : ''}`}
       onDragEnter={event => {
         if (event.dataTransfer.types.includes('Files')) {
@@ -3100,6 +3114,7 @@ export const Composer = memo(function Composer({
         void addFiles(event.dataTransfer.files)
       }}
     >
+      <div className="question-composer-slot" ref={questionContainerRef} />
       {inputSelection && <SteeringTarget selection={inputSelection} onClear={() => { setInputSelection(undefined); setDraftClientMessageId(createDraftClientMessageId()) }} />}
       <span className="composer-prompt">›</span>
       <div className="composer-input-area">
@@ -3541,6 +3556,8 @@ export default function App() {
   const cognitiveCoordinationNetworkRef = useRef<HTMLDivElement>(null)
   const cognitiveCoordinationPopoverRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
+  const userInputDialogRef = useRef<UserInputDialogHandle>(null)
+  const [questionComposerSlot, setQuestionComposerSlot] = useState<HTMLDivElement | null>(null)
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
   const executionTargetCatalogRequestRef = useRef('')
@@ -3549,6 +3566,11 @@ export default function App() {
   const operatorReturnScopeRef = useRef<PrincipalScopeLocation | null>(null)
   const activeViewRef = useRef(view)
   const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
+  const schedulerHistoryVersionRef = useRef(0)
+  const schedulerHistoryCacheRef = useRef<{
+    contextId: string; principalId: string; limit: number; version: number; snapshot: SchedulerSnapshot
+  } | null>(null)
+  const schedulerOpenIdsRef = useRef<{ contextId: string; ids: Set<string> }>({contextId: '', ids: new Set()})
 
   useEffect(() => {
     try {
@@ -3964,6 +3986,7 @@ export default function App() {
       // Keep one window for both views; "load more" then remains stable when
       // the operator returns to Dialogue and opens Scheduler again.
       const schedulerLimit = includeTerminal ? schedulerHistoryLimitRef.current : 50
+      const readPrincipalId = principalScopeRef.current?.principal.id ?? ''
       let resolvedSchedulerSummary: SchedulerSnapshot['summary'] | null = null
       const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
         if (!isCurrentScope()) return
@@ -4015,6 +4038,32 @@ export default function App() {
         )
         applySchedulerSnapshot(scheduler)
       })
+      const activityRequest = async () => {
+        const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200`
+        const current = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
+        if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
+        const previousOpen = schedulerOpenIdsRef.current
+        const ids = new Set(current.threads.map(value => value.thread.id))
+        if (previousOpen.contextId === contextId && [...previousOpen.ids].some(id => !ids.has(id)))
+          schedulerHistoryVersionRef.current++
+        schedulerOpenIdsRef.current = {contextId, ids}
+        const cached = schedulerHistoryCacheRef.current
+        const matching = cached?.contextId === contextId && cached.principalId === readPrincipalId ? cached : null
+        applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(current, matching?.snapshot))
+        const version = schedulerHistoryVersionRef.current
+        if (matching?.limit === schedulerLimit && matching.version === version) return
+        const history = await DASHBOARD_API.get<SchedulerSnapshot>(
+          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
+        )
+        if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
+        schedulerHistoryCacheRef.current = {contextId, principalId: readPrincipalId, limit: schedulerLimit, version, snapshot: history}
+        // History can take longer than current state. Re-read the small live
+        // inventory so a late historical page never restores old approvals,
+        // terminal phase or a question that has already been answered.
+        const latest = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
+        if ((principalScopeRef.current?.principal.id ?? '') === readPrincipalId)
+          applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(latest, history))
+      }
       const requests = [
         DASHBOARD_API.tryGet<AttentionAcknowledgementsPage>(
           (() => {
@@ -4094,9 +4143,7 @@ export default function App() {
         }),
         overviewRequest,
         ...(includeTerminal
-          ? [DASHBOARD_API.get<SchedulerSnapshot>(
-              `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
-            ).then(applySchedulerSnapshot)]
+          ? [activityRequest()]
           : []),
         DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>(
           `/api/delegations?context_id=${encodeURIComponent(contextId)}&include_terminal=true&limit=200`,
@@ -4909,6 +4956,9 @@ export default function App() {
     const pendingAuthoritativeQueries = new Set<AuthoritativeQuery>()
     let disposed = false
     const scheduleAuthoritativeRefresh = (topic: string) => {
+      if (['chat/reply', 'chat/no_reply', 'chat/cancelled', 'chat/runtime_error',
+        'runtime/thread_completed', 'runtime/thread_cancelled', 'runtime/thread_failed'].includes(topic) || topic.startsWith('objective/'))
+        schedulerHistoryVersionRef.current++
       for (const query of invalidatedQueriesForTopic(topic)) {
         pendingAuthoritativeQueries.add(query)
       }
@@ -4959,6 +5009,7 @@ export default function App() {
       nextSocket.onopen = () => {
         if (disposed || socket !== nextSocket) return
         setWsStatus('connected')
+        schedulerHistoryVersionRef.current++
         void loadSession(selectedSessionId, selectedContextId)
       }
       nextSocket.onmessage = messageEvent => {
@@ -5713,9 +5764,13 @@ export default function App() {
     [toolTimeline],
   )
   const activeObjectives = objectives.filter(item => !objectiveIsTerminal(item.status))
+  const acceptedQuestionObjectiveIds = new Set(schedulerSnapshot?.objectives.filter(value =>
+    questionAnswerAccepted(value.objective.id, value.objective.generation, value.dependencies)).map(value => value.objective.id) ?? [])
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
-  const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input')
+  const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input' && !acceptedQuestionObjectiveIds.has(item.id))
+  const waitingQuestionThreads = schedulerThreads.filter(snapshot => currentQuestion(snapshot)
+    && !waitingUserObjectives.some(objective => objective.wait_condition?.request_id === snapshot.user_input_request?.request_id))
   const acknowledgedAttentionKeys = useMemo(
     () => new Set(
       attentionAcknowledgements
@@ -5947,6 +6002,7 @@ export default function App() {
     + failedSchedulerJobs.length
     + failedDeliveries.length
     + waitingUserObjectives.length
+    + waitingQuestionThreads.length
   // The header action is Runtime-wide. Its badge must use the same bounded,
   // authoritative projection as the global Overview instead of recomputing
   // the currently selected Context's Scheduler attention.
@@ -6010,7 +6066,7 @@ export default function App() {
   const composerBlockedObjectives = composerObjectives.filter(item => item.status === 'blocked')
   const composerPausedObjectives = composerObjectives.filter(item => item.status === 'paused')
   const composerWaitingUserObjectives = composerRunningObjectives
-    .filter(item => item.wait_condition?.kind === 'user_input')
+    .filter(item => item.wait_condition?.kind === 'user_input' && !acceptedQuestionObjectiveIds.has(item.id))
   const composerSchedules = composerThreads
     .flatMap(item => item.schedules)
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
@@ -6719,11 +6775,33 @@ export default function App() {
 
   const steerThread = (snapshot: SchedulerThreadSnapshot) => {
     if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
+    if (currentQuestion(snapshot)) { userInputDialogRef.current?.open(snapshot); return }
+    userInputDialogRef.current?.close()
     setSelectionRequest({ destination: threadDestination(snapshot), label: `${shortId(snapshot.thread.id)} · ${threadAssignment(snapshot) ?? t('steering.intentUnknown')}`, sessionId: snapshot.thread.session_id })
     navigate(dashboardPath('dialogue', snapshot.thread.context_id, snapshot.thread.session_id))
   }
   const steerObjective = (objective: ObjectiveRecord) => {
     if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
+    const requestId = objective.wait_condition?.kind === 'user_input' ? objective.wait_condition.request_id : undefined
+    const asking = typeof requestId === 'string' ? schedulerThreads.find(snapshot => currentQuestion(snapshot)?.request_id === requestId
+      && snapshot.thread.context_id === objective.context_id) : undefined
+    if (asking) { userInputDialogRef.current?.open(asking); return }
+    if (objective.wait_condition?.kind === 'user_input') {
+      if (acceptedQuestionObjectiveIds.has(objective.id)) return
+      const owner = schedulerSnapshot?.objectives.find(value => value.objective.id === objective.id && value.objective.generation === objective.generation)
+      const edge = owner?.dependencies.find(edge => edge.dependency_kind === 'user_input' && edge.status === 'pending'
+        && (edge.metadata as Record<string, unknown> | null)?.source === 'request_user_input')
+      if (edge) {
+        const data = edge.metadata as Record<string, unknown>
+        if (typeof data.thread_id !== 'string') { setError(t('userInput.stale')); return }
+        void DASHBOARD_API.get<ThreadDetailResponse>(`/api/contexts/${encodeURIComponent(objective.context_id)}/threads/${encodeURIComponent(data.thread_id)}`)
+          .then(detail => {
+            if (principalScopeRef.current || currentQuestion(detail.snapshot)?.request_id !== requestId) { setError(t('userInput.stale')); return }
+            userInputDialogRef.current?.open(detail.snapshot)
+          }).catch(error => setError(error instanceof Error ? error.message : String(error)))
+      } else userInputDialogRef.current?.openLegacy(objective)
+      return
+    }
     setSelectionRequest({ destination: objectiveReplyDestination(objective), label: objective.stated_objective, sessionId: objective.coordinator_session_id })
     navigate(dashboardPath('dialogue', objective.context_id, objective.coordinator_session_id))
   }
@@ -7607,8 +7685,29 @@ export default function App() {
     setEventHistoryBeforeSequence(previous)
   }
 
+  const openDelegationContext = async (delegation: DelegationRecord) => {
+    let childSession = sessions.find(session => session.id === delegation.child_session_id)
+    let childContext = contexts.find(context => context.id === delegation.child_context_id)
+    if (!childSession && !childContext) {
+      const catalog = await loadCatalog()
+      childSession = catalog?.sessions.find(session => session.id === delegation.child_session_id)
+      childContext = catalog?.contexts.find(context => context.id === delegation.child_context_id)
+    }
+    if (childSession) {
+      chooseSession(childSession)
+      return
+    }
+    if (childContext) {
+      activateContext(childContext)
+      return
+    }
+    setError(t('errors.delegationContextUnavailable'))
+  }
+
   const renderDialogueActivityDock = () => (
     <DialogueActivityDock
+      onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
+      acceptedQuestionObjectiveIds={acceptedQuestionObjectiveIds}
       onSteerThread={steerThread}
       onSteerObjective={steerObjective}
       open={dialogueActivityOpen}
@@ -7653,26 +7752,7 @@ export default function App() {
       onEditObjective={objective => void editObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
       onThreadControl={(thread, action) => void controlThread(thread, action)}
-      onOpenDelegationContext={delegation => {
-        void (async () => {
-          let childSession = sessions.find(session => session.id === delegation.child_session_id)
-          let childContext = contexts.find(context => context.id === delegation.child_context_id)
-          if (!childSession && !childContext) {
-            const catalog = await loadCatalog()
-            childSession = catalog?.sessions.find(session => session.id === delegation.child_session_id)
-            childContext = catalog?.contexts.find(context => context.id === delegation.child_context_id)
-          }
-          if (childSession) {
-            chooseSession(childSession)
-            return
-          }
-          if (childContext) {
-            activateContext(childContext)
-            return
-          }
-          setError(t('errors.delegationContextUnavailable'))
-        })()
-      }}
+      onOpenDelegationContext={delegation => void openDelegationContext(delegation)}
     />
   )
 
@@ -8913,7 +8993,7 @@ export default function App() {
               <header className="workspace-heading">
                 <div><span>{t('work.title').toUpperCase()}</span><h1>{t('work.heading')}</h1><p>{t('work.description')}</p></div>
                 <div className="workspace-actions">
-                  <button type="button" onClick={() => void loadSession(selectedSessionId, selectedContextId)}><RefreshCw size={14} /> {t('work.refresh')}</button>
+                  <button type="button" onClick={() => { schedulerHistoryVersionRef.current++; void loadSession(selectedSessionId, selectedContextId) }}><RefreshCw size={14} /> {t('work.refresh')}</button>
                   <button type="button" onClick={() => setView('dialogue')}><ArrowLeft size={14} /> {t('work.backToChat')}</button>
                 </div>
               </header>
@@ -8932,6 +9012,7 @@ export default function App() {
                   {threadDetail?.snapshot.thread.id === route.threadId ? (
                     <ThreadCausalCard
                       onSteer={steerThread}
+                      onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
                       snapshot={threadDetail.snapshot}
                       modelAttemptEvents={threadDetail.model_attempt_events}
                       liveModelAttempts={threadDetailLiveAttempts}
@@ -8969,13 +9050,18 @@ export default function App() {
                 <section className="attention-board">
                   <header><span>{t('work.attention.title').toUpperCase()}</span><b>{attentionCount}</b><small>{t('work.attention.subtitle')}</small></header>
                   <div className="attention-list">
+                    {waitingQuestionThreads.map(snapshot => <article className="attention-card user-input" key={snapshot.user_input_request!.request_id}>
+                      <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(snapshot.thread.updated_at, t)}</time></div>
+                      <h2>{threadAssignment(snapshot) ?? snapshot.thread.id}</h2>
+                      <UserInputPreview snapshot={snapshot} onReply={snapshot => userInputDialogRef.current?.open(snapshot)} />
+                    </article>)}
                     {waitingUserObjectives.map(objective => {
                       return <article className="attention-card user-input" key={`waiting-user-${objective.id}`}>
                         <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(objective.updated_at, t)}</time></div>
                         <h2>{objective.stated_objective}</h2>
                         {objective.status_reason && <p>{objective.status_reason}</p>}
                         <div className="attention-actions">
-                          <ObjectiveSteeringButton objective={objective} t={t} onClick={() => steerObjective(objective)} />
+                          <ObjectiveSteeringButton objective={objective} t={t} replyAccepted={acceptedQuestionObjectiveIds.has(objective.id)} onClick={() => steerObjective(objective)} />
                         </div>
                       </article>
                     })}
@@ -9075,8 +9161,8 @@ export default function App() {
                         </header>
                         <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
                         <div className="objective-work-input">
-                          <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} onClick={() => steerObjective(objective)} />
-                          {objective.wait_condition?.kind === 'user_input' && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
+                          <ObjectiveSteeringButton objective={objective} t={t} disabled={Boolean(busy)} replyAccepted={acceptedQuestionObjectiveIds.has(objective.id)} onClick={() => steerObjective(objective)} />
+                          {objective.wait_condition?.kind === 'user_input' && !acceptedQuestionObjectiveIds.has(objective.id) && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
                         </div>
                         {expanded && (
                           <div className="objective-work-details">
@@ -9214,6 +9300,7 @@ export default function App() {
                       {snapshots.map(snapshot => (
                         <ThreadCausalCard
                           onSteer={steerThread}
+                          onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
                           key={snapshot.thread.id}
                           snapshot={snapshot}
                           t={t}
@@ -9883,6 +9970,7 @@ export default function App() {
                   {reasoningEffortOptions.includes('low') && <option value="low">{t('reasoning.low')}</option>}
                   {reasoningEffortOptions.includes('medium') && <option value="medium">{t('reasoning.medium')}</option>}
                   {reasoningEffortOptions.includes('high') && <option value="high">{t('reasoning.high')}</option>}
+                  {reasoningEffortOptions.includes('xhigh') && <option value="xhigh">{t('reasoning.xhigh')}</option>}
                   {reasoningEffortOptions.includes('max') && <option value="max">{t('reasoning.max')}</option>}
                 </select>
               </label>
@@ -9987,6 +10075,7 @@ export default function App() {
             </div>
           </div>
           <Composer
+            questionContainerRef={setQuestionComposerSlot}
             selectionRequest={selectionRequest}
             onSelectionRequestHandled={consumeSelectionRequest}
             directedCandidates={[
@@ -10059,6 +10148,11 @@ export default function App() {
         />
       )}
       {appDialog && <AppDialog key={appDialog.id} request={appDialog} onResolve={resolveAppDialog} />}
+      <UserInputDialogHost key={`${activePrincipalId ?? ''}:${observingForeignPrincipal}`} ref={userInputDialogRef}
+        container={questionComposerSlot} onEngage={() => setView('dialogue')}
+        onRelease={() => requestAnimationFrame(() => composerInputRef.current?.focus({preventScroll:true}))}
+        principalId={activePrincipalId ?? ''} readOnly={observingForeignPrincipal || !activePrincipalId}
+        onAccepted={() => { if (selectedSessionId && selectedContextId) void loadSession(selectedSessionId, selectedContextId) }} />
     </main>
   )
 }

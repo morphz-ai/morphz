@@ -1256,6 +1256,16 @@ impl ActivationStore for PostgresStore {
                 fresh_activation: false,
             });
         }
+        if super::user_input::signal_blocked_in_tx(&mut tx, &thread, &stored_signal.event_id)
+            .await?
+        {
+            tx.commit().await?;
+            return Ok(ThreadSignalBatchClaim {
+                activation: None,
+                execution_path,
+                fresh_activation: false,
+            });
+        }
         // Preserve directed input behind the exact live/approval-parked
         // Objective owner instead of admitting and then discarding it.
         if stored_signal.kind == "chat/steering" && sqlx::query_scalar::<_, i32>(
@@ -1694,6 +1704,29 @@ impl ActivationStore for PostgresStore {
                  AND signals.thread_generation = thread.generation
                  AND thread.status = 'open'
                  AND thread.control_state = 'active'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies q
+                   WHERE q.owner_kind='thread' AND q.owner_id=thread.id AND q.owner_generation=thread.generation
+                     AND q.dependency_kind='user_input' AND q.status='pending' AND q.required
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies q JOIN scheduler_dependencies g
+                     ON g.dependency_id=q.dependency_id AND g.dependency_kind='user_input' AND g.owner_kind='objective'
+                   JOIN objectives o ON o.id=g.owner_id AND o.generation=g.owner_generation
+                   WHERE q.owner_kind='thread' AND q.owner_id=thread.id AND q.owner_generation=thread.generation
+                     AND q.dependency_kind='user_input' AND q.status='satisfied' AND g.status='pending'
+                     AND g.metadata_json ->> 'accepted_answer_event_id'=q.satisfied_by_event_id
+                     AND (signals.event_id<>q.satisfied_by_event_id OR o.active_evaluation_id IS NOT NULL OR EXISTS(SELECT 1 FROM scheduler_dependencies other_wait WHERE other_wait.owner_kind=g.owner_kind AND other_wait.owner_id=g.owner_id AND other_wait.owner_generation=g.owner_generation AND other_wait.required=TRUE AND other_wait.status='pending' AND other_wait.id<>g.id))
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1 FROM scheduler_dependencies g
+                   WHERE thread.kind='execution' AND thread.supervisor_kind='objective'
+                     AND thread.origin_evaluation_id IS NULL AND thread.parent_thread_id IS NULL
+                     AND g.owner_kind='objective' AND g.owner_id=thread.supervisor_id AND g.owner_generation=thread.supervision_generation
+                     AND g.dependency_kind='user_input' AND g.status='pending' AND g.required
+                     AND g.metadata_json ->> 'source'='request_user_input'
+                     AND (COALESCE(g.metadata_json ->> 'accepted_answer_event_id','')<>signals.event_id OR COALESCE(g.metadata_json ->> 'thread_id','')<>thread.id)
+                 )
                  AND NOT EXISTS (
                    SELECT 1 FROM objectives o
                    WHERE signals.kind = 'chat/steering'
@@ -2807,6 +2840,9 @@ impl ActivationStore for PostgresStore {
             .get("disposition")
             .and_then(JsonValue::as_str)
             .unwrap_or("deliver");
+        if disposition == crate::user_input::DISPOSITION {
+            return self.commit_user_input_request(activation_id, event).await;
+        }
         let root_turn_id = event
             .payload
             .get("root_turn_id")

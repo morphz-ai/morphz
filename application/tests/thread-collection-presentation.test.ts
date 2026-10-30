@@ -691,7 +691,7 @@ const initialThreads=${JSON.stringify([thread({ id: "parent", lifecycle: "comple
 window.morphzDesktop={application:{onStream:()=>()=>{},subscribe:async(id,scope)=>{reads.push(['subscribe',scope]);},unsubscribe:()=>{}}};
 function Frame(){const[facts,setFacts]=useState({threads:initialThreads,online:true,connected:true,available:true,truncated:false,scope:${JSON.stringify(scope)}});api=value=>setFacts(old=>({...old,...value}));
 const runtime={configured:true,connected:facts.connected,model:'',error:'',deliveries:[],messages:[],activity:{available:facts.available,truncated:facts.truncated,threads:facts.threads}};
-const client={online:facts.online,workspaceChangeRevision:0,boot:{centerId:'fixture-center',principalId:'local-owner',csrfToken:'fixture-generation',actantId:'local-human',workspace:state,runtime,outputs:[],scriptOutputs:[],localSavedInputIds:[],localInputSubmissions:{},capabilities:{teamAuthentication:true}},contentCatalog:[],contentVersionTitle:()=> '原对象',executionSnapshot:async(scope)=>{reads.push(['snapshot',scope]);return{jobs:[],approvals:[],limit:100};},executionResult:async()=>null,controlExecution:async operation=>{events.push(['control',operation]);},cancelInput:async id=>events.push(['cancel',id]),approvalSubmitted:()=>false};
+const client={online:facts.online,workspaceChangeRevision:0,boot:{centerId:'fixture-center',principalId:'local-owner',csrfToken:'fixture-generation',actantId:'local-human',workspace:state,runtime,outputs:[],scriptOutputs:[],localSavedInputIds:[],localInputSubmissions:{},capabilities:{teamAuthentication:true}},contentCatalog:[],contentVersionTitle:()=> '原对象',executionSnapshot:async(scope)=>{reads.push(['snapshot',scope]);return{jobs:[],approvals:[],limit:100};},executionResult:async()=>null,controlExecution:async operation=>{events.push(['control',operation]);},refreshView:async()=>{reads.push(['refreshView']);},cancelInput:async id=>events.push(['cancel',id]),approvalSubmitted:()=>false};
 return <main><button id="outside">原画布</button><Conversation inputs={[state.inputs[0]]} state={state} runtime={runtime} messages={[]} streamConnected={false} seenReplies={{}} onRead={()=>{}} conversationId="first-project" onRetry={async()=>{}} client={client} onOpen={()=>{}} positions={positions} revealInputId={null} onInspect={id=>events.push(['inspect',id])}/><ExecutionSidebar client={client} scope={facts.scope} layout={{mode:'docked',width:340,maxWidth:520}} onResize={()=>{}} onClose={()=>events.push(['close'])} onSelect={scope=>{events.push(['select',scope]);api({scope});}} onOpen={()=>{}} onSupplement={value=>events.push(['supplement',value])} onRefresh={async()=>events.push(['refresh'])}/></main>;}
 const root=createRoot(document.getElementById('root'));flushSync(()=>root.render(<StrictMode><Frame/></StrictMode>));
 const id=node=>{if(!node)return null;if(!nodes.has(node))nodes.set(node,++serial);return nodes.get(node);};
@@ -1067,6 +1067,11 @@ test(
       },
     ]);
     assert.equal((await snapshot()).stopDisabled, true);
+    assert.equal(
+      (await snapshot()).reads.filter((read) => read[0] === "refreshView")
+        .length,
+      1,
+    );
     assert.equal((await snapshot()).summary, "当前进度");
     await set({ threads: [], available: false });
     assert.equal((await snapshot()).summary, null);

@@ -113,7 +113,25 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
   verifyIsolation(source);
   assert.throws(() => verifyIsolation(source.replace("  source-contracts:", "  source-contracts:\n    if: github.event_name == 'push'")));
   assert.throws(() => verifyIsolation(source + "\n  linux-native-regressions:\n    steps: []\n"));
-  assert.doesNotMatch(native, /workflow_call/);
+  const ci = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  function verifyExplicitNativeOwner(owner, candidate) {
+    const entry = jobSource(owner, "native-regressions");
+    assert.match(entry, /uses: \.\/\.github\/workflows\/application-native-regressions\.yml/);
+    assert.doesNotMatch(entry, /^    if:|continue-on-error|github\.event_name|github\.ref/m);
+    assert.match(candidate, /^  workflow_call:/m);
+    for (const name of ["remaining-browser-regressions", "macos-reader-regressions",
+      "linux-native-regressions", "macos-compose-regressions"]) {
+      const job = jobSource(candidate, name);
+      assert.doesNotMatch(job, /^    if:|github\.event_name|github\.ref/m,
+        `${name}: native coverage cannot silently skip for its caller event`);
+    }
+  }
+  verifyExplicitNativeOwner(ci, native);
+  assert.throws(() => verifyExplicitNativeOwner(ci.replace(
+    "  native-regressions:\n", "  native-regressions:\n    if: github.ref == 'refs/heads/main'\n"), native));
+  assert.throws(() => verifyExplicitNativeOwner(ci, native.replace(
+    "  linux-native-regressions:\n", "  linux-native-regressions:\n    if: github.event_name == 'push'\n")));
+  assert.throws(() => verifyExplicitNativeOwner(ci, native.replace("  workflow_call:\n", "")));
   assert.match(native, /branches: \[fix\/full-application-regressions-20261021\]/);
   const job = jobSource(native, "linux-native-regressions");
   assert.ok(job.indexOf("node node_modules/electron/install.js") < job.indexOf("xvfb-run -a npm test"));

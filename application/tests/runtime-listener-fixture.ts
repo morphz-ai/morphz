@@ -1,4 +1,19 @@
 import assert from "node:assert/strict";
+import { type ChildProcess } from "node:child_process";
+
+/** Only a ChildProcess created by the isolated fixture may be passed here.
+ * A signal exit leaves exitCode null forever; it is already finished. */
+export async function stopRuntimeFixtureChild(child: ChildProcess | undefined) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<void>((done) => child.once("exit", () => done()));
+  child.kill("SIGTERM");
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
+    await exited;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Only the canonical Runtime's structured bound-listener diagnostic is
  * startup authority. A configured :0, human log, model text or other target

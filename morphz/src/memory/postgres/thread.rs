@@ -1104,6 +1104,10 @@ impl ThreadStore for PostgresStore {
         let expected_revision = i64::try_from(expected_revision)?;
         if action == ThreadControlAction::Cancel {
             let mut tx = self.pool.begin().await?;
+            // Match question/Goal lock ordering, including an asking prelude
+            // that owns an Evaluation without direct Thread supervision.
+            sqlx::query("SELECT o.id FROM objectives o WHERE o.id IN (SELECT t.supervisor_id FROM threads t WHERE t.id=$1 AND t.supervisor_kind='objective' UNION SELECT d.owner_id FROM scheduler_dependencies d JOIN threads t ON t.id=$1 AND (d.metadata_json ->> 'thread_generation')::bigint=t.generation WHERE d.owner_kind='objective' AND d.dependency_kind='user_input' AND d.status='pending' AND d.metadata_json ->> 'source'='request_user_input' AND d.metadata_json ->> 'thread_id'=t.id) ORDER BY o.id FOR UPDATE OF o")
+                .bind(id).fetch_all(&mut *tx).await?;
             let row = sqlx::query("SELECT * FROM threads WHERE id = $1 FOR UPDATE")
                 .bind(id)
                 .fetch_optional(&mut *tx)
@@ -1217,6 +1221,7 @@ impl ThreadStore for PostgresStore {
             .bind(&current.id)
             .execute(&mut *tx)
             .await?;
+            super::user_input::cancel_thread_question_barriers(&mut tx, &current, &now).await?;
             sqlx::query(
                 r#"UPDATE scheduler_dependencies
                    SET status = 'cancelled', updated_at = $1

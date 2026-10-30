@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, GitBranch, KeyRound, Layers3, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
+import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, GitBranch, KeyRound, Layers3, LoaderCircle, MessageSquarePlus, Pause, Play, Radio, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
 import type {
@@ -14,6 +14,8 @@ import type {
 import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } from '../app/presentation'
 import { canSteerThread, threadAssignment } from '../app/steering'
 import { copyTextToClipboard } from '../utils/clipboard'
+import { currentQuestion } from '../app/userInput'
+import { observeSupplementAttention } from '../components/supplement-attention'
 
 function modelAttemptActivationId(event: ThreadDetailResponse['model_attempt_events'][number]) {
   return typeof event.payload.activation_id === 'string' ? event.payload.activation_id : ''
@@ -216,6 +218,7 @@ export function ThreadCausalCard({
   onSchedule,
   onThreadControl,
   onSteer,
+  onReplyQuestion,
   selectedSupervisorId,
   onSupervisorFilter,
   onInspect,
@@ -232,6 +235,7 @@ export function ThreadCausalCard({
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
   onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => void
   onSteer?: (snapshot: SchedulerThreadSnapshot) => void
+  onReplyQuestion?: (snapshot: SchedulerThreadSnapshot) => void
   selectedSupervisorId?: string
   onSupervisorFilter?: (supervisorId: string) => void
   onInspect?: (threadId: string) => void
@@ -261,7 +265,7 @@ export function ThreadCausalCard({
   return (
     <details className={`causal-thread ${displayPhase}`} open={active}>
       <summary>
-        <span className={`status-pill ${displayPhase}`}>{statusLabel(displayPhase, t)}</span>
+        <span className={`status-pill ${displayPhase}`}>{thread.control_state !== 'paused' && currentQuestion(snapshot) ? t('work.attention.waitingUser') : statusLabel(displayPhase, t)}</span>
         <div>
           <strong>{threadKindLabel(thread.kind, t)}</strong>
           <span className="thread-assignment" title={threadAssignment(snapshot)}>{threadAssignment(snapshot) ?? t('steering.intentUnknown')}</span>
@@ -294,7 +298,7 @@ export function ThreadCausalCard({
         </section>
         <div className="causal-thread-actions">
           <button type="button" title={thread.id} onClick={() => { void copyTextToClipboard(thread.id).catch(() => window.prompt(t('steering.copyId'), thread.id)) }}>{t('steering.copyId')}</button>
-          {onSteer && canSteerThread(snapshot) && <button type="button" onClick={() => onSteer(snapshot)}>{t('steering.intervene')}</button>}
+          {onSteer && canSteerThread(snapshot) && <button type="button" className={currentQuestion(snapshot) ? 'needs-input' : undefined} ref={currentQuestion(snapshot) ? observeSupplementAttention : undefined} onClick={() => currentQuestion(snapshot) && onReplyQuestion ? onReplyQuestion(snapshot) : onSteer(snapshot)}><MessageSquarePlus size={13}/>{t('steering.supplement')}</button>}
           {onInspect && <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>}
           {onSupervisorFilter && thread.supervision.supervisor_id && (
             <button

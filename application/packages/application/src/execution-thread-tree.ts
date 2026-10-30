@@ -4,6 +4,7 @@ import { DomainError } from "../../core/src/model.js";
 import { jobSchema, type ExecutionThread } from "../../core/src/execution.js";
 import type { RuntimeRequest } from "./execution.js";
 import { activityAnnotationFields } from "./response-annotations.js";
+import { pendingUserInputRequestSchema } from "../../core/src/user-input.js";
 
 export const runtimeExecutionRecordsSchema = z.object({
   session_id: z.string().min(1),
@@ -32,6 +33,7 @@ export const runtimeExecutionRecordsSchema = z.object({
         updated_at: z.string(),
         intent: z.string().nullable(),
         response_annotations: z.unknown().optional(),
+        user_input_request: pendingUserInputRequestSchema.nullish(),
         execution_model: executionModelSchema.nullish(),
       }),
     )
@@ -53,6 +55,13 @@ export function executionRecordThread(
     parentThreadId: t.parent_thread_id,
     title: annotation?.title ?? t.intent?.trim() ?? "",
     ...(t.execution_model ? { executionModel: t.execution_model } : {}),
+    ...(t.user_input_request &&
+    t.user_input_request.thread_id === t.id &&
+    t.user_input_request.thread_generation === t.generation &&
+    t.user_input_request.session_id === t.session_id &&
+    t.user_input_request.context_id === t.context_id
+      ? { userInputRequest: t.user_input_request, waitKinds: ["user_input"] }
+      : {}),
     ...(annotation?.summary ? { summary: annotation.summary } : {}),
     phase: t.phase,
     lifecycle: t.lifecycle,

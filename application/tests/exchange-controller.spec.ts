@@ -20,7 +20,7 @@ let controller, current, generation, showCount = 0;
 let control;
 let savedReceipt;
 function Fixture() {
-  const [model, setModel] = useState({ exchangeKey: 'surface-A', contextKey: 'conversation-A:object-A', conversationId: 'conversation-A', dialogueCanvas: false, sending: false, suspended: false, sequence: 0 });
+  const [model, setModel] = useState({ exchangeKey: 'surface-A', contextKey: 'conversation-A:object-A', conversationId: 'conversation-A', dialogueCanvas: false, sending: false, suspended: false, holdInput: false, sequence: 0 });
   const [preferences, setPreferences] = useState({ interactions: { 'surface-A': 'input', 'surface-B': 'input' }, pinnedInputs: { 'surface-A': true, 'surface-B': true }, pinnedHistories: { 'surface-A': false, 'surface-B': false }, exchangeHeights: { 'surface-A': 250, 'surface-B': 180 } });
   const input = useRef(null), exchange = useRef(null), toggle = useRef(null), navigationGeneration = useRef(1);
   generation = navigationGeneration;
@@ -60,6 +60,7 @@ function Fixture() {
     else if (name === 'show-navigate') { controller.showInput(); navigationGeneration.current++; update(value); }
     else if (name === 'dialogue') update({ dialogueCanvas: value });
     else if (name === 'suspend') update({ suspended: value });
+    else if (name === 'hold-input') update({ holdInput: value });
     else if (name === 'pulse') update({});
     else if (name === 'clear-log') { writes.length = 0; events.length = 0; }
     else throw new Error('Unknown fixture action: ' + name);
@@ -72,7 +73,7 @@ function Fixture() {
       <div className="exchange-panel" data-open={controller.inputVisible || controller.conversationVisible || undefined}>
         {!model.dialogueCanvas && (controller.inputVisible || controller.conversationVisible) && <ExchangeControls inputVisible={controller.inputVisible} conversationVisible={controller.conversationVisible} readingSelected={controller.view !== 'input'} historyVisible={controller.historyVisible} pinned={controller.inputPinned} historyPinned={controller.historyPinned} unread={false} onInteraction={controller.setInteraction} onPin={controller.toggleInputPin} onHistoryPin={controller.toggleHistoryPin} onHide={controller.hideInput}/>}
         {controller.conversationVisible && <div id="reading">Reading</div>}
-        {controller.inputVisible && <div id="global-composer"><textarea id="input" ref={input} disabled={model.sending} defaultValue="untouched draft" onFocus={() => events.push('input:focus')}/><button id="inside">Input tool</button></div>}
+        {controller.inputVisible && !model.holdInput && <div id="global-composer"><textarea id="input" ref={input} disabled={model.sending} defaultValue="untouched draft" onFocus={() => events.push('input:focus')}/><button id="inside">Input tool</button></div>}
       </div>
     </div>
   </div>;
@@ -296,6 +297,33 @@ scenario(
       "input:focus",
       "inspector",
     ]);
+  },
+);
+scenario(
+  "named intent survives painted frames and intermediate commits until the exact conversation input mounts",
+  async (page) => {
+    await page.locator("#outside").focus();
+    await run(page, "hold-input", true);
+    await run(page, "named-focus", "conversation-B");
+    await frames(page);
+    await run(page, "pulse");
+    await run(page, "resolve-named", "conversation-C");
+    await frames(page);
+    assert.equal((await report(page)).active, "outside");
+    await run(page, "resolve-named", "conversation-B");
+    await frames(page);
+    await run(page, "pulse");
+    assert.equal((await report(page)).active, "outside");
+    await expect(page.locator("#input")).toHaveCount(0);
+    await run(page, "clear-log");
+    await run(page, "hold-input", false);
+    await expect(page.locator("#input")).toBeFocused();
+    assert.deepEqual((await report(page)).events, ["input:focus"]);
+    await page.locator("#outside").focus();
+    await run(page, "pulse");
+    await frames(page);
+    assert.equal((await report(page)).active, "outside");
+    assert.deepEqual((await report(page)).events, ["input:focus"]);
   },
 );
 scenario(

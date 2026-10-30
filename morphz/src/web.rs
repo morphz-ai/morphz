@@ -465,6 +465,7 @@ struct PutProviderAccountModelsRequest {
 #[derive(serde::Deserialize)]
 struct ProviderAccountModelSelection {
     id: String,
+    supported_reasoning_efforts: Option<Vec<ReasoningEffort>>,
     alias: Option<String>,
     prompt_cache_strategy: Option<crate::config::PromptCacheStrategy>,
     context_window_tokens: Option<usize>,
@@ -1803,14 +1804,31 @@ fn configured_dashboard_base_path() -> Result<String, std::io::Error> {
 }
 
 fn dashboard_index_html(base_path: &str) -> String {
+    // Keep the embedded filenames stable, but never reuse the browser URL for
+    // changed bytes. A pre-update stylesheet can otherwise outlive its HTML
+    // and leave newly shipped controls completely unstyled.
+    static ASSET_URLS: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    let (script_url, style_url) = ASSET_URLS.get_or_init(|| {
+        (
+            dashboard_asset_url("app.js", DASHBOARD_APP_JS),
+            dashboard_asset_url("app.css", DASHBOARD_APP_CSS),
+        )
+    });
     let index =
         std::str::from_utf8(DASHBOARD_INDEX).expect("embedded Dashboard index must be valid UTF-8");
+    let index = index
+        .replace("./assets/app.js", script_url)
+        .replace("./assets/app.css", style_url);
     let replacement = format!("<base href=\"{base_path}\">");
     if index.contains("<base href=\"/\">") {
         index.replacen("<base href=\"/\">", &replacement, 1)
     } else {
         index.replacen("<base href=\"/\" />", &replacement, 1)
     }
+}
+
+fn dashboard_asset_url(name: &str, bytes: &[u8]) -> String {
+    format!("./assets/{name}?v={:x}", Sha256::digest(bytes))
 }
 
 async fn handle_dashboard_index() -> Response {
@@ -2773,6 +2791,7 @@ async fn handle_put_provider_account_models(
         models.insert(
             id,
             ProviderModelConfig {
+                supported_reasoning_efforts: selection.supported_reasoning_efforts,
                 prompt_cache_strategy,
                 context_window_tokens: selection.context_window_tokens,
                 max_input_tokens: selection.max_input_tokens,
@@ -3728,12 +3747,10 @@ async fn handle_update_inference(
         Some(value) if value.is_empty() || value.eq_ignore_ascii_case("default") => None,
         Some(value) => match ReasoningEffort::parse(value) {
             Some(effort) => Some(effort),
-            None => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    "reasoning_effort supports only default, none, low, medium, high, or max",
-                )
-            }
+            None => return error_response(
+                StatusCode::BAD_REQUEST,
+                "reasoning_effort supports only default, none, low, medium, high, xhigh, or max",
+            ),
         },
     };
     if let Some(effort) = effort {
@@ -3741,7 +3758,9 @@ async fn handle_update_inference(
             if option
                 .supported_reasoning_efforts
                 .as_ref()
-                .is_some_and(|supported| !supported.iter().any(|level| level == effort.as_str()))
+                .map_or(effort == ReasoningEffort::XHigh, |supported| {
+                    !supported.iter().any(|level| level == effort.as_str())
+                })
             {
                 let supported = option
                     .supported_reasoning_efforts
@@ -8177,6 +8196,9 @@ async fn handle_update_session(
                         ),
                     );
                 }
+            } else if reasoning == "xhigh" {
+                return error_response(StatusCode::BAD_REQUEST,
+                    format!("reasoning effort 'xhigh' is not declared supported by model '{effective_model}'"));
             }
         }
     }
@@ -12288,6 +12310,20 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_asset_urls_follow_bytes_and_preserve_deployment_prefix() {
+        let first = dashboard_asset_url("app.css", b"first stylesheet");
+        assert_eq!(first, dashboard_asset_url("app.css", b"first stylesheet"));
+        assert_ne!(first, dashboard_asset_url("app.css", b"changed stylesheet"));
+        assert_ne!(first, dashboard_asset_url("app.js", b"first stylesheet"));
+        let index = dashboard_index_html("/console/");
+        assert!(index.contains("<base href=\"/console/\">"));
+        assert!(index.contains(&dashboard_asset_url("app.css", DASHBOARD_APP_CSS)));
+        assert!(index.contains(&dashboard_asset_url("app.js", DASHBOARD_APP_JS)));
+        assert!(!index.contains("href=\"./assets/app.css\""));
+        assert!(!index.contains("src=\"./assets/app.js\""));
+    }
+
+    #[test]
     fn dashboard_base_path_is_normalized_and_injected_into_embedded_html() {
         assert_eq!(normalize_dashboard_base_path("").unwrap(), "/");
         assert_eq!(
@@ -15585,6 +15621,10 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    supported_reasoning_efforts: Some(vec![
+                        ReasoningEffort::High,
+                        ReasoningEffort::XHigh,
+                    ]),
                     prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: None,
@@ -15602,6 +15642,17 @@ mod tests {
         assert_eq!(saved.status(), StatusCode::OK);
 
         let after_enablement = runtime.inference_model_options().await.unwrap();
+        assert_eq!(
+            after_enablement
+                .iter()
+                .find(|option| option
+                    .physical_models
+                    .iter()
+                    .any(|model| model == "physical-subscription-model"))
+                .unwrap()
+                .supported_reasoning_efforts,
+            Some(vec!["high".to_string(), "xhigh".to_string()]),
+        );
         let physical = after_enablement
             .iter()
             .find(|option| option.label == "physical-subscription-model")
@@ -15619,6 +15670,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    supported_reasoning_efforts: None,
                     prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: Some("fast-subscription".to_string()),
@@ -15670,6 +15722,7 @@ mod tests {
             Query(AuthQuery::default()),
             Json(PutProviderAccountModelsRequest {
                 models: vec![ProviderAccountModelSelection {
+                    supported_reasoning_efforts: None,
                     prompt_cache_strategy: None,
                     id: "physical-subscription-model".to_string(),
                     alias: None,
@@ -16945,6 +16998,7 @@ account = "xai-account"
             Json(PutProviderAccountModelsRequest {
                 models: vec![
                     ProviderAccountModelSelection {
+                        supported_reasoning_efforts: None,
                         prompt_cache_strategy: None,
                         id: "model-a".to_string(),
                         alias: Some("primary-local".to_string()),
@@ -16956,6 +17010,7 @@ account = "xai-account"
                         max_input_attachment_total_bytes: Some(192 * 1024 * 1024),
                     },
                     ProviderAccountModelSelection {
+                        supported_reasoning_efforts: None,
                         prompt_cache_strategy: None,
                         id: "model-b".to_string(),
                         alias: None,

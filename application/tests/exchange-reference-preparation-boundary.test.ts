@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import {
   isCallExpression,
   isVariableDeclaration,
@@ -194,8 +195,8 @@ test("preparation hooks retain complete original state stable setter effect only
     app,
     changed(
       owner,
-      "    scheduleSearchQuoteFocus(): void;",
-      "    scheduleSearchQuoteFocus(): Promise<void>;",
+      "    scheduleSearchQuoteFocus(id: string, generation: number): void;",
+      "    scheduleSearchQuoteFocus(id: string, generation: number): Promise<void>;",
     ),
     /exact preparation scope focus render and authority port types/,
   );
@@ -262,7 +263,7 @@ test("search preparation retains void Promise bridge exact generation target key
       "generation === navigationGeneration.current",
     ],
     [
-      'const key = conversationKey(projectId) + ":" + id;',
+      'const key = quoteConversationId + ":" + id;',
       'const key = conversationId + ":" + id;',
     ],
     ["...(drafts[key] ?? emptyDraft),", "...draft,"],
@@ -275,8 +276,20 @@ test("search preparation retains void Promise bridge exact generation target key
       "    return openObject(\n      projectId,",
     ],
     [
-      '      setInteraction("recent");\n      scheduleSearchQuoteFocus();',
+      '      setInteraction("recent");\n      scheduleSearchQuoteFocus(quoteConversationId, generation);',
       '      setInteraction("recent");\n      scheduleCommentComposerFocus();',
+    ],
+    [
+      "const quoteConversationId = conversationKey(projectId);",
+      "const quoteConversationId = conversationId;",
+    ],
+    [
+      "scheduleSearchQuoteFocus(quoteConversationId, generation);",
+      "scheduleSearchQuoteFocus(conversationId, generation);",
+    ],
+    [
+      "scheduleSearchQuoteFocus(quoteConversationId, generation);",
+      "scheduleSearchQuoteFocus(quoteConversationId, navigationGeneration.current);",
     ],
   ])
     rejected(
@@ -415,22 +428,46 @@ test("actual factory borrows the captured original fields and conversation funct
     owner,
     /complete preparation captured render fields scope and distinct lazy focus ports/,
   );
-  const searchPort = `scheduleSearchQuoteFocus: () =>
-        requestAnimationFrame(() => {
-          if (!exchange.current?.contains(document.activeElement))
-            input.current?.focus();
-        })`;
-  const commentPort = `scheduleCommentComposerFocus: () =>
-        requestAnimationFrame(() =>
-          input.current?.focus({ preventScroll: true }),
-        )`;
+  const searchPort = `scheduleSearchQuoteFocus: (id, generation) => {
+        if (!exchange.current?.contains(document.activeElement))
+          requestConversationFocus(id, generation);
+      }`;
   rejected(
     changed(
       app,
       searchPort,
       searchPort.replace(
-        searchPort.slice(searchPort.indexOf("requestAnimationFrame")),
-        commentPort.slice(commentPort.indexOf("requestAnimationFrame")),
+        "requestConversationFocus(id, generation);",
+        "input.current?.focus();",
+      ),
+    ),
+    owner,
+    /complete preparation captured render fields scope and distinct lazy focus ports/,
+  );
+  for (const replacement of [
+    "requestConversationFocus(conversationId, generation);",
+    "requestConversationFocus(id, navigationGeneration.current);",
+    "requestAnimationFrame(() => input.current?.focus());",
+  ])
+    rejected(
+      changed(
+        app,
+        searchPort,
+        searchPort.replace(
+          "requestConversationFocus(id, generation);",
+          replacement,
+        ),
+      ),
+      owner,
+      /complete preparation captured render fields scope and distinct lazy focus ports/,
+    );
+  rejected(
+    changed(
+      app,
+      searchPort,
+      searchPort.replace(
+        "if (!exchange.current?.contains(document.activeElement))\n          ",
+        "",
       ),
     ),
     owner,
@@ -454,6 +491,39 @@ test("actual factory borrows the captured original fields and conversation funct
     ),
     /inert preparation construction exact borrowed captures and eight direct returns/,
   );
+});
+test("actual Host search focus port queues the exact scope and generation without requiring a mounted input or an animation frame", () => {
+  const matches = [
+    ...app.matchAll(
+      /scheduleSearchQuoteFocus: (\(id, generation\) => \{[\s\S]*?\n      \}),\n      scheduleCommentComposerFocus:/g,
+    ),
+  ];
+  assert.equal(matches.length, 1, "one actual Host search focus port");
+  const queued: [string, number][] = [];
+  const inside = {};
+  const document = { activeElement: {} };
+  const exchange: {
+    current: { contains(element: unknown): boolean } | null;
+  } = { current: { contains: (element) => element === inside } };
+  // Deliberately provide neither input nor requestAnimationFrame. Scheduling is
+  // owned by the existing commit-time controller, not a single painted frame.
+  const focus = runInNewContext(`(${matches[0]![1]})`, {
+    document,
+    exchange,
+    requestConversationFocus: (id: string, generation: number) =>
+      queued.push([id, generation]),
+  }) as (id: string, generation: number) => void;
+  focus("target-conversation", 7);
+  assert.deepEqual(queued, [["target-conversation", 7]]);
+  document.activeElement = inside;
+  focus("must-not-steal-existing-input", 8);
+  assert.equal(queued.length, 1);
+  exchange.current = null;
+  focus("not-yet-mounted-conversation", 9);
+  assert.deepEqual(queued, [
+    ["target-conversation", 7],
+    ["not-yet-mounted-conversation", 9],
+  ]);
 });
 test("four actual consumers are sole direct returned symbols and retain full original tree keys guards and captured neighboring callbacks", () => {
   rejected(

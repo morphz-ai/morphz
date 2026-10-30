@@ -1,0 +1,34 @@
+{
+  "kind": "completed-historical-compiled-host-equivalence",
+  "archivedAt": "2026-10-26",
+  "historicalAcceptanceDate": "2026-10-04",
+  "archivedFromCommit": "de0954fed05e368e25b7be6a4be9d618f7bca541",
+  "includedInDailyCi": false,
+  "historicalEvidence": "application/docs/13-implementation-status.md: 2026-10-04 frontend refactoring stages twelve, thirteen and fourteen",
+  "scope": "One-time comparisons of the saved pre-refactor compiled Host and its matching refactor candidate, not requirements that the current product retain historical pixels or APIs.",
+  "preservation": "Archived scripts are byte-for-byte copies. Their original relative imports and assertions remain unchanged. Current regression tests, frozen algorithm fixtures and the shared paint comparator stay in application/tests.",
+  "replayRequirements": "Restore the script to its original path in a matching historical checkout and supply the original baseline build, candidate manifest and matching Host/API. Do not run against today's product or substitute current assets as a historical baseline.",
+  "scripts": [
+    {
+      "file": "exchange-frame-equivalence.spec.ts",
+      "originalPath": "application/tests/exchange-frame-equivalence.spec.ts",
+      "baselineCommit": "b9906e0cf7d62715834424c22b102905a8f1c05a",
+      "historicalPassedCases": 14,
+      "sha256": "46c479ee0e6ac6ac7c80d1166305ae2aabb82f67aed0deb7e7d979ed2be063c5"
+    },
+    {
+      "file": "subject-inspector-equivalence.spec.ts",
+      "originalPath": "application/tests/subject-inspector-equivalence.spec.ts",
+      "baselineCommit": "85a50934d3c80920b78ce659a065adcddaa46ae0",
+      "historicalPassedCases": 4,
+      "sha256": "a2520e61a1618d2d5c30737977651d8017d81c8dcc5239e7bcd8f40495beb397"
+    },
+    {
+      "file": "script-editor-reads-equivalence.spec.ts",
+      "originalPath": "application/tests/script-editor-reads-equivalence.spec.ts",
+      "baselineCommit": "4ce98b6454d2028369d3c8f08d885bf1e1f13a04",
+      "historicalPassedCases": 2,
+      "sha256": "a40b05150768d2198efd0fb279e05d64b7211ef1858588cc47238656908a5018"
+    }
+  ]
+}

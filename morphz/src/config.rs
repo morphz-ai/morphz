@@ -659,7 +659,7 @@ where
     }
     ReasoningEffort::parse(value).map(Some).ok_or_else(|| {
         serde::de::Error::custom(
-            "reasoning_effort supports only default, none, low, medium, high, or max",
+            "reasoning_effort supports only default, none, low, medium, high, xhigh, or max",
         )
     })
 }
@@ -1075,6 +1075,11 @@ pub struct CredentialConfig {
 pub struct ProviderConfig {
     pub protocol: ModelProtocol,
     pub base_url: String,
+    /// Physical OpenAI Chat endpoint dialect, independent of the model name.
+    /// None uses the official endpoint default (DeepSeek: max_tokens; other
+    /// endpoints: max_completion_tokens). Compatible gateways can override it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_token_limit_parameter: Option<ChatTokenLimitParameter>,
     pub credential: Option<String>,
     /// Operator-declared physical capabilities keyed by the exact model name
     /// accepted by this Provider endpoint. Morphz never probes a remote model
@@ -1097,12 +1102,23 @@ pub struct ProviderInstanceConfig {
     pub adapter: String,
     pub protocol: ModelProtocol,
     pub base_url: String,
+    /// Same transport capability as ProviderConfig; never inferred from a
+    /// routed model alias. Ignored by non-Chat protocols.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_token_limit_parameter: Option<ChatTokenLimitParameter>,
     /// Ordered account pool. Dynamic health/cooldown state is Runtime data and
     /// therefore never written back into this static configuration.
     pub accounts: Vec<String>,
     pub models: BTreeMap<String, ProviderModelConfig>,
     pub headers: BTreeMap<String, String>,
     pub env_headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatTokenLimitParameter {
+    MaxTokens,
+    MaxCompletionTokens,
 }
 
 /// Non-secret catalog metadata for one independently schedulable login.
@@ -1274,6 +1290,11 @@ impl<'de> Deserialize<'de> for ModelRouteConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderModelConfig {
+    /// Native, distinct reasoning levels for this exact endpoint/model pair.
+    /// None leaves capability knowledge unspecified; [] explicitly disables
+    /// the dial. This is endpoint metadata, never a task's selected effort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supported_reasoning_efforts: Option<Vec<ReasoningEffort>>,
     /// Physical prompt-cache capability for this exact Provider/model pair.
     pub prompt_cache_strategy: PromptCacheStrategy,
     /// Total model context window, including input and generated output.
@@ -1283,7 +1304,8 @@ pub struct ProviderModelConfig {
     /// than deriving a ceiling from `context_window_tokens`.
     #[serde(deserialize_with = "deserialize_optional_positive_usize")]
     pub max_input_tokens: Option<usize>,
-    /// Output allowance reserved when deriving the physical prompt ceiling.
+    /// Per-model output allowance sent unless llm.max_output_tokens overrides
+    /// it, and reserved when deriving the physical prompt ceiling.
     #[serde(deserialize_with = "deserialize_optional_positive_usize")]
     pub max_output_tokens: Option<usize>,
     /// Exact maximum attachment count declared by this Provider/model. `None`
@@ -1300,13 +1322,29 @@ pub struct ProviderModelConfig {
 
 impl ProviderModelConfig {
     pub fn prompt_token_limit(&self) -> Option<usize> {
-        self.max_input_tokens.or_else(|| {
-            self.context_window_tokens.and_then(|window| {
-                window
-                    .checked_sub(self.max_output_tokens.unwrap_or_default())
-                    .filter(|limit| *limit > 0)
-            })
-        })
+        self.prompt_token_limit_for_request(None)
+    }
+
+    /// Request serialization and Context admission must reserve the same output
+    /// allowance. An explicit request setting overrides the per-model default.
+    pub fn output_token_budget(&self, request_limit: Option<u32>) -> Option<usize> {
+        request_limit
+            .map(|limit| limit as usize)
+            .or(self.max_output_tokens)
+    }
+
+    pub fn prompt_token_limit_for_request(&self, request_limit: Option<u32>) -> Option<usize> {
+        let window_input_limit = self.context_window_tokens.and_then(|window| {
+            window
+                .checked_sub(self.output_token_budget(request_limit).unwrap_or_default())
+                .filter(|limit| *limit > 0)
+        });
+        match (self.max_input_tokens, window_input_limit) {
+            (Some(input), Some(window)) => Some(input.min(window)),
+            (Some(input), None) if self.context_window_tokens.is_none() => Some(input),
+            (None, window) => window,
+            _ => None,
+        }
     }
 
     pub fn model_input_limits(&self) -> ModelInputLimits {
@@ -3845,7 +3883,7 @@ impl AppConfig {
             } else {
                 Some(ReasoningEffort::parse(value).ok_or_else(|| {
                     format!(
-                        "MORPHZ_LLM_REASONING_EFFORT supports only default, none, low, medium, high, and max: {value}"
+                        "MORPHZ_LLM_REASONING_EFFORT supports only default, none, low, medium, high, xhigh, and max: {value}"
                     )
                 })?)
             };
@@ -4873,7 +4911,9 @@ mod tests {
         assert_eq!(max.llm.reasoning_effort, Some(ReasoningEffort::Max));
         let default = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='default'\n").unwrap();
         assert_eq!(default.llm.reasoning_effort, None);
-        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").is_err());
+        let xhigh = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").unwrap();
+        assert_eq!(xhigh.llm.reasoning_effort, Some(ReasoningEffort::XHigh));
+        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='unknown'\n").is_err());
     }
 
     #[test]
@@ -5126,6 +5166,31 @@ max_input_tokens = 0
             ..ProviderModelConfig::default()
         };
         assert_eq!(profile.prompt_token_limit(), None);
+    }
+
+    #[test]
+    fn physical_output_budget_uses_request_override_and_respects_both_input_ceilings() {
+        let profile = ProviderModelConfig {
+            context_window_tokens: Some(262_144),
+            max_input_tokens: Some(250_000),
+            max_output_tokens: Some(131_072),
+            ..ProviderModelConfig::default()
+        };
+        assert_eq!(profile.prompt_token_limit(), Some(131_072));
+        assert_eq!(
+            profile.prompt_token_limit_for_request(Some(32_768)),
+            Some(229_376)
+        );
+        assert_eq!(profile.output_token_budget(Some(32_768)), Some(32_768));
+        assert_eq!(profile.prompt_token_limit_for_request(Some(262_144)), None);
+        let input_only = ProviderModelConfig {
+            max_input_tokens: Some(100_000),
+            ..ProviderModelConfig::default()
+        };
+        assert_eq!(
+            input_only.prompt_token_limit_for_request(Some(32_768)),
+            Some(100_000)
+        );
     }
 
     #[test]

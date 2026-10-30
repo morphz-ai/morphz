@@ -1,13 +1,16 @@
 use crate::approval::{
+    approved_capability_lease_duration, bind_capability_lease_duration,
     capability_lease_policy_digest, capability_lease_scope_risk_tag, reusable_capabilities,
-    AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, ApprovalRequest, ApprovalScope,
-    CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
-    CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
+    without_capability_lease_authority, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
+    ApprovalRequest, ApprovalScope, CapabilityLeaseOffer, HumanApprovalHub, HumanApprovalProvider,
+    PendingHumanApproval, CAPABILITY_LEASE_APPROVED_RISK_TAG,
+    CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 
 mod execution_model;
 mod execution_records;
 mod execution_workspace;
+mod user_input;
 pub use execution_workspace::{ExecutionWorkspaceFile, ExecutionWorkspaceRead};
 mod response_annotation_projection;
 mod session_approval;
@@ -92,10 +95,7 @@ use crate::provider::control::{
     ProviderAccountControlAction, ProviderAccountControlRecord, ProviderControlSnapshot,
 };
 use crate::provider::routing::EffectiveProviderCatalog;
-use crate::provider::{
-    build_configured_client, normalize_reasoning_effort_for_model,
-    supported_reasoning_efforts_for_model,
-};
+use crate::provider::{build_configured_client, normalize_reasoning_effort_for_model};
 use crate::scheduler::{
     audit_scheduler_invariants, derive_objective_readiness, KernelResult,
     SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
@@ -193,7 +193,9 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
                 .map(|(_, profile)| {
                     profile
                         .as_ref()
-                        .and_then(crate::config::ProviderModelConfig::prompt_token_limit)
+                        .and_then(|profile| {
+                            profile.prompt_token_limit_for_request(config.llm.max_output_tokens)
+                        })
                         .unwrap_or(fallback)
                 })
                 .min()
@@ -212,14 +214,18 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
                 .map(|(_, profile)| {
                     profile
                         .as_ref()
-                        .and_then(|profile| profile.max_output_tokens)
+                        .and_then(|profile| {
+                            profile.output_token_budget(config.llm.max_output_tokens)
+                        })
                         .or(config.llm.max_output_tokens.map(|value| value as usize))
                 })
                 .collect::<Option<Vec<_>>>();
             let configured = candidates.iter().any(|(_, profile)| {
                 profile
                     .as_ref()
-                    .and_then(crate::config::ProviderModelConfig::prompt_token_limit)
+                    .and_then(|profile| {
+                        profile.prompt_token_limit_for_request(config.llm.max_output_tokens)
+                    })
                     .is_some()
             });
             (
@@ -234,14 +240,15 @@ fn resolve_model_context_capacity(config: &AppConfig, model: &str) -> ModelConte
                 },
             )
         } else {
-            let configured_prompt_token_limit =
-                legacy_profile.and_then(crate::config::ProviderModelConfig::prompt_token_limit);
+            let configured_prompt_token_limit = legacy_profile.and_then(|profile| {
+                profile.prompt_token_limit_for_request(config.llm.max_output_tokens)
+            });
             (
                 legacy_provider_id,
                 configured_prompt_token_limit.unwrap_or(fallback).max(1),
                 legacy_profile.and_then(|profile| profile.context_window_tokens),
                 legacy_profile
-                    .and_then(|profile| profile.max_output_tokens)
+                    .and_then(|profile| profile.output_token_budget(config.llm.max_output_tokens))
                     .or(config.llm.max_output_tokens.map(|value| value as usize)),
                 if configured_prompt_token_limit.is_some() {
                     "provider-model-config"
@@ -910,29 +917,9 @@ pub struct InferenceModelOption {
 }
 
 fn common_supported_reasoning_efforts(
-    capabilities: &[Option<&'static [ReasoningEffort]>],
+    capabilities: &[Option<Vec<ReasoningEffort>>],
 ) -> Option<Vec<String>> {
-    if capabilities.is_empty() || capabilities.iter().any(Option::is_none) {
-        return None;
-    }
-    let canonical = [
-        ReasoningEffort::Off,
-        ReasoningEffort::Low,
-        ReasoningEffort::Medium,
-        ReasoningEffort::High,
-        ReasoningEffort::Max,
-    ];
-    Some(
-        canonical
-            .into_iter()
-            .filter(|effort| {
-                capabilities
-                    .iter()
-                    .all(|supported| supported.is_some_and(|levels| levels.contains(effort)))
-            })
-            .map(|effort| effort.as_str().to_string())
-            .collect(),
-    )
+    crate::provider::common_reasoning_efforts(capabilities)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -4160,6 +4147,8 @@ impl MorphzRuntime {
                     )
                     .into());
                 }
+            } else if effort == "xhigh" {
+                return Err(format!("reasoning effort 'xhigh' is not declared supported by model '{effective_model}'").into());
             }
         }
         Ok(selection)
@@ -4325,9 +4314,11 @@ impl MorphzRuntime {
             let reasoning_capabilities = available_candidates
                 .iter()
                 .map(|(candidate, provider)| {
-                    supported_reasoning_efforts_for_model(
+                    crate::provider::model_reasoning_efforts(
                         provider.adapter.as_str(),
+                        provider.protocol,
                         candidate.model.as_str(),
+                        provider.models.get(&candidate.model),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -4371,7 +4362,23 @@ impl MorphzRuntime {
                 label: model.to_string(),
                 physical_models: vec![model.to_string()],
                 aliases: Vec::new(),
-                supported_reasoning_efforts: None,
+                supported_reasoning_efforts: config
+                    .providers
+                    .get(config.llm.provider.as_deref().unwrap_or_default())
+                    .and_then(|provider| {
+                        crate::provider::model_reasoning_efforts(
+                            "openai-compatible",
+                            provider.protocol,
+                            model,
+                            provider.models.get(model),
+                        )
+                        .map(|levels| {
+                            levels
+                                .into_iter()
+                                .map(|level| level.as_str().to_string())
+                                .collect()
+                        })
+                    }),
                 source: "manual".to_string(),
             });
         }
@@ -7825,7 +7832,7 @@ impl MorphzRuntime {
                 risk_tags,
             } => ApprovalResolution::Allow {
                 rationale: rationale.clone(),
-                risk_tags: risk_tags.clone(),
+                risk_tags: without_capability_lease_authority(risk_tags.clone()),
             },
             ApprovalDecision::AllowLease {
                 rationale,
@@ -7850,11 +7857,28 @@ impl MorphzRuntime {
                     );
                 }
                 let mut risk_tags = risk_tags.clone();
+                let duration = if current.status.is_pending() {
+                    let duration = self
+                        .inner
+                        .config
+                        .edge_execution
+                        .capability_lease_ttl
+                        .as_secs();
+                    if duration == 0 {
+                        return Err("Runtime has disabled Capability Lease duration".into());
+                    }
+                    Some(duration)
+                } else {
+                    approved_capability_lease_duration(&current.risk_tags)?
+                };
                 if !risk_tags
                     .iter()
                     .any(|tag| tag == CAPABILITY_LEASE_APPROVED_RISK_TAG)
                 {
                     risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
+                }
+                if let Some(duration) = duration {
+                    risk_tags = bind_capability_lease_duration(risk_tags, duration);
                 }
                 ApprovalResolution::Allow {
                     rationale: rationale.clone(),
@@ -9317,6 +9341,7 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                user_input_request: None,
                 execution_model: None,
                 source: thread_sources.get(&thread.id).cloned(),
                 response_annotations: None,
@@ -9351,6 +9376,8 @@ impl MorphzRuntime {
         self.attach_execution_models(context_id, &mut threads)
             .await?;
         self.attach_response_annotations(context_id, &mut threads)
+            .await?;
+        self.attach_user_input_requests(context_id, &mut threads)
             .await?;
         orphan_activations.extend(activations_by_thread.into_values().flatten());
         orphan_signals.extend(pending_signals_by_thread.into_values().flatten());
@@ -9839,6 +9866,67 @@ impl MorphzRuntime {
             }),
         )?;
 
+        let objective_question_edges = self
+            .inner
+            .store
+            .list_active_objective_user_input_dependencies(
+                &objectives
+                    .iter()
+                    .map(|objective| objective.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let accepted_question_objectives = objective_question_edges
+            .iter()
+            .filter(|edge| {
+                edge.metadata
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(crate::user_input::TOOL_NAME)
+                    && edge
+                        .metadata
+                        .get("request_event_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(edge.dependency_id.as_str())
+                    && edge
+                        .metadata
+                        .get("accepted_answer_event_id")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|id| !id.is_empty())
+            })
+            .map(|edge| edge.owner_id.clone())
+            .collect::<HashSet<_>>();
+        let question_edges = self
+            .inner
+            .store
+            .list_pending_user_input_dependencies(
+                &open_threads
+                    .iter()
+                    .map(|thread| thread.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        let question_threads = open_threads
+            .iter()
+            .filter(|thread| {
+                question_edges.iter().any(|edge| {
+                    edge.owner_id == thread.id
+                        && edge.owner_generation == thread.generation
+                        && edge
+                            .metadata
+                            .get("source")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(crate::user_input::TOOL_NAME)
+                        && user_input::question_reply_allowed(
+                            thread,
+                            &edge.metadata,
+                            &edge.dependency_id,
+                            &objective_question_edges,
+                        )
+                })
+            })
+            .map(|thread| thread.id.clone())
+            .collect::<HashSet<_>>();
         let displayed_session_ids = sessions
             .iter()
             .map(|session| session.id.clone())
@@ -9945,9 +10033,12 @@ impl MorphzRuntime {
             if objective.status == ObjectiveStatus::Blocked
                 || matches!(
                     objective.wait_condition.as_ref(),
-                    Some(ObjectiveWaitCondition::UserInput { .. })
-                        | Some(ObjectiveWaitCondition::Permission { .. })
+                    Some(ObjectiveWaitCondition::Permission { .. })
                 )
+                || (matches!(
+                    objective.wait_condition.as_ref(),
+                    Some(ObjectiveWaitCondition::UserInput { .. })
+                ) && !accepted_question_objectives.contains(&objective.id))
             {
                 let attention_sessions = attention_sessions_by_context
                     .entry(objective.context_id.clone())
@@ -9973,6 +10064,17 @@ impl MorphzRuntime {
                     .cmp(&left.updated_at)
                     .then_with(|| left.id.cmp(&right.id))
             });
+        }
+        for threads in threads_by_session.values() {
+            for thread in threads
+                .iter()
+                .filter(|thread| question_threads.contains(&thread.id))
+            {
+                attention_sessions_by_context
+                    .entry(thread.context_id.clone())
+                    .or_default()
+                    .insert(thread.session_id.clone());
+            }
         }
 
         let delegation_by_child_context = delegations
@@ -10046,6 +10148,15 @@ impl MorphzRuntime {
                         &thread_by_root,
                     );
                     for thread in &mut projected.threads {
+                        if question_threads.contains(&thread.id)
+                            && !matches!(
+                                thread.state,
+                                RuntimeSessionState::Running | RuntimeSessionState::NeedsAttention
+                            )
+                        {
+                            thread.phase = ThreadPhase::Waiting;
+                            thread.state = RuntimeSessionState::WaitingUser;
+                        }
                         thread.intent = overview_intents.get(&thread.id).cloned().or_else(|| {
                             objectives
                                 .iter()
@@ -10062,6 +10173,37 @@ impl MorphzRuntime {
                             .iter()
                             .find(|thread| thread.id == current.id)
                             .and_then(|thread| thread.intent.clone());
+                    }
+                    for objective in &mut projected.objectives {
+                        if accepted_question_objectives.contains(&objective.id)
+                            && matches!(
+                                objective.wait_condition,
+                                Some(ObjectiveWaitCondition::UserInput { .. })
+                            )
+                        {
+                            objective.state = RuntimeSessionState::Waiting;
+                        }
+                    }
+                    projected.state = runtime_overview_effective_session_state(
+                        &projected.objectives,
+                        &projected.threads,
+                        &projected.execution_jobs,
+                        projected.pending_dialogue_turns,
+                    );
+                    projected.attention_required = matches!(
+                        projected.state,
+                        RuntimeSessionState::NeedsAttention | RuntimeSessionState::WaitingUser
+                    );
+                    if projected
+                        .threads
+                        .iter()
+                        .any(|thread| question_threads.contains(&thread.id))
+                    {
+                        projected.current_thread = projected
+                            .threads
+                            .iter()
+                            .max_by_key(|thread| thread.state.priority())
+                            .cloned();
                     }
                     projected
                 })
@@ -10761,6 +10903,7 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                user_input_request: None,
                 execution_model: None,
                 source: self
                     .scheduler_thread_sources(context_id, std::slice::from_ref(&thread))
@@ -10794,6 +10937,8 @@ impl MorphzRuntime {
         self.attach_execution_models(context_id, std::slice::from_mut(&mut detail.snapshot))
             .await?;
         self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot))
+            .await?;
+        self.attach_user_input_requests(context_id, std::slice::from_mut(&mut detail.snapshot))
             .await?;
         Ok(Some(detail))
     }
@@ -12222,6 +12367,11 @@ impl SessionHandle {
                         ),
                     )));
                 }
+            } else if parsed == ReasoningEffort::XHigh {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    format!("reasoning effort 'xhigh' is not declared supported by model '{effective_model}'"),
+                )));
             }
             Some(parsed.as_str().to_string())
         } else {
@@ -13561,6 +13711,64 @@ mod tests {
         assert_eq!(fallback.prompt_token_limit, 262_144);
         assert_eq!(fallback.context_window_tokens, None);
         assert_eq!(fallback.source, "runtime-default");
+    }
+
+    #[test]
+    fn physical_output_budget_matches_request_override_for_legacy_and_routed_models() {
+        let mut config = AppConfig::default();
+        config.llm.provider = Some("proxy".into());
+        let profile = ProviderModelConfig {
+            context_window_tokens: Some(262_144),
+            max_output_tokens: Some(131_072),
+            ..Default::default()
+        };
+        config.providers.insert(
+            "proxy".into(),
+            ProviderConfig {
+                base_url: "https://legacy-provider.invalid/v1".into(),
+                models: BTreeMap::from([("physical".into(), profile.clone())]),
+                ..Default::default()
+            },
+        );
+        config.auth_accounts.insert(
+            "test-account".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                ..Default::default()
+            },
+        );
+        config.provider_instances.insert(
+            "routed-provider".into(),
+            crate::config::ProviderInstanceConfig {
+                adapter: "protocol-compatible".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                accounts: vec!["test-account".into()],
+                models: BTreeMap::from([("physical".into(), profile)]),
+                ..Default::default()
+            },
+        );
+        config.model_routes.insert(
+            "route".into(),
+            crate::config::ModelRouteConfig {
+                candidates: vec![crate::config::ModelRouteCandidateConfig {
+                    provider: "routed-provider".into(),
+                    model: "physical".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        EffectiveProviderCatalog::from_config(&config)
+            .expect("valid physical-output-budget fixture");
+        for override_limit in [None, Some(32_768)] {
+            config.llm.max_output_tokens = override_limit;
+            for model in ["physical", "route"] {
+                let budget = resolve_model_context_capacity(&config, model);
+                let output = override_limit.unwrap_or(131_072) as usize;
+                assert_eq!(budget.max_output_tokens, Some(output));
+                assert_eq!(budget.prompt_token_limit, 262_144 - output, "{model}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -21838,6 +22046,9 @@ mod tests {
             assert_eq!(schemas.len(), 2);
             assert_eq!(schemas[0], schemas[1]);
             assert!(schemas[0].iter().any(|name| name == "objective_amend"));
+            assert!(schemas[0]
+                .iter()
+                .any(|name| name == crate::user_input::TOOL_NAME));
             assert_eq!(schemas[0].last().map(String::as_str), Some("no_reply"));
             assert!(schemas[0][..schemas[0].len() - 1]
                 .windows(2)

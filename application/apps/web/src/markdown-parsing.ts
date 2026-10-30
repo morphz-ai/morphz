@@ -1,9 +1,2 @@
-import remarkGfm from "remark-gfm";
-import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
-import type { PluggableList } from "unified";
-
-/** Shared grammar only; each surface keeps its own link and media policy. */
-export const markdownRemarkPlugins: PluggableList = [
-  remarkGfm,
-  remarkCjkFriendly,
-];
+// Rendering and authoritative quote validation must agree on visible words.
+export { markdownRemarkPlugins } from "../../../packages/core/src/markdown-parsing.js";

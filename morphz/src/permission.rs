@@ -1213,6 +1213,7 @@ mod tests {
                 thread_id: "thread-a".to_string(),
                 scope: CapabilityLeaseScope::Thread,
                 scope_id: "thread-a".to_string(),
+                objective_id: None,
                 target_id: "local".to_string(),
                 capability: "filesystem.write".to_string(),
                 capabilities: vec![
@@ -1224,7 +1225,7 @@ mod tests {
                     ..CapabilityDelta::default()
                 },
                 policy_digest: "policy-a".to_string(),
-                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                duration_secs: 3600,
             }),
         };
 

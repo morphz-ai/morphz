@@ -17,6 +17,7 @@ const ephemeralTopics = new Set([
 ])
 
 const sessionProjectionTopics = new Set([
+  'runtime/user_input_requested',
   'chat/steering',
   'chat/reply',
   'chat/no_reply',
@@ -57,6 +58,7 @@ export function invalidatedQueriesForTopic(topic: string): AuthoritativeQuery[] 
     || topic.startsWith('runtime/approval')
     || topic.startsWith('runtime/schedule')
     || topic.startsWith('runtime/model_attempt')
+    || topic === 'runtime/user_input_requested'
     || topic === 'runtime/model_reasoning_summary'
     || topic === 'chat/tool_output'
   ) {

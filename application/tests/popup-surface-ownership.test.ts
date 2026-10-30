@@ -937,7 +937,7 @@ test("actual relative closure rejects unreachable primitive consumers and compon
         source.modules.set(
           name,
           text.replace(
-            /from "(?:\.\.\/)*\.\/ComposerOptions\.js"/g,
+            /from "(?:\.\/|(?:\.\.\/)+)ComposerOptions\.js"/g,
             'from "./MissingOptions.js"',
           ),
         );

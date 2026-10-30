@@ -38,10 +38,25 @@ async function fixture(page: Page, host: Host, missing = false) {
   const policies = new Map<string, SessionEvaluationDefaults>();
   const revisions = new Map<string, number>();
   let gate: Promise<void> | undefined, release: (() => void) | undefined;
+  let capacityGate: Promise<void> | undefined,
+    releaseCapacity: (() => void) | undefined;
+  let requestedCapacity: number | null = null,
+    capacityRevision = 0;
   const state = {
     missing,
     failRead: false,
     loseWrite: false,
+    failCapacity: false,
+    loseCapacityWrite: false,
+    holdCapacity() {
+      capacityGate = new Promise<void>((resolve) => {
+        releaseCapacity = resolve;
+      });
+    },
+    releaseCapacity() {
+      releaseCapacity?.();
+      capacityGate = undefined;
+    },
     calls,
     hold() {
       gate = new Promise<void>((resolve) => {
@@ -85,6 +100,134 @@ async function fixture(page: Page, host: Host, missing = false) {
       request: ApplicationInvocation,
     ): Promise<ApplicationReply> => {
       calls.push(structuredClone(request));
+      if (request.method === "session-context-budget.read") {
+        await capacityGate;
+        if (state.failCapacity)
+          return {
+            ok: false,
+            error: {
+              status: 503,
+              code: "unavailable",
+              message: "TEST 容量读取失败",
+            },
+          };
+        const scope = request.params as {
+          projectId: string;
+          conversationId: string;
+        };
+        const policy = snapshot(scope);
+        return {
+          ok: true,
+          value: {
+            scope: policy.scope,
+            source: state.missing ? "not_started" : "runtime",
+            inputTokens: state.missing
+              ? null
+              : Math.min(
+                  requestedCapacity ??
+                    (policy.defaults.model === other ? 114688 : 229376),
+                  policy.defaults.model === other ? 114688 : 229376,
+                ),
+            windowTokens: state.missing
+              ? null
+              : policy.defaults.model === other
+                ? 131072
+                : 262144,
+            outputTokens: state.missing
+              ? null
+              : policy.defaults.model === other
+                ? 16384
+                : 32768,
+            model: policy.defaults.model,
+            capacitySource: "provider-route-model-config",
+            contextId: "TEST-context",
+            runtimeSessionId: "TEST-session",
+            requestedTokens: requestedCapacity,
+            physicalInputTokens:
+              policy.defaults.model === other ? 114688 : 229376,
+            revision: capacityRevision,
+            canUpdate: !state.missing,
+            usage: state.missing
+              ? null
+              : {
+                  contextId: "TEST-context",
+                  sessionId: "TEST-session",
+                  model: policy.defaults.model ?? model,
+                  physicalModel: policy.defaults.model ?? model,
+                  inputTokens: policy.defaults.model === other ? 32768 : 209715,
+                  accuracy: "heuristic-estimate",
+                  measuredAt: "2026-10-28T00:00:00Z",
+                  sequence: 1,
+                },
+          },
+        };
+      }
+      if (request.method === "session-context-budget.update") {
+        const params = request.params as {
+          expectedRevision: number;
+          requestedTokens: number | null;
+        };
+        if (params.expectedRevision !== capacityRevision)
+          return {
+            ok: false,
+            error: {
+              status: 409,
+              code: "conflict",
+              message: "TEST 容量已经变化",
+            },
+          };
+        capacityRevision++;
+        requestedCapacity = params.requestedTokens;
+        if (state.loseCapacityWrite) {
+          state.loseCapacityWrite = false;
+          return {
+            ok: false,
+            error: {
+              status: 503,
+              code: "unavailable",
+              message: "TEST 容量回执未知",
+            },
+          };
+        }
+        const scope = request.params as {
+          projectId: string;
+          conversationId: string;
+        };
+        const policy = snapshot(scope);
+        return {
+          ok: true,
+          value: {
+            scope: policy.scope,
+            source: "runtime",
+            inputTokens: Math.min(
+              requestedCapacity ??
+                (policy.defaults.model === other ? 114688 : 229376),
+              policy.defaults.model === other ? 114688 : 229376,
+            ),
+            windowTokens: policy.defaults.model === other ? 131072 : 262144,
+            outputTokens: policy.defaults.model === other ? 16384 : 32768,
+            model: policy.defaults.model,
+            capacitySource: "provider-route-model-config",
+            contextId: "TEST-context",
+            runtimeSessionId: "TEST-session",
+            requestedTokens: requestedCapacity,
+            physicalInputTokens:
+              policy.defaults.model === other ? 114688 : 229376,
+            revision: capacityRevision,
+            canUpdate: true,
+            usage: {
+              contextId: "TEST-context",
+              sessionId: "TEST-session",
+              model: policy.defaults.model ?? model,
+              physicalModel: policy.defaults.model ?? model,
+              inputTokens: policy.defaults.model === other ? 32768 : 209715,
+              accuracy: "heuristic-estimate",
+              measuredAt: "2026-10-28T00:00:00Z",
+              sequence: 1,
+            },
+          },
+        };
+      }
       if (request.method === "session-evaluation.read") {
         if (state.failRead)
           return {
@@ -202,6 +345,27 @@ async function fixture(page: Page, host: Host, missing = false) {
         request: ApplicationInvocation,
       ): Promise<ApplicationReply>;
     };
+    const subscriptions = new Set<string>();
+    const listeners = new Set<
+      (value: {
+        id: string;
+        value: {
+          connected: boolean;
+          messages: never[];
+          contextUsages: unknown[];
+        };
+      }) => void
+    >();
+    Object.defineProperty(window, "__emitCapacityUsage", {
+      value: (contextUsages: unknown[]) => {
+        for (const id of subscriptions)
+          for (const listener of listeners)
+            listener({
+              id,
+              value: { connected: true, messages: [], contextUsages },
+            });
+      },
+    });
     Object.defineProperty(window, "morphzDesktop", {
       configurable: true,
       value: {
@@ -209,9 +373,25 @@ async function fixture(page: Page, host: Host, missing = false) {
           invoke: (request: ApplicationInvocation) =>
             bridge.__evaluationHostInvoke(request),
           cancel() {},
-          subscribe: async () => {},
-          unsubscribe() {},
-          onStream: () => () => {},
+          subscribe: async (id: string) => {
+            subscriptions.add(id);
+          },
+          unsubscribe(id: string) {
+            subscriptions.delete(id);
+          },
+          onStream: (
+            listener: (value: {
+              id: string;
+              value: {
+                connected: boolean;
+                messages: never[];
+                contextUsages: unknown[];
+              };
+            }) => void,
+          ) => {
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
         },
       },
     });
@@ -430,4 +610,312 @@ test("同一全局Session跨对话、事项、内容、工作台和项目页面�
   await expect(
     settings.getByLabel("会话推理强度", { exact: true }),
   ).toHaveAttribute("aria-valuetext", "max");
+});
+
+test("上下文容量随会话模型更新，独立慢读不阻塞正文，也不随输入轮询", async ({
+  page,
+  messageHost,
+}, info) => {
+  const f = await fixture(page, messageHost);
+  await page.keyboard.press("Escape");
+  const capacity = page.getByRole("button", {
+    name: "上下文容量",
+    exact: true,
+  });
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute(
+    "aria-description",
+    /256K.*80%.*预留 32K/,
+  );
+  f.state.holdCapacity();
+  const settings = await openComposerSettings(page);
+  await settings.getByLabel("会话模型", { exact: true }).selectOption(other);
+  await expect.poll(() => f.writes().length).toBe(1);
+  await page.keyboard.press("Escape");
+  await f.input.fill("TEST 容量慢读时仍可立即写入，正文保持。");
+  await expect(f.input).toHaveValue("TEST 容量慢读时仍可立即写入，正文保持。");
+  await capacity.click();
+  await expect(
+    page.getByText("正在读取当前上下文…", { exact: true }),
+  ).toBeVisible();
+  f.state.releaseCapacity();
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /128K/);
+  await expect(page.getByText("预留 16K", { exact: true })).toBeVisible();
+  const bar = page.getByRole("progressbar", {
+    name: "已用上下文",
+    exact: true,
+  });
+  const reservedBounds = await bar
+    .locator(".capacity-bar-reserved")
+    .boundingBox();
+  const usedBounds = await bar.locator(".capacity-bar-used").boundingBox();
+  const barBounds = await bar.boundingBox();
+  expect(reservedBounds).not.toBeNull();
+  expect(usedBounds).not.toBeNull();
+  expect(barBounds).not.toBeNull();
+  expect(Math.abs(reservedBounds!.x - barBounds!.x)).toBeLessThan(1);
+  expect(
+    Math.abs(usedBounds!.x - reservedBounds!.x - reservedBounds!.width),
+  ).toBeLessThan(1);
+  expect(reservedBounds!.width / barBounds!.width).toBeCloseTo(0.125, 2);
+  expect(usedBounds!.width / barBounds!.width).toBeCloseTo(0.25, 2);
+  expect(
+    barBounds!.x + barBounds!.width - usedBounds!.x - usedBounds!.width,
+  ).toBeGreaterThan(16);
+  await expect(
+    page.locator(".composer-capacity-legend > span").nth(0),
+  ).toContainText("预留");
+  await expect(
+    page.locator(".composer-capacity-legend > span").nth(1),
+  ).toHaveText("已用");
+  await expect(
+    page.locator(".composer-capacity-legend > span").nth(2),
+  ).toContainText("剩余");
+  await page.screenshot({ path: info.outputPath("capacity-light.png") });
+  await page.keyboard.press("Escape");
+  const reads = f.state.calls.filter(
+    (x) => x.method === "session-context-budget.read",
+  ).length;
+  for (const text of ["TEST 编辑一", "TEST 编辑二", "TEST 编辑三"])
+    await f.input.fill(text);
+  await expect(f.input).toHaveValue("TEST 编辑三");
+  expect(
+    f.state.calls.filter((x) => x.method === "session-context-budget.read"),
+  ).toHaveLength(reads);
+  expect(f.messages()).toHaveLength(0);
+  await page.setViewportSize({ width: 1050, height: 850 });
+  await capacity.click();
+  await expect(page.getByText("最大上下文", { exact: true })).toBeVisible();
+  const bounds = await page
+    .locator(".composer-capacity-menu:popover-open")
+    .boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(1050);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await settleTransitions(page);
+  await page.screenshot({ path: info.outputPath("capacity-dark-narrow.png") });
+});
+
+test("三段配色随主题统一；未超限保留主题色，明暗模式均可区分", async ({
+  page,
+  messageHost,
+}, info) => {
+  const f = await fixture(page, messageHost);
+  await page.keyboard.press("Escape");
+  const capacity = page.getByRole("button", {
+    name: "上下文容量",
+    exact: true,
+  });
+  await expect(capacity).toHaveAttribute("aria-description", /80%/);
+  await capacity.click();
+  const bar = page.getByRole("progressbar", {
+    name: "已用上下文",
+    exact: true,
+  });
+  await expect(bar).not.toHaveAttribute("data-pressure");
+  await expect(capacity.locator("svg")).not.toHaveAttribute("data-pressure");
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      await page.locator(".app").evaluate((node, accent) => {
+        (node as HTMLElement).dataset.accent = accent;
+      }, accent);
+      await settleTransitions(page);
+      const colors = await bar.evaluate((node) => [
+        getComputedStyle(node.querySelector(".capacity-bar-reserved")!)
+          .backgroundColor,
+        getComputedStyle(node.querySelector(".capacity-bar-used")!)
+          .backgroundColor,
+        getComputedStyle(node).backgroundColor,
+      ]);
+      expect(new Set(colors).size).toBe(3);
+      if (accent === "cyan")
+        await page.screenshot({
+          path: info.outputPath(`capacity-color-${scheme}.png`),
+        });
+    }
+  }
+  expect(f.messages()).toHaveLength(0);
+  expect(f.writes()).toHaveLength(0);
+});
+
+test("容量读取失败只影响容量入口，重读不改模型、正文或发送消息", async ({
+  page,
+  messageHost,
+}) => {
+  const f = await fixture(page, messageHost);
+  f.state.failCapacity = true;
+  await f.picker.selectOption(other);
+  await expect.poll(() => f.writes().length).toBe(1);
+  await page.keyboard.press("Escape");
+  const capacity = page.getByRole("button", {
+    name: "上下文容量",
+    exact: true,
+  });
+  await expect(capacity).toHaveText("");
+  await f.input.fill("TEST 容量暂不可读时保留正文");
+  await capacity.click();
+  await expect(
+    page.getByText("容量暂时无法读取。", { exact: true }),
+  ).toBeVisible();
+  f.state.failCapacity = false;
+  await page.getByRole("button", { name: "重新读取", exact: true }).click();
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /128K/);
+  await page.keyboard.press("Escape");
+  await expect(f.input).toHaveValue("TEST 容量暂不可读时保留正文");
+  expect(f.writes()).toHaveLength(1);
+  expect(f.messages()).toHaveLength(0);
+});
+
+test("用量沿现有事件流更新；容量可调、可恢复自动，回车不会发送正文", async ({
+  page,
+  messageHost,
+}, info) => {
+  const f = await fixture(page, messageHost);
+  await page.keyboard.press("Escape");
+  const capacity = page.getByRole("button", {
+    name: "上下文容量",
+    exact: true,
+  });
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /80%/);
+  const reads = f.state.calls.filter(
+    (c) => c.method === "session-context-budget.read",
+  ).length;
+  await page.evaluate((model) => {
+    (
+      window as unknown as { __emitCapacityUsage(values: unknown[]): void }
+    ).__emitCapacityUsage([
+      {
+        contextId: "TEST-context",
+        sessionId: "TEST-session",
+        model,
+        physicalModel: model,
+        inputTokens: 235930,
+        accuracy: "heuristic-estimate",
+        measuredAt: "2026-10-28T01:00:00Z",
+        sequence: 10,
+      },
+      {
+        contextId: "TEST-context",
+        sessionId: "foreign",
+        model,
+        physicalModel: model,
+        inputTokens: 999999,
+        accuracy: "exact",
+        measuredAt: "2026-10-28T02:00:00Z",
+        sequence: 11,
+      },
+    ]);
+  }, model);
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /256K.*90%/);
+  expect(
+    f.state.calls.filter((c) => c.method === "session-context-budget.read"),
+  ).toHaveLength(reads);
+  await f.input.fill("TEST 主输入草稿保持，容量操作不发送消息");
+  await capacity.click();
+  const value = page.getByRole("spinbutton", {
+    name: "最大上下文 K",
+    exact: true,
+  });
+  await expect(value).toBeEnabled();
+  await expect(value).toHaveValue("256");
+  await value.fill("128");
+  await value.press("Enter");
+  await expect
+    .poll(
+      () =>
+        f.state.calls.filter(
+          (c) => c.method === "session-context-budget.update",
+        ).length,
+    )
+    .toBe(1);
+  await expect(capacity).toHaveText("");
+  await expect(capacity).toHaveAttribute("aria-description", /128K.*180%/);
+  await expect(
+    page.getByRole("progressbar", { name: "已用上下文", exact: true }),
+  ).toHaveAttribute("data-pressure", "over");
+  expect(
+    f.state.calls.filter((c) => c.method === "session-context-budget.update")[0]
+      ?.params,
+  ).toMatchObject({ requestedTokens: 98304 });
+  await settleTransitions(page);
+  await page.screenshot({
+    path: info.outputPath("capacity-configurable-light.png"),
+  });
+  await page.getByRole("button", { name: "自动", exact: true }).focus();
+  await page.getByRole("button", { name: "自动", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(capacity).toHaveAttribute("aria-description", /256K/);
+  await expect(
+    page.getByRole("button", { name: "应用", exact: true }),
+  ).toBeDisabled();
+  expect(
+    f.state.calls.filter((c) => c.method === "session-context-budget.update"),
+  ).toHaveLength(2);
+  expect(f.messages()).toHaveLength(0);
+  expect(f.writes()).toHaveLength(0);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await settleTransitions(page);
+  await page.screenshot({
+    path: info.outputPath("capacity-configurable-dark.png"),
+  });
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await settleTransitions(page);
+  const zoomed = await page
+    .getByRole("group", { name: "上下文容量", exact: true })
+    .boundingBox();
+  expect(zoomed).not.toBeNull();
+  expect(zoomed!.x).toBeGreaterThanOrEqual(0);
+  expect(zoomed!.y).toBeGreaterThanOrEqual(0);
+  expect(zoomed!.x + zoomed!.width).toBeLessThanOrEqual(1280);
+  expect(zoomed!.y + zoomed!.height).toBeLessThanOrEqual(900);
+  await page.screenshot({ path: info.outputPath("capacity-zoom-200.png") });
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "";
+  });
+  await page.keyboard.press("Escape");
+  await expect(f.input).toHaveValue("TEST 主输入草稿保持，容量操作不发送消息");
+});
+
+test("容量写入回执未知时停止重放；重新读取确认实际值并保留正文", async ({
+  page,
+  messageHost,
+}) => {
+  const f = await fixture(page, messageHost);
+  await page.keyboard.press("Escape");
+  await f.input.fill("TEST 容量写入结果未知也保留正文");
+  await page.getByRole("button", { name: "上下文容量", exact: true }).click();
+  const value = page.getByRole("spinbutton", {
+    name: "最大上下文 K",
+    exact: true,
+  });
+  await expect(value).toBeEnabled();
+  await value.fill("128");
+  f.state.loseCapacityWrite = true;
+  await page.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("回执未知");
+  expect(
+    f.state.calls.filter((c) => c.method === "session-context-budget.update"),
+  ).toHaveLength(1);
+  await expect(value).toBeDisabled();
+  await page.getByRole("button", { name: "重新读取", exact: true }).click();
+  await expect(value).toBeEnabled();
+  await expect(value).toHaveValue("128");
+  await expect(
+    page.getByRole("button", { name: "应用", exact: true }),
+  ).toBeDisabled();
+  expect(
+    f.state.calls.filter((c) => c.method === "session-context-budget.update"),
+  ).toHaveLength(1);
+  expect(f.messages()).toHaveLength(0);
+  await page.keyboard.press("Escape");
+  await expect(f.input).toHaveValue("TEST 容量写入结果未知也保留正文");
 });

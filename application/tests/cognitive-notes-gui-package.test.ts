@@ -25,6 +25,7 @@ import {
   startNotesGuiAuthor,
   expectNotesGuiStartupRefusal,
   openNotesGuiBrowser,
+  waitForNotesGuiInteraction,
 } from "./fixtures/cognitive-notes-gui-package.js";
 
 let packed: ReturnType<typeof packCognitiveNotesGui>;
@@ -445,6 +446,208 @@ test("missing optional GUI release refuses only explicit --gui without creating 
     renameSync(held, path);
   }
 });
+
+test("Notes GUI diagnostics are bounded and never replace the original failure", async () => {
+  const { notesGuiDiagnostic } =
+    await import("./fixtures/cognitive-notes-gui-package.js");
+  assert.deepEqual(await notesGuiDiagnostic(() => new Promise(() => {}), 10), {
+    unavailable: "Diagnostic read timed out",
+  });
+  assert.deepEqual(
+    await notesGuiDiagnostic(() =>
+      Promise.reject(new Error("controlled diagnostic failure")),
+    ),
+    { unavailable: "controlled diagnostic failure" },
+  );
+});
+
+test("Notes GUI cleanup preserves the original failure but still rejects a successful test's failed cleanup", async (t) => {
+  const { notesGuiCleanup } =
+    await import("./fixtures/cognitive-notes-gui-package.js");
+  const original = new Error("controlled original failure");
+  const secondary = new Error("controlled cleanup failure");
+  const logs = t.mock.method(console, "error", () => {});
+  await assert.rejects(
+    (async () => {
+      try {
+        throw original;
+      } finally {
+        await notesGuiCleanup(() => Promise.reject(secondary), {
+          preserveFailure: true,
+        });
+      }
+    })(),
+    (error) => error === original,
+  );
+  assert.equal(logs.mock.calls.length, 1);
+  assert.equal(logs.mock.calls[0]!.arguments[1], secondary);
+  await assert.rejects(
+    notesGuiCleanup(() => Promise.reject(secondary)),
+    (error) => error === secondary,
+  );
+});
+
+test(
+  "Node timeout cancels the actual notes GUI fixture and exits failed without an owned Browser or server",
+  { timeout: 45_000 },
+  async () => {
+    const environment: NodeJS.ProcessEnv = {
+      ...process.env,
+      MORPHZ_TEST_NOTES_GUI_ABORT_ROOT: packed.root,
+    };
+    delete environment.NODE_TEST_CONTEXT;
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--test",
+        "--test-isolation=none",
+        "--test-reporter=tap",
+        fileURLToPath(
+          new URL(
+            "./fixtures/cognitive-notes-gui-abort-child.ts",
+            import.meta.url,
+          ),
+        ),
+      ],
+      {
+        cwd: fileURLToPath(new URL("../", import.meta.url)),
+        env: environment,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "",
+      forced = false;
+    child.stdout.on("data", (bytes) => {
+      output += bytes;
+    });
+    child.stderr.on("data", (bytes) => {
+      output += bytes;
+    });
+    const guard = setTimeout(() => {
+      forced = true;
+      child.kill("SIGTERM");
+    }, 40_000);
+    const force = setTimeout(() => child.kill("SIGKILL"), 43_000);
+    try {
+      const result = await new Promise<{
+        code: number | null;
+        signal: NodeJS.Signals | null;
+      }>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => resolve({ code, signal }));
+      });
+      assert.equal(forced, false, output);
+      assert.equal(result.signal, null, output);
+      assert.equal(result.code, 1, output);
+      assert.match(output, /test timed out after 1000ms/);
+      const ready = output.match(/NOTES_GUI_ABORT_READY (\{[^\n]+\})/);
+      assert.ok(ready, output);
+      assert.match(output, /NOTES_GUI_ABORT_CLOSED \{"connected":false\}/);
+      const origin = JSON.parse(ready[1]!).origin;
+      await assert.rejects(
+        fetch(origin, { signal: AbortSignal.timeout(1_000) }),
+        "Owned HTTP listener must also be closed, not just detached from the test",
+      );
+      console.info("Controlled notes GUI abort receipt", {
+        ready: true,
+        testTimeoutMs: 1_000,
+        exitCode: result.code,
+        forced,
+        browserConnected: false,
+        serverClosed: true,
+      });
+    } finally {
+      clearTimeout(guard);
+      clearTimeout(force);
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGTERM");
+    }
+  },
+);
+
+test(
+  "Notes GUI first interaction awaits activation, fonts and two paints in every frame",
+  { timeout: 1000 },
+  async () => {
+    const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+    let activate!: () => void;
+    const active = new Promise<void>((resolve) => {
+      activate = resolve;
+    });
+    const frames = Array.from({ length: 3 }, () => {
+      let loadFonts!: () => void;
+      const fonts = new Promise<void>((resolve) => {
+        loadFonts = resolve;
+      });
+      const paints: (() => void)[] = [];
+      return {
+        loadFonts,
+        paints,
+        evaluations: 0,
+        async evaluate(read: () => Promise<void>) {
+          this.evaluations++;
+          await new Script(`(${read.toString()})()`).runInNewContext({
+            document: { fonts: { ready: fonts } },
+            requestAnimationFrame: (paint: () => void) => paints.push(paint),
+          });
+        },
+      };
+    });
+    let ready = false;
+    const waiting = waitForNotesGuiInteraction(
+      { bringToFront: () => active },
+      frames,
+    ).then(() => {
+      ready = true;
+    });
+    await tick();
+    assert.deepEqual(
+      frames.map((frame) => frame.evaluations),
+      [0, 0, 0],
+    );
+    activate();
+    await tick();
+    assert.deepEqual(
+      frames.map((frame) => frame.evaluations),
+      [1, 1, 1],
+    );
+    assert.deepEqual(
+      frames.map((frame) => frame.paints.length),
+      [0, 0, 0],
+    );
+    for (const frame of frames) frame.loadFonts();
+    await tick();
+    for (const frame of frames) frame.paints.shift()!();
+    await tick();
+    assert.equal(
+      ready,
+      false,
+      "one frame is not an interaction-ready paint boundary",
+    );
+    for (const frame of frames.slice(0, 2)) frame.paints.shift()!();
+    await tick();
+    assert.equal(
+      ready,
+      false,
+      "the author frame cannot be replaced by its ancestors",
+    );
+    frames[2]!.paints.shift()!();
+    await waiting;
+    assert.equal(ready, true);
+    await assert.rejects(
+      waitForNotesGuiInteraction({ bringToFront: async () => {} }, [
+        {
+          evaluate: async () => {
+            throw new Error("controlled frame failure");
+          },
+        },
+      ]),
+      /controlled frame failure/,
+    );
+  },
+);
 
 test("Notes GUI diagnostics are bounded and never replace the original failure", async () => {
   const { notesGuiDiagnostic } =

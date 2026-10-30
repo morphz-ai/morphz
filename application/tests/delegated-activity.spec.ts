@@ -160,8 +160,15 @@ test("委派期间原消息保持运行反馈、主活动显示子任务且可�
   await children.locator(`[data-thread-id="${child.id}"]`).click();
   await expect(panel).toContainText("npm run build");
   expect(childReads).toBeGreaterThan(0);
+  // Delegation cancellation is now explicit and separately confirmed; Job,
+  // approval, supplement and ordinary Thread controls stay unavailable here.
   await expect(
-    panel.getByRole("button", { name: /停止|补充|批准|拒绝/ }),
+    panel.getByRole("button", { name: "停止子智能体", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    panel.getByRole("button", {
+      name: /补充|批准|拒绝|暂停此执行|继续此执行|更多执行操作|停止此执行/,
+    }),
   ).toHaveCount(0);
   await page.setViewportSize({ width: 760, height: 600 });
   await page.screenshot({

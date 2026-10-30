@@ -67,6 +67,8 @@ impl ExecutionRecordsQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionRecordThread {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_input_request: Option<crate::user_input::PendingUserInputRequest>,
     pub execution_model: Option<super::ExecutionModel>,
     pub id: String,
     pub session_id: String,
@@ -305,6 +307,7 @@ impl MorphzRuntime {
                     })
                     .collect();
                 SchedulerThreadSnapshot {
+                    user_input_request: None,
                     execution_model: None,
                     source: None,
                     response_annotations: None,
@@ -331,6 +334,8 @@ impl MorphzRuntime {
             })
             .collect::<Vec<_>>();
         self.attach_execution_models(context_id, &mut snapshots)
+            .await?;
+        self.attach_user_input_requests(context_id, &mut snapshots)
             .await?;
         if !query.metadata_only {
             self.attach_response_annotations(context_id, &mut snapshots)
@@ -371,6 +376,7 @@ impl MorphzRuntime {
                 .map(|snapshot| {
                     let thread = snapshot.thread;
                     ExecutionRecordThread {
+                        user_input_request: snapshot.user_input_request,
                         execution_model: snapshot.execution_model,
                         id: thread.id,
                         session_id: thread.session_id,

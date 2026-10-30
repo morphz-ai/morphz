@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import test, { type TestContext } from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { chromium, type Browser } from "@playwright/test";
+import {
+  createLogger,
+  createServer,
+  transformWithOxc,
+  type ViteDevServer,
+} from "vite";
+import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
 
 // Real React/StrictMode and actual Conversation, with in-memory presentation
 // facts and real browser storage/focus/scroll/dialogs. No Host, Runtime, model,
@@ -93,9 +102,47 @@ const installed = executable
   ? existsSync(executable)
   : existsSync(chromium.executablePath());
 async function mountReceiptFixture(context: TestContext) {
-  const server = await createServer({
+  const observation = mountedFixtureObservation(
+    context,
+    "exchange-read-receipts",
+  );
+  const cache = await mkdtemp(resolve(tmpdir(), "morphz-read-receipts-vite-"));
+  let server: ViteDevServer | undefined, browser: Browser | undefined;
+  context.after(async () => {
+    try {
+      await browser?.close();
+    } finally {
+      try {
+        await server?.close();
+      } finally {
+        await rm(cache, { recursive: true, force: true });
+      }
+    }
+  });
+  const compileErrors: string[] = [];
+  const logger = createLogger();
+  observation.stage("cold fixture server setup");
+  server = await createServer({
     configFile: false,
     root: resolve("apps/web"),
+    // Each case starts cold, independent of another fixture's Vite config or
+    // optimized dependencies. Scan this fixture's source, not the app entry.
+    cacheDir: cache,
+    optimizeDeps: {
+      entries: [
+        resolve("apps/web/src/Conversation.tsx"),
+        resolve("apps/web/src/host/use-exchange-read-receipts.ts"),
+        resolve("tests/fixtures/exchange-read-receipts-4ce98b64.ts"),
+      ],
+      include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime"],
+    },
+    customLogger: {
+      ...logger,
+      error(message, options) {
+        compileErrors.push(message);
+        logger.error(message, options);
+      },
+    },
     plugins: [
       react(),
       {
@@ -123,13 +170,30 @@ async function mountReceiptFixture(context: TestContext) {
     ],
     server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
   });
-  context.after(() => server.close());
-  const browser = await chromium.launch({
+  await server.listen();
+  observation.stage("fixture module preparation");
+  const preparedAt = performance.now();
+  const client = server.environments.client!;
+  assert.ok(await client.transformRequest("/__read-receipts.tsx"));
+  await client.waitForRequestsIdle();
+  assert.deepEqual(
+    compileErrors,
+    [],
+    "Read receipt fixture compilation failed",
+  );
+  context.diagnostic(
+    JSON.stringify({
+      receiptFixturePreparation: {
+        coldCache: true,
+        compileMs: Math.round(performance.now() - preparedAt),
+      },
+    }),
+  );
+  observation.stage("fixture modules prepared");
+  browser = await chromium.launch({
     headless: true,
     executablePath: executable || undefined,
   });
-  context.after(() => browser.close());
-  await server.listen();
   const address = server.httpServer!.address();
   assert(address && typeof address !== "string");
   const browserContext = await browser.newContext();
@@ -143,6 +207,7 @@ async function mountReceiptFixture(context: TestContext) {
     if (!complete)
       context.diagnostic(JSON.stringify({ phase, errors, queries }));
   });
+  observation.observe(page, "receipts");
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => {
     if (
@@ -151,8 +216,10 @@ async function mountReceiptFixture(context: TestContext) {
     )
       queries.push(request.url());
   });
+  observation.stage("initial module mount");
   await page.goto(`http://127.0.0.1:${address.port}/__read-receipts`);
   await page.waitForSelector("#lane-production");
+  observation.stage("receipt lanes mounted");
   const report = () =>
     page.evaluate(() =>
       Reflect.get(window, "receiptFixture").report(),
@@ -197,6 +264,7 @@ async function mountReceiptFixture(context: TestContext) {
     },
     finish() {
       complete = true;
+      observation.complete();
     },
   };
 }

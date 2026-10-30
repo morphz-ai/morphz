@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { observeSupplementAttention } from "./supplement-attention.js";
 import {
   ArrowLeft,
   ChevronRight,
@@ -29,6 +30,7 @@ import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { objectiveDetailStatus } from "./subject-sidebar-model.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import { useModal } from "./useModal.js";
+import type { QuestionObjective } from "./UserInputDialogHost.js";
 
 type Goal = NonNullable<ExecutionActivity["objectives"]>[number];
 type Thread = ExecutionActivity["threads"][number];
@@ -43,6 +45,7 @@ export function SubjectObjectiveDialog({
   onClose,
   onSelect,
   onSupplement,
+  onReplyObjective,
 }: {
   goal: Goal;
   threads: Thread[];
@@ -53,6 +56,8 @@ export function SubjectObjectiveDialog({
   onClose(): void;
   onSelect(scope: ExecutionReadScope): void;
   onSupplement?: (target: InputContinuation) => Promise<void>;
+  onReply?: (thread: Thread) => void;
+  onReplyObjective?: (goal: QuestionObjective, threads: Thread[]) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     body = useRef<HTMLDivElement>(null),
@@ -174,7 +179,10 @@ export function SubjectObjectiveDialog({
   });
   const target = targets.length === 1 ? targets[0] : undefined;
   const supplementDisabled =
-    disabled || goal.status !== "active" || !target || !onSupplement;
+    disabled ||
+    goal.status !== "active" ||
+    (!(goal.pendingUserInput && onReplyObjective) &&
+      (!target || !onSupplement));
   const unavailable =
     !fresh || !client.online
       ? "连接恢复后可操作"
@@ -252,6 +260,11 @@ export function SubjectObjectiveDialog({
     }
   }
   async function supplement() {
+    if (!supplementDisabled && goal.pendingUserInput && onReplyObjective) {
+      onClose();
+      requestAnimationFrame(() => onReplyObjective(goal, threads));
+      return;
+    }
     if (pending.current || supplementDisabled || !target || !onSupplement)
       return;
     pending.current = true;
@@ -342,7 +355,12 @@ export function SubjectObjectiveDialog({
                 }
               >
                 <button
-                  className="icon-button"
+                  className={`icon-button${goal.pendingUserInput ? " needs-input" : ""}`}
+                  ref={
+                    goal.pendingUserInput
+                      ? observeSupplementAttention
+                      : undefined
+                  }
                   aria-label="补充目标"
                   disabled={supplementDisabled}
                   onClick={() => void supplement()}

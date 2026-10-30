@@ -31,7 +31,10 @@ import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import type { CognitiveAppHostOptions } from "../packages/application/src/cognitive-app-host.js";
 import type { workInputFormats } from "../packages/application/src/session-io.js";
-import { runtimeListenerFromJsonLine } from "./runtime-listener-fixture.js";
+import {
+  runtimeListenerFromJsonLine,
+  stopRuntimeFixtureChild,
+} from "./runtime-listener-fixture.js";
 import {
   profileCustom,
   profileSnapshotSchema,
@@ -582,6 +585,9 @@ export async function profileActualTransportFixture(
     for (const item of held.values()) item.response.destroy();
     held.clear();
     embedded?.close();
+    // Release native requests before waiting for Host reconciliation. A Runtime
+    // terminated by a signal has no future exit event to await again.
+    await stopRuntimeFixtureChild(child);
     await runtime?.stop();
     if (server) {
       server.closeAllConnections();
@@ -589,15 +595,6 @@ export async function profileActualTransportFixture(
     }
     await domains?.close();
     store.close();
-    if (child && child.exitCode === null) {
-      const exited = new Promise<void>((done) =>
-        child!.once("exit", () => done()),
-      );
-      child.kill("SIGTERM");
-      const timer = setTimeout(() => child?.kill("SIGKILL"), 5000);
-      await exited;
-      clearTimeout(timer);
-    }
     provider.closeAllConnections();
     await new Promise<void>((done) => provider.close(() => done()));
     rmSync(directory, { recursive: true, force: true });
@@ -1089,6 +1086,11 @@ export async function profileActualTransportFixture(
       },
       async waitRequest(marker: string, since = 0) {
         for (let attempt = 0; attempt < 300; attempt++) {
+          assert.ok(
+            child && child.exitCode === null && child.signalCode === null,
+            "Actual Runtime exited before its model request: " +
+              (options.realProvider ? "real-provider details omitted" : logs),
+          );
           const found = requests
             .slice(since)
             .find((value) => JSON.stringify(value.messages).includes(marker));

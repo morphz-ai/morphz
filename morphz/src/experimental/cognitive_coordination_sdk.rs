@@ -169,7 +169,7 @@ impl crate::tool::Tool for CoordinateTool {
                     },
                     "reasoning_effort": {
                         "type": "string",
-                        "enum": ["none", "low", "medium", "high", "max"]
+                        "enum": ["none", "low", "medium", "high", "xhigh", "max"]
                     },
                     "participant_models": {
                         "type": "array",
@@ -181,7 +181,7 @@ impl crate::tool::Tool for CoordinateTool {
                                 "model_route": { "type": "string", "minLength": 1 },
                                 "reasoning_effort": {
                                     "type": "string",
-                                    "enum": ["none", "low", "medium", "high", "max"]
+                                    "enum": ["none", "low", "medium", "high", "xhigh", "max"]
                                 }
                             },
                             "required": ["authority_id"],

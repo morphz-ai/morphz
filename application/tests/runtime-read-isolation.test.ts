@@ -11,7 +11,15 @@ import { localAccess } from "../packages/core/src/model.js";
 
 test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Host 未接收输入", async () => {
   type Mode =
-    "healthy" | "network" | "body" | "malformed" | "timeline" | 401 | 403 | 503;
+    | "healthy"
+    | "network"
+    | "body"
+    | "malformed"
+    | "timeline"
+    | "head"
+    | 401
+    | 403
+    | 503;
   let mode: Mode = "healthy";
   let posts = 0;
   let requests = 0;
@@ -51,6 +59,8 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
       return send(200, { not_a_runtime_response: true });
     if (mode === "timeline" && url.pathname.endsWith("/timeline"))
       return send(503, { error: "Controlled timeline unavailable" });
+    if (mode === "head" && url.pathname.endsWith("/events"))
+      return send(503, { error: "Controlled head unavailable" });
     if (url.pathname === "/api/status") return send(200, { model: "fixture" });
     if (url.pathname === "/api/runtime/inference")
       return send(200, { model: "fixture", models: [] });
@@ -201,6 +211,29 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
       "the failed baseline never publishes the old local queue",
     );
     assert.equal(posts, 1, "head/stream recovery never resends input");
+    assert.equal(
+      fixture.runtime.platformStatus().connected,
+      true,
+      "a failed timeline does not disconnect independently healthy Runtime status",
+    );
+    mode = "head";
+    const isolated = await fixture.session().platformRuntimeNavigation(scope);
+    assert.equal(
+      isolated.runtime.connected,
+      true,
+      "a failed head does not erase independently healthy current Runtime state",
+    );
+    assert.equal(
+      isolated.historyVersion,
+      undefined,
+      "an unavailable head is not the fresh sequence zero or a reusable history cache token",
+    );
+    const diagnostic = await fixture.runtime.inspectConnection(
+      AbortSignal.timeout(2000),
+    );
+    assert.equal(diagnostic.state, "connected");
+    assert.equal(diagnostic.lastReadFailure?.operation, "conversation-history");
+    assert.equal(diagnostic.lastReadFailure?.httpStatus, 503);
     const beforeDenied = requests;
     await assert.rejects(
       fixture.runtime.platformConversationHistory(scope, {

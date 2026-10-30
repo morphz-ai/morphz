@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Target, ChevronDown, ChevronRight, Eye } from "lucide-react";
+import {
+  Target,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  MessageSquarePlus,
+  Pause,
+  Play,
+} from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
@@ -14,11 +22,16 @@ import {
   executionActivityStatus,
   executionActivityContextAvailable,
   executionActivityThreadAvailable,
+  executionActivityApprovals,
 } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { PersistentDetails } from "./PersistentDetails.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import { SubjectObjectiveDialog } from "./SubjectObjectiveDialog.js";
+import type { ActivityThread } from "./execution-activity.js";
+import type { QuestionObjective } from "./UserInputDialogHost.js";
+import { observeSupplementAttention } from "./supplement-attention.js";
+import { applicationCall } from "./application-transport.js";
 
 function ObjectiveHeading({
   title,
@@ -26,12 +39,16 @@ function ObjectiveHeading({
   status,
   onToggle,
   onView,
+  supplement,
+  control,
 }: {
   title: string;
   open: boolean;
   status: ReactNode;
   onToggle(): void;
   onView(): void;
+  supplement?: ReactNode;
+  control?: ReactNode;
 }) {
   return (
     <div className="subject-objective-row">
@@ -49,16 +66,20 @@ function ObjectiveHeading({
           {open ? <ChevronDown /> : <ChevronRight />}
         </button>
       </Tooltip>
-      <Tooltip label="查看目标">
-        <button
-          className="icon-button subject-objective-view"
-          data-size="icon-xs"
-          aria-label="查看目标"
-          onClick={onView}
-        >
-          <Eye />
-        </button>
-      </Tooltip>
+      <span className="subject-objective-actions">
+        {supplement}
+        <Tooltip label="查看目标">
+          <button
+            className="icon-button subject-objective-view"
+            data-size="icon-xs"
+            aria-label="查看目标"
+            onClick={onView}
+          >
+            <Eye />
+          </button>
+        </Tooltip>
+        {control}
+      </span>
     </div>
   );
 }
@@ -68,14 +89,26 @@ export function SubjectObjectives({
   scope,
   onSelect,
   onSupplement,
+  onReply,
+  onReplyObjective,
 }: {
   client: WorkspaceClient;
   scope?: ExecutionReadScope;
   onSelect(scope: ExecutionReadScope): void;
   onSupplement?: (target: InputContinuation) => void;
+  onReply?: (thread: ActivityThread) => void;
+  onReplyObjective?: (
+    goal: QuestionObjective,
+    threads: ActivityThread[],
+  ) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
+  const [controlling, setControlling] = useState(""),
+    [controlError, setControlError] = useState("");
+  const pendingControl = useRef(false),
+    identity = useRef(client.boot!.csrfToken);
+  identity.current = client.boot!.csrfToken;
   const supplement = useRef(onSupplement);
   supplement.current = onSupplement;
   const supplementRequest = useRef(0);
@@ -124,6 +157,47 @@ export function SubjectObjectives({
           ))
       );
     }) ?? [];
+  async function quickControl(goal: (typeof goals)[number]) {
+    if (
+      pendingControl.current ||
+      !client.online ||
+      !runtime.connected ||
+      !goal.controlAllowed ||
+      !goal.revision ||
+      !executionActivityContextAvailable(goal.contextId, runtime)
+    )
+      return;
+    const origin = client.boot!.csrfToken;
+    pendingControl.current = true;
+    setControlling(goal.id);
+    setControlError("");
+    try {
+      await applicationCall(
+        "objective.control",
+        {
+          objectiveId: goal.id,
+          projectId: goal.projectId,
+          conversationId: goal.conversationId,
+          revision: goal.revision,
+          action: ["paused", "blocked"].includes(goal.status)
+            ? "resume"
+            : "pause",
+        },
+        { identityGeneration: origin, signal: AbortSignal.timeout(12000) },
+      );
+      await client.refreshView();
+    } catch (cause) {
+      if (identity.current === origin)
+        setControlError(
+          cause instanceof Error
+            ? cause.message
+            : "目标操作未确认，请核对状态。",
+        );
+    } finally {
+      pendingControl.current = false;
+      if (identity.current === origin) setControlling("");
+    }
+  }
   if (!goals.length && (scope || !runtime.activity?.objectivesTruncated))
     return null;
   const fresh =
@@ -151,6 +225,16 @@ export function SubjectObjectives({
           goal.threadIds.includes(thread.id),
       ) ?? [];
     const open = expanded === goal.id;
+    const needsApproval =
+      goalFresh &&
+      threads.some(
+        (thread) =>
+          executionActivityApprovals(
+            thread,
+            runtime.activity?.threads ?? [],
+            runtime.attention,
+          ).length,
+      );
     const running = goalFresh
       ? threads.filter(
           (thread) =>
@@ -171,17 +255,67 @@ export function SubjectObjectives({
           open={open}
           onToggle={() => setExpanded(open ? null : goal.id)}
           onView={() => setViewing(goal.id)}
+          control={
+            goal.controlAllowed &&
+            ["active", "blocked", "paused"].includes(goal.status) ? (
+              <Tooltip
+                label={
+                  ["paused", "blocked"].includes(goal.status)
+                    ? "继续目标"
+                    : "暂停目标"
+                }
+              >
+                <button
+                  className="icon-button"
+                  data-size="icon-xs"
+                  aria-label={
+                    ["paused", "blocked"].includes(goal.status)
+                      ? "继续目标"
+                      : "暂停目标"
+                  }
+                  disabled={!goalFresh || !!controlling}
+                  aria-busy={controlling === goal.id}
+                  onClick={() => void quickControl(goal)}
+                >
+                  {["paused", "blocked"].includes(goal.status) ? (
+                    <Play />
+                  ) : (
+                    <Pause />
+                  )}
+                </button>
+              </Tooltip>
+            ) : undefined
+          }
+          supplement={
+            goal.pendingUserInput && onReplyObjective ? (
+              <Tooltip label="补充 · 有待答问题">
+                <button
+                  type="button"
+                  className="icon-button needs-input"
+                  ref={observeSupplementAttention}
+                  data-size="icon-xs"
+                  aria-label="补充目标"
+                  disabled={!goalFresh || goal.status !== "active"}
+                  onClick={() => onReplyObjective(goal, threads)}
+                >
+                  <MessageSquarePlus />
+                </button>
+              </Tooltip>
+            ) : undefined
+          }
           status={
             <>
-              {goalFresh
-                ? goal.readiness === "waiting"
-                  ? objectiveDetailStatus(
-                      goal.status,
-                      goal.readiness,
-                      goal.waitKinds,
-                    )
-                  : objectiveStatus(goal.status)
-                : "状态待核对"}{" "}
+              {needsApproval
+                ? "等待你的批准"
+                : goalFresh
+                  ? goal.readiness === "waiting"
+                    ? objectiveDetailStatus(
+                        goal.status,
+                        goal.readiness,
+                        goal.waitKinds,
+                      )
+                    : objectiveStatus(goal.status)
+                  : "状态待核对"}{" "}
               · {threads.length} 个关联执行
               {running > 0 && ` · ${running} 条执行中`}
             </>
@@ -190,13 +324,15 @@ export function SubjectObjectives({
         {open && (
           <div className="subject-objective-detail">
             <p role="status">
-              {goalFresh
-                ? objectiveDetailStatus(
-                    goal.status,
-                    goal.readiness,
-                    goal.waitKinds,
-                  )
-                : "目标状态待核对"}
+              {needsApproval
+                ? "等待你的批准"
+                : goalFresh
+                  ? objectiveDetailStatus(
+                      goal.status,
+                      goal.readiness,
+                      goal.waitKinds,
+                    )
+                  : "目标状态待核对"}
             </p>
             {threads.map((thread) => {
               const status = executionActivityStatus(
@@ -252,6 +388,11 @@ export function SubjectObjectives({
         <section className="subject-objectives" aria-label={label}>
           <h3>{label}</h3>
           {current.map(renderGoal)}
+          {controlError && (
+            <p role="alert" className="delivery-error">
+              {controlError}
+            </p>
+          )}
           {runtime.activity?.objectivesTruncated && (
             <small className="muted">目标概览尚不完整</small>
           )}
@@ -306,42 +447,35 @@ export function SubjectObjectives({
                       goal.threadIds.includes(thread.id),
                   )}
                   onSelect={onSelect}
+                  onReply={onReply}
+                  onReplyObjective={onReplyObjective}
                   onSupplement={
                     onSupplement
                       ? async (target) => {
                           const request = ++supplementRequest.current;
                           const identity = `${client.boot!.centerId}:${client.boot!.principalId}:${client.boot!.actantId}`;
-                          await client.loadHistoryUntil(target.inputId);
-                          // History hydration publishes a new render. Invoke its current
-                          // draft command, never a captured pre-hydration draft snapshot.
-                          await new Promise<void>((resolve) =>
-                            requestAnimationFrame(() => resolve()),
-                          );
                           const boot = client.getSnapshot();
-                          const original = boot?.workspace.inputs.find(
-                            (input) => input.id === target.inputId,
-                          );
                           if (
                             request !== supplementRequest.current ||
                             currentView.current !== goal.id ||
                             !boot ||
                             `${boot.centerId}:${boot.principalId}:${boot.actantId}` !==
                               identity ||
-                            !original ||
-                            original.author.principalId !== boot.principalId ||
-                            original.author.actantId !== boot.actantId ||
                             !supplement.current
                           )
                             throw new Error(
-                              "此目标的原消息暂时无法读取，未改变输入框或发送消息。",
+                              "当前工作范围已变化，未切换补充目标。",
                             );
                           setViewing(null);
+                          // Selecting the exact loaded Thread is local. Never page
+                          // old messages just to open its supplement draft.
                           // Let native-modal focus restoration finish before the shared
                           // composer takes focus. The command only associates; never sends.
                           requestAnimationFrame(() => {
                             const boot = client.getSnapshot();
                             if (
                               request === supplementRequest.current &&
+                              currentView.current === null &&
                               boot &&
                               `${boot.centerId}:${boot.principalId}:${boot.actantId}` ===
                                 identity

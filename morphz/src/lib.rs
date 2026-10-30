@@ -76,6 +76,7 @@ pub mod tool;
 pub mod trajectory;
 pub mod tui;
 pub mod update;
+pub mod user_input;
 pub mod web;
 
 pub use yao_lang as yao;

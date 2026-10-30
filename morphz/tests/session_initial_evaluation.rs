@@ -63,6 +63,7 @@ async fn creation_contract(store: &impl SessionDirectoryStore) -> Vec<String> {
         ("inherited", None),
         ("none", Some(ReasoningEffort::Off)),
         ("max", Some(ReasoningEffort::Max)),
+        ("xhigh", Some(ReasoningEffort::XHigh)),
     ] {
         let selection = InitialSessionEvaluation {
             model_alias: effort.map(|_| "fixture-model".to_string()),

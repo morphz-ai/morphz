@@ -70,7 +70,7 @@ pub struct SessionApprovalView {
     pub objective_id: Option<String>,
     pub requested_scope: ApprovalScope,
     pub available_scopes: Vec<ApprovalScope>,
-    pub lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub lease_duration_secs: Option<u64>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -156,7 +156,8 @@ impl MorphzRuntime {
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
         let mut available_scopes = Vec::new();
-        let mut lease_expires_at = None;
+        let mut lease_duration_secs =
+            approved_capability_lease_duration(&record.risk_tags).map_err(unavailable)?;
         if record.status == ApprovalStatus::PendingHuman
             && job.status == ExecutionJobStatus::WaitingApproval
         {
@@ -185,7 +186,7 @@ impl MorphzRuntime {
                     .approval_lease_offer(&record, &job, &action, &requested)
                     .await
                 {
-                    lease_expires_at = Some(offer.expires_at);
+                    lease_duration_secs = Some(offer.duration_secs);
                     available_scopes.push(ApprovalScope::Thread);
                     if objective_id.is_some() {
                         available_scopes.push(ApprovalScope::Objective);
@@ -206,7 +207,7 @@ impl MorphzRuntime {
             objective_id,
             requested_scope,
             available_scopes,
-            lease_expires_at,
+            lease_duration_secs,
             created_at: record.created_at,
             decided_at: record.decided_at,
         })
@@ -221,7 +222,9 @@ impl MorphzRuntime {
         action: &ApprovalAction,
         requested: &CapabilityDelta,
     ) -> Option<CapabilityLeaseOffer> {
-        if !self.inner.config.edge_execution.capability_leases_enabled {
+        if !record.status.is_pending()
+            || !self.inner.config.edge_execution.capability_leases_enabled
+        {
             return None;
         }
         let ttl = self
@@ -231,12 +234,6 @@ impl MorphzRuntime {
             .capability_lease_ttl
             .as_secs();
         if ttl == 0 {
-            return None;
-        }
-        let expires_at = record
-            .created_at
-            .checked_add_signed(chrono::Duration::try_seconds(i64::try_from(ttl).ok()?)?)?;
-        if expires_at <= chrono::Utc::now() {
             return None;
         }
         let requested_scope = job
@@ -275,6 +272,11 @@ impl MorphzRuntime {
             thread_id: job.thread_id.clone(),
             scope,
             scope_id,
+            objective_id: job
+                .request
+                .get(CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
             target_id: job.target_id.clone(),
             capability: action.lease_capability(),
             capabilities: reusable_capabilities(action, requested),
@@ -283,7 +285,7 @@ impl MorphzRuntime {
                 &self.inner.permissions.policy_digest(),
                 &target.policy_digest,
             ),
-            expires_at,
+            duration_secs: ttl,
         })
     }
 
@@ -326,6 +328,9 @@ impl MorphzRuntime {
                 if let Some(scope) = scope.lease_scope() {
                     risk_tags.push(capability_lease_scope_risk_tag(scope).into());
                     risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.into());
+                    if let Some(duration) = current.lease_duration_secs {
+                        risk_tags = bind_capability_lease_duration(risk_tags, duration);
+                    }
                 }
                 let resolution = ApprovalResolution::Allow {
                     rationale: rationale.clone(),

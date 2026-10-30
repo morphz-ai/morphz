@@ -27,9 +27,14 @@
   background: var(--soft);
   color: var(--muted);
 }
-.execution-activity-icon[data-status="running"] {
+.execution-activity-icon[data-status="running"],
+.execution-activity-icon[data-status="approval"] {
   background: color-mix(in srgb, var(--accent) 10%, var(--paper));
   color: var(--accent-strong);
+}
+.execution-activity-body > .execution-activity-summary[data-approval] {
+  color: var(--accent-strong);
+  font-weight: 500;
 }
 .execution-activity-icon[data-status="ended"] {
   color: var(--success-ink);

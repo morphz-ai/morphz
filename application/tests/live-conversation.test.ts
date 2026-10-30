@@ -2,6 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { internalModelOutput } from "../packages/core/src/model-publication.js";
 import {
+  contextUsageFromEvent,
+  latestContextUsage,
+} from "../packages/core/src/session-context-budget.js";
+import {
   LiveConversationProjection,
   sessionIoDraftSchema,
   type StreamEvent,
@@ -30,6 +34,88 @@ function projection() {
         : null,
   }));
 }
+test("上下文用量只保留数值元数据；按会话和模型取最新值，乱序不会回退", () => {
+  const p = projection();
+  const measurement = (
+    sequence: number,
+    tokens: number,
+    model = "model-a",
+  ) => ({
+    ...event("runtime/model_attempt_state", {
+      context_id: "context",
+      session_id: "owned",
+      context_token_budget: { model },
+      pressure: {
+        token_scope: "full-work-prompt",
+        estimated_tokens: tokens,
+        token_model: model,
+        token_accuracy: "heuristic-estimate",
+      },
+      detail: "private request body",
+    }),
+    timestamp: "2026-10-28T01:00:00Z",
+    sequence,
+  });
+  p.consume(measurement(10, 800));
+  p.consume(measurement(9, 200));
+  p.consume(measurement(11, 900, "model-b"));
+  const scope = { contextId: "context", sessionId: "owned", model: "model-a" };
+  assert.equal(
+    latestContextUsage(p.latestContextUsages(), scope)?.inputTokens,
+    800,
+  );
+  assert.equal(p.latestContextUsages().length, 2);
+  assert.equal(
+    latestContextUsage(p.latestContextUsages(), {
+      ...scope,
+      sessionId: "foreign",
+    }),
+    null,
+  );
+  assert.equal(
+    latestContextUsage(p.latestContextUsages(), { ...scope, model: "model-b" })
+      ?.inputTokens,
+    900,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(p.latestContextUsages()),
+    /private request body|detail/,
+  );
+  p.reconnect();
+  assert.equal(
+    latestContextUsage(p.latestContextUsages(), scope)?.inputTokens,
+    800,
+  );
+  const valid = measurement(12, 1000);
+  const pressure = {
+    token_scope: "full-work-prompt",
+    estimated_tokens: 1000,
+    token_model: "model-a",
+    token_accuracy: "heuristic-estimate",
+  };
+  assert.equal(contextUsageFromEvent({ ...valid, topic: "chat/reply" }), null);
+  assert.equal(
+    contextUsageFromEvent({
+      ...valid,
+      payload: {
+        ...valid.payload,
+        pressure: { ...pressure, estimated_tokens: -1 },
+      },
+    }),
+    null,
+  );
+  assert.equal(
+    contextUsageFromEvent({
+      ...valid,
+      payload: {
+        ...valid.payload,
+        pressure: { ...pressure, token_scope: "tool-result" },
+      },
+    }),
+    null,
+  );
+});
+
 test("模型阶段按同一输入的持久序号更新；终态、取消和断线清除，隐藏内容不成为回复", () => {
   const p = projection();
   const phase = (sequence: number, state: string, terminal = false) => ({

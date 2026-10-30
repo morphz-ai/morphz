@@ -104,12 +104,29 @@ const statementNames = [
 const originalRefs = parse({ Refs: fixed.spans.refs.raw })
   .get("Refs")!
   .nodes.filter(isVariableDeclaration);
-// 009b1826 added read-only inspection without granting action authority.
-// Keep the signed historical spans unchanged, and pin the exact reviewed guard.
-const currentControl = fixed.spans.control.raw.replace(
-  "    const origin = observationScope;",
-  '    if ("runtime" in scope) return;\n    const origin = observationScope;',
-);
+// The signed historical spans stay unchanged. Review only the explicit new
+// control discriminants/feedback; preserve scope retirement, no retry, and one
+// coalesced refresh. Runtime pointer authorization now belongs to the Gateway.
+const currentControl = fixed.spans.control.raw
+  .replace('action.type === "cancel-thread"', '"threadId" in action')
+  .replace(
+    "          : action.approvalId,",
+    '          : action.type === "cancel-delegation"\n            ? (scope.threadId ?? "delegation")\n            : action.approvalId,',
+  )
+  .replace(
+    'setNotice(action.type === "cancel-job" ? "已请求停止" : "已提交决定");',
+    `setNotice(
+          action.type === "pause-thread"
+            ? "已暂停此执行"
+            : action.type === "resume-thread"
+              ? "已继续此执行"
+              : action.type === "supersede-thread"
+                ? "已纠正并继续此执行"
+                : action.type.startsWith("cancel-")
+                  ? "已请求停止"
+                  : "已提交决定",
+        );`,
+  );
 const expectedBody = statementNames
   .map((name) =>
     name === "refs"

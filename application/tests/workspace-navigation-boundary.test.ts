@@ -2172,6 +2172,23 @@ nodeTest(
       {
         owner: changed(
           current.owner,
+          "if (revision !== undefined)",
+          "if (revision === undefined)",
+        ),
+        app: current.app,
+        rule: /required loaded script revision guard/,
+      },
+      {
+        owner: current.owner.replaceAll(
+          '        if (revision !== undefined)\n          throw new Error("剧本版本请从剧本的历史记录打开，未跳转到当前版。");\n',
+          "",
+        ),
+        app: current.app,
+        rule: /required loaded script revision guard/,
+      },
+      {
+        owner: changed(
+          current.owner,
           "  async function openUser(\n",
           "  function openUser() {}\n  async function openUser(\n",
         ),

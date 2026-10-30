@@ -43,6 +43,7 @@
   margin-bottom: 18px;
 }
 .app .subject-tabs > button {
+  position: relative;
   flex: 1;
   min-width: 0;
   height: 34px;
@@ -65,6 +66,23 @@
 .subject-tabs svg {
   width: 18px;
   height: 18px;
+}
+.subject-approval-count {
+  position: absolute;
+  top: 0;
+  right: calc(50% - 22px);
+  display: grid;
+  place-items: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent-strong);
+  color: var(--paper);
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
 }
 .app .subject-tabs .profile-avatar,
 .app .subject-tabs .brand-mark {
@@ -133,6 +151,30 @@
   display: flex;
   align-items: center;
   gap: 0;
+  container: objective-row / inline-size;
+}
+.subject-objective-actions {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+@container objective-row (max-width: 180px) {
+  .subject-objective-actions {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+.subject-schedule-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.subject-schedule-row > .subject-record {
+  flex: 1;
+  min-width: 0;
+}
+.runtime-schedule-actions {
+  flex: none;
 }
 .app .subject-objective-row > .subject-objective-heading {
   flex: 1;
@@ -143,6 +185,11 @@
 }
 .subject-objective-row .subject-objective-heading > span {
   gap: 2px;
+}
+.subject-objective-heading small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .subject-objective-heading > svg:last-child {
   width: 14px;

@@ -87,6 +87,10 @@ export function SubjectSidebar({
     (actor) => actor.kind === "agent",
   );
   const attention = runtime.attention;
+  const pendingApprovals = attention?.approvals.length ?? 0;
+  const approvalHint = pendingApprovals
+    ? `${pendingApprovals} 项等待你的批准${attention?.available ? "" : " · 状态待核对"}`
+    : "";
   const name =
     (profile?.snapshot?.agent.available && profile.snapshot.agent.enabled
       ? profile.snapshot.agent.data.name
@@ -142,10 +146,15 @@ export function SubjectSidebar({
               role="tab"
               id={`subject-tab-${id}`}
               aria-label={label}
+              aria-description={
+                id === "permissions" ? approvalHint || undefined : undefined
+              }
               title={
                 id === "activity"
                   ? `${label} · ${subjectStatus(runtime, client.online)}`
-                  : label
+                  : id === "permissions" && approvalHint
+                    ? `${label} · ${approvalHint}`
+                    : label
               }
               aria-selected={view === id}
               aria-controls={`subject-view-${id}`}
@@ -162,6 +171,11 @@ export function SubjectSidebar({
                 />
               ) : (
                 <Icon />
+              )}
+              {id === "permissions" && pendingApprovals > 0 && (
+                <span className="subject-approval-count" aria-hidden="true">
+                  {pendingApprovals > 99 ? "99+" : pendingApprovals}
+                </span>
               )}
             </button>
           ))}
@@ -190,9 +204,10 @@ export function SubjectSidebar({
         {view === "permissions" && (
           <section className="subject-section">
             <h3>授权</h3>
-            {!client.online || !runtime.connected || !attention?.available ? (
-              <p className="muted">审批状态待核对</p>
-            ) : attention.approvals.length ? (
+            {(!client.online ||
+              !runtime.connected ||
+              !attention?.available) && <p className="muted">审批状态待核对</p>}
+            {attention?.approvals.length ? (
               attention.approvals.map((entry) => (
                 <ApprovalCard
                   key={entry.approval.fingerprint}
@@ -209,9 +224,9 @@ export function SubjectSidebar({
                   onInspect={() => onInspect(entry.scope)}
                 />
               ))
-            ) : (
+            ) : client.online && runtime.connected && attention?.available ? (
               <p className="muted">没有待审批请求</p>
-            )}
+            ) : null}
             {directoryAvailable && (
               <div className="subject-permissions">
                 <h4>

@@ -1,6 +1,39 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runtimeListenerFromJsonLine } from "./runtime-listener-fixture.js";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import {
+  runtimeListenerFromJsonLine,
+  stopRuntimeFixtureChild,
+} from "./runtime-listener-fixture.js";
+
+test(
+  "fixture cleanup settles for both a live owned process and an already signal-terminated one",
+  { timeout: 5000 },
+  async () => {
+    for (const alreadyExited of [false, true]) {
+      const child = spawn(process.execPath, [
+        "-e",
+        "setInterval(() => {}, 1000)",
+      ]);
+      await once(child, "spawn");
+      try {
+        if (alreadyExited) {
+          const exited = once(child, "exit");
+          child.kill("SIGTERM");
+          await exited;
+          assert.equal(child.exitCode, null);
+          assert.equal(child.signalCode, "SIGTERM");
+        }
+        await stopRuntimeFixtureChild(child);
+        assert.equal(child.signalCode, "SIGTERM");
+        await stopRuntimeFixtureChild(child);
+      } finally {
+        await stopRuntimeFixtureChild(child);
+      }
+    }
+  },
+);
 
 const ready = (addr: unknown) =>
   JSON.stringify({

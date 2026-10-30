@@ -4,8 +4,9 @@ use crate::activation_admission::{
 };
 use crate::admission::{AdmissionClass, AdmissionKey};
 use crate::approval::{
-    capability_lease_policy_digest, capability_lease_scope, capability_lease_was_approved,
-    reusable_capabilities, reusable_capabilities_cover, stable_capability_lease_id,
+    bind_capability_lease_duration, capability_lease_expires_at, capability_lease_policy_digest,
+    capability_lease_scope, capability_lease_was_approved, reusable_capabilities,
+    reusable_capabilities_cover, stable_capability_lease_id, without_capability_lease_authority,
     ApprovalDecision, ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub,
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
@@ -577,6 +578,7 @@ You decide what the current objective warrants retaining, summarizing, revising,
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
 - reply: return the exact original business value through the frozen Session IO carrier, independently of annotation mode. For native_v3, Chat/UTF-8 is ordinary native text, typed JSON is the original business value, and applicable enabled work annotations belong to the SAME actual native call's _morphz field, never an answer wrapper. Historical explicit outputs retain their frozen fields. Receiving-side tolerance is not permission to omit applicable work metadata. Runtime constructs the caller Message and causal identities. No text markers or companion calls. Only the Runtime's return boundary ends this Evaluation; other business publications are nonterminal. Bare `(eval ...)` or `(infer ...)` inside ordinary text remains data.
 - no-reply: call no_reply as the only work/control call and choose a mode; enabled annotation fields are not work effects. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
+- ask-user: when request_user_input is advertised, call it alone with explicit questions and optional choices if this exact work genuinely needs the initiating person's information or decision. Runtime durably suspends this Thread without a fallback timer or model polling until that exact question is answered. Do not create an Objective or hand the question to another Thread merely to ask. Closing the UI is not an answer; a reply is not a permission grant. Report a manual step only from its actual verified result.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
 - schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. An attached child keeps its parent request open until the child terminates; do not use attached for a delayed or recurring task when the user expects scheduling to finish the current request. Use a durable Objective at spawn, or atomically promote the same attached child before the final reply; do not create a duplicate Schedule. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
@@ -2772,6 +2774,7 @@ impl ActivationCancellationRegistry {
 enum TerminalDecision {
     Deliver(String),
     NoReply(NoReplyMode),
+    UserInput(crate::user_input::RequestUserInput),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2946,6 +2949,7 @@ impl TerminalDecision {
             Self::Deliver(_) => "deliver",
             Self::NoReply(NoReplyMode::Silent) => "no_reply",
             Self::NoReply(NoReplyMode::Wait { .. }) => "wait",
+            Self::UserInput(_) => crate::user_input::DISPOSITION,
         }
     }
 
@@ -2988,6 +2992,9 @@ fn classify_terminal_response(
     response: &crate::llm::Response,
     native_arguments: bool,
 ) -> Result<Option<TerminalDecision>, String> {
+    if let Some(request) = crate::user_input::classify(response, native_arguments)? {
+        return Ok(Some(TerminalDecision::UserInput(request)));
+    }
     let no_reply_calls = response
         .tool_calls
         .iter()
@@ -3083,6 +3090,7 @@ fn validate_final_reply_response(
                 "Objective finalization cannot enter a waiting state; submit the complete final report, or call no_reply(mode=silent) only when no message is needed"
                     .to_string(),
             ),
+            Some(TerminalDecision::UserInput(_)) => Err("Objective finalization cannot ask a new user question".into()),
             None => Err(
                 "Objective finalization must return final content using the active response format and enabled annotation contract, without work tools, or exclusively call no_reply(mode=silent)"
                     .to_string(),
@@ -9091,9 +9099,10 @@ impl Orchestrator {
             }
         }
         if let Some(supervisor) = &self.objective_supervisor {
-            if supervisor
-                .prepare_routed_event(&event, &activation.id)
-                .await?
+            // Admission finishes before Evaluation begins. Do not reserve
+            // its question/recovery frame throughout the later model/Plan
+            // poll stack, including when the event needs no Objective route.
+            if Box::pin(supervisor.prepare_routed_event(&event, &activation.id)).await?
                 == crate::objective::RoutedObjectiveEventDisposition::Suppressed
             {
                 tracing::info!(
@@ -10459,11 +10468,64 @@ impl Orchestrator {
             .await?
             .into_iter()
             .next();
-        let Some(trigger_attempt_id) = trigger
-            .as_ref()
-            .and_then(|event| event.payload.get("attempt_id"))
-            .and_then(|value| value.as_str())
-        else {
+        // A Human answer owns a new Activation, but closes the *original*
+        // native question call. Restore only its durable correlated receipt,
+        // never an attempt_id or Objective supplied by a caller.
+        let answer_attempt = if let Some(answer) = trigger.as_ref() {
+            if let Some(reply) =
+                crate::steering::destination(answer)?.and_then(|value| value.user_input_reply())
+            {
+                let request = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(reply.request_id.clone()),
+                        session_id: Some(session_id.to_owned()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or("Accepted question reply has no saved native request")?;
+                let expected = crate::user_input::answer_receipt(&request, answer)?;
+                let receipt = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(expected.id.clone()),
+                        session_id: Some(session_id.to_owned()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or("Accepted question reply has no durable native result")?;
+                if !crate::user_input::is_answer_receipt(&receipt)
+                    || receipt.payload != expected.payload
+                    || receipt.timestamp != expected.timestamp
+                {
+                    return Err(
+                        "Question reply continuation does not match its committed Human receipt"
+                            .into(),
+                    );
+                }
+                receipt
+                    .payload
+                    .get("attempt_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let trigger_attempt_id = answer_attempt.or_else(|| {
+            trigger
+                .as_ref()
+                .and_then(|event| event.payload.get("attempt_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+        let Some(trigger_attempt_id) = trigger_attempt_id.as_deref() else {
             return Ok(ToolContinuationEnvelope::default());
         };
         let events = self
@@ -10789,7 +10851,9 @@ impl Orchestrator {
             .get("text")
             .and_then(|value| value.as_str())
             .unwrap_or_default();
-        if crate::session_io::response::is_annotations_event(output) {
+        if crate::session_io::response::is_annotations_event(output)
+            || crate::user_input::is_answer_receipt(output)
+        {
             // An IO acknowledgement closes its actual native call; it is not
             // an external Observation and cannot mint a Recall reference.
             return Message {
@@ -13200,6 +13264,23 @@ impl Orchestrator {
                     self.publish_no_reply(session_id, &activation.id, parent.as_deref())
                         .await?;
                 }
+                TerminalDecision::UserInput(request) => {
+                    let store = self
+                        .context_engine
+                        .session_store()
+                        .ok_or("Question recovery requires SessionStore")?;
+                    let thread = store
+                        .get_thread_by_root(&activation.root_turn_id)
+                        .await?
+                        .ok_or("Question recovery Thread is missing")?;
+                    Box::pin(self.publish_user_input_request(
+                        activation,
+                        &thread,
+                        assistant_call,
+                        &request,
+                    ))
+                    .await?;
+                }
             }
             return Ok(true);
         }
@@ -14188,7 +14269,7 @@ impl Orchestrator {
         // file bytes. Only an explicit Agent tool result may supply native
         // media in the one-shot continuation. In particular, later Evaluations
         // must not reread the root input's files behind the Agent's back.
-        let mut continuation = if fresh_activation {
+        let mut continuation = if fresh_activation && activation.trigger_kind != "chat/steering" {
             ToolContinuationEnvelope::default()
         } else {
             self.tool_continuation_for_trigger(
@@ -14461,6 +14542,15 @@ impl Orchestrator {
         }
         restrict_tools_to_scope(&mut stable_work_tools, plan_infer_tools.as_ref());
         restrict_tools_to_scope(&mut stable_work_tools, model_harness_tool_scope.as_ref());
+        if thread.executor_kind == "self" && thread_kind != "delivery"
+            && thread.initiating_principal_id.is_some() && plan_infer_tools.is_none()
+            && model_harness_tool_scope.as_ref().is_none_or(|scope| scope.contains(crate::user_input::TOOL_NAME)) {
+            // Preserve the sorted work prefix and the existing no_reply tail
+            // across physical requests; question availability is route-stable.
+            let index = stable_work_tools.partition_point(|tool|
+                tool.name.as_str() < crate::user_input::TOOL_NAME);
+            stable_work_tools.insert(index, crate::user_input::definition());
+        }
         if thread.executor_kind != "plan_infer" {
             stable_work_tools.push(no_reply_tool_definition());
         }
@@ -14835,6 +14925,22 @@ impl Orchestrator {
                 }
             }
         }
+        // The model protocol/correction phase has a large debug poll frame.
+        // A Harness root never uses it, but an inline branch still reserves
+        // that frame before dispatching the Harness. Keep the phases behind
+        // separate heap boundaries, without spawning, yielding or changing
+        // the current Evaluation's leases and error propagation.
+        let model_directive = runtime_directive.map(|(phase, prompt)| (phase.to_owned(), prompt));
+        Box::pin(async move {
+        // Rebuild borrowed views inside their owning phase. Only the short
+        // directive label crosses the boundary as owned text; the Context,
+        // Harness metadata and return binding are moved, not deep-cloned.
+        let request_overlay = EvaluationContextOverlay {
+            return_binding: Some(&return_binding),
+            evaluation_profile: harness_context.as_ref().map(|item| item.profile.as_str()),
+            harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
+            runtime_directive: model_directive.as_ref().map(|(phase, prompt)| (phase.as_str(), *prompt)),
+        };
         let mut allowed_tool_names = allowed_tools
             .iter()
             .map(|tool| tool.name.clone())
@@ -16046,6 +16152,11 @@ impl Orchestrator {
                 .and_then(|_| validate_objective_completion_call(&response, native_arguments))
                 .and_then(|_| classify_terminal_response(&response, native_arguments))
                 .and_then(|decision| {
+                    if matches!(decision, Some(TerminalDecision::UserInput(_))) && !allowed_tool_names.contains(crate::user_input::TOOL_NAME) {
+                        Err("request_user_input is not available in this execution route or phase".into())
+                    } else { Ok(decision) }
+                })
+                .and_then(|decision| {
                     validate_objective_closure_review_response(
                         initial_objective_closure_review && !completion_prepared,
                         decision,
@@ -16308,6 +16419,22 @@ impl Orchestrator {
         }
 
         if let Some(decision) = terminal_decision {
+            if let TerminalDecision::UserInput(request) = &decision {
+                let call_id = self.record_terminal_response(session_id, &attempt_id, &effective_phase,
+                    &response, &decision, TerminalResponseEvidence {
+                        model_attempt_id: &terminal_model_attempt_id,
+                        annotation_bundle: terminal_response_annotations.as_ref(),
+                        context_view_manifest: &terminal_context_view_manifest,
+                        provider_continuation: terminal_provider_continuation.as_ref(),
+                    }).await?;
+                let call = self.context_engine.find_event(&activation.context_id, &call_id).await?
+                    .ok_or("Question native-call boundary is not durable")?;
+                // Keep the question outcome's state machine off the already
+                // large Evaluation frame on ordinary Tokio worker stacks.
+                Box::pin(self.publish_user_input_request(activation, &thread, &call, request)).await?;
+                if let Some(lease) = dialogue_lease.as_mut() { lease.release(); }
+                return Ok(());
+            }
             // A lifecycle control does not silence a progress explanation.
             // Preserve the model's text as progress while the independently
             // validated control decides waiting or non-delivery of a final reply.
@@ -16467,6 +16594,7 @@ impl Orchestrator {
                     )
                     .await
                 }
+                TerminalDecision::UserInput(_) => unreachable!("questions suspend before terminal delivery"),
             };
             if let Some(lease) = dialogue_lease.as_mut() {
                 lease.release();
@@ -16574,6 +16702,7 @@ impl Orchestrator {
         }
 
         unreachable!("A tool-free response must be handled by terminal-protocol classification, correction, or the circuit breaker")
+        }).await
         }).await
     }
 
@@ -17083,7 +17212,7 @@ impl Orchestrator {
         response: &crate::llm::Response,
         decision: &TerminalDecision,
         evidence: TerminalResponseEvidence<'_>,
-    ) -> Result<(), DynError> {
+    ) -> Result<String, DynError> {
         let TerminalResponseEvidence {
             model_attempt_id,
             annotation_bundle,
@@ -17128,6 +17257,28 @@ impl Orchestrator {
             }
         }
         self.append_activation_route(attempt_id, &mut payload);
+        if matches!(decision, TerminalDecision::UserInput(_)) {
+            if annotation_bundle.is_none() {
+                payload.push(("context_view_manifest".into(), json!(context_view_manifest)));
+                if let Some(continuation) = provider_continuation {
+                    payload.push(("provider_continuation".into(), json!(continuation)));
+                }
+            }
+            if let Some(objective_id) = payload
+                .iter()
+                .find(|(key, _)| key == "objective_id")
+                .and_then(|(_, value)| value.as_str())
+            {
+                let objective = self
+                    .objective_supervisor
+                    .as_ref()
+                    .ok_or("Objective question requires its Supervisor")?
+                    .get(objective_id)
+                    .await?
+                    .ok_or("Question Objective is missing")?;
+                payload.push(("objective_generation".into(), json!(objective.generation)));
+            }
+        }
         // A rejected logical completion can reassess inside this same
         // Activation, whose first working call already owns call_{attempt}.
         // Preserve Off's original ID unless that real durable work boundary
@@ -17153,13 +17304,32 @@ impl Orchestrator {
         };
         self.bus
             .publish(Event::new(
-                event_id,
+                event_id.clone(),
                 "Agent-Morphz".to_string(),
                 TYPE_AGENT_CALL.to_string(),
                 "chat/assistant_call".to_string(),
                 payload.into_iter().collect(),
             ))
             .await?;
+        Ok(event_id)
+    }
+
+    async fn publish_user_input_request(
+        &self,
+        activation: &ThreadActivationRecord,
+        thread: &ThreadRecord,
+        call: &Event,
+        request: &crate::user_input::RequestUserInput,
+    ) -> Result<(), DynError> {
+        let event = crate::user_input::request_event(call, thread, request)?;
+        if self
+            .commit_and_dispatch_outcome(&activation.id, &event)
+            .await?
+        {
+            if let Some(supervisor) = &self.objective_supervisor {
+                supervisor.user_input_outcome(&event).await?;
+            }
+        }
         Ok(())
     }
 
@@ -18226,11 +18396,14 @@ impl Orchestrator {
             }
         }
         let commit = committed.ok_or("Evaluation outcome persistence produced no result")?;
-        let requested_provider_wait = event
-            .payload
-            .get("disposition")
-            .and_then(serde_json::Value::as_str)
-            == Some("provider_wait");
+        let requested_suspension = matches!(
+            event
+                .payload
+                .get("disposition")
+                .and_then(serde_json::Value::as_str),
+            Some("provider_wait" | crate::user_input::DISPOSITION)
+        );
+        let mut dispatch_event = event.clone();
         let (
             should_dispatch,
             ready_signal_event_ids,
@@ -18253,12 +18426,25 @@ impl Orchestrator {
                     activation_id = %route.activation_id,
                     thread_id = %route.thread_id,
                     dependency_id,
-                event_code = "orchestrator.thread.provider_wait_persisted",
-                "Thread durably entered Provider wait while retaining an open lifecycle"
+                disposition = ?event.payload.get("disposition"),
+                event_code = "orchestrator.thread.suspension_persisted",
+                "Thread durably entered a dependency wait while retaining an open lifecycle"
                 );
                 (true, Vec::new(), Vec::new(), false, false)
             }
             ActivationOutcomeCommit::Existing { ref event_id } if event_id == &event.id => {
+                dispatch_event = self
+                    .context_engine
+                    .find_event(
+                        event
+                            .payload
+                            .get("context_id")
+                            .and_then(serde_json::Value::as_str)
+                            .ok_or("Existing outcome has no Context")?,
+                        event_id,
+                    )
+                    .await?
+                    .ok_or("Existing outcome Event is missing")?;
                 // The process may have committed the immutable outcome and
                 // failed before dispatching it.  Redispatching that exact
                 // Event is safe and closes the durable/live handoff.
@@ -18272,8 +18458,8 @@ impl Orchestrator {
                     true,
                     Vec::new(),
                     Vec::new(),
-                    !requested_provider_wait,
-                    !requested_provider_wait,
+                    !requested_suspension,
+                    !requested_suspension,
                 )
             }
             ActivationOutcomeCommit::Existing { ref event_id } => {
@@ -18346,6 +18532,7 @@ impl Orchestrator {
                 (false, Vec::new(), Vec::new(), false, false)
             }
         };
+        let event = &dispatch_event;
         if thread_terminal {
             // `commit_activation_outcome` atomically owns the real terminal
             // boundary. Record it before live EventBus handoff: dispatch can
@@ -20754,7 +20941,7 @@ impl Orchestrator {
                     &services.broker.policy_digest(),
                     &target.policy_digest,
                 );
-                let mut lease_offer = route
+                let lease_offer = route
                     .initiating_principal_id
                     .as_ref()
                     .filter(|_| {
@@ -20783,6 +20970,7 @@ impl Orchestrator {
                             thread_id: thread.id.clone(),
                             scope,
                             scope_id,
+                            objective_id: objective_scope_id.clone(),
                             target_id: new_job.target_id.clone(),
                             capability: requirement.action.lease_capability(),
                             capabilities: reusable_capabilities(
@@ -20791,11 +20979,7 @@ impl Orchestrator {
                             ),
                             requested: requirement.requested.clone(),
                             policy_digest: lease_policy_digest.clone(),
-                            expires_at: Utc::now()
-                                + chrono::Duration::seconds(
-                                    i64::try_from(services.capability_lease_ttl_secs)
-                                        .unwrap_or(i64::MAX),
-                                ),
+                            duration_secs: services.capability_lease_ttl_secs,
                         }
                     });
                 let identity = stable_approval_identity(
@@ -20826,12 +21010,6 @@ impl Orchestrator {
                         .await?,
                     "create approval authority",
                 )?;
-                if let Some(offer) = lease_offer.as_mut() {
-                    offer.expires_at = approval.created_at
-                        + chrono::Duration::seconds(
-                            i64::try_from(services.capability_lease_ttl_secs).unwrap_or(i64::MAX),
-                        );
-                }
                 // A persisted request is an immutable fact, but UI delivery is
                 // process-local. Re-dispatch an exact still-pending replay so
                 // restart never leaves a human Approval invisible merely
@@ -20949,7 +21127,7 @@ impl Orchestrator {
                                 risk_tags,
                             } => ApprovalResolution::Allow {
                                 rationale,
-                                risk_tags,
+                                risk_tags: without_capability_lease_authority(risk_tags),
                             },
                             ApprovalDecision::AllowLease {
                                 rationale,
@@ -20964,6 +21142,13 @@ impl Orchestrator {
                                 if !capability_lease_was_approved(&risk_tags) {
                                     risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
                                 }
+                                risk_tags = bind_capability_lease_duration(
+                                    risk_tags,
+                                    lease_offer
+                                        .as_ref()
+                                        .expect("offer checked above")
+                                        .duration_secs,
+                                );
                                 ApprovalResolution::Allow {
                                     rationale,
                                     risk_tags,
@@ -21001,9 +21186,14 @@ impl Orchestrator {
                     }
                 }
 
-                if approval.status == ApprovalStatus::Allowed
+                let lease_expiry = if approval.status == ApprovalStatus::Allowed
                     && capability_lease_was_approved(&approval.risk_tags)
                 {
+                    capability_lease_expires_at(&approval)?.filter(|expiry| *expiry > Utc::now())
+                } else {
+                    None
+                };
+                if let Some(expires_at) = lease_expiry {
                     let offer = lease_offer.as_ref().ok_or(
                         "Allowed Approval is marked as a Capability Lease, but the current request lacks a lease_offer",
                     )?;
@@ -21026,7 +21216,7 @@ impl Orchestrator {
                         requested: serde_json::to_value(&offer.requested)?,
                         policy_digest: offer.policy_digest.clone(),
                         issued_by_approval_id: Some(approval.id.clone()),
-                        expires_at: offer.expires_at,
+                        expires_at,
                     };
                     match services
                         .capability_leases

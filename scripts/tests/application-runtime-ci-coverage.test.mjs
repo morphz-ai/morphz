@@ -29,6 +29,92 @@ function jobSource(source, name) {
   return next === -1 ? tail : tail.slice(0, next);
 }
 
+function verifyTimingStability(source) {
+  const job = jobSource(source, "linux-native-regressions");
+  const step = job.split("\n      - ").find(part => part.includes("name: Require five consecutive timing and healthy-idle passes without retries"));
+  assert.ok(step, "mandatory timing stability step");
+  for (const file of ["tests/conversation-performance.spec.ts", "tests/platform-history-cache.spec.ts", "tests/search-panel.spec.ts", "tests/exchange-controller.spec.ts"])
+    assert.ok(step.includes(`            ${file} \\\n`), `complete ${file} must be repeated`);
+  assert.match(step, /--repeat-each=5 --forbid-only/);
+  assert.doesNotMatch(step, /--grep|--shard|--retries|continue-on-error|\bif:|\|\|/);
+}
+
+function verifyHarnessStackStability(source) {
+  const job = jobSource(source, "runtime-admission");
+  const steps = job.split("\n      - ");
+  const inventory = steps.findIndex(part => part.includes("name: Run the complete Runtime library inventory through the installed implementation"));
+  const repeated = steps.findIndex(part => part.includes("name: Require five Harness root passes on the default 2 MiB test stack"));
+  assert.ok(inventory >= 0 && repeated > inventory, "stack repetition supplements the complete inventory");
+  const step = steps[repeated];
+  assert.match(step, /shell: bash/);
+  assert.match(step, /for round in 1 2 3 4 5; do/);
+  assert.match(step, /RUST_MIN_STACK=2097152 \/usr\/local\/libexec\/morphz-runtime-ci\/lib/);
+  assert.match(step, /runtime::tests::bound_runtime_harness_returns_without_a_model_rewrite_or_goal_completion/);
+  assert.match(step, /--exact --test-threads=1/);
+  assert.doesNotMatch(step, /continue-on-error|\bif:|\|\||--ignored|\buntil\b/);
+}
+
+function verifyNotesGuiStability(source) {
+  const triggers = source.slice(0, source.indexOf("\npermissions:"));
+  for (const path of [
+    "application/tests/cognitive-notes-gui-package.test.ts",
+    "application/tests/fixtures/cognitive-notes-gui-package.ts",
+    "application/tests/connection-read-diagnostics-mounted.test.ts",
+  ]) assert.ok(triggers.includes(`      - ${path}\n`), `${path} must trigger stability checks`);
+  const job = jobSource(source, "macos-compose-regressions");
+  assert.match(job, /^    needs: macos-reader-regressions$/m);
+  assert.match(job, /^    runs-on: macos-26$/m);
+  assert.match(jobSource(source, "macos-reader-regressions"), /^    runs-on: macos-26$/m);
+  const steps = job.split("\n      - ");
+  const prepare = steps.findIndex(part => part.includes("name: Prepare exact independent author dependencies for early GUI stability"));
+  const repeated = steps.findIndex(part => part.includes("name: Require five complete Notes GUI and connection resize passes without retries"));
+  assert.ok(prepare >= 0 && repeated > prepare);
+  assert.match(steps[prepare], /scripts\/prepare-cognitive-author-dependencies\.ts/);
+  assert.match(steps[repeated], /for round in 1 2 3 4 5; do/);
+  assert.match(steps[repeated], /npm test -- --test-concurrency=1 tests\/cognitive-notes-gui-package\.test\.ts/);
+  assert.match(steps[repeated], /tests\/connection-read-diagnostics-mounted\.test\.ts/);
+  assert.doesNotMatch(steps[repeated], /--test-name-pattern|--grep|--retries|continue-on-error|\bif:|\|\||\buntil\b/);
+  assert.match(job, /timeout-minutes: 20/);
+}
+
+test("macOS repeats complete Notes GUI and connection resize files five times before the long inventory without narrowing or retrying", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  verifyNotesGuiStability(source);
+  for (const changed of [
+    source.replace("    needs: macos-reader-regressions\n", ""),
+    source.replaceAll("runs-on: macos-26\n", "runs-on: macos-26-intel\n"),
+    source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    source.replaceAll("scripts/prepare-cognitive-author-dependencies.ts", "scripts/omitted.ts"),
+    source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "--test-name-pattern=fast\n          done"),
+    source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "tests/connection-read-diagnostics-mounted.test.ts || true\n          done"),
+    source.replace(" tests/connection-read-diagnostics-mounted.test.ts\n          done", "\n          done"),
+    source.replace("      - application/tests/connection-read-diagnostics-mounted.test.ts\n", ""),
+  ]) assert.throws(() => verifyNotesGuiStability(changed));
+});
+
+test("Harness stack stability must pass five times at the default budget after the complete installed inventory", () => {
+  const source = readFileSync(new URL("../../.github/workflows/linux-sandbox-service.yml", import.meta.url), "utf8");
+  verifyHarnessStackStability(source);
+  for (const changed of [
+    source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    source.replace("RUST_MIN_STACK=2097152", "RUST_MIN_STACK=8388608"),
+    source.replace("--exact --test-threads=1\n          done", "--exact --test-threads=1 || true\n          done"),
+  ]) assert.throws(() => verifyHarnessStackStability(changed));
+});
+
+test("the latest commit must pass every timing and healthy-idle case five times, not retry failures", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  verifyTimingStability(source);
+  for (const changed of [
+    source.replace("--repeat-each=5", "--repeat-each=1"),
+    source.replace("            tests/platform-history-cache.spec.ts \\\n", ""),
+    source.replace("            tests/search-panel.spec.ts \\\n", ""),
+    source.replace("            tests/exchange-controller.spec.ts \\\n", ""),
+    source.replace("--repeat-each=5", "--retries=5"),
+    source.replace("--repeat-each=5", "--repeat-each=5 --grep fast"),
+  ]) assert.throws(() => verifyTimingStability(changed));
+});
+
 function verifyModelSettingsDiagnostic(source) {
   const triggers = source.slice(0, source.indexOf("\npermissions:"));
   for (const path of [
@@ -452,7 +538,7 @@ test("native browser omission, optional execution and name filters cannot pass c
   const desktop = jobSource(workflow, "desktop");
   for (const changed of [
     desktop.replace(" tests/sidebar-resize.spec.ts", ""),
-    desktop.replace("runs-on: macos-latest", "runs-on: ubuntu-latest"),
+    desktop.replace(/runs-on: macos-[^\n]+/, "runs-on: ubuntu-latest"),
     desktop.replace(
       "run: npx playwright test",
       "continue-on-error: true\n        run: npx playwright test",

@@ -46,6 +46,24 @@ try {
     throw "Release archive does not contain morphz.exe."
   }
 
+  # GitHub /latest excludes drafts/prereleases. Verify the already-checksummed
+  # binary too, before replacing any component, including when a mirror is used.
+  $versionOutput = (& $binary --version | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^morphz ([0-9]+\.[0-9]+\.[0-9]+(?:[+-][0-9A-Za-z.+-]+)?)(?: \(git [^)]*\))?$') {
+    throw "Release binary could not report a valid version."
+  }
+  $packageVersion = $Matches[1]
+  if ($version -eq "latest") {
+    if (($packageVersion -split '\+', 2)[0].Contains("-")) {
+      throw "Stable installation rejected prerelease $packageVersion; set MORPHZ_VERSION to the exact release tag to opt in."
+    }
+  } else {
+    $requestedVersion = if ($version.StartsWith("v")) { $version.Substring(1) } else { $version }
+    if ($packageVersion -cne $requestedVersion) {
+      throw "Release binary version $packageVersion does not match requested version $version."
+    }
+  }
+
   New-Item -ItemType Directory -Force $installDir | Out-Null
   @(
     "morphz.exe",
@@ -63,7 +81,7 @@ try {
   Write-Host "[5/5] Configuring the command path"
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   $pathEntries = @($userPath -split ";" | Where-Object { $_ })
-  if ($pathEntries -notcontains $installDir) {
+  if ($env:MORPHZ_NO_MODIFY_PATH -ne "1" -and $pathEntries -notcontains $installDir) {
     $updatedPath = (@($pathEntries) + $installDir) -join ";"
     [Environment]::SetEnvironmentVariable("Path", $updatedPath, "User")
   }

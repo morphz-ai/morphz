@@ -1,6 +1,6 @@
 use crate::config::{
-    AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, PromptCacheStrategy,
-    ProviderConfig, ProviderModelConfig,
+    AppConfig, ChatTokenLimitParameter, CredentialConfig, CredentialSource, LlmConfig,
+    ModelProtocol, PromptCacheStrategy, ProviderConfig, ProviderModelConfig,
 };
 use crate::llm::{
     model_attachments, model_visible_message_text, provider_continuation, segmented_model_text,
@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 pub mod auth;
+mod chat_token_limit;
 mod claude_oauth;
 pub mod control;
 pub(crate) mod gemini_schema;
@@ -29,7 +30,9 @@ pub(crate) mod gemini_schema;
 mod native_message_tests;
 #[cfg(test)]
 mod native_output_tests;
+mod reasoning;
 mod refresh_diagnostics;
+pub(crate) use reasoning::{common_reasoning_efforts, model_reasoning_efforts};
 pub mod routing;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
@@ -119,6 +122,21 @@ fn positive_usize(value: Option<&Value>) -> Option<usize> {
 }
 
 fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderModelConfig {
+    let supported_reasoning_efforts = row
+        .get("supported_reasoning_efforts")
+        .or_else(|| row.get("supported_reasoning_levels"))
+        .and_then(Value::as_array)
+        .map(|levels| {
+            levels
+                .iter()
+                .filter_map(|level| {
+                    level
+                        .as_str()
+                        .or_else(|| level.get("effort").and_then(Value::as_str))
+                        .and_then(ReasoningEffort::parse)
+                })
+                .collect()
+        });
     let context_window_tokens = ["context_window_tokens", "context_window", "context_length"]
         .into_iter()
         .find_map(|field| positive_usize(row.get(field)))
@@ -147,6 +165,7 @@ fn discovered_model_profile(row: &Value, protocol: ModelProtocol) -> ProviderMod
     let max_input_attachment_total_bytes =
         positive_usize(row.get("max_input_attachment_total_bytes"));
     ProviderModelConfig {
+        supported_reasoning_efforts,
         prompt_cache_strategy: PromptCacheStrategy::Auto,
         context_window_tokens,
         max_input_tokens,
@@ -428,6 +447,7 @@ pub(crate) struct ProtocolClient {
     stream_idle_timeout: Duration,
     first_byte_timeout: Duration,
     max_output_tokens: Option<u32>,
+    chat_token_limit_parameter: ChatTokenLimitParameter,
     reasoning_effort: RwLock<Option<ReasoningEffort>>,
     model_profiles: BTreeMap<String, ProviderModelConfig>,
     usage_anchors: Mutex<HashMap<u64, PromptUsageAnchor>>,
@@ -591,6 +611,28 @@ fn provider_failure_kind_from_code(code: Option<&str>) -> Option<ModelFailureKin
     }
 }
 
+/// Kimi Code's captured native Responses 400 uses an authentication type for
+/// this explicit context-window failure. Do not generalize the type to other
+/// statuses or search arbitrary echoed request text (see the budget audit).
+fn explicit_bad_request_context_limit(status: reqwest::StatusCode, body: &str) -> bool {
+    if status != reqwest::StatusCode::BAD_REQUEST {
+        return false;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let Some(message) = value.pointer("/error/message").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(message) = message.strip_prefix("Your request exceeded ") else {
+        return false;
+    };
+    let Some((model, limit)) = message.rsplit_once(" model token limit: ") else {
+        return false;
+    };
+    !model.trim().is_empty() && limit.trim().parse::<u64>().is_ok_and(|limit| limit > 0)
+}
+
 fn http_model_failure(
     status: reqwest::StatusCode,
     body: String,
@@ -605,7 +647,9 @@ fn http_model_failure(
     let provider_code = provider_error_code(&body);
     let kind = if let Some(kind) = provider_failure_kind_from_code(provider_code.as_deref()) {
         kind
-    } else if semantic.kind == ModelFailureKind::ContextLimit {
+    } else if semantic.kind == ModelFailureKind::ContextLimit
+        || explicit_bad_request_context_limit(status, &body)
+    {
         ModelFailureKind::ContextLimit
     } else if status == reqwest::StatusCode::PAYMENT_REQUIRED
         || semantic.kind == ModelFailureKind::QuotaExhausted
@@ -1332,6 +1376,17 @@ impl ProtocolClient {
         llm: &LlmConfig,
         request_context: BTreeMap<String, String>,
     ) -> Result<Self, ProviderError> {
+        for (model, profile) in &provider.models {
+            if profile
+                .max_output_tokens
+                .is_some_and(|limit| u32::try_from(limit).is_err())
+            {
+                return Err(format!(
+                    "model '{model}' output allowance exceeds the request token-limit range"
+                )
+                .into());
+            }
+        }
         if provider.models.get(&model).is_some_and(|profile| {
             profile.prompt_cache_strategy == PromptCacheStrategy::ExperimentalStructuredDeltas
         }) && !cfg!(feature = "experimental-structured-context-delta-cache")
@@ -1387,6 +1442,7 @@ impl ProtocolClient {
             stream_idle_timeout: Duration::from_secs(llm.stream_idle_timeout_secs.max(1)),
             first_byte_timeout: Duration::from_secs(llm.first_byte_timeout_secs.max(1)),
             max_output_tokens: llm.max_output_tokens,
+            chat_token_limit_parameter: chat_token_limit::for_provider(provider),
             reasoning_effort: RwLock::new(llm.reasoning_effort),
             model_profiles: provider.models.clone(),
             usage_anchors: Mutex::new(HashMap::new()),
@@ -1428,7 +1484,41 @@ impl ProtocolClient {
         reasoning_override: Option<Option<ReasoningEffort>>,
         record_current_boundary: bool,
     ) -> Result<Vec<Message>, ProviderError> {
+        if self.model_profiles.get(model).is_some_and(|profile| {
+            profile.context_window_tokens.is_some()
+                && profile
+                    .prompt_token_limit_for_request(self.max_output_tokens)
+                    .is_none()
+        }) {
+            return Err(boxed_model_failure(ModelFailure::new(
+                ModelFailureKind::InvalidModelOrRequest,
+                "Configured output allowance leaves no input capacity in this model's context window",
+            )));
+        }
         let protocol = self.protocol_for_model(model);
+        let effort = self.request_reasoning_effort(model, reasoning_override);
+        let capabilities = model_reasoning_efforts(
+            &self.adapter,
+            protocol,
+            model,
+            self.model_profiles.get(model),
+        );
+        if let Some(effort) = effort {
+            let unsupported = capabilities
+                .as_ref()
+                .map_or(effort == ReasoningEffort::XHigh, |levels| {
+                    !levels.contains(&effort)
+                });
+            if unsupported {
+                return Err(boxed_model_failure(ModelFailure::new(
+                    ModelFailureKind::InvalidModelOrRequest,
+                    format!(
+                        "reasoning effort '{}' is not declared supported by model '{model}'",
+                        effort.as_str()
+                    ),
+                )));
+            }
+        }
         let mut messages = if matches!(
             protocol,
             ModelProtocol::OpenaiChat | ModelProtocol::OpenaiResponses
@@ -1553,10 +1643,16 @@ impl ProtocolClient {
         reasoning_override: Option<Option<ReasoningEffort>>,
     ) -> Value {
         let reasoning_effort = self.request_reasoning_effort(model, reasoning_override);
+        let max_output_tokens = self.max_output_tokens.or_else(|| {
+            self.model_profiles
+                .get(model)
+                .and_then(|profile| profile.max_output_tokens)
+                .and_then(|limit| u32::try_from(limit).ok())
+        });
         let request = build_request_with_prompt_cache(
             self.protocol_for_model(model),
             model,
-            self.max_output_tokens,
+            max_output_tokens,
             reasoning_effort,
             messages,
             tools,
@@ -1717,6 +1813,11 @@ impl ProtocolClient {
     }
 
     fn adapt_request(&self, model: &str, request: Value, tools: &[ToolDefinition]) -> Value {
+        let request = chat_token_limit::adapt(
+            request,
+            self.protocol_for_model(model),
+            self.chat_token_limit_parameter,
+        );
         let request = if self.protocol_for_model(model) == ModelProtocol::GeminiContent {
             let dialect = if self.adapter == "google-antigravity" {
                 gemini_schema::GeminiToolSchemaDialect::Antigravity
@@ -6455,6 +6556,48 @@ mod tests {
     }
 
     #[test]
+    fn physical_output_budget_overflow_400_preserves_authentication_boundaries() {
+        let body = json!({"error": {
+            "message": "Your request exceeded k3-256k model token limit: 262144",
+            "type": "invalid_authentication_error"
+        }})
+        .to_string();
+        let failure = http_model_failure(reqwest::StatusCode::BAD_REQUEST, body.clone(), None);
+        assert_eq!(failure.kind, ModelFailureKind::ContextLimit);
+        assert_eq!(failure.http_status, Some(400));
+        assert_eq!(
+            failure.provider_code.as_deref(),
+            Some("invalid_authentication_error")
+        );
+        assert!(failure
+            .message
+            .contains("k3-256k model token limit: 262144"));
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+        ] {
+            assert!(!explicit_bad_request_context_limit(status, &body));
+            assert_eq!(
+                http_model_failure(status, body.clone(), None).kind,
+                ModelFailureKind::Authentication
+            );
+        }
+        for message in [
+            "Invalid API key",
+            "Your request exceeded rate limit: 10",
+            "Your request exceeded k3-256k model token limit: unknown",
+            "Quoted error: Your request exceeded k3-256k model token limit: 262144",
+        ] {
+            let body = json!({"error":{"message":message,"type":"invalid_authentication_error"}})
+                .to_string();
+            assert!(!explicit_bad_request_context_limit(
+                reqwest::StatusCode::BAD_REQUEST,
+                &body
+            ));
+        }
+    }
+
+    #[test]
     fn provider_retry_after_is_a_lower_bound_even_with_jitter() {
         let delay = provider_retry_delay(Duration::from_secs(1), Some(17), 3).unwrap();
         assert!(delay >= Duration::from_secs(17));
@@ -9942,6 +10085,76 @@ mod tests {
         assert_eq!(catalog[1].profile.max_output_tokens, Some(8_000));
         assert_eq!(catalog[2].id, "model-without-capacity");
         assert_eq!(catalog[2].profile, ProviderModelConfig::default());
+    }
+
+    #[test]
+    fn physical_output_budget_is_serialized_per_model_without_changing_unknown_models() {
+        for protocol in [
+            ModelProtocol::OpenaiChat,
+            ModelProtocol::OpenaiResponses,
+            ModelProtocol::AnthropicMessages,
+            ModelProtocol::GeminiContent,
+        ] {
+            let provider = ProviderConfig {
+                protocol,
+                models: BTreeMap::from([(
+                    "configured".into(),
+                    ProviderModelConfig {
+                        max_output_tokens: Some(131_072),
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+            for explicit in [None, Some(32_768)] {
+                let client = ProtocolClient::new(
+                    &provider,
+                    "configured".into(),
+                    None,
+                    &LlmConfig {
+                        max_output_tokens: explicit,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let body = client.request_for_model("configured", &[], &[]);
+                let value = match protocol {
+                    ModelProtocol::OpenaiChat => &body["max_completion_tokens"],
+                    ModelProtocol::OpenaiResponses => &body["max_output_tokens"],
+                    ModelProtocol::AnthropicMessages => &body["max_tokens"],
+                    ModelProtocol::GeminiContent => &body["generationConfig"]["maxOutputTokens"],
+                };
+                assert_eq!(value, &json!(explicit.unwrap_or(131_072)));
+                if protocol == ModelProtocol::OpenaiResponses && explicit.is_none() {
+                    assert!(client
+                        .request_for_model("unknown", &[], &[])
+                        .get("max_output_tokens")
+                        .is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn physical_output_budget_rejects_an_impossible_window_before_counting_or_transport() {
+        let provider = ProviderConfig {
+            models: BTreeMap::from([(
+                "configured".into(),
+                ProviderModelConfig {
+                    context_window_tokens: Some(32_768),
+                    max_output_tokens: Some(32_768),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let client =
+            ProtocolClient::new(&provider, "configured".into(), None, &LlmConfig::default())
+                .unwrap();
+        let error = client
+            .prepare_prompt_cache_messages("configured", Vec::new(), &[], None, false)
+            .unwrap_err();
+        assert!(error.to_string().contains("leaves no input capacity"));
     }
 
     #[tokio::test]

@@ -264,13 +264,15 @@ test("fixed actual Git51f five complete raw algorithms match both oracle and can
     "./fixtures/execution-interactions-51f9101e.ts",
     "../apps/web/src/data/execution-interactions.ts",
   ]) {
-    // The two read DTOs now also accept an independently authorized Runtime
-    // reference. Normalize only their erased type names; runtime algorithms,
-    // deadlines, signals, approval ledger and error behavior remain identical.
-    const source = readFileSync(
-      new URL(path, import.meta.url),
-      "utf8",
-    ).replaceAll("scope: ExecutionReadScope", "scope: ExecutionScope");
+    // Normalize the reviewed read DTO and approval discriminant extensions.
+    // Historical source hashes remain fixed; deadlines, physical-call ordering,
+    // shared ledger, unknown outcomes and refresh behavior stay protected.
+    const source = readFileSync(new URL(path, import.meta.url), "utf8")
+      .replaceAll("scope: ExecutionReadScope", "scope: ExecutionScope")
+      .replace(
+        'if ("approvalId" in command.action)',
+        'if (\n      command.action.type === "allow-once" ||\n      command.action.type === "deny"\n    )',
+      );
     assert.deepEqual(rawHashes(source), fixedHashes);
   }
   const old = readFileSync(
@@ -286,6 +288,34 @@ test("fixed actual Git51f five complete raw algorithms match both oracle and can
     () => assert.deepEqual(rawHashes(changed), fixedHashes),
     assert.AssertionError,
   );
+});
+
+test("Objective and Session grants share the original before-send approval ledger across surfaces and uncertainty", async () => {
+  for (const type of ["allow-objective", "allow-session"] as const) {
+    const h = harness(createExecutionInteractions);
+    const command: ExecutionControl = {
+      scope,
+      action: { type, approvalId: "approval", fingerprint },
+    };
+    const pending = h.commands.controlExecution(command);
+    assert.deepEqual(
+      h.events
+        .filter((e) =>
+          ["has", "add", "counter", "rpc"].includes((e as string[])[0]!),
+        )
+        .map((e) => (e as string[])[0]),
+      ["has", "add", "counter", "rpc"],
+    );
+    const other = createExecutionInteractions(h.ports);
+    await assert.rejects(
+      other.controlExecution(approval("allow-once")),
+      /本次审批已提交/,
+    );
+    h.calls[0]!.pending.reject(new Error("TEST unknown outcome"));
+    await assert.rejects(pending, /unknown outcome/);
+    await assert.rejects(other.controlExecution(command), /本次审批已提交/);
+    assert.equal(h.calls.length, 1);
+  }
 });
 
 test("constructor borrows ports without current, Set, callback, transport or refresh access", () => {

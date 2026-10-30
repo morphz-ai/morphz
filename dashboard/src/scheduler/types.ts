@@ -161,6 +161,7 @@ export interface SchedulerActivationSnapshot {
 }
 
 export interface SchedulerThreadSnapshot {
+  user_input_request?: import('../../../sdk/typescript/src/user-input.ts').PendingUserInputRequest | null
   intent?: string | null
   thread: ThreadRecord
   phase: 'idle' | 'runnable' | 'running' | 'waiting'

@@ -2,51 +2,9 @@ name: Application
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "application/**"
-      - "morphz/**"
-      - "executor/**"
-      - "yao/**"
-      - "third_party/**"
-      - "Cargo.*"
-      - "LICENSE"
-      - "rust-toolchain.toml"
-      - "scripts/generate-third-party-licenses.py"
-      - "scripts/update-npm-license-records.py"
-      - "scripts/tests/test_npm_license_records.py"
-      - "scripts/tests/application-cognitive-ci-setup.test.mjs"
-      - "scripts/tests/application-electron-ci-setup.test.mjs"
-      - "scripts/tests/application-runtime-ci-coverage.test.mjs"
-      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
-      - "scripts/prune-orphan-test-sqlite.mjs"
-      - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
-      - "scripts/observe-ci-resources.mjs"
-      - "scripts/tests/observe-ci-resources.test.mjs"
-      - ".github/workflows/application.yml"
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
-    paths:
-      - "application/**"
-      - "morphz/**"
-      - "executor/**"
-      - "yao/**"
-      - "third_party/**"
-      - "Cargo.*"
-      - "LICENSE"
-      - "rust-toolchain.toml"
-      - "scripts/generate-third-party-licenses.py"
-      - "scripts/update-npm-license-records.py"
-      - "scripts/tests/test_npm_license_records.py"
-      - "scripts/tests/application-cognitive-ci-setup.test.mjs"
-      - "scripts/tests/application-electron-ci-setup.test.mjs"
-      - "scripts/tests/application-runtime-ci-coverage.test.mjs"
-      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
-      - "scripts/prune-orphan-test-sqlite.mjs"
-      - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
-      - "scripts/observe-ci-resources.mjs"
-      - "scripts/tests/observe-ci-resources.test.mjs"
-      - ".github/workflows/application.yml"
+    branches: [main, "release/**"]
   workflow_dispatch:
 
 permissions:
@@ -75,6 +33,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
       - name: Verify independent SDK cache preparation in every full-test job
         run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs ../scripts/tests/application-electron-ci-setup.test.mjs ../scripts/tests/application-runtime-ci-coverage.test.mjs
       - name: Prepare pinned Electron before parallel test imports
@@ -222,6 +182,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
       - name: Prepare pinned Electron before parallel test imports
         run: node node_modules/electron/install.js
       - name: Prepare exact independent SDK and author dependencies
@@ -242,7 +204,11 @@ jobs:
 
   desktop:
     name: Embedded Desktop (macOS)
-    runs-on: macos-latest
+    # The arm64 hosted fleet cancelled the complete inventory before acquiring
+    # a runner (40339218428 / 121628987967). Keep the same macOS 26 release on
+    # the standard Intel fleet; dedicated Reader/GUI jobs retain arm64.
+    # Every case, native-focus requirement and deadline below stays mandatory.
+    runs-on: macos-26-intel
     # On the 7 GiB runner, the complete single-worker Node inventory took 84m20s.
     # Native/OCR assertions also passed, but the old 90m budget cancelled final
     # cleanup. Preserve every case and its own deadlines; budget the whole job.
@@ -262,6 +228,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
       - name: Prepare exact independent SDK and author dependencies
         run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       # Download the pinned runtime before timed UI tests, not on first launch.
@@ -423,6 +391,8 @@ jobs:
       - run: npm --prefix application run test:runtime-identity
       - run: npm --prefix application run test:platform-task-runtime
       - run: npm --prefix application run test:platform-message-runtime
+      - name: Actual Thread and Objective controls through the embedded Host
+        run: npm --prefix application run test:objective-controls-runtime
       - name: Check and format the official Yao Harness offline
         run: |
           target/debug/morphz harness check application/harnesses/script-studio.hns --tool-schema=application/harnesses/script-studio.tools.json --format=json

@@ -128,8 +128,8 @@ import type { LiveMessage } from "../../packages/core/src/live-conversation.js";
 import {
   jobStatusLabel,
   type ExecutionScope,
-  type ExecutionControl,
 } from "../../packages/core/src/execution.js";
+import type { HistoricalExecutionControl as ExecutionControl } from "./execution-control-114960d1.js";
 import type { WorkspaceClient } from "../../apps/web/src/client.js";
 import { useModal } from "../../apps/web/src/useModal.js";
 import { useObservedRead } from "../../apps/web/src/useObservedRead.js";

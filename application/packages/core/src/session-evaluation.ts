@@ -10,7 +10,7 @@ export const sessionEvaluationScopeSchema = z
 export const sessionEvaluationDefaultsSchema = z
   .object({
     model: z.string().trim().min(1).max(256).nullable(),
-    // Session HTTP exposes these five levels; null restores inheritance.
+    // Session HTTP shares the canonical levels; null restores inheritance.
     // Task-level provider_default is not a separate Session PATCH value.
     reasoningEffort: reasoningEffortSchema.nullable(),
   })

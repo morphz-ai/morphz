@@ -77,6 +77,9 @@ static int succeeded(struct json_object *value) {
 #ifdef MORPHZ_TEST_RUNTIME
 int main(int argc, char **argv) {
     if (argc != 8 || morphz_unprivileged()) fail("fixed Runtime arguments");
+#ifdef MORPHZ_TEST_INSTALLED
+    if (strcmp(argv[4], "installed-normal")) fail("fixed installed lifecycle mode");
+#endif
     struct json_object *policy = json_object_from_file(argv[2]);
     if (!policy) fail("synthetic policy file");
     struct json_object *value = request("register", NULL);
@@ -98,15 +101,22 @@ int main(int argc, char **argv) {
     if (child < 0) fail("launcher fork");
     if (!child) {
         close(descriptor);
+#ifdef MORPHZ_TEST_INSTALLED
+        /* No arbitrary command interface in the native CI identity. The real
+         * production launcher still performs every admission/namespace step. */
+        execl(argv[3], argv[3], "--launch", launch,
+              "exec /usr/bin/python3 -I -B /usr/local/libexec/morphz-sandbox-lifecycle-ci/worker.py", (char *)NULL);
+#else
         execl(argv[3], argv[3], argv[1], launch, argv[4], argv[5], argv[6], argv[7], (char *)NULL);
+#endif
         fail("fixed launcher exec");
     }
-    if (!strncmp(argv[4], "mounted-", 8)) {
+    if (!strncmp(argv[4], "mounted-", 8) || !strcmp(argv[4], "installed-normal")) {
         struct pollfd pending = {.fd = descriptor, .events = POLLIN | POLLHUP};
         if (poll(&pending, 1, 8000) != 1) fail("private startup receipt timeout");
         unsigned char byte = 0;
         ssize_t size = read(descriptor, &byte, 1);
-        if (!strcmp(argv[4], "mounted-normal") ? size != 1 || byte != 1 : size != 0)
+        if ((!strcmp(argv[4], "mounted-normal") || !strcmp(argv[4], "installed-normal")) ? size != 1 || byte != 1 : size != 0)
             fail("service receipt does not match real admission outcome");
         fprintf(stderr, "private startup receipt verified: %s\n", size == 1 ? "admitted" : "refused");
     }

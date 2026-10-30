@@ -705,14 +705,86 @@ test("supplement uses exact captured author, ordered feedback and deferred origi
     },
     { rightInspector: { mode: "overlay" } },
   );
-  for (const denied of ["principal", "actant", "missing"] as const)
+  for (const denied of ["principal", "actant"] as const)
     await parity((h) => {
       if (denied === "principal") h.client.boot!.principalId = "other";
-      else if (denied === "actant") h.client.boot!.actantId = "other";
-      else h.render.workspace!.inputs.length = 0;
+      else h.client.boot!.actantId = "other";
       h.commands.supplement(target);
       assert.equal(h.events.length, 0);
     });
+});
+test("supplement selects an authorized Thread without loading its old message; unknown source gives visible feedback", () => {
+  const h = harness("owner");
+  h.render.workspace!.inputs = [];
+  const source = {
+    inputId: target.inputId,
+    projectId: "original-project",
+    conversationId: "original-conversation",
+    targetActantId: "original-agent",
+    artifactId: null,
+    artifactRevision: null,
+  };
+  h.client.boot!.runtime.activity = {
+    available: true,
+    truncated: false,
+    threads: [
+      {
+        id: target.threadId,
+        kind: "execution",
+        title: "旧消息对应的原线程",
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+        inputId: source.inputId,
+        rootId: "root",
+        sessionId: "session",
+        phase: "waiting",
+        lifecycle: "open",
+        controlState: "active",
+        revision: 9,
+        updatedAt: "2026-10-27T00:00:00Z",
+        continuation: target,
+        continuationSource: source,
+      },
+    ],
+  };
+  h.commands.supplement(target);
+  assert.equal(h.stored().continuation, target);
+  assert.equal(h.stored().continuationSource, source);
+  assert.equal(h.stored().continuationLabel, "旧消息对应的原线程");
+  assert.equal(h.stored().body, "正文");
+  assert.equal(
+    h.events.some((event) => event[0] === "show-input"),
+    true,
+  );
+  assert.equal(
+    h.events.some((event) => event[0] === "execute"),
+    false,
+  );
+
+  const unknown = harness("owner");
+  unknown.render.workspace!.inputs = [];
+  unknown.commands.supplement(target);
+  assert.deepEqual(unknown.stored(), unknown.render.draft);
+  assert.match(
+    unknown.state().errors[unknown.render.contextKey]!,
+    /补充范围尚未确认/,
+  );
+  assert.equal(
+    unknown.events.some((event) => event[0] === "show-input"),
+    true,
+  );
+
+  h.events.length = 0;
+  h.client.boot!.runtime.activity.threads[0]!.continuation = {
+    ...target,
+    generation: target.generation + 1,
+  };
+  h.commands.supplement(target);
+  assert.match(h.state().errors[h.render.contextKey]!, /补充范围尚未确认/);
+  assert.equal(
+    h.events.some((event) => event[0] === "replace"),
+    false,
+  );
 });
 test("supplement busy guards and partial write errors retain exact notice/no cleanup", async () => {
   await parity(

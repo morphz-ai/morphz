@@ -5,6 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 import { Pool } from "pg";
 import { z } from "zod";
 import {
+  reasoningEffortSchema,
+  type ReasoningEffort,
+} from "../../core/src/inference.js";
+import {
   applicationInstanceSchema,
   parseApplicationViewState,
   browserApplication,
@@ -781,9 +785,7 @@ function validTaskAgentSettings(request: {
         request.modelId.length <= 100 &&
         request.modelId.trim() === request.modelId)) &&
     (request.reasoningEffort == null ||
-      ["none", "low", "medium", "high", "max"].includes(
-        request.reasoningEffort,
-      )) &&
+      reasoningEffortSchema.safeParse(request.reasoningEffort).success) &&
     (request.notBefore == null ||
       (!Number.isNaN(Date.parse(request.notBefore)) &&
         new Date(request.notBefore).toISOString() === request.notBefore)) &&
@@ -9117,7 +9119,7 @@ export class PlatformStore {
       description?: string;
       assigneeId: string;
       modelId?: string | null;
-      reasoningEffort?: "none" | "low" | "medium" | "high" | "max" | null;
+      reasoningEffort?: ReasoningEffort | null;
       notBefore?: string | null;
       everySeconds?: number | null;
       dueDate?: string;
@@ -9884,7 +9886,7 @@ export class PlatformStore {
       assigneeId?: string;
       assignment?: "proposed" | "accepted" | "declined";
       modelId?: string | null;
-      reasoningEffort?: "none" | "low" | "medium" | "high" | "max" | null;
+      reasoningEffort?: ReasoningEffort | null;
       notBefore?: string | null;
       everySeconds?: number | null;
       execution?: "planned" | "active" | "waiting" | "completed" | "cancelled";

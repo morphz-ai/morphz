@@ -396,6 +396,7 @@ async fn inspect_catalogue(
         ProviderConfig {
             protocol: provider.protocol,
             base_url: endpoint,
+            chat_token_limit_parameter: provider.chat_token_limit_parameter,
             credential,
             models: provider.models.clone(),
             headers: provider.headers.clone(),

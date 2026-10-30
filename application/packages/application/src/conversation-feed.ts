@@ -38,6 +38,7 @@ export class ConversationFeed {
   private synchronizing?: Promise<void>;
   private syncAgain = false;
   private notifyTimer?: ReturnType<typeof setTimeout>;
+  private hadContextUsage = false;
   constructor(
     private options: {
       sessions: () => string[];
@@ -103,8 +104,14 @@ export class ConversationFeed {
                 : message.id,
           })),
         );
+        const contextUsages = current.flatMap(([, c]) =>
+          c.projection.latestContextUsages(),
+        );
+        const publishUsage = contextUsages.length > 0 || this.hadContextUsage;
+        this.hadContextUsage = contextUsages.length > 0;
         this.options.changed({
           connected: current.every(([, c]) => c.ready),
+          ...(publishUsage ? { contextUsages } : {}),
           messages: this.options.messageLimit
             ? messages
                 .sort(
