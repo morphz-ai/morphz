@@ -103,6 +103,12 @@ const optionalTests = [
   ],
   [
     "infer-model-controls-runtime.test.ts",
+      "actual local Host account deletion uses Runtime cleanup without model calls or Session changes and remains forbidden over HTTP",
+    "runtime",
+    "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
+  ],
+  [
+    "infer-model-controls-runtime.test.ts",
     "actual Host inherited input follows a live Session switch only after the in-flight request, while an explicit task remains fixed",
     "runtime",
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",

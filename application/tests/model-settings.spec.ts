@@ -90,6 +90,295 @@ async function open(page: Page) {
   return dialog;
 }
 
+test("账号操作使用有名称的等大图标，窄窗和亮暗保留整行，取消删除不提交并恢复焦点", async ({
+  page,
+}, info) => {
+  const state = await prepare(page);
+  state.accounts.push({
+    id: "oauth-account",
+    label: "已连接的订阅账号与较长中文名称用于完整列表排版验收",
+    kind: "oauth",
+    state: "ready",
+    version: "oauth-v1",
+    models: [{ id: "second", enabled: true }],
+  });
+  const writes: unknown[] = [];
+  await page.route("**/api/model-settings/update", (route) => {
+    writes.push(route.request().postDataJSON());
+    return route.fulfill({ status: 500, json: { message: "不应提交" } });
+  });
+  const dialog = await open(page);
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await dialog.locator(".model-account-list").scrollIntoViewIfNeeded();
+      const buttons = dialog.locator(".model-account-actions button");
+      await expect(buttons).toHaveCount(5);
+      for (const button of await buttons.all())
+        await expect(button).toBeInViewport();
+      const metrics = await buttons.evaluateAll((elements) =>
+        elements.map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            text: element.textContent?.trim(),
+            name: element.getAttribute("aria-label"),
+            title: element.getAttribute("title"),
+            width: rect.width,
+            height: rect.height,
+            svg: element.querySelectorAll("svg").length,
+          };
+        }),
+      );
+      for (const metric of metrics) {
+        expect(metric.text).toBe("");
+        expect(metric.name).toBeTruthy();
+        expect(metric.title).toBe(metric.name);
+        expect(metric.svg).toBe(1);
+        expect(metric.width).toBe(metrics[0]!.width);
+        expect(metric.height).toBe(metrics[0]!.height);
+        expect(metric.width).toBeGreaterThanOrEqual(24);
+      }
+      expect(
+        await dialog
+          .locator(".model-account-list")
+          .evaluate(
+            (element) => element.scrollWidth <= element.clientWidth + 1,
+          ),
+      ).toBe(true);
+      expect(
+        await dialog.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth + 1,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: info.outputPath(`account-icons-${scheme}-${width}.png`),
+        animations: "disabled",
+      });
+    }
+  }
+  const trigger = dialog.getByRole("button", {
+    name: "删除账号：已有账号",
+    exact: true,
+  });
+  await trigger.click();
+  await expect(
+    dialog.getByRole("region", { name: "确认删除账号" }),
+  ).toContainText("已有账号");
+  await expect(dialog).toContainText("不会注销服务商账号");
+  const cancel = dialog.getByRole("button", { name: "取消", exact: true });
+  await expect(cancel).toBeFocused();
+  expect(writes).toEqual([]);
+  await page.screenshot({
+    path: info.outputPath("account-delete-confirmation-narrow-dark.png"),
+    animations: "disabled",
+  });
+  await cancel.click();
+  await expect(trigger).toBeFocused();
+  await trigger.press("Enter");
+  await expect(cancel).toBeFocused();
+  await dialog
+    .getByRole("button", { name: "返回模型设置", exact: true })
+    .click();
+  await expect(trigger).toBeFocused();
+  await trigger.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(writes).toEqual([]);
+});
+
+test("账号删除失败不假成功，处理中禁止重复与离开，API和订阅删除后刷新列表并保留其他账号", async ({
+  page,
+}, info) => {
+  const state = await prepare(page);
+  state.accounts.push(
+    {
+      id: "oauth",
+      label: "订阅账号",
+      kind: "oauth",
+      state: "ready",
+      version: "o1",
+      models: [],
+    },
+    {
+      id: "retained",
+      label: "保留账号",
+      kind: "api",
+      state: "ready",
+      version: "r1",
+      models: [{ id: "second", enabled: true }],
+    },
+  );
+  const writes: any[] = [];
+  let reject = true;
+  let release = () => {};
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/model-settings/update", async (route) => {
+    const action = route.request().postDataJSON();
+    writes.push(action);
+    expect(action.action).toBe("account-delete");
+    if (reject)
+      return route.fulfill({
+        status: 409,
+        json: {
+          message: "无法删除此账号：仍被其他智能体共用，请刷新设置后检查。",
+        },
+      });
+    await pending;
+    state.accounts = state.accounts.filter(
+      (account) => account.id !== action.accountId,
+    );
+    state.catalog = {
+      current: "second",
+      options: [{ id: "second", label: "Second model" }],
+    };
+    return route.fulfill({
+      json: { kind: "removed", accountId: action.accountId },
+    });
+  });
+  const dialog = await open(page);
+  await dialog.getByLabel("默认模型", { exact: true }).selectOption("second");
+  await dialog
+    .getByRole("button", { name: "删除账号：已有账号", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "删除账号", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("仍被其他智能体共用");
+  await expect(
+    dialog.getByRole("region", { name: "确认删除账号" }),
+  ).toContainText("已有账号");
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  expect(state.accounts).toHaveLength(3);
+  await page.screenshot({
+    path: info.outputPath("account-delete-rejected.png"),
+    animations: "disabled",
+  });
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog.getByLabel("默认模型", { exact: true })).toHaveValue(
+    "second",
+  );
+  reject = false;
+  await dialog
+    .getByRole("button", { name: "删除账号：已有账号", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "删除账号", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "正在删除…", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: "取消", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    dialog.getByRole("button", { name: "关闭设置", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    dialog
+      .getByRole("navigation", { name: "设置分类" })
+      .getByRole("button", { name: "外观", exact: true }),
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  expect(writes).toHaveLength(2);
+  release();
+  await expect(dialog.getByRole("status")).toHaveText("账号已从此应用删除。");
+  await expect(
+    dialog.getByRole("button", { name: "删除账号：已有账号", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "刷新模型设置", exact: true }),
+  ).toBeFocused();
+  await expect(dialog.getByLabel("默认模型", { exact: true })).toHaveValue(
+    "second",
+  );
+  await dialog
+    .getByRole("button", { name: "删除账号：订阅账号", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "删除账号", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "删除账号：订阅账号", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "编辑连接：保留账号", exact: true }),
+  ).toBeEnabled();
+  await dialog
+    .getByRole("button", { name: "刷新模型设置", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "编辑连接：保留账号", exact: true }),
+  ).toBeEnabled();
+  expect(writes).toEqual([
+    { action: "account-delete", accountId: "account", expectedVersion: "v1" },
+    { action: "account-delete", accountId: "account", expectedVersion: "v1" },
+    { action: "account-delete", accountId: "oauth", expectedVersion: "o1" },
+  ]);
+  await page.screenshot({
+    path: info.outputPath("account-delete-completed.png"),
+    animations: "disabled",
+  });
+});
+
+test("连接缺少密钥时显示明确恢复文案和错误色，保留原模型选择", async ({
+  page,
+}, info) => {
+  await prepare(page);
+  const message =
+    "此 API 连接缺少密钥。请返回账号列表，打开「编辑连接」填写原 API Key 并保存，再读取模型。";
+  const actions: unknown[] = [];
+  await page.route("**/api/model-settings/update", (route) => {
+    actions.push(route.request().postDataJSON());
+    return route.fulfill({ status: 400, json: { message } });
+  });
+  const dialog = await open(page);
+  await dialog
+    .getByRole("button", { name: "选择模型：已有账号", exact: true })
+    .click();
+  await dialog.getByLabel("second", { exact: true }).check();
+  await dialog.getByRole("button", { name: "读取并测试", exact: true }).click();
+  const alert = dialog.getByRole("alert");
+  await expect(alert).toHaveText(message);
+  await expect(dialog.getByLabel("first", { exact: true })).toBeChecked();
+  await expect(dialog.getByLabel("second", { exact: true })).toBeChecked();
+  expect(actions).toEqual([
+    { action: "account-refresh", accountId: "account" },
+  ]);
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect(async () => {
+        const geometry = await alert.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const probe = document.createElement("span");
+          probe.style.color = "var(--danger)";
+          element.appendChild(probe);
+          const danger = getComputedStyle(probe).color;
+          probe.remove();
+          return {
+            color: getComputedStyle(element).color,
+            danger,
+            ink: getComputedStyle(element.parentElement!).color,
+            fits: bounds.left >= 0 && bounds.right <= innerWidth + 1,
+            overflow: element.scrollWidth > element.clientWidth + 1,
+          };
+        });
+        expect(geometry.color).toBe(geometry.danger);
+        expect(geometry.color).not.toBe(geometry.ink);
+        expect(geometry.fits).toBe(true);
+        expect(geometry.overflow).toBe(false);
+      }).toPass({ timeout: 3000 });
+      await page.screenshot({
+        path: info.outputPath(`missing-credential-${scheme}-${width}.png`),
+        animations: "disabled",
+      });
+    }
+  }
+  await dialog.getByRole("button", { name: "返回模型设置" }).click();
+  await expect(
+    dialog.getByRole("button", { name: "编辑连接：已有账号", exact: true }),
+  ).toBeEnabled();
+});
+
 test("响应注解开关持久显示、键盘操作、失败不假成功，保持未保存的模型选择", async ({
   page,
 }, testInfo) => {
@@ -196,7 +485,9 @@ test("API 连接可修改地址和替换密钥；独立保存、不回显、冲�
     return route.fulfill({ json: { kind: "connection", connection } });
   });
   const dialog = await open(page);
-  await dialog.getByRole("button", { name: "编辑连接", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "编辑连接：已有账号", exact: true })
+    .click();
   const address = dialog.getByLabel("API 地址（Base URL）", { exact: true });
   const key = dialog.getByLabel("API Key", { exact: true });
   await expect(address).toHaveValue(connection.baseUrl);
@@ -265,7 +556,9 @@ test("API 连接可修改地址和替换密钥；独立保存、不回显、冲�
     path: testInfo.outputPath("api-connection-editor.png"),
   });
   await dialog.getByRole("button", { name: "返回模型设置" }).click();
-  await dialog.getByRole("button", { name: "编辑连接", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "编辑连接：已有账号", exact: true })
+    .click();
   await expect(key).toHaveValue("");
   expect(writes).toHaveLength(3);
 });
@@ -288,7 +581,7 @@ test("共用连接明确确认影响范围；外部凭据只读且返回不保�
     return route.fulfill({ json: { kind: "connection", connection } });
   });
   const dialog = await open(page);
-  await dialog.getByRole("button", { name: "编辑连接" }).click();
+  await dialog.getByRole("button", { name: "编辑连接：已有账号" }).click();
   await dialog
     .getByLabel("API 地址（Base URL）")
     .fill("https://example.com/next");
@@ -305,7 +598,7 @@ test("共用连接明确确认影响范围；外部凭据只读且返回不保�
   connection.keyEditable = false;
   connection.keyUnavailableReason =
     "密钥由外部凭据源管理，请在原凭据源中更新。";
-  await dialog.getByRole("button", { name: "编辑连接" }).click();
+  await dialog.getByRole("button", { name: "编辑连接：已有账号" }).click();
   await expect(dialog.getByLabel("API Key", { exact: true })).toBeDisabled();
   await expect(dialog.getByLabel("API Key", { exact: true })).toHaveValue("");
   await expect(dialog).toContainText("密钥由外部凭据源管理");

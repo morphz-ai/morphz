@@ -54,6 +54,12 @@ struct ConcurrencyProbeClient {
     active: AtomicUsize,
     max_active: AtomicUsize,
     calls: AtomicUsize,
+    first_completion_gate: Option<CompletionGate>,
+}
+
+struct CompletionGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 struct BudgetProbeClient {
@@ -66,6 +72,15 @@ struct BudgetProbeClient {
 struct FailingClient;
 
 struct BindingFailureClient;
+
+struct PrebindingRouteFailureClient {
+    bindings: Mutex<Vec<(String, String)>>,
+    calls: AtomicUsize,
+    unscoped_probes: AtomicUsize,
+    catalog_revision: AtomicUsize,
+    reload_catalog_on_failure: bool,
+    recovery_authorized: tokio::sync::Notify,
+}
 
 struct UnconfiguredAgentClient {
     binding_calls: AtomicUsize,
@@ -125,6 +140,9 @@ struct SessionModelSwitchContinuationClient {
     messages_seen: Mutex<Vec<Vec<Message>>>,
     store: Arc<SqliteStore>,
     session_id: String,
+    thread_selection: Option<morphz::model_selection::ModelSelection>,
+    session_effort: Option<String>,
+    fail_after_switch: bool,
 }
 
 struct InvalidProtocolContinuationClient {
@@ -195,6 +213,7 @@ struct PersistentOutageClient;
 struct HealthyAfterRestartClient {
     calls: AtomicUsize,
     health_probe_calls: AtomicUsize,
+    default_resource: &'static str,
 }
 
 struct PartialReasoningProviderFailureClient {
@@ -431,6 +450,81 @@ impl Client for BindingFailureClient {
 }
 
 #[async_trait::async_trait]
+impl Client for PrebindingRouteFailureClient {
+    fn model(&self) -> Option<String> {
+        Some("runtime-default".into())
+    }
+
+    fn provider_resource_key(&self) -> String {
+        "model-route:runtime-default".into()
+    }
+
+    fn provider_resource_key_for_requested_model(&self, alias: Option<&str>) -> String {
+        format!(
+            "model-route:{}:v{}",
+            alias.unwrap_or("runtime-default"),
+            self.catalog_revision.load(Ordering::SeqCst)
+        )
+    }
+
+    async fn bind_requested_model_attempt(
+        &self,
+        request: &ModelRequestContext,
+        requested_model: Option<&str>,
+    ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        let alias = requested_model.expect("Session policy must select a logical route");
+        let first_attempt = {
+            let mut bindings = self.bindings.lock().unwrap();
+            bindings.push((alias.to_string(), request.session_id.clone()));
+            bindings.len() == 1
+        };
+        if first_attempt {
+            if self.reload_catalog_on_failure {
+                self.catalog_revision.store(1, Ordering::SeqCst);
+            }
+            return Err(ModelAttemptBindingError::account_unavailable(
+                "test Agent-authorized account is temporarily unavailable",
+            ));
+        }
+        self.recovery_authorized.notified().await;
+        Ok(ModelAttemptBinding {
+            requested_alias: alias.to_string(),
+            route_id: alias.to_string(),
+            route_revision: "test-v1".into(),
+            provider_instance_id: self.provider_resource_key_for_requested_model(Some(alias)),
+            auth_account_id: "agent-owned-account".into(),
+            physical_model: alias.to_string(),
+            protocol: "custom".into(),
+            provider_adapter: "direct-client".into(),
+            provider_adapter_version: "test".into(),
+            endpoint: "http://127.0.0.1/synthetic-prebinding-recovery".into(),
+            request_session_id: Some(request.session_id.clone()),
+            capabilities: Vec::new(),
+            model_input_limits: Default::default(),
+        })
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(text_reply_response(
+            "resumed the original authorized request",
+        ))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.unscoped_probes.fetch_add(1, Ordering::SeqCst);
+        // A healthy process-default route proves nothing about this Agent's
+        // selected route/account. The production regression used this result
+        // to incorrectly wake a different route's durable waiter.
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
 impl Client for UnconfiguredAgentClient {
     async fn bind_model_attempt(
         &self,
@@ -636,7 +730,7 @@ impl Client for PersistentOutageClient {
 #[async_trait::async_trait]
 impl Client for HealthyAfterRestartClient {
     fn provider_resource_key(&self) -> String {
-        "model-provider:test-restart-outage".to_string()
+        self.default_resource.to_string()
     }
 
     async fn create_completion(
@@ -943,6 +1037,13 @@ impl Client for SessionModelSwitchContinuationClient {
         Some("route-a".to_string())
     }
 
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Err(Box::new(ModelFailure::new(
+            ModelFailureKind::TransientNetwork,
+            "test old provider remains unavailable; policy change is not provider recovery",
+        )))
+    }
+
     async fn create_completion_bound_stream_with_options(
         &self,
         _binding: &ModelAttemptBinding,
@@ -1005,12 +1106,39 @@ impl Client for SessionModelSwitchContinuationClient {
                     &self.session_id,
                     SessionUpdate {
                         model_alias: Some(Some("route-b".to_string())),
-                        reasoning_effort: Some(Some("low".to_string())),
+                        reasoning_effort: Some(self.session_effort.clone()),
                         ..Default::default()
                     },
                 )
                 .await?
                 .ok_or("test Session disappeared during model switch")?;
+            if let Some(selection) = &self.thread_selection {
+                let threads = self
+                    .store
+                    .list_session_threads(&self.session_id, &self.session_id, false)
+                    .await?;
+                assert_eq!(threads.len(), 1, "one exact in-flight synthetic task");
+                let before = &threads[0];
+                let changed = self
+                    .store
+                    .update_thread_evaluation_policy(&before.id, before.revision, selection)
+                    .await?;
+                let morphz::memory::ThreadMutation::Updated(after) = changed else {
+                    return Err("synthetic task policy compare-and-set failed".into());
+                };
+                assert_eq!(after.generation, before.generation);
+                assert_eq!(after.root_turn_id, before.root_turn_id);
+                assert_eq!(after.lifecycle, ThreadLifecycle::Open);
+            }
+            if self.fail_after_switch {
+                return Err(Box::new(
+                    ModelFailure::new(
+                        ModelFailureKind::ServerUnavailable,
+                        "old model request failed after the operator policy committed",
+                    )
+                    .with_retry_after(Some(3600)),
+                ));
+            }
             let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
                 text: "portable progress from route a".to_string(),
             });
@@ -1305,9 +1433,18 @@ impl Client for ConcurrencyProbeClient {
         }
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
-        // Keep the probe open long enough for the second independently routed
-        // Session to enter even under a fully loaded test runner.
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        if let Some(gate) = self
+            .first_completion_gate
+            .as_ref()
+            .filter(|_| self.calls.load(Ordering::SeqCst) == 0)
+        {
+            gate.entered.notify_one();
+            gate.release.notified().await;
+        } else {
+            // Keep the probe open long enough for the second independently
+            // routed Session to enter under a loaded test runner.
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
         self.active.fetch_sub(1, Ordering::SeqCst);
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(text_reply_response(format!("reply-{call}")))
@@ -2578,16 +2715,17 @@ async fn runtime_start_retires_legacy_outbox_for_direct_supervisor_wake() {
         config,
         engine,
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        Arc::clone(&orchestrator).start(),
-    )
-    .await
-    .expect("a direct supervisor wake must not block startup on handler completion")
-    .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), observed.notified())
+    let starting = tokio::spawn(Arc::clone(&orchestrator).start());
+    // Observe the actual blocked handler before measuring the non-blocking
+    // handoff. Database setup under parallel test load is not that contract.
+    tokio::time::timeout(std::time::Duration::from_secs(5), observed.notified())
         .await
         .expect("the process-local supervisor wake should still be replayed");
+    tokio::time::timeout(std::time::Duration::from_secs(2), starting)
+        .await
+        .expect("a direct supervisor wake must not block startup on handler completion")
+        .unwrap()
+        .unwrap();
 
     assert!(store
         .list_signal_outbox(morphz::memory::SignalOutboxStatus::Pending, 8)
@@ -3647,6 +3785,9 @@ async fn mixed_incomplete_output_preserves_reasoning_and_public_text_in_one_cont
 async fn run_session_model_switch_continuation(
     session_id: &str,
     explicit_trigger_model: bool,
+    thread_selection: Option<morphz::model_selection::ModelSelection>,
+    session_effort: Option<&str>,
+    fail_after_switch: bool,
 ) -> (Vec<String>, Vec<Vec<Message>>) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("session-model-switch.db");
@@ -3660,6 +3801,9 @@ async fn run_session_model_switch_continuation(
         messages_seen: Mutex::new(Vec::new()),
         store: Arc::clone(&store),
         session_id: session_id.to_string(),
+        thread_selection: thread_selection.clone(),
+        session_effort: session_effort.map(ToOwned::to_owned),
+        fail_after_switch,
     });
     let config = morphz::config::OrchestratorConfig {
         reasoning_continuation_safety_limit: None,
@@ -3669,7 +3813,12 @@ async fn run_session_model_switch_continuation(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = new_test_orchestrator(
+    let constructor = if fail_after_switch {
+        new_test_orchestrator_with_runtime_store
+    } else {
+        new_test_orchestrator
+    };
+    let orchestrator = constructor(
         Arc::clone(&bus),
         Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
@@ -3692,9 +3841,70 @@ async fn run_session_model_switch_continuation(
     );
     let bindings = client.bindings.lock().unwrap().clone();
     let messages = client.messages_seen.lock().unwrap().clone();
-    let options = client.options_seen.lock().unwrap();
+    let options = client.options_seen.lock().unwrap().clone();
     assert_eq!(options.len(), 2);
-    if explicit_trigger_model {
+    if fail_after_switch {
+        let events = store
+            .query(QueryFilter {
+                session_id: Some(session_id.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.payload.get("disposition") == Some(&json!("provider_wait")))
+                .count(),
+            1
+        );
+        let recoveries = events
+            .iter()
+            .filter(|event| event.topic == "runtime/resource_available")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recoveries.len(),
+            1,
+            "the committed policy change must release exactly the old request's late wait"
+        );
+        assert_eq!(
+            recoveries[0].payload.get("recovery_reason"),
+            Some(&json!(
+                "old_request_failed_after_task_or_session_policy_change"
+            ))
+        );
+        let threads = store
+            .list_session_threads(session_id, session_id, true)
+            .await
+            .unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].generation, 1);
+        assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
+        assert_eq!(
+            recoveries[0].payload.get("thread_id"),
+            Some(&json!(threads[0].id))
+        );
+        assert_eq!(
+            recoveries[0].payload.get("thread_generation"),
+            Some(&json!(threads[0].generation))
+        );
+    }
+    if let Some(selection) = thread_selection {
+        assert_eq!(
+            options[0].reasoning_effort,
+            Some(Some(morphz::llm::ReasoningEffort::High))
+        );
+        assert_eq!(
+            options[1].reasoning_effort,
+            match selection.reasoning_effort.as_deref() {
+                Some("provider_default") => Some(None),
+                Some("none") => Some(Some(morphz::llm::ReasoningEffort::Off)),
+                Some("high") => Some(Some(morphz::llm::ReasoningEffort::High)),
+                None => Some(session_effort.and_then(morphz::llm::ReasoningEffort::parse)),
+                other => panic!("unhandled synthetic choice: {other:?}"),
+            }
+        );
+    } else if explicit_trigger_model {
         assert!(options
             .iter()
             .all(|options| options.reasoning_effort
@@ -3711,8 +3921,14 @@ async fn run_session_model_switch_continuation(
 
 #[tokio::test]
 async fn session_model_switch_applies_at_the_next_physical_request_boundary() {
-    let (bindings, messages) =
-        run_session_model_switch_continuation("attempt-session-model-switch", false).await;
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-session-model-switch",
+        false,
+        None,
+        Some("low"),
+        false,
+    )
+    .await;
 
     assert_eq!(bindings, ["route-a", "route-b"]);
     assert_eq!(messages.len(), 2);
@@ -3726,8 +3942,14 @@ async fn session_model_switch_applies_at_the_next_physical_request_boundary() {
 
 #[tokio::test]
 async fn explicit_trigger_model_remains_fixed_across_physical_requests() {
-    let (bindings, messages) =
-        run_session_model_switch_continuation("attempt-explicit-model-binding", true).await;
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-explicit-model-binding",
+        true,
+        None,
+        Some("low"),
+        false,
+    )
+    .await;
 
     assert_eq!(bindings, ["route-a", "route-a"]);
     assert_eq!(messages.len(), 2);
@@ -3738,6 +3960,116 @@ async fn explicit_trigger_model_remains_fixed_across_physical_requests() {
                 if reasoning_items.iter().any(|item| item["id"] == "route-a-reasoning")
         )
     }));
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_clear_changes_only_the_next_request_and_does_not_revive_the_old_trigger(
+) {
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-thread-policy-clear",
+        true,
+        Some(morphz::model_selection::ModelSelection::default()),
+        Some("low"),
+        false,
+    )
+    .await;
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(
+        messages.len(),
+        2,
+        "the in-flight call was not cancelled or repeated"
+    );
+    assert!(messages[1].iter().any(|message| message.role == "user"
+        && message.content.contains("portable progress from route a")));
+    assert!(
+        messages[1]
+            .iter()
+            .all(|message| provider_continuation(message).is_none()),
+        "opaque provider state must not cross the model change"
+    );
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_keeps_explicit_none_and_provider_default_distinct_from_inheritance(
+) {
+    use morphz::model_selection::ModelSelection;
+    for (suffix, selection, expected_model) in [
+        (
+            "model-only",
+            ModelSelection {
+                model: Some("route-a".into()),
+                reasoning_effort: None,
+            },
+            "route-a",
+        ),
+        (
+            "provider-default",
+            ModelSelection {
+                model: None,
+                reasoning_effort: Some("provider_default".into()),
+            },
+            "route-b",
+        ),
+        (
+            "none",
+            ModelSelection {
+                model: None,
+                reasoning_effort: Some("none".into()),
+            },
+            "route-b",
+        ),
+        (
+            "explicit",
+            ModelSelection {
+                model: Some("route-a".into()),
+                reasoning_effort: Some("high".into()),
+            },
+            "route-a",
+        ),
+    ] {
+        let (bindings, messages) = run_session_model_switch_continuation(
+            &format!("attempt-thread-policy-{suffix}"),
+            true,
+            Some(selection),
+            Some("low"),
+            false,
+        )
+        .await;
+        assert_eq!(bindings, ["route-a", expected_model], "{suffix}");
+        assert_eq!(messages.len(), 2, "{suffix}: no repair request or replay");
+    }
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_clear_with_provider_defaults_does_not_resurrect_old_high() {
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-thread-policy-provider-default-inheritance",
+        true,
+        Some(morphz::model_selection::ModelSelection::default()),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(messages.len(), 2);
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_change_before_old_failure_releases_the_late_wait() {
+    let (bindings, messages) = run_session_model_switch_continuation(
+        "attempt-thread-policy-late-provider-failure",
+        true,
+        Some(morphz::model_selection::ModelSelection::default()),
+        Some("low"),
+        true,
+    )
+    .await;
+    assert_eq!(bindings, ["route-a", "route-b"]);
+    assert_eq!(
+        messages.len(),
+        2,
+        "do not retry the old provider or replay user input"
+    );
 }
 
 #[tokio::test]
@@ -7741,6 +8073,10 @@ async fn same_session_dialogue_turns_are_serialized() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: Some(CompletionGate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        }),
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -7758,7 +8094,31 @@ async fn same_session_dialogue_turns_are_serialized() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "serialized-session", "first").await;
+    // Unread consecutive messages deliberately share one bounded signal batch.
+    // This test owns a different contract: a new turn arriving during physical
+    // inference must queue behind it. Hold that actual inference boundary open
+    // instead of depending on event-handler scheduling or a fixed sleep.
+    let gate = client.first_completion_gate.as_ref().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
+        .await
+        .expect("the first turn must enter the model before the second message");
     publish_user(&bus, "serialized-session", "second").await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let signals = store
+                .list_context_thread_signals("serialized-session", None)
+                .await
+                .unwrap();
+            if signals.len() == 2 {
+                assert_ne!(signals[0].thread_id, signals[1].thread_id);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the second turn must be durably queued while the first is held");
+    gate.release.notify_one();
 
     let replies = wait_for_topic_count(&store, "chat/reply", "serialized-session", 2).await;
 
@@ -7906,17 +8266,16 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
     );
     completion_gate.notify_one();
 
-    let replies = tokio::time::timeout(
+    let reply_wait = tokio::time::timeout(
         // Keep a generous loaded-runner margin while remaining well below the
         // thirty-second pending-Signal reconciler interval. Completion inside
         // this bound therefore still proves the direct hand-off path ran.
         tokio::time::Duration::from_secs(10),
         wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2),
     )
-    .await
-    .expect(
-        "context maintenance hand-off must not depend on the thirty-second pending-Signal reconciler",
-    );
+    .await;
+    let timed_out = reply_wait.is_err();
+    let replies = reply_wait.unwrap_or_default();
     if replies.len() < 2 {
         let activations = store
             .list_context_thread_activations("context-maintenance-dialogue", true)
@@ -7929,8 +8288,9 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
             })
             .await
             .unwrap();
+        let dispatch_errors = dispatch_errors.lock().unwrap().clone();
         panic!(
-            "context-maintenance dialogue did not resume: replies={replies:#?}\nactivations={activations:#?}\nevents={events:#?}"
+            "context maintenance hand-off must not depend on the thirty-second pending-Signal reconciler: timed_out={timed_out}\nreplies={replies:#?}\nactivations={activations:#?}\nevents={events:#?}\ndispatch_errors={dispatch_errors:#?}"
         );
     }
     assert_eq!(
@@ -8275,6 +8635,7 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: None,
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -8496,6 +8857,168 @@ async fn successful_explicit_request_resumes_durable_wait_without_probe_success(
 
 #[tokio::test]
 async fn provider_wait_survives_runtime_restart() {
+    run_provider_wait_restart(false, false).await;
+}
+
+#[tokio::test]
+async fn thread_evaluation_policy_committed_without_wake_is_recovered_after_restart() {
+    run_provider_wait_restart(true, false).await;
+}
+
+#[tokio::test]
+async fn provider_wait_resources_restart_recovers_wait_outside_process_default() {
+    run_provider_wait_restart(false, true).await;
+}
+
+#[tokio::test]
+async fn provider_wait_resources_unbound_failure_uses_session_route_without_default_probe() {
+    run_prebinding_resource_recovery(false).await;
+}
+
+#[tokio::test]
+async fn provider_wait_resources_freezes_admission_identity_across_catalog_reload() {
+    run_prebinding_resource_recovery(true).await;
+}
+
+async fn run_prebinding_resource_recovery(reload_catalog_on_failure: bool) {
+    let context_id = "prebinding-route-context";
+    let session_id = "prebinding-route-session";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("prebinding-route.db");
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .ensure_agent(NewAgent {
+            id: "test-agent".into(),
+            title: "Test Agent".into(),
+            root_context_id: context_id.into(),
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_context(NewCognitiveContext {
+            id: context_id.into(),
+            agent_id: "test-agent".into(),
+            title: context_id.into(),
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_session(NewSession {
+            id: session_id.into(),
+            agent_id: "test-agent".into(),
+            context_id: context_id.into(),
+            parent_session_id: None,
+            title: session_id.into(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    store
+        .update_session(
+            session_id,
+            SessionUpdate {
+                model_alias: Some(Some("session-selected".into())),
+                reasoning_effort: Some(Some("high".into())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let bus = Arc::new(InMemoryEventBus::new());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(PrebindingRouteFailureClient {
+        bindings: Mutex::new(Vec::new()),
+        calls: AtomicUsize::new(0),
+        unscoped_probes: AtomicUsize::new(0),
+        catalog_revision: AtomicUsize::new(0),
+        reload_catalog_on_failure,
+        recovery_authorized: tokio::sync::Notify::new(),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator_with_runtime_store(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+    // This is one real ingress event with no Thread model override. Recovery
+    // must resume it, not fabricate another user input or use process default.
+    publish_user_in_context(&bus, context_id, session_id, "retain my selected route").await;
+    let waits = wait_for_disposition_count(&store, context_id, "provider_wait", 1).await;
+    assert_eq!(waits.len(), 1);
+    assert_eq!(
+        waits[0].payload.get("provider_resource"),
+        Some(&json!("model-route:session-selected:v0")),
+        "a failure before binding belongs to the frozen admission resource, not the default route or reloaded catalog"
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(client.unscoped_probes.load(Ordering::SeqCst), 0);
+    client.recovery_authorized.notify_one();
+    let replies = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        wait_for_topic(&store, "chat/reply", session_id),
+    )
+    .await
+    .expect("bounded retry must resume the original authorized request");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("resumed the original authorized request"))
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(client.unscoped_probes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *client.bindings.lock().unwrap(),
+        vec![
+            ("session-selected".to_string(), session_id.to_string()),
+            ("session-selected".to_string(), session_id.to_string()),
+        ],
+        "each retry must repeat ordinary Agent-authorized binding for the same Session"
+    );
+    let threads = store.list_context_threads(context_id, true).await.unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!(threads[0].generation, 1);
+    assert_eq!(threads[0].lifecycle, ThreadLifecycle::Completed);
+    assert_eq!(
+        waits[0]
+            .payload
+            .get("thread_id")
+            .and_then(|value| value.as_str()),
+        Some(threads[0].id.as_str())
+    );
+    let recoveries = store
+        .query(QueryFilter {
+            context_id: Some(context_id.into()),
+            topic: Some("runtime/resource_available".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(recoveries.iter().any(|event| {
+        event.payload.get("resource") == Some(&json!("model-route:session-selected:v0"))
+            && event.payload.get("recovery_reason") == Some(&json!("request_retry_elapsed"))
+            && event.payload.get("recovery_phase") == Some(&json!("request_retry"))
+    }));
+    assert!(
+        recoveries.iter().all(|event| {
+            event.payload.get("recovery_reason") != Some(&json!("health_probe_succeeded"))
+        }),
+        "an authorized retry must not declare an unprobed Provider healthy"
+    );
+}
+
+async fn run_provider_wait_restart(
+    change_policy_without_event: bool,
+    change_process_default: bool,
+) {
     let context_id = "provider-restart-context";
     let session_id = "provider-restart-session";
     let tmp = TempDir::new().unwrap();
@@ -8528,10 +9051,43 @@ async fn provider_wait_survives_runtime_restart() {
     drop(first_orchestrator);
     drop(first_bus);
 
+    if change_policy_without_event {
+        let threads = store.list_context_threads(context_id, true).await.unwrap();
+        assert_eq!(threads.len(), 1);
+        assert!(matches!(
+            store
+                .update_thread_evaluation_policy(
+                    &threads[0].id,
+                    threads[0].revision,
+                    &morphz::model_selection::ModelSelection::default(),
+                )
+                .await
+                .unwrap(),
+            morphz::memory::ThreadMutation::Updated(_)
+        ));
+        assert!(
+            store
+                .query(QueryFilter {
+                    context_id: Some(context_id.into()),
+                    topic: Some("runtime/thread_evaluation_policy_changed".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .is_empty(),
+            "simulate exit after CAS, before notification"
+        );
+    }
+
     let second_bus = Arc::new(InMemoryEventBus::new());
     let recovering_client = Arc::new(HealthyAfterRestartClient {
         calls: AtomicUsize::new(0),
         health_probe_calls: AtomicUsize::new(0),
+        default_resource: if change_process_default {
+            "model-route:different-runtime-default"
+        } else {
+            "model-provider:test-restart-outage"
+        },
     });
     let second_engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
@@ -8558,7 +9114,8 @@ async fn provider_wait_survives_runtime_restart() {
     );
     assert_eq!(
         recovering_client.health_probe_calls.load(Ordering::SeqCst),
-        1
+        0,
+        "restart must rebind the original work through Agent authority, never probe a process-default account for an unknown binding"
     );
     assert_eq!(recovering_client.calls.load(Ordering::SeqCst), 1);
     let threads = store.list_context_threads(context_id, true).await.unwrap();
@@ -8909,6 +9466,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: None,
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -9075,6 +9633,7 @@ async fn tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply() {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
+        first_completion_gate: None,
     });
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(

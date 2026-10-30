@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -19,6 +20,10 @@ import {
   MessageShareDialog,
   type MessageShareContent,
 } from "./MessageShareDialog.js";
+import {
+  sameMessageActionPresentation,
+  type MessageActionProps,
+} from "./message-action-presentation.js";
 import { ResponseWaiting } from "./ResponseWaiting.js";
 import { ConversationSearch } from "./ConversationSearch.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
@@ -904,6 +909,14 @@ export function Conversation({
                   available={client.online && runtime.connected}
                 />
               );
+              const resendControl =
+                item &&
+                onResend &&
+                !submission &&
+                delivery?.state === "failed" &&
+                !delivery.retryable &&
+                !item.continuation &&
+                item.author.actantId === client.boot?.actantId;
               return (
                 <Fragment key={id}>
                   {dateDivider}
@@ -1219,42 +1232,36 @@ export function Conversation({
                             catalog: client.contentCatalog,
                           }}
                           control={
-                            item ? (
+                            item && (stopControl || resendControl) ? (
                               <>
                                 {stopControl}
-                                {onResend &&
-                                  !submission &&
-                                  delivery?.state === "failed" &&
-                                  !delivery.retryable &&
-                                  !item.continuation &&
-                                  item.author.actantId ===
-                                    client.boot?.actantId && (
-                                    <Tooltip label="重新发送原消息">
-                                      <button
-                                        type="button"
-                                        className="message-copy message-resend"
-                                        aria-label="重新发送原消息"
-                                        disabled={
-                                          !runtime.connected ||
-                                          !client.online ||
-                                          resendStates[item.id]?.pending
-                                        }
-                                        onClick={() => void resend(item.id)}
-                                      >
-                                        {resendStates[item.id]?.pending ? (
-                                          <LoaderCircle
-                                            size={13}
-                                            aria-hidden="true"
-                                          />
-                                        ) : (
-                                          <RotateCcw
-                                            size={13}
-                                            aria-hidden="true"
-                                          />
-                                        )}
-                                      </button>
-                                    </Tooltip>
-                                  )}
+                                {resendControl && (
+                                  <Tooltip label="重新发送原消息">
+                                    <button
+                                      type="button"
+                                      className="message-copy message-resend"
+                                      aria-label="重新发送原消息"
+                                      disabled={
+                                        !runtime.connected ||
+                                        !client.online ||
+                                        resendStates[item.id]?.pending
+                                      }
+                                      onClick={() => void resend(item.id)}
+                                    >
+                                      {resendStates[item.id]?.pending ? (
+                                        <LoaderCircle
+                                          size={13}
+                                          aria-hidden="true"
+                                        />
+                                      ) : (
+                                        <RotateCcw
+                                          size={13}
+                                          aria-hidden="true"
+                                        />
+                                      )}
+                                    </button>
+                                  </Tooltip>
+                                )}
                               </>
                             ) : undefined
                           }
@@ -1485,19 +1492,13 @@ export function StopResponse({
   );
 }
 
-function MessageActions({
+export const MessageActions = memo(function MessageActions({
   createdAt,
   text,
   control,
   share,
   client,
-}: {
-  createdAt: string;
-  text: string;
-  control?: ReactNode;
-  share: MessageShareContent;
-  client: WorkspaceClient;
-}) {
+}: MessageActionProps) {
   // Locale formatting is relatively expensive across a long history. The
   // timestamp is immutable while typing or streaming, unlike the message body.
   const formattedTime = useMemo(
@@ -1576,7 +1577,7 @@ function MessageActions({
       )}
     </>
   );
-}
+}, sameMessageActionPresentation);
 
 export function ToolMessage({
   message,

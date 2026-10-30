@@ -6,6 +6,11 @@ test("长对话先读最近消息，旧消息按需加载且保持阅读位置",
   let actantId = "local-human";
   let catalogBump = 0;
   let earlierAccessRemoved = false;
+  let holdEarlier = false;
+  let releaseEarlier!: () => void;
+  const earlierReadGate = new Promise<void>((resolve) => {
+    releaseEarlier = resolve;
+  });
   const requests: string[] = [];
   await page.route("**/api/platform/bootstrap", async (route) => {
     const response = await route.fetch();
@@ -70,6 +75,7 @@ test("长对话先读最近消息，旧消息按需加载且保持阅读位置",
       }));
       const beforeCreatedAt = url.searchParams.get("beforeCreatedAt");
       const beforeId = url.searchParams.get("beforeId");
+      if (beforeId && holdEarlier) await earlierReadGate;
       const eligible = (
         earlierAccessRemoved ? inputs.slice(-20) : inputs
       ).filter(
@@ -118,12 +124,27 @@ test("长对话先读最近消息，旧消息按需加载且保持阅读位置",
   const olderButton = conversation.getByRole("button", {
     name: "查看更早消息",
   });
-  await olderButton.scrollIntoViewIfNeeded();
   const anchor = conversation.getByText("历史输入 020");
-  const beforeTop = await anchor.evaluate(
-    (element) => element.getBoundingClientRect().top,
-  );
-  await olderButton.click();
+  // Upward scrolling now requests this page automatically. Hold only that
+  // response to capture the existing anchor before the real prepend; do not
+  // click a cursor button which the automatic page can legitimately exhaust.
+  holdEarlier = true;
+  const beforeTop = await (async () => {
+    try {
+      const requested = page.waitForRequest(
+        (request) =>
+          new URL(request.url()).searchParams.get("beforeId") === "history-020",
+      );
+      await olderButton.scrollIntoViewIfNeeded();
+      await requested;
+      return await anchor.evaluate(
+        (element) => element.getBoundingClientRect().top,
+      );
+    } finally {
+      holdEarlier = false;
+      releaseEarlier();
+    }
+  })();
   await expect(
     conversation.locator('[data-message-id="history-000"]'),
   ).toBeVisible();

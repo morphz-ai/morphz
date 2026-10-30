@@ -5,6 +5,7 @@ import { transformSync } from "esbuild";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import * as ast from "typescript/unstable/ast";
+import { assertSyntaxIdentity } from "./assert-syntax-identity.js";
 import {
   historicalObjectAnnotations,
   historicalSubjectApp,
@@ -48,13 +49,109 @@ function readHistory(path: URL | string) {
   );
   return files[value]!;
 }
+type HistoricalHelper = "humanHelper" | "privateHelper";
+const syntaxIdentityCalls: Record<HistoricalHelper, readonly string[]> = {
+  humanHelper: [
+    `  assert.equal(
+    binding.propertyName,
+    undefined,
+    "same-name actual human creation import",
+  );`,
+    `    assert.equal(
+      guard.right,
+      paren,
+      "original direct conditional creation placement",
+    );`,
+    `  assert.equal(
+    component.parent,
+    feature.source,
+    "one module-scope creation component identity",
+  );`,
+  ],
+  privateHelper: [
+    `      assert.equal(
+        statement.parent,
+        workspace.body,
+        "private scope seam remains directly registered in WorkspaceApp " +
+          name,
+      );`,
+    `    assert.equal(
+      actual.parent,
+      factory.body,
+      "seven actions share one private scope owner",
+    );`,
+    `  assert.equal(
+    statements[
+      statements.indexOf(
+        calls.get("useCommittedConversationDraftRetirement")!,
+      ) - 1
+    ],
+    calls.get("startedProjectConversationIds"),
+    "retirement effect follows original started projection",
+  );`,
+  ],
+};
+const creationUseArray = `  assert.deepEqual(
+    app.nodes
+      .filter(isIdentifier)
+      .filter((node) => app.symbols.get(node) === symbol),
+    [binding.name, ...consumers.map((node) => node.tagName)],
+    "only two direct imported creation uses, no alias or render factory",
+  );`;
+
+// Keep the archived source and its hashes immutable. Only these seven reviewed
+// assertion diagnostics are adapted for execution: strict node identity and
+// exact ordered identity slots remain authoritative, without formatting lazy
+// native AST graphs when an original negative recipe correctly rejects.
+export function adaptHistoricalSyntaxIdentity(
+  key: HistoricalHelper,
+  raw: string,
+): string {
+  assert.ok(
+    !raw.includes("assertSyntaxIdentity"),
+    "historical syntax identity helper must not shadow the execution binding",
+  );
+  let adapted = raw;
+  const replace = (before: string, after: string, index: number) => {
+    assert.ok(
+      adapted.split(before).length - 1 === 1,
+      `historical syntax identity ${key} seam ${index} must occur exactly once`,
+    );
+    adapted = adapted.replace(before, after);
+  };
+  syntaxIdentityCalls[key].forEach((before, index) =>
+    replace(
+      before,
+      before.replace("assert.equal(", "assertSyntaxIdentity("),
+      index,
+    ),
+  );
+  if (key === "humanHelper") {
+    replace(
+      creationUseArray,
+      `  assert.deepEqual(
+    app.nodes
+      .filter(isIdentifier)
+      .filter((node) => app.symbols.get(node) === symbol)
+      .map((node, index) =>
+        node === [binding.name, ...consumers.map((value) => value.tagName)][index],
+      ),
+    [true, ...consumers.map(() => true)],
+    "only two direct imported creation uses, no alias or render factory",
+  );`,
+      3,
+    );
+  }
+  return adapted;
+}
+
 function run(
-  key: string,
+  key: HistoricalHelper,
   bindings: Record<string, unknown>,
 ): Record<string, unknown> {
   const module = { exports: {} };
   const value = s[key]!;
-  const code = transformSync(value.raw, {
+  const code = transformSync(adaptHistoricalSyntaxIdentity(key, value.raw), {
     loader: "ts",
     format: "cjs",
     target: "es2022",
@@ -64,13 +161,17 @@ function run(
       ),
     },
   }).code;
-  new Function("require", "module", code)((name: string) => {
-    assert.ok(
-      Object.hasOwn(bindings, name),
-      "closed immutable historical dependency " + name,
-    );
-    return bindings[name];
-  }, module);
+  new Function("require", "module", "assertSyntaxIdentity", code)(
+    (name: string) => {
+      assert.ok(
+        Object.hasOwn(bindings, name),
+        "closed immutable historical dependency " + name,
+      );
+      return bindings[name];
+    },
+    module,
+    assertSyntaxIdentity,
+  );
   return module.exports;
 }
 const common = {

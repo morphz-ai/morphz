@@ -433,6 +433,29 @@ test("raw current App borrows the real eight-command owner without whole-App inv
     );
 });
 
+test("block-local history inputs do not replace or shadow the actual borrowed composer ref", () => {
+  const statement = "  const state = client.boot?.workspace;";
+  assert.equal(currentApp.split(statement).length, 2);
+  const withLocalInput = currentApp.replace(
+    statement,
+    "  for (const input of []) void input;\n" + statement,
+  );
+  verifyExchangeReferencePreparationConsumption(withLocalInput, currentOwner);
+  const composer = "  const input = useRef<HTMLTextAreaElement>(null),";
+  assert.equal(withLocalInput.split(composer).length, 2);
+  assert.throws(
+    () =>
+      verifyExchangeReferencePreparationConsumption(
+        withLocalInput.replace(
+          composer,
+          "  const unrelatedInput = useRef<HTMLTextAreaElement>(null),",
+        ),
+        currentOwner,
+      ),
+    /reference borrowed live binding input/,
+  );
+});
+
 // Independently written finite recipe for the already accepted decorator seam;
 // this is not extracted from today's App and does not replace historical peers.
 const cognitiveWriterRecipe = `  const writeDrafts = createCognitiveDraftWriter({

@@ -5,6 +5,46 @@ use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(target_os = "linux")]
+mod linux_service;
+
+/// A private service-owned receipt, never a marker parsed from command output.
+#[derive(Debug, Clone)]
+pub struct StartupReceipt {
+    #[cfg(target_os = "linux")]
+    inner: Arc<linux_service::Receipt>,
+}
+
+impl PartialEq for StartupReceipt {
+    fn eq(&self, other: &Self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            Arc::ptr_eq(&self.inner, &other.inner)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = other;
+            true
+        }
+    }
+}
+impl Eq for StartupReceipt {}
+
+impl StartupReceipt {
+    pub fn wait(&self) -> Result<(), SandboxError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.wait()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(SandboxError::new(
+                "private Linux receipt on unsupported platform",
+            ))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkPolicy {
@@ -103,6 +143,7 @@ impl BackendKind {
 #[serde(rename_all = "snake_case")]
 pub enum EnforcementStatus {
     Enforced,
+    Pending,
     Unavailable,
 }
 
@@ -146,6 +187,7 @@ pub struct PreparedCommand {
     /// it launches the untrusted command. This avoids operating-system argv
     /// limits without exposing the payload to the child command line.
     pub startup_stdin: Option<Vec<u8>>,
+    pub startup_receipt: Option<StartupReceipt>,
     pub report: BackendReport,
 }
 
@@ -196,6 +238,7 @@ impl PreparedPty {
         self,
         configure: impl FnOnce(&mut portable_pty::CommandBuilder),
     ) -> Result<SpawnedPty, SandboxError> {
+        let receipt = self.command.startup_receipt;
         let mut command = portable_pty::CommandBuilder::new(self.command.program);
         command.args(self.command.arguments);
         configure(&mut command);
@@ -203,11 +246,18 @@ impl PreparedPty {
         // this slave its controlling terminal before exec. Always require that
         // invariant here; callers cannot opt out while retaining PTY preparation.
         command.set_controlling_tty(true);
-        let child =
+        let mut child =
             self.pair.slave.spawn_command(command).map_err(|error| {
                 SandboxError::new(format!("failed to spawn private PTY: {error}"))
             })?;
         drop(self.pair.slave);
+        if let Some(receipt) = receipt {
+            if let Err(error) = receipt.wait() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
         Ok((self.pair.master, child))
     }
 }
@@ -310,6 +360,7 @@ impl NativeSandbox {
             program: platform_shell_program(),
             arguments: platform_shell_arguments(command),
             startup_stdin: None,
+            startup_receipt: None,
             report: BackendReport::unavailable(
                 self.backend.report().backend,
                 "the native sandbox is explicitly disabled by configuration; the command has no operating-system isolation",
@@ -324,7 +375,7 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn is_filesystem_root(path: &Path) -> bool {
     path.parent().is_none()
 }
@@ -498,6 +549,7 @@ impl SandboxBackend for UnsupportedNativeBackend {
             program: platform_shell_program(),
             arguments: platform_shell_arguments(&request.command),
             startup_stdin: None,
+            startup_receipt: None,
             report: self.report(),
         })
     }
@@ -558,6 +610,7 @@ mod macos {
                     program: platform_shell_program(),
                     arguments: platform_shell_arguments(&request.command),
                     startup_stdin: None,
+                    startup_receipt: None,
                     report,
                 });
             }
@@ -573,6 +626,7 @@ mod macos {
                     OsString::from(&request.command),
                 ],
                 startup_stdin: None,
+                startup_receipt: None,
                 report,
             })
         }
@@ -807,14 +861,8 @@ mod macos {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    #[cfg(test)]
     use std::collections::BTreeSet;
-
-    const STANDARD_BWRAP_PATHS: &[&str] = &[
-        "/usr/bin/bwrap",
-        "/bin/bwrap",
-        "/usr/local/bin/bwrap",
-        "/snap/bin/bwrap",
-    ];
 
     pub struct LinuxBubblewrapBackend;
 
@@ -827,14 +875,14 @@ mod linux {
 
     impl SandboxBackend for LinuxBubblewrapBackend {
         fn report(&self) -> BackendReport {
-            match find_bwrap(None) {
-                Some(path) => BackendReport::enforced(
+            match linux_service::probe() {
+                Ok(()) => BackendReport::enforced(
                     BackendKind::LinuxNative,
-                    format!("Linux Bubblewrap is available through '{}'", path.display()),
+                    "Administrator-installed Bubblewrap/AppArmor service is available; each launch still requires private admission",
                 ),
-                None => BackendReport::unavailable(
+                Err(error) => BackendReport::unavailable(
                     BackendKind::LinuxNative,
-                    "Bubblewrap (bwrap) is not installed; install the distribution's bubblewrap package before using workspace-write sandboxing",
+                    error.to_string(),
                 ),
             }
         }
@@ -860,81 +908,28 @@ mod linux {
             request: &ShellRequest,
             session: SessionIsolation,
         ) -> Result<PreparedCommand, SandboxError> {
-            let Some(bwrap) = find_bwrap(Some(&request.cwd)) else {
-                if request.policy.fail_closed {
-                    return Err(SandboxError::new(
-                        "Linux Bubblewrap is unavailable and fail_closed=true; install the distribution's bubblewrap package instead of running the command without operating-system isolation",
-                    ));
-                }
-                return Ok(PreparedCommand {
-                    program: platform_shell_program(),
-                    arguments: platform_shell_arguments(&request.command),
-                    startup_stdin: None,
-                    report: self.report(),
-                });
-            };
-            let arguments = build_bwrap_arguments_for_session(request, session)?;
+            let (launcher, launch, receipt) =
+                linux_service::register(request, matches!(session, SessionIsolation::PrivatePty))?;
             Ok(PreparedCommand {
-                program: bwrap.into_os_string(),
-                arguments,
+                program: launcher.into_os_string(),
+                arguments: vec![
+                    "--launch".into(),
+                    launch.into(),
+                    request.command.clone().into(),
+                ],
                 startup_stdin: None,
-                report: BackendReport::enforced(
-                    BackendKind::LinuxNative,
-                    "Bubblewrap enforces mount, user, PID, IPC, capability, and optional network-namespace isolation",
-                ),
+                startup_receipt: Some(StartupReceipt {
+                    inner: Arc::new(receipt),
+                }),
+                report: BackendReport {
+                    backend: BackendKind::LinuxNative,
+                    status: EnforcementStatus::Pending,
+                    notes: vec![
+                        "Policy registered; actual command admission has not completed".into(),
+                    ],
+                },
             })
         }
-    }
-
-    fn find_bwrap(untrusted_root: Option<&Path>) -> Option<PathBuf> {
-        let path_candidates = std::env::var_os("PATH")
-            .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
-            .unwrap_or_default();
-        for candidate in STANDARD_BWRAP_PATHS.iter().map(PathBuf::from).chain(
-            path_candidates
-                .into_iter()
-                .filter(|directory| directory.is_absolute())
-                .map(|directory| directory.join("bwrap")),
-        ) {
-            let Ok(candidate) = std::fs::canonicalize(candidate) else {
-                continue;
-            };
-            if !candidate.is_file() {
-                continue;
-            }
-            if untrusted_root.is_some_and(|root| {
-                std::fs::canonicalize(root).is_ok_and(|root| candidate.starts_with(root))
-            }) {
-                continue;
-            }
-            if !bwrap_is_usable(&candidate) {
-                continue;
-            }
-            return Some(candidate);
-        }
-        None
-    }
-
-    fn bwrap_is_usable(candidate: &Path) -> bool {
-        std::process::Command::new(candidate)
-            .args([
-                "--ro-bind",
-                "/",
-                "/",
-                "--dev",
-                "/dev",
-                "--unshare-user",
-                "--unshare-pid",
-                "--proc",
-                "/proc",
-                "--",
-                "/bin/true",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
     }
 
     #[cfg(test)]
@@ -942,6 +937,7 @@ mod linux {
         build_bwrap_arguments_for_session(request, SessionIsolation::NewSession)
     }
 
+    #[cfg(test)]
     fn build_bwrap_arguments_for_session(
         request: &ShellRequest,
         session: SessionIsolation,
@@ -1093,6 +1089,7 @@ mod linux {
         Ok(arguments)
     }
 
+    #[cfg(test)]
     fn resolve_denied_paths(
         literal_paths: &[PathBuf],
         patterns: &[SandboxPathPattern],
@@ -1111,6 +1108,7 @@ mod linux {
         )?))
     }
 
+    #[cfg(test)]
     fn sort_paths_by_specificity(mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
         paths.sort_by(|left, right| {
             left.components()
@@ -1123,6 +1121,7 @@ mod linux {
     }
 
     /// Returns true only when an existing directory was replaced by a mask.
+    #[cfg(test)]
     fn mask_path(arguments: &mut Vec<OsString>, path: &Path) -> Result<bool, SandboxError> {
         let metadata = match std::fs::metadata(path) {
             Ok(metadata) => metadata,
@@ -1148,12 +1147,14 @@ mod linux {
         Ok(metadata.is_dir())
     }
 
+    #[cfg(test)]
     fn push_mount(arguments: &mut Vec<OsString>, operation: &str, source: &Path, target: &Path) {
         arguments.push(os(operation));
         arguments.push(source.as_os_str().to_owned());
         arguments.push(target.as_os_str().to_owned());
     }
 
+    #[cfg(test)]
     fn push_mount_target_dirs(arguments: &mut Vec<OsString>, target: &Path) {
         let mut parents = target.ancestors().skip(1).collect::<Vec<_>>();
         parents.reverse();
@@ -1166,6 +1167,7 @@ mod linux {
         }
     }
 
+    #[cfg(test)]
     fn os(value: &str) -> OsString {
         OsString::from(value)
     }
@@ -1173,7 +1175,37 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::process::Command;
+        use std::process::{Command, Output, Stdio};
+
+        fn installed_service_available() -> bool {
+            match linux_service::probe() {
+                Ok(()) => true,
+                Err(error) => {
+                    assert!(
+                        std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none(),
+                        "the installed native Linux sandbox is required: {error}"
+                    );
+                    eprintln!("native Linux integration not exercised: {error}");
+                    false
+                }
+            }
+        }
+
+        fn run_installed(request: &ShellRequest) -> Output {
+            let prepared = NativeSandbox::for_current_platform()
+                .prepare_shell(request)
+                .unwrap();
+            assert_eq!(prepared.report.status, EnforcementStatus::Pending);
+            let child = Command::new(&prepared.program)
+                .args(&prepared.arguments)
+                .current_dir(&request.cwd)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            prepared.startup_receipt.as_ref().unwrap().wait().unwrap();
+            child.wait_with_output().unwrap()
+        }
 
         fn argument_strings(arguments: Vec<OsString>) -> Vec<String> {
             arguments
@@ -1204,11 +1236,7 @@ mod linux {
 
         #[test]
         fn native_bubblewrap_only_private_pty_retains_controlling_terminal() {
-            if find_bwrap(None).is_none() {
-                assert!(
-                    std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none(),
-                    "Bubblewrap is unavailable, but the native Linux sandbox test is required"
-                );
+            if !installed_service_available() {
                 return;
             }
             let workspace = tempfile::TempDir::new().unwrap();
@@ -1345,10 +1373,9 @@ mod linux {
 
         #[test]
         fn native_bubblewrap_nested_protected_paths_stay_hidden_and_read_only() {
-            let Some(bwrap) = find_bwrap(None) else {
-                assert!(std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none());
+            if !installed_service_available() {
                 return;
-            };
+            }
             let temp = tempfile::TempDir::new().unwrap();
             let workspace = temp.path().join("workspace");
             let protected = workspace.join("edge");
@@ -1368,19 +1395,17 @@ mod linux {
             }
             policy.deny_path(&nested);
             policy.deny_path(&protected);
-            let arguments = build_bwrap_arguments(&ShellRequest {
+            let output = run_installed(&ShellRequest {
                 command: "set -eu; printf allowed > allowed.txt; \
-                    test ! -s edge/runtime.db; test ! -s edge/runtime.db-wal; \
-                    test ! -s edge/nested/secret.txt; \
                     if cat edge/runtime.db >/dev/null 2>&1; then exit 10; fi; \
+                    if cat edge/runtime.db-wal >/dev/null 2>&1; then exit 13; fi; \
+                    if cat edge/nested/secret.txt >/dev/null 2>&1; then exit 14; fi; \
                     if printf denied > edge/runtime.db; then exit 11; fi; \
                     if mkdir edge/new-directory; then exit 12; fi"
                     .to_string(),
                 cwd: workspace.clone(),
                 policy,
-            })
-            .unwrap();
-            let output = Command::new(bwrap).args(arguments).output().unwrap();
+            });
             assert!(
                 output.status.success(),
                 "{}",
@@ -1433,10 +1458,9 @@ mod linux {
 
         #[test]
         fn native_bubblewrap_masks_home_paths_before_sealing_private_roots() {
-            let Some(bwrap) = find_bwrap(None) else {
-                assert!(std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none());
+            if !installed_service_available() {
                 return;
-            };
+            }
             let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
             let fixture = tempfile::TempDir::new_in(&home).unwrap();
             let workspace = fixture.path().join("workspace");
@@ -1446,7 +1470,7 @@ mod linux {
             std::fs::write(protected.join("secret.txt"), "test-secret").unwrap();
             let mut policy = SandboxPolicy::workspace(&workspace);
             policy.deny_path(&protected);
-            let arguments = build_bwrap_arguments(&ShellRequest {
+            let output = run_installed(&ShellRequest {
                 command: format!(
                     "set -eu; printf allowed > allowed.txt; test ! -r '{}/secret.txt'; \
                      if printf denied > '{}'; then exit 10; fi",
@@ -1455,9 +1479,7 @@ mod linux {
                 ),
                 cwd: workspace.clone(),
                 policy,
-            })
-            .unwrap();
-            let output = Command::new(bwrap).args(arguments).output().unwrap();
+            });
             assert!(
                 output.status.success(),
                 "{}",
@@ -1476,10 +1498,9 @@ mod linux {
 
         #[test]
         fn native_bubblewrap_home_workspace_is_writable_and_protected_paths_stay_masked() {
-            let Some(bwrap) = find_bwrap(None) else {
-                assert!(std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none());
+            if !installed_service_available() {
                 return;
-            };
+            }
             let home = std::fs::canonicalize(std::env::var_os("HOME").unwrap()).unwrap();
             let fixture = tempfile::TempDir::new_in(&home).unwrap();
             let output_file = tempfile::NamedTempFile::new_in(&home).unwrap();
@@ -1487,9 +1508,10 @@ mod linux {
             std::fs::write(&protected, "test-secret").unwrap();
             let mut policy = SandboxPolicy::workspace(&home);
             policy.deny_path(&protected);
-            let arguments = build_bwrap_arguments(&ShellRequest {
+            let output = run_installed(&ShellRequest {
                 command: format!(
-                    "set -eu; printf home-ok > '{}'; test ! -s '{}'; \
+                    "set -eu; printf home-ok > '{}'; \
+                     if cat '{}' >/dev/null 2>&1; then exit 11; fi; \
                      if printf denied > '{}'; then exit 10; fi",
                     output_file.path().display(),
                     protected.display(),
@@ -1497,9 +1519,7 @@ mod linux {
                 ),
                 cwd: home,
                 policy,
-            })
-            .unwrap();
-            let output = Command::new(bwrap).args(arguments).output().unwrap();
+            });
             assert!(
                 output.status.success(),
                 "{}",
@@ -1514,14 +1534,9 @@ mod linux {
 
         #[test]
         fn native_bubblewrap_blocks_outside_writes_and_protected_content() {
-            let Some(bwrap) = find_bwrap(None) else {
-                assert!(
-                    std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none(),
-                    "Bubblewrap is missing or unusable, but the native Linux sandbox attack test is required"
-                );
-                eprintln!("skipping native Bubblewrap attack test because bwrap is unavailable");
+            if !installed_service_available() {
                 return;
-            };
+            }
             let temp = tempfile::TempDir::new().unwrap();
             let workspace = temp.path().join("workspace");
             let outside = temp.path().join("outside.txt");
@@ -1531,20 +1546,18 @@ mod linux {
             policy.deny_path(workspace.join(".env"));
             let request = ShellRequest {
                 command: format!(
-                    "printf allowed > allowed.txt; if printf denied > '{}'; then exit 10; fi; test ! -s .env; python3 -c 'import socket; s=socket.socket(); s.settimeout(0.2); s.connect((\"1.1.1.1\", 53))' >/dev/null 2>&1 && exit 11 || true",
+                    "set -eu; printf allowed > allowed.txt; if printf denied > '{}'; then exit 10; fi; if cat .env >/dev/null 2>&1; then exit 12; fi; if python3 -c 'import socket; s=socket.socket(); s.settimeout(0.2); s.connect((\"1.1.1.1\", 53))' >/dev/null 2>&1; then exit 11; fi",
                     outside.display()
                 ),
                 cwd: workspace.clone(),
                 policy,
             };
-            let arguments = build_bwrap_arguments(&request).unwrap();
-            let status = Command::new(bwrap)
-                .args(arguments)
-                .current_dir(&workspace)
-                .status()
-                .unwrap();
-
-            assert!(status.success());
+            let output = run_installed(&request);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
             assert_eq!(
                 std::fs::read_to_string(workspace.join("allowed.txt")).unwrap(),
                 "allowed"
@@ -1724,6 +1737,7 @@ mod windows {
                 program: bundle.runner.into_os_string(),
                 arguments: Vec::new(),
                 startup_stdin: Some(encoded.into_bytes()),
+                startup_receipt: None,
                 report: BackendReport::enforced(
                     BackendKind::WindowsNative,
                     "Windows command is delegated to a restricted token with ACL/WFP policy and a Job Object process-tree boundary",
@@ -2290,6 +2304,7 @@ mod tests {
                 program: OsString::from("recording-shell"),
                 arguments: vec![OsString::from(&request.command)],
                 startup_stdin: None,
+                startup_receipt: None,
                 report: self.report(),
             })
         }
@@ -2334,6 +2349,7 @@ mod tests {
                     program: "must-not-run".into(),
                     arguments: vec![],
                     startup_stdin: Some(b"private policy".to_vec()),
+                    startup_receipt: None,
                     report: RecordingBackend.report(),
                 })
             },

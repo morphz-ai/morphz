@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createServer as createPortProbe } from "node:net";
+import { createServer } from "node:http";
+import type { RuntimeConfig } from "../packages/application/src/runtime.js";
 import { localAccess, initialWorkspace } from "../packages/core/src/model.js";
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 import { executionActivityScope } from "../apps/web/src/execution-activity.js";
@@ -51,8 +53,8 @@ const data = (value: any): any =>
             value: typeof value === "number" ? String(value) : value,
           };
 
-async function fixture() {
-  const f = await platformRuntimeHostFixture();
+async function fixture(config?: RuntimeConfig) {
+  const f = await platformRuntimeHostFixture(config);
   const { dialogueId } = await f.session().ensurePlatformSpaces();
   await f.session().platformMessage({
     commandId: randomUUID(),
@@ -149,12 +151,352 @@ async function fixture() {
   return { f, internal, delivery, thread, bounds, objective, contextId };
 }
 
+/** Real HTTP status at the Runtime boundary, using only synthetic input. */
+async function logicalRootSource() {
+  let source: unknown;
+  let direct: number | "malformed" = 404;
+  let fallbackReads = 0;
+  const server = createServer((request, response) => {
+    const path = new URL(request.url!, "http://127.0.0.1").pathname;
+    const send = (status: number, value: unknown) => {
+      response.writeHead(status, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(value));
+    };
+    if (request.method !== "GET") return send(405, {});
+    if (path === "/api/status") return send(200, { model: "isolated-model" });
+    if (path === "/api/runtime/inference")
+      return send(200, { model: "isolated-model", models: ["isolated-model"] });
+    if (path.endsWith("/events/root-input"))
+      return direct === "malformed"
+        ? send(200, { event: {} })
+        : send(direct, {});
+    if (path.endsWith("/turns/root-input/source")) {
+      fallbackReads++;
+      return send(200, { input_event: source });
+    }
+    return send(404, {});
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    config: {
+      url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      token: "isolated-delegation-source",
+      namespace: randomUUID(),
+    },
+    source(value: unknown) {
+      source = value;
+    },
+    direct(value: number | "malformed") {
+      direct = value;
+    },
+    get fallbackReads() {
+      return fallbackReads;
+    },
+    async close() {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    },
+  };
+}
+
+async function assertDelegatedSource(rootKind: "event" | "logical-turn") {
+  const rootHTTP =
+    rootKind === "logical-turn" ? await logicalRootSource() : null;
+  const { f, internal, delivery, thread, bounds, contextId } = await fixture(
+    rootHTTP?.config,
+  ).catch(async (error) => {
+    await rootHTTP?.close();
+    throw error;
+  });
+  const source = internal as unknown as {
+    authorizePlatformRead: (...args: any[]) => Promise<any>;
+  };
+  const authorize = source.authorizePlatformRead;
+  let revoked = false;
+  try {
+    const principal = "TEST-runtime-initiator";
+    const record = {
+      id: "TEST-delegation",
+      parent_context_id: contextId,
+      parent_session_id: delivery.sessionId,
+      child_context_id: "TEST-child-context",
+      child_session_id: "TEST-child-session",
+      initiating_principal_id: principal,
+      task: "TEST 验证子任务真实回执",
+      status: "running",
+      created_at: now,
+      updated_at: now,
+    };
+    const event = {
+      id: "TEST-delegate-request",
+      actor: "Runtime",
+      type: "agent_call",
+      topic: "chat/delegate",
+      timestamp: now,
+      sequence: 4,
+      payload: {
+        delegation_id: record.id,
+        parent_context_id: contextId,
+        context_id: contextId,
+        parent_session_id: delivery.sessionId,
+        session_id: delivery.sessionId,
+        child_context_id: record.child_context_id,
+        child_session_id: record.child_session_id,
+        principal_id: principal,
+        thread_id: "TEST-parent",
+        root_turn_id: delivery.rootId,
+      },
+    };
+    const root = {
+      id: rootHTTP ? "TEST-original-input-event" : delivery.rootId,
+      actor: "Human",
+      type: "session_message",
+      topic: "chat/user_message",
+      timestamp: now,
+      sequence: 1,
+      payload: {
+        session_id: delivery.sessionId,
+        client_message_id: delivery.inputId,
+        root_turn_id: delivery.rootId,
+        session_io: {
+          request: {
+            ...delivery.request,
+            client_metadata: data(delivery.request.client_metadata),
+            message: {
+              ...delivery.request.message,
+              content: {
+                encoding: "json",
+                value: data(delivery.request.message.content.value),
+              },
+            },
+          },
+        },
+      },
+    };
+    rootHTTP?.source(root);
+    const actualRequest = internal.request.bind(internal);
+    const parent = thread("TEST-parent");
+    parent.phase = "waiting";
+    const child = thread("TEST-child", "open", "TEST-child-root");
+    Object.assign(child.thread, {
+      context_id: record.child_context_id,
+      session_id: record.child_session_id,
+      initiating_principal_id: principal,
+    });
+    const writes: string[] = [];
+    let wrongOwner = false;
+    internal.request = async (path, method = "GET") => {
+      if (method !== "GET") writes.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [record], has_more: false };
+      if (path === `/api/delegations/${record.id}`) return record;
+      if (path.startsWith(`/api/contexts/${contextId}/events?`))
+        return {
+          context_id: contextId,
+          events: [event],
+          scan_exhaustive: true,
+        };
+      if (path.endsWith(`/events/${event.id}`)) return { event };
+      if (path.endsWith(`/events/${delivery.rootId}`))
+        return rootHTTP ? actualRequest(path, method) : { event: root };
+      if (path.endsWith(`/turns/${delivery.rootId}/source`) && rootHTTP)
+        return actualRequest(path, method);
+      if (path.includes("/execution-records?"))
+        return {
+          session_id: record.child_session_id,
+          context_id: record.child_context_id,
+          selected_thread_id: child.thread.id,
+          source_root_id: child.thread.root_turn_id,
+          limit: 100,
+          has_more_jobs: false,
+          threads_truncated: false,
+          jobs: [],
+          threads: [
+            {
+              ...child.thread,
+              parent_thread_id: null,
+              phase: child.phase,
+              intent: child.intent,
+              initiating_principal_id: wrongOwner ? "foreign" : principal,
+            },
+          ],
+        };
+      if (
+        path.startsWith(`/api/contexts/${record.child_context_id}/scheduler?`)
+      )
+        return {
+          context_id: record.child_context_id,
+          detail_bounds: bounds,
+          threads: [
+            {
+              ...child,
+              schedules: [
+                {
+                  thread_id: child.thread.id,
+                  status: "queued",
+                  not_before: "2099-10-24T02:00:00Z",
+                },
+              ],
+            },
+          ],
+        };
+      if (path.startsWith(`/api/contexts/${contextId}/scheduler?`))
+        return {
+          detail_bounds: bounds,
+          threads: [parent],
+          objectives: [],
+        };
+      throw new Error(`unexpected read ${path}`);
+    };
+    source.authorizePlatformRead = (...args) => {
+      if (revoked) throw new Error("TEST 撤权");
+      return authorize(...args);
+    };
+    const sessionsBefore = Object.keys(internal.state.sessions);
+    await internal.refreshActivity();
+    const activity = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    assert.equal(activity.delegationsAvailable, true);
+    if (rootHTTP)
+      assert.ok(
+        rootHTTP.fallbackReads > 0,
+        "a real root-event HTTP 404 reaches the existing exact turn source",
+      );
+    const projected = activity.threads.find((t) => t.id === child.thread.id)!;
+    assert.ok(projected);
+    assert.equal(projected.inputId, delivery.inputId);
+    assert.equal(projected.sessionId, record.child_session_id);
+    assert.equal(projected.contextId, record.child_context_id);
+    assert.equal(projected.continuation, undefined);
+    assert.ok(
+      activity.threads
+        .find((t) => t.id === parent.thread.id)
+        ?.waitKinds?.includes("delegation"),
+    );
+    assert.deepEqual(
+      Object.keys(internal.state.sessions),
+      sessionsBefore,
+      "reading a delegate never registers or claims a child Session",
+    );
+    assert.equal(
+      f.runtime.platformNavigationSnapshot(localAccess, []).runtime.activity!
+        .threads.length,
+      0,
+    );
+    const scope = executionActivityScope(projected, initialWorkspace());
+    assert.ok("runtime" in scope);
+    const viewer = await f.runtime.platformExecutionRead(
+      scope as any,
+      localAccess,
+      () => {},
+    );
+    assert.deepEqual(
+      (await viewer.snapshot()).threads?.map((t) => t.id),
+      [child.thread.id],
+    );
+    assert.deepEqual((await viewer.snapshot()).approvals, []);
+    child.phase = "idle";
+    const waitingViewer = await f.runtime.platformExecutionRead(
+      scope as any,
+      localAccess,
+      () => {},
+    );
+    const waitingDetail = await waitingViewer.snapshot();
+    assert.deepEqual(
+      waitingDetail.threads?.[0]?.waitKinds,
+      ["timer"],
+      "delegated read-only wrapper must not overwrite the enriched family",
+    );
+    assert.equal(waitingDetail.threads?.[0]?.waitUntil, "2099-10-24T02:00:00Z");
+    if (rootHTTP) {
+      for (const failure of [401, 403, 503, "malformed"] as const) {
+        const beforeFallback: number = rootHTTP.fallbackReads;
+        rootHTTP.direct(failure);
+        await assert.rejects(
+          f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
+          (error: any) =>
+            failure === "malformed"
+              ? error.name === "ZodError"
+              : error.status === failure,
+          "only an actual root-event 404 may use turns/source",
+        );
+        assert.equal(rootHTTP.fallbackReads, beforeFallback);
+      }
+      rootHTTP.direct(404);
+      rootHTTP.source({
+        ...root,
+        payload: { ...root.payload, session_id: "TEST-foreign-session" },
+      });
+      await assert.rejects(
+        f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
+        /原始输入/,
+        "the fallback does not relax the exact originating Session/source proof",
+      );
+      rootHTTP.source(root);
+    }
+    wrongOwner = true;
+    await assert.rejects(
+      f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
+      /身份/,
+    );
+    wrongOwner = false;
+    event.payload.child_context_id = "unrelated-context";
+    await assert.rejects(
+      f.runtime.platformExecutionRead(scope as any, localAccess, () => {}),
+      /委派/,
+    );
+    event.payload.child_context_id = record.child_context_id;
+    revoked = true;
+    await assert.rejects(viewer.snapshot(), /撤权/);
+    revoked = false;
+    for (const status of ["completed", "failed", "cancelled"]) {
+      record.status = status;
+      child.thread.lifecycle = status;
+      child.phase = "idle";
+      await internal.refreshActivity();
+      const next = f.runtime.platformNavigationSnapshot(localAccess, [
+        f.projectId,
+      ]).runtime.activity!;
+      assert.equal(
+        next.threads.find((t) => t.id === child.thread.id)?.lifecycle,
+        status,
+      );
+      assert.ok(
+        !next.threads
+          .find((t) => t.id === parent.thread.id)
+          ?.waitKinds?.includes("delegation"),
+      );
+    }
+    assert.deepEqual(
+      writes,
+      [],
+      "activity, details and all rejection paths remain read-only",
+    );
+  } finally {
+    try {
+      await f.close();
+    } finally {
+      await rootHTTP?.close();
+    }
+  }
+}
+
+test("跨 Session delegate 保留父输入与真实子执行，精确只读、撤权和篡改不扩大权限", () =>
+  assertDelegatedSource("event"));
+test("delegate 的逻辑回合根事件真实 HTTP 404 时只读核验 turns/source，其他错误不降级", () =>
+  assertDelegatedSource("logical-turn"));
+
 test("活动由真实线程投影，保留终态事实、原intent、目标和运行线程", async () => {
   const { f, internal, delivery, thread, bounds, objective } = await fixture();
   try {
     const calls: string[] = [];
     internal.request = async (path) => {
       calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return {
         detail_bounds: bounds,
         threads: path.includes("include_terminal=true")
@@ -167,7 +509,14 @@ test("活动由真实线程投影，保留终态事实、原intent、目标和�
     const activity = f.runtime.platformNavigationSnapshot(localAccess, [
       f.projectId,
     ]).runtime.activity!;
-    assert.equal(calls.length, 2);
+    assert.equal(
+      calls.filter((path) => path.includes("/scheduler?")).length,
+      2,
+    );
+    assert.equal(
+      calls.filter((path) => path.startsWith("/api/delegations?")).length,
+      2,
+    );
     assert.equal(activity.truncated, false);
     assert.equal(activity.objectivesTruncated, false);
     assert.deepEqual(
@@ -373,6 +722,8 @@ test("线程自己的定时和审批原因透传到活动，不被父目标的�
     const calls: string[] = [];
     internal.request = async (path) => {
       calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
       return {
         detail_bounds: bounds,
         threads: [timer, approval],
@@ -383,7 +734,19 @@ test("线程自己的定时和审批原因透传到活动，不被父目标的�
     const activity = f.runtime.platformNavigationSnapshot(localAccess, [
       f.projectId,
     ]).runtime.activity!;
-    assert.equal(calls.length, 2);
+    assert.equal(
+      calls.filter((path) => path.includes("/scheduler?")).length,
+      2,
+    );
+    assert.equal(
+      calls.filter((path) => path.startsWith("/api/delegations?")).length,
+      2,
+    );
+    assert.equal(
+      calls.length,
+      4,
+      "timer/approval state adds no per-Thread reads beyond the bounded Context inventories",
+    );
     assert.deepEqual(activity.threads[0]!.waitKinds, ["timer"]);
     assert.equal(activity.threads[0]!.waitUntil, "2026-10-23T01:00:00Z");
     assert.deepEqual(activity.threads[1]!.waitKinds, ["permission"]);

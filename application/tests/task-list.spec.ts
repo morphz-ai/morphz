@@ -737,8 +737,10 @@ test("失败执行保留记录和重试，重试请求失败不伪装成功；�
     })
     .click();
   await page.getByRole("button", { name: "执行记录", exact: true }).click();
-  await expect(page.getByText(/本次执行 · 最近/)).toBeVisible();
-  await expect(page.getByText("测试资料不存在", { exact: true })).toBeVisible();
+  const records = page.getByRole("dialog", { name: "执行记录", exact: true });
+  await expect(records.getByText("本次执行", { exact: true })).toBeVisible();
+  await expect(records.getByText(/本次执行 · 最近/)).toHaveCount(0);
+  await expect(records.getByText("测试资料不存在", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await retry.click();
   await expect(

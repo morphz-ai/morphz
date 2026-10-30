@@ -408,12 +408,18 @@ test("Platform-only project sends a durable Runtime input without a legacy works
                 evaluation ? "activation_id" : "attempt_id"
               ] as string)
             : null;
+        // Runtime's immutable progress rows retain their Event time/id, unlike
+        // the stream/final publication row. The Host must resolve first-visible
+        // time from the exact public-output fact, not from this fixture.
+        const publication = event.topic !== "chat/progress";
         const visible =
-          (attempt && firstVisible.get(attempt)) || event.timestamp;
+          (publication && attempt && firstVisible.get(attempt)) ||
+          event.timestamp;
         entries.push({
-          entry_id: attempt
-            ? (evaluation ? "evaluation:" : "publication:") + attempt
-            : event.id,
+          entry_id:
+            publication && attempt
+              ? (evaluation ? "evaluation:" : "publication:") + attempt
+              : event.id,
           ...sqlTimelineTime(visible),
           root_turn_id: rootId,
           attempt_id: attempt,
@@ -2627,7 +2633,103 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       source: { ...quote.source, messageId: `publication:${cjkAttempt}` },
       text: "好，提前一天就是 10 月 23 日。当天上午 9 点（北京时间）提醒你，可以吗？确认后我再设置定时提醒。",
     };
-    const quotes = [quote, nanosQuote, offsetQuote, cjkQuote];
+    const progressAttempt = `progress-attempt-${command.commandId}`;
+    const progressId = `progress-${progressAttempt}`;
+    const progressWrittenAt = new Date(
+      Date.parse(quote.source.createdAt) + 60_000,
+    ).toISOString();
+    const progressText = "正在验证开发服务器的缓存与热更新。";
+    const progressOutput: FixtureEvent = {
+      id: `model_public_output_${progressAttempt}`,
+      sequence: firstEvents.length + 1,
+      timestamp: progressWrittenAt,
+      topic: "runtime/model_public_output",
+      payload: {
+        session_id: firstSessionId,
+        root_turn_id: `root-${command.commandId}`,
+        attempt_id: progressAttempt,
+        first_visible_at: nanosQuote.source.createdAt,
+        text: progressText,
+        complete: true,
+      },
+    };
+    const progressEvent: FixtureEvent = {
+      id: progressId,
+      sequence: firstEvents.length + 2,
+      timestamp: progressWrittenAt,
+      topic: "chat/progress",
+      payload: {
+        session_id: firstSessionId,
+        root_turn_id: `root-${command.commandId}`,
+        attempt_id: progressAttempt,
+        text: progressText,
+      },
+    };
+    firstEvents.push(progressOutput, progressEvent);
+    for (const host of [runtime, secondRuntime!]) {
+      assert.equal(
+        (
+          await host.platformMessageSource(
+            sourceScope,
+            localAccess,
+            progressId,
+            command.commandId,
+          )
+        )?.createdAt,
+        nanosQuote.source.createdAt,
+        "a completed progress quote keeps its first-visible time on every Host",
+      );
+      const history = await host.platformConversationHistory(
+        sourceScope,
+        localAccess,
+        { limit: 1 },
+      );
+      assert.equal(history.runtime.messages[0]?.id, progressId);
+      assert.equal(
+        history.runtime.messages[0]?.createdAt,
+        nanosQuote.source.createdAt,
+        "history and live progress use the same stable message time",
+      );
+      assert.deepEqual(
+        history.nextCursor,
+        {
+          id: progressId,
+          createdAt: sqlTimelineTime(progressWrittenAt).visible_at,
+        },
+        "pagination still uses Runtime's immutable ordering key",
+      );
+      const previous = await host.platformConversationHistory(
+        sourceScope,
+        localAccess,
+        { limit: 1, before: history.nextCursor! },
+      );
+      assert.ok(previous.runtime.messages.every((m) => m.id !== progressId));
+    }
+    progressOutput.payload.root_turn_id = "unrelated-input-root";
+    assert.equal(
+      (
+        await runtime.platformMessageSource(
+          sourceScope,
+          localAccess,
+          progressId,
+          command.commandId,
+        )
+      )?.createdAt,
+      progressWrittenAt,
+      "another root's public output cannot supply a quote timestamp",
+    );
+    progressOutput.payload.root_turn_id = `root-${command.commandId}`;
+    const progressQuote = {
+      ...quote,
+      id: randomUUID(),
+      source: {
+        ...quote.source,
+        messageId: progressId,
+        createdAt: nanosQuote.source.createdAt,
+      },
+      text: progressText,
+    };
+    const quotes = [quote, nanosQuote, offsetQuote, cjkQuote, progressQuote];
     quotedInput.operation.textQuotes = quotes;
     const fullHistory = t.mock.method(
       runtime,
@@ -2665,6 +2767,10 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         },
       },
       { ...cjkQuote, text: cjkQuote.text.replace("上午 9 点", "上午 8 点") },
+      {
+        ...progressQuote,
+        source: { ...progressQuote.source, createdAt: progressWrittenAt },
+      },
     ])
       await assert.rejects(
         session().platformMessage({

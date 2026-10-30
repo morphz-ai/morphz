@@ -69,6 +69,164 @@ async fn claim<S: morphz::memory::RuntimeStore>(
         .unwrap()
 }
 
+pub async fn assert_maintenance_handoff_keeps_lane<S: morphz::memory::RuntimeStore>(store: &S) {
+    for released in [false, true] {
+        let prefix = format!("maintenance-handoff-lane-{released}");
+        let session = store
+            .create_session(NewSession {
+                id: prefix.clone(),
+                agent_id: "conformance-agent".into(),
+                context_id: "conformance-context".into(),
+                parent_session_id: Some("conformance-session".into()),
+                title: prefix.clone(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        // Trusted adapters may publish ordinary inputs without an explicit
+        // after_thread_id. Durable lane ownership must still serialize them.
+        let mut turns = Vec::new();
+        for suffix in ["first", "second"] {
+            let event = Event::new(
+                format!("{prefix}-{suffix}"),
+                "Store-Conformance".into(),
+                morphz::event::TYPE_USER_MESSAGE.into(),
+                "chat/user_message".into(),
+                json!({"context_id": session.context_id, "session_id": session.id, "text": suffix})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+            store.append(event.clone()).await.unwrap();
+            let thread = store
+                .ensure_thread(NewThread {
+                    response_annotations: morphz::response_annotations::Protocol::Off,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    id: stable_thread_id(&event.id),
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    initiating_principal_id: None,
+                    root_turn_id: event.id.clone(),
+                    kind: ThreadKind::DialogueTurn,
+                    executor_kind: "self".into(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: ThreadSupervision::runtime("maintenance-test"),
+                })
+                .await
+                .unwrap();
+            let activation = claim(store, &thread, &event, None).await.unwrap();
+            let activation = if suffix == "first" {
+                transition(store, &activation, ThreadActivationStatus::Running).await
+            } else {
+                activation
+            };
+            turns.push((thread, activation));
+        }
+        let (first, mut owner) = turns.remove(0);
+        let (_, second) = turns.remove(0);
+        if released {
+            assert!(store
+                .release_dialogue_turn_activation(&owner.id, chrono::Utc::now())
+                .await
+                .unwrap());
+            owner = store
+                .get_thread_activation(&owner.id)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let receipt = Event::new(
+            format!("{prefix}-receipt"),
+            "context_tx".into(),
+            morphz::event::TYPE_TOOL_OUTPUT.into(),
+            "chat/tool_output".into(),
+            json!({"context_id": session.context_id, "session_id": session.id,
+                "root_turn_id": first.root_turn_id, "parent_activation_id": owner.id,
+                "tool": "context_tx", "result": "committed context maintenance"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store
+            .append_to_thread(receipt.clone(), &first.id)
+            .await
+            .unwrap();
+        let owner = transition(store, &owner, ThreadActivationStatus::Succeeded).await;
+        // Pause at the exact durable gap: the owner's transaction committed,
+        // the receipt is pending, and no successor Activation exists yet.
+        let runnable = store
+            .dialogue_turn_activation_runnable(&second.id)
+            .await
+            .unwrap();
+        let queued = store
+            .list_queued_thread_activations_for_admission(64, 8, 60_000)
+            .await
+            .unwrap();
+        let visible = queued
+            .iter()
+            .any(|(activation, _)| activation.id == second.id);
+        let admission = store
+            .update_thread_activation(
+                &second.id,
+                second.revision,
+                ThreadActivationStatus::Running,
+                Some("handoff-competing-worker"),
+                Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!((runnable, visible, matches!(admission, ThreadActivationMutation::Updated(_))),
+            (released, released, released),
+            "runnable read, queue refill and atomic running transition must all reserve an unreleased maintenance hand-off");
+        if released {
+            assert!(
+                matches!(admission, ThreadActivationMutation::Updated(_)),
+                "a prior physical-work release must still allow the next user turn"
+            );
+            continue;
+        }
+        assert!(
+            matches!(admission, ThreadActivationMutation::Conflict { .. }),
+            "the running transition must enforce the fence even without a preflight read"
+        );
+        let continuation = claim(store, &first, &receipt, Some(owner.id))
+            .await
+            .unwrap();
+        assert!(store
+            .dialogue_turn_activation_runnable(&continuation.id)
+            .await
+            .unwrap());
+        let continuation = transition(store, &continuation, ThreadActivationStatus::Running).await;
+        transition(store, &continuation, ThreadActivationStatus::Succeeded).await;
+        let first = store.get_thread(&first.id).await.unwrap().unwrap();
+        assert!(matches!(
+            store
+                .update_thread(
+                    &first.id,
+                    first.revision,
+                    None,
+                    Some(ThreadLifecycle::Completed),
+                    Some("first reply"),
+                    Some("handoff-reply"),
+                    Some(DeliveryStatus::Delivered),
+                    Some("handoff-reply")
+                )
+                .await
+                .unwrap(),
+            ThreadMutation::Updated(_)
+        ));
+        assert!(store
+            .dialogue_turn_activation_runnable(&second.id)
+            .await
+            .unwrap());
+        transition(store, &second, ThreadActivationStatus::Running).await;
+    }
+}
+
 pub async fn assert_maintenance_interrupt<S: morphz::memory::RuntimeStore>(store: &S) {
     // The same immutable user Signal is acknowledged by the original model
     // pass; a context_tx receipt, not that Signal, drives the next pass.

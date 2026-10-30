@@ -67,7 +67,7 @@ export function SubjectSidebar({
   onClose(): void;
   detail: boolean;
   onBack(): void;
-  activity: ReactNode;
+  activity(navigation: ReactNode): ReactNode;
   onInspect(scope: ExecutionReadScope): void;
   onOpen(id: string): void;
   onModels?: () => void;
@@ -168,23 +168,25 @@ export function SubjectSidebar({
         </div>
       }
     >
-      {detail && view === "activity" && (
-        <button
-          className="subject-back"
-          aria-label="返回活动列表"
-          onClick={onBack}
-        >
-          <ArrowLeft />
-          活动
-        </button>
-      )}
       <div
         role="tabpanel"
         id={`subject-view-${view}`}
         aria-labelledby={`subject-tab-${view}`}
         className="subject-content"
       >
-        {view === "activity" && activity}
+        {view === "activity" &&
+          activity(
+            detail ? (
+              <button
+                className="subject-back"
+                aria-label="返回活动列表"
+                onClick={onBack}
+              >
+                <ArrowLeft />
+                活动
+              </button>
+            ) : null,
+          )}
         {view === "permissions" && (
           <section className="subject-section">
             <h3>授权</h3>

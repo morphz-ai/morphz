@@ -34,10 +34,11 @@ test("every locked brace-expansion branch clears GHSA-q2hr-2g5m-vwhr", () => {
   }
 });
 
-test("every locked undici branch clears the six reported HTTP, cache, retry and TLS advisories", () => {
+test("every locked undici branch clears HTTP, cache, retry, TLS, EventSource and integrity advisories", () => {
   // GHSA-pmjh-fq2x-6v4x, GHSA-r53p-7pc4-xj5r, GHSA-2jfj-6hjv-fm6j,
   // GHSA-2gqq-gqf2-x968, GHSA-w293-vg96-wgc3 and GHSA-8436-99hf-9mmv.
-  const floors = new Map([[7, "7.29.1"], [8, "8.10.2"]]);
+  // Also GHSA-4qv8-2p9j-2685, GHSA-f72v-6w45-q472 and GHSA-xjj6-f33q-929c.
+  const floors = new Map([[7, "7.30.1"], [8, "8.12.2"]]);
   for (const [path, dependency] of lockedPackages("undici")) {
     const minimum = floors.get(release(dependency.version)[0]);
     assert.ok(minimum, `Review the security floor for ${path}@${dependency.version}`);
@@ -48,7 +49,7 @@ test("every locked undici branch clears the six reported HTTP, cache, retry and 
 test("Miniflare's exact vulnerable pin cannot reintroduce undici on a fresh install", () => {
   for (const [, dependency] of lockedPackages("miniflare")) {
     if (dependency.dependencies?.undici === "7.29.0") {
-      assert.equal(manifest.overrides?.miniflare?.undici, "7.29.1");
+      assert.equal(manifest.overrides?.miniflare?.undici, "7.30.1");
     }
   }
 });

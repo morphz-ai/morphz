@@ -1294,6 +1294,7 @@ mod tests {
                     request_id: Some("question-1".into()),
                 }),
                 None,
+                None,
             )
             .await
             .unwrap()

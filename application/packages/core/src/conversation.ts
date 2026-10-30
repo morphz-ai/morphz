@@ -7,7 +7,7 @@ import {
   evaluationSourceSchema,
 } from "./evaluation-result.js";
 import { providerRecoverySchema } from "./provider-recovery.js";
-import { executionAttentionSchema } from "./execution.js";
+import { executionAttentionSchema, delegationLinkSchema } from "./execution.js";
 import { continuationSchema } from "./continuation.js";
 export const artifactOutputSchema = z.object({
   commandId: z.string(),
@@ -42,6 +42,17 @@ export const runtimeScheduleSchema = z.object({
 export type RuntimeSchedule = z.infer<typeof runtimeScheduleSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
+  /** Read observations, not execution/control authority. A failed Context must
+   * not erase another Context's successfully read current work. */
+  readScopes: z
+    .array(
+      z.object({
+        contextId: z.string().min(1),
+        currentAvailable: z.boolean(),
+        historyAvailable: z.boolean(),
+      }),
+    )
+    .optional(),
   truncated: z.boolean().default(false),
   /** Current open threads/Objectives were fully read in the authorized domain.
    * Independent of the bounded terminal activity history; absent is unknown. */
@@ -51,6 +62,10 @@ export const activitySchema = z.object({
   objectivesTruncated: z.boolean().optional(),
   schedulesAvailable: z.boolean().optional(),
   schedulesTruncated: z.boolean().optional(),
+  /** Cross-Context delegation visibility has its own read bounds; it does not
+   * redefine the registered Platform-Session openWorkComplete domain. */
+  delegationsAvailable: z.boolean().optional(),
+  delegationsTruncated: z.boolean().optional(),
   schedules: z.array(runtimeScheduleSchema).optional(),
   objectives: z
     .array(
@@ -61,6 +76,7 @@ export const activitySchema = z.object({
         inputId: z.string(),
         rootId: z.string(),
         sessionId: z.string(),
+        contextId: z.string().optional(),
         title: z.string(),
         status: z.string(),
         /** Missing control metadata cannot authorize an action. */
@@ -102,6 +118,7 @@ export const activitySchema = z.object({
       controlState: z.string().optional(),
       createdAt: z.string().optional(),
       parentThreadId: z.string().nullable().optional(),
+      delegation: delegationLinkSchema.optional(),
       objectiveId: z.string().optional(),
       outcome: z
         .object({

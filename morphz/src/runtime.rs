@@ -11,6 +11,9 @@ mod execution_workspace;
 pub use execution_workspace::{ExecutionWorkspaceFile, ExecutionWorkspaceRead};
 mod response_annotation_projection;
 mod session_approval;
+#[cfg(test)]
+#[path = "runtime/thread_evaluation_policy_tests.rs"]
+mod thread_evaluation_policy_tests;
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
@@ -1475,6 +1478,7 @@ impl MorphzRuntimeBuilder {
             .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>)
             .with_delegation_store(Arc::clone(&store) as Arc<dyn crate::memory::DelegationStore>)
             .with_thread_store(Arc::clone(&store) as Arc<dyn crate::memory::ThreadStore>)
+            .with_session_store(Arc::clone(&store) as Arc<dyn crate::memory::SessionDirectoryStore>)
             .with_thread_group_store(Arc::clone(&store) as Arc<dyn crate::memory::ThreadGroupStore>)
             .with_activation_store(Arc::clone(&store) as Arc<dyn crate::memory::ActivationStore>)
             .with_scheduler_dependency_store(
@@ -2644,85 +2648,64 @@ impl MorphzRuntime {
             .into_iter()
             .map(|thread| (thread.id.clone(), thread))
             .collect::<BTreeMap<_, _>>();
-        let objectives = self
+        // Objective convergence reads its own atomic failure cause and primary
+        // request snapshot. A Session event only invalidates that Context; it
+        // must not satisfy arbitrary Goal waits sharing a Session/resource.
+        let mut provider_waits = BTreeMap::<String, (Vec<String>, Vec<String>)>::new();
+        let dependencies = self
             .inner
             .store
-            .list_session_objectives(&current.context_id, &current.id, false)
-            .await?;
-        let objective_by_id = objectives
-            .into_iter()
-            .map(|objective| (objective.id.clone(), objective))
-            .collect::<BTreeMap<_, _>>();
-        let mut provider_waits = BTreeMap::<String, (Vec<String>, Vec<String>)>::new();
-        for (owner_kind, owner_ids) in [
-            (
+            .list_scheduler_dependencies_for_owners(
                 SchedulerDependencyOwnerKind::Thread,
-                thread_by_id.keys().cloned().collect::<Vec<_>>(),
-            ),
-            (
-                SchedulerDependencyOwnerKind::Objective,
-                objective_by_id.keys().cloned().collect::<Vec<_>>(),
-            ),
-        ] {
-            let dependencies = self
+                &thread_by_id.keys().cloned().collect::<Vec<_>>(),
+            )
+            .await?;
+        for dependency in dependencies {
+            if dependency.status != SchedulerDependencyStatus::Pending
+                || dependency.dependency_kind != SchedulerDependencyKind::Resource
+                || !dependency.required
+                || (!dependency.dependency_id.starts_with("model-route:")
+                    && !dependency.dependency_id.starts_with("model-provider:"))
+            {
+                continue;
+            }
+            let Some(wait_event_id) = dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let Some(policy) = self
                 .inner
                 .store
-                .list_scheduler_dependencies_for_owners(owner_kind, &owner_ids)
-                .await?;
-            for dependency in dependencies {
-                if dependency.status != SchedulerDependencyStatus::Pending
-                    || dependency.dependency_kind != SchedulerDependencyKind::Resource
-                    || !dependency.required
-                    || (!dependency.dependency_id.starts_with("model-route:")
-                        && !dependency.dependency_id.starts_with("model-provider:"))
-                {
-                    continue;
-                }
-                match dependency.owner_kind {
-                    SchedulerDependencyOwnerKind::Thread => {
-                        let Some(thread) = thread_by_id.get(&dependency.owner_id) else {
-                            continue;
-                        };
-                        if thread.lifecycle != ThreadLifecycle::Open
-                            || thread.generation != dependency.owner_generation
-                        {
-                            continue;
-                        }
-                        provider_waits
-                            .entry(dependency.dependency_id)
-                            .or_default()
-                            .1
-                            .push(thread.id.clone());
-                    }
-                    SchedulerDependencyOwnerKind::Objective => {
-                        let Some(objective) = objective_by_id.get(&dependency.owner_id) else {
-                            continue;
-                        };
-                        if objective.status != ObjectiveStatus::Active
-                            || objective.generation != dependency.owner_generation
-                            || !matches!(
-                                objective.wait_condition,
-                                Some(ObjectiveWaitCondition::ResourceAvailable {
-                                    ref resource
-                                }) if resource == &dependency.dependency_id
-                            )
-                        {
-                            continue;
-                        }
-                        provider_waits
-                            .entry(dependency.dependency_id)
-                            .or_default()
-                            .0
-                            .push(objective.id.clone());
-                    }
-                    SchedulerDependencyOwnerKind::Plan
-                    | SchedulerDependencyOwnerKind::Schedule
-                    | SchedulerDependencyOwnerKind::Delivery => continue,
-                }
+                .get_thread_evaluation_policy(&dependency.owner_id)
+                .await?
+            else {
+                continue;
+            };
+            let wait = self
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(wait_event_id.to_string()),
+                    context_id: Some(current.context_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            if wait.as_ref().is_some_and(|wait| {
+                policy.session_replaces_provider_wait(current, &dependency, wait)
+            }) {
+                let (thread_ids, dependency_ids) =
+                    provider_waits.entry(dependency.dependency_id).or_default();
+                thread_ids.push(policy.thread.id);
+                dependency_ids.push(dependency.id);
             }
         }
 
-        for (index, (resource, (objective_ids, thread_ids))) in
+        for (index, (resource, (thread_ids, dependency_ids))) in
             provider_waits.into_iter().enumerate()
         {
             self.inner
@@ -2738,8 +2721,12 @@ impl MorphzRuntime {
                         ("resource".to_string(), json!(resource)),
                         ("configuration_event_id".to_string(), json!(&changed.id)),
                         ("selected_model".to_string(), json!(&current.model_alias)),
-                        ("objective_ids".to_string(), json!(objective_ids)),
+                        ("objective_ids".to_string(), json!([])),
                         ("thread_ids".to_string(), json!(thread_ids)),
+                        (
+                            "scheduler_dependency_ids".to_string(),
+                            json!(dependency_ids),
+                        ),
                         (
                             "recovery_phase".to_string(),
                             json!("session_evaluation_policy_changed"),
@@ -3138,6 +3125,19 @@ impl MorphzRuntime {
                             || !report.requeue_receipts.is_empty()
                             || !report.lost_receipts.is_empty() =>
                     {
+                        // Local detached monitors can disappear independently
+                        // of their still-live processes. Their fenced uncertain
+                        // results need the same durable delivery recovery as
+                        // expired Edge background results below.
+                        background_outbox_recovery_needed |= report
+                            .recovered_receipts
+                            .iter()
+                            .chain(report.lost_receipts.iter())
+                            .any(|receipt| {
+                                receipt
+                                    .applied_job()
+                                    .is_some_and(|job| job.tool_name == "exec/background")
+                            });
                         tracing::info!(
                             recovered = report.recovered_receipts.len(),
                             requeued = report.requeue_receipts.len(),
@@ -5722,9 +5722,17 @@ impl MorphzRuntime {
                 &identity.thread_id,
             )
             .await?;
-        let routes = crate::execution_target::ArtifactTransferRouteSnapshot {
-            source: crate::execution_target::ExecutionRouteSnapshot::freeze(&source),
-            destination: crate::execution_target::ExecutionRouteSnapshot::freeze(&destination),
+        let routes = match self.inner.store.get_execution_job(&identity.job_id).await? {
+            // Admission already froze this intent's routes. A registry revision
+            // change must neither rebind its physical action nor break replay.
+            // Live authorization above and exact Store request checks still apply.
+            Some(existing) => {
+                crate::execution_target::artifact_transfer_routes_from_job(&existing)?
+            }
+            None => crate::execution_target::ArtifactTransferRouteSnapshot {
+                source: crate::execution_target::ExecutionRouteSnapshot::freeze(&source),
+                destination: crate::execution_target::ExecutionRouteSnapshot::freeze(&destination),
+            },
         };
         let mut job_request: Value = serde_json::from_str(&arguments)?;
         job_request
@@ -10817,6 +10825,193 @@ impl MorphzRuntime {
             .await
     }
 
+    /// Replace task Evaluation overrides without replacing the logical work,
+    /// cancelling its schedules or changing an already issued model request.
+    pub async fn update_thread_evaluation_policy(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+        expected_revision: u64,
+        selection: crate::model_selection::ModelSelection,
+    ) -> Result<ThreadMutation, RuntimeError> {
+        let Some(previous) = self.inner.store.get_thread(thread_id).await? else {
+            return Ok(ThreadMutation::NotFound);
+        };
+        if previous.context_id != context_id {
+            return Ok(ThreadMutation::NotFound);
+        }
+        if previous.revision != expected_revision || previous.lifecycle != ThreadLifecycle::Open {
+            return Ok(ThreadMutation::Conflict { current: previous });
+        }
+        let session = self
+            .inner
+            .store
+            .get_session(&previous.session_id)
+            .await?
+            .ok_or("Thread Evaluation policy Session disappeared")?;
+        if session.context_id != previous.context_id || session.agent_id != previous.agent_id {
+            return Err("Thread Evaluation policy Session route differs from its owner".into());
+        }
+        let inherited_model =
+            if previous.supervision.supervisor_kind == ThreadSupervisorKind::Objective {
+                match previous.supervision.supervisor_id.as_deref() {
+                    Some(id) => self
+                        .inner
+                        .store
+                        .get_objective(id)
+                        .await?
+                        .and_then(|objective| {
+                            (objective.context_id == previous.context_id
+                                && objective.agent_id == previous.agent_id)
+                                .then_some(objective.model_alias)
+                                .flatten()
+                        }),
+                    None => None,
+                }
+            } else {
+                None
+            }
+            .or(session.model_alias);
+        let selection = self
+            .validate_task_model_selection(selection, inherited_model.as_deref())
+            .await
+            .map_err(|error| -> RuntimeError {
+                Box::new(crate::model_selection::InvalidModelSelection(
+                    error.to_string(),
+                ))
+            })?;
+        let mutation = self
+            .inner
+            .store
+            .update_thread_evaluation_policy(thread_id, expected_revision, &selection)
+            .await?;
+        if let ThreadMutation::Updated(current) = &mutation {
+            self.publish_thread_evaluation_policy_changed(&previous, current)
+                .await?;
+        }
+        Ok(mutation)
+    }
+
+    pub async fn thread_evaluation_policy(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<crate::memory::ThreadEvaluationPolicyState>, RuntimeError> {
+        Ok(self
+            .inner
+            .store
+            .get_thread_evaluation_policy(thread_id)
+            .await?
+            .filter(|state| state.thread.context_id == context_id))
+    }
+
+    async fn publish_thread_evaluation_policy_changed(
+        &self,
+        previous: &ThreadRecord,
+        current: &ThreadRecord,
+    ) -> Result<(), RuntimeError> {
+        let changed = Event::new(
+            format!(
+                "thread_model_configuration_changed_{}_r{}",
+                current.id, current.revision
+            ),
+            "Runtime-ThreadModelConfiguration".into(),
+            "runtime_control".into(),
+            "runtime/thread_evaluation_policy_changed".into(),
+            json!({
+                "context_id": current.context_id, "session_id": current.session_id,
+                "thread_id": current.id, "thread_generation": current.generation,
+                "expected_revision": previous.revision, "revision": current.revision,
+                "previous_model": previous.model_alias, "selected_model": current.model_alias,
+                "previous_reasoning_effort": previous.reasoning_effort,
+                "reasoning_effort": current.reasoning_effort,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        self.inner.bus.publish(changed.clone()).await?;
+        if current.control_state != ThreadControlState::Active {
+            return Ok(());
+        }
+        let dependencies = self
+            .inner
+            .store
+            .list_scheduler_dependencies_for_owners(
+                SchedulerDependencyOwnerKind::Thread,
+                std::slice::from_ref(&current.id),
+            )
+            .await?;
+        let mut resources = std::collections::BTreeMap::<String, Vec<String>>::new();
+        let policy = crate::memory::ThreadEvaluationPolicyState {
+            thread: current.clone(),
+            control_revision: Some(current.revision),
+        };
+        for dependency in dependencies.into_iter().filter(|dependency| {
+            dependency.status == SchedulerDependencyStatus::Pending
+                && dependency.owner_generation == current.generation
+                && dependency.dependency_kind == SchedulerDependencyKind::Resource
+                && dependency.required
+                && (dependency.dependency_id.starts_with("model-route:")
+                    || dependency.dependency_id.starts_with("model-provider:"))
+        }) {
+            let Some(event_id) = dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let wait = self
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_ids: vec![event_id.to_string()],
+                    context_id: Some(current.context_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            if !wait
+                .as_ref()
+                .is_some_and(|wait| policy.supersedes_provider_wait(&dependency, wait))
+            {
+                continue;
+            }
+            resources
+                .entry(dependency.dependency_id)
+                .or_default()
+                .push(dependency.id);
+        }
+        for (index, (resource, dependency_ids)) in resources.into_iter().enumerate() {
+            self.inner
+                .bus
+                .publish(Event::new(
+                    format!("thread_model_available_{}_{}", changed.id, index),
+                    "Runtime-ThreadModelConfiguration".into(),
+                    "runtime_control".into(),
+                    "runtime/resource_available".into(),
+                    json!({
+                        "context_id": current.context_id, "session_id": current.session_id,
+                        "resource": resource, "configuration_event_id": changed.id,
+                        "selected_model": current.model_alias, "objective_ids": [],
+                        "thread_id": current.id, "thread_ids": [current.id],
+                        "thread_generation": current.generation,
+                        "thread_evaluation_policy_revision": current.revision,
+                        "scheduler_dependency_ids": dependency_ids,
+                        "recovery_phase": "thread_evaluation_policy_changed",
+                        "recovery_reason": "operator_changed_thread_model_or_reasoning",
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
     /// Replaces the current physical generation of one logical Thread with a
     /// corrected intent. The store commits the generation fence and new
     /// mailbox Signal atomically; process-local cancellation and wakeup are
@@ -13431,6 +13626,7 @@ mod tests {
                     resource: MODEL_CONFIGURATION_RESOURCE.to_string(),
                 }),
                 Some("test configuration wait"),
+                None,
             )
             .await
             .unwrap()
@@ -13675,14 +13871,23 @@ mod tests {
         let resource = "model-route:exhausted-session-a-route";
         let mut dependency_ids = Vec::new();
         let mut thread_ids = Vec::new();
-        for (suffix, session_id) in [("a", session_a), ("b", session_b)] {
+        for (suffix, session_id, inherits_model, inherits_effort) in [
+            ("a", session_a, true, true),
+            ("b", session_b, true, true),
+            ("explicit", session_a, false, false),
+            ("effort-only", session_a, false, true),
+            ("model-only", session_a, true, false),
+            ("legacy", session_a, true, true),
+            ("malformed", session_a, true, true),
+            ("stale-generation", session_a, true, true),
+        ] {
             let thread = runtime
                 .inner
                 .store
                 .ensure_thread(NewThread {
                     response_annotations: crate::response_annotations::Protocol::Off,
-                    model_alias: None,
-                    reasoning_effort: None,
+                    model_alias: (!inherits_model).then(|| "explicit-route".into()),
+                    reasoning_effort: (!inherits_effort).then(|| "high".into()),
                     id: format!("thread-model-switch-{suffix}"),
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
@@ -13697,6 +13902,31 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            let activation_id = format!("activation-model-switch-{suffix}");
+            let mut wait = Event::new(format!("wait-model-switch-{suffix}"),
+                "Runtime-Orchestrator".into(), "agent_call".into(), "runtime/provider_wait".into(),
+                json!({
+                    "context_id": thread.context_id, "session_id": thread.session_id,
+                    "thread_id": thread.id, "thread_generation": thread.generation,
+                    "activation_id": activation_id, "disposition": "provider_wait",
+                    "provider_resource": resource,
+                    "session_evaluation_policy": crate::model_selection::SessionEvaluationSnapshot::new(None, None, inherits_model, inherits_effort),
+                }).as_object().unwrap().clone());
+            match suffix {
+                "legacy" => {
+                    wait.payload.remove("session_evaluation_policy");
+                }
+                "malformed" => {
+                    wait.payload.get_mut("session_evaluation_policy").unwrap()
+                        ["model_default_hash"] = json!("not-a-fingerprint");
+                }
+                "stale-generation" => {
+                    wait.payload
+                        .insert("thread_generation".into(), json!(thread.generation + 1));
+                }
+                _ => {}
+            }
+            runtime.inner.store.append(wait.clone()).await.unwrap();
             let dependency_id = crate::scheduler::stable_scheduler_dependency_id(
                 SchedulerDependencyOwnerKind::Thread,
                 &thread.id,
@@ -13717,7 +13947,7 @@ mod tests {
                     dependency_id: resource.to_string(),
                     dependency_generation: 1,
                     required: true,
-                    metadata: json!({"source": "provider_wait"}),
+                    metadata: json!({"source": "provider_wait", "activation_id": activation_id, "wait_event_id": wait.id}),
                 })
                 .await
                 .unwrap();
@@ -13748,7 +13978,30 @@ mod tests {
             .unwrap();
         assert_eq!(event.payload["resource"], json!(resource));
         assert_eq!(event.payload["session_id"], json!(session_a));
-        assert_eq!(event.payload["thread_ids"], json!([thread_ids[0].clone()]));
+        let selected_threads = event.payload["thread_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            selected_threads,
+            [thread_ids[0].as_str(), thread_ids[4].as_str()]
+                .into_iter()
+                .collect()
+        );
+        let selected_dependencies = event.payload["scheduler_dependency_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            selected_dependencies,
+            [dependency_ids[0].as_str(), dependency_ids[4].as_str()]
+                .into_iter()
+                .collect()
+        );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 if runtime
@@ -13768,18 +14021,14 @@ mod tests {
         })
         .await
         .expect("the selected Session's stale route dependency must be satisfied");
-        assert_eq!(
-            runtime
-                .inner
-                .store
-                .get_scheduler_dependency(&dependency_ids[1])
-                .await
-                .unwrap()
-                .unwrap()
-                .status,
-            SchedulerDependencyStatus::Pending,
-            "changing Session A must not wake Session B's unrelated waiter"
-        );
+        for (index, dependency_id) in dependency_ids.iter().enumerate() {
+            if index == 0 || index == 4 {
+                continue;
+            }
+            assert_eq!(runtime.inner.store.get_scheduler_dependency(dependency_id).await.unwrap().unwrap().status,
+                SchedulerDependencyStatus::Pending,
+                "other Session, explicit/unchanged inherited fields, and unproven old requests must remain waiting: {}", thread_ids[index]);
+        }
     }
 
     #[test]
@@ -18256,10 +18505,9 @@ mod tests {
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call < 100 {
-                // Keep every Activation shorter than the Objective heartbeat,
-                // while making the whole Evaluation cross multiple lease
-                // windows. This reproduces the production pattern of many
-                // quick tool/no-reply continuations.
+                // Exercise many quick no-reply continuations. The ordinary
+                // admission/heartbeat renewal contracts have separate tests;
+                // this end-to-end count is not an OS scheduling deadline.
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 return Ok(no_reply_response(format!("objective-long-run-call-{call}")));
             }
@@ -25583,7 +25831,11 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
-        config.orchestrator.objective_evaluation_lease_secs = 1;
+        // Keep the production lease. A process/SQLite stall longer than a
+        // three-second lease correctly reclaims an Evaluation before its next
+        // model call, so lease claims are not then a model-evaluation count.
+        // short_activation_chains_renew_one_ordinary_evaluation tests the
+        // near-expiry admission branch without a machine-speed assumption.
         let client = Arc::new(ObjectiveLongRunClient {
             calls: AtomicU64::new(0),
         });
@@ -27144,6 +27396,7 @@ mod tests {
                     ObjectiveStatus::Active,
                     Some(ObjectiveWaitCondition::Timer { deadline }),
                     Some("等待计时器到期"),
+                    None,
                 )
                 .await
                 .unwrap(),
@@ -27669,14 +27922,130 @@ mod tests {
             "even a short transfer must persist its final progress snapshot"
         );
 
+        let original_routes =
+            crate::execution_target::artifact_transfer_routes_from_job(&first.job).unwrap();
+        let mut target = runtime
+            .get_execution_target(&request.destination.target_id)
+            .await
+            .unwrap()
+            .unwrap();
+        for status in [
+            ExecutionTargetStatus::Offline,
+            ExecutionTargetStatus::Online,
+        ] {
+            target = match runtime
+                .set_execution_target_status(&target.id, target.revision, status)
+                .await
+                .unwrap()
+            {
+                ExecutionTargetMutation::Updated(target) => target,
+                outcome => panic!("the isolated Target status change must commit: {outcome:?}"),
+            };
+        }
+        assert!(target.revision > original_routes.destination.target_revision);
+        let published = tokio::fs::metadata(&destination_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
         let replay = runtime
-            .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, request)
+            .submit_artifact_transfer(
+                &runtime.identity().principal_id,
+                &session.id,
+                request.clone(),
+            )
             .await
             .unwrap();
         assert_eq!(replay.job.id, first.job.id);
         assert_eq!(replay.thread.id, first.thread.id);
         assert_eq!(replay.activation.id, first.activation.id);
         assert_eq!(replay.request_event_sequence, first.request_event_sequence);
+        assert_eq!(replay.job.request, first.job.request);
+        assert_eq!(
+            crate::execution_target::artifact_transfer_routes_from_job(&replay.job).unwrap(),
+            original_routes
+        );
+        assert_eq!(
+            tokio::fs::metadata(&destination_path)
+                .await
+                .unwrap()
+                .modified()
+                .unwrap(),
+            published
+        );
+        for changed in [
+            ArtifactTransferRequest {
+                media_type: Some("text/plain".into()),
+                ..request.clone()
+            },
+            ArtifactTransferRequest {
+                expected_source_digest: Some(format!("sha256:{}", "a".repeat(64))),
+                ..request.clone()
+            },
+            ArtifactTransferRequest {
+                destination: crate::artifact::ArtifactLocation {
+                    path: root
+                        .path()
+                        .join("different.bin")
+                        .to_string_lossy()
+                        .into_owned(),
+                    ..request.destination.clone()
+                },
+                ..request.clone()
+            },
+        ] {
+            let error = runtime
+                .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, changed)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("因果键"), "{error}");
+        }
+        assert_eq!(
+            runtime
+                .get_execution_job(&first.job.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .request,
+            first.job.request
+        );
+        assert_eq!(
+            tokio::fs::read(&destination_path).await.unwrap(),
+            source_bytes
+        );
+        assert!(!root.path().join("different.bin").exists());
+        assert!(runtime
+            .submit_artifact_transfer("foreign-principal", &session.id, request.clone())
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("is not a participant"));
+        assert!(matches!(
+            runtime
+                .set_execution_target_status(
+                    &target.id,
+                    target.revision,
+                    ExecutionTargetStatus::Disabled,
+                )
+                .await
+                .unwrap(),
+            ExecutionTargetMutation::Updated(_)
+        ));
+        assert!(runtime
+            .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, request)
+            .await
+            .is_err());
+        assert_eq!(
+            runtime
+                .list_execution_jobs(ExecutionJobFilter {
+                    include_terminal: true,
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

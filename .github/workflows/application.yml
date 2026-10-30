@@ -18,6 +18,7 @@ on:
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/tests/application-electron-ci-setup.test.mjs"
       - "scripts/tests/application-runtime-ci-coverage.test.mjs"
+      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -40,6 +41,7 @@ on:
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/tests/application-electron-ci-setup.test.mjs"
       - "scripts/tests/application-runtime-ci-coverage.test.mjs"
+      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -51,12 +53,12 @@ permissions:
   contents: read
 
 jobs:
-  web:
-    name: Shared application and Web
+  web-node:
+    name: Shared application full Node inventory
     runs-on: ubuntu-latest
-    # This job includes the complete Node/PostgreSQL and browser inventories.
-    # Local full runs already exceed 30 minutes; keep every gate and allow
-    # installation/build time rather than cancelling the later regressions.
+    # Keep the full managed inventory, including PostgreSQL and skip auditing.
+    # Browser tests have independent runners: combining both inventories hit
+    # this budget while still progressing through the browser suite.
     timeout-minutes: 90
     defaults:
       run:
@@ -65,7 +67,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.13.0
           cache: npm
@@ -96,22 +98,87 @@ jobs:
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
           xvfb-run -a npm test
-      - run: npx playwright install --with-deps chrome
-      # The browser inventory also launches real cross-platform Electron
-      # windows. Only the explicitly macOS-only cases skip on this runner.
-      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure() || cancelled()
         with:
-          name: application-web-failures
+          name: application-node-failures
           path: application/test-results/
           if-no-files-found: ignore
+
+  web-browser:
+    name: Complete Web browser inventory (${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Prepare pinned Electron before parallel test imports
+        run: node node_modules/electron/install.js
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: sudo apt-get update && sudo apt-get install -y postgresql lsof xvfb xauth
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chrome
+      # The full browser inventory includes actual Profile and Host notification
+      # transports. Other jobs' target directories are not shared with this one.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Build actual Runtime for the complete browser inventory
+        run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
+      # The browser inventory also launches real cross-platform Electron
+      # windows. Only the explicitly macOS-only cases skip on this runner.
+      # Shards are complete complementary partitions, not selected files or
+      # retries. Keep one worker inside each isolated runner for native focus.
+      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --shard=${{ matrix.shard }}/2 --forbid-only
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() || cancelled()
+        with:
+          name: application-web-failures-${{ matrix.shard }}
+          path: application/test-results/
+          if-no-files-found: ignore
+
+  web:
+    # Preserve the existing required-check identity. Every Node case and both
+    # browser partitions must succeed; a cancelled/skipped dependency is red.
+    name: Shared application and Web
+    needs: [web-node, web-browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all complete inventories
+        env:
+          NODE_RESULT: ${{ needs.web-node.result }}
+          BROWSER_RESULT: ${{ needs.web-browser.result }}
+        run: |
+          test "$NODE_RESULT" = success
+          test "$BROWSER_RESULT" = success
 
   storage-postgres:
     name: Application storage (PostgreSQL)
     runs-on: ubuntu-latest
-    # The managed entry runs the full inventory, not only the storage files.
-    timeout-minutes: 60
+    # This is the complete Node inventory plus live PostgreSQL/S3, not a small
+    # storage subset. Bound file scheduling below; keep every case and its own
+    # deadline. The old 60m job cap cancelled the still-running full inventory.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: application
@@ -147,7 +214,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.13.0
           cache: npm
@@ -169,13 +236,17 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          xvfb-run -a npm test
+          # Independent browser/author compiler files must not compete with
+          # the two backend services. Internal CAS/race concurrency is retained.
+          xvfb-run -a npm test -- --test-concurrency=1
 
   desktop:
     name: Embedded Desktop (macOS)
     runs-on: macos-latest
-    # Full Node tests precede real Electron and local OCR acceptance.
-    timeout-minutes: 90
+    # On the 7 GiB runner, the complete single-worker Node inventory took 84m20s.
+    # Native/OCR assertions also passed, but the old 90m budget cancelled final
+    # cleanup. Preserve every case and its own deadlines; budget the whole job.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: application
@@ -183,7 +254,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.13.0
           cache: npm
@@ -216,15 +287,18 @@ jobs:
       - run: npm run test:platform-embedded-desktop
       - run: npm run test:platform-desktop
       - run: npm run test:draft-restart
-      - run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts
+      - name: Require every declared macOS native browser file
+        run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts tests/sidebar-resize.spec.ts --forbid-only
       # Real, checksum-pinned local OCR. No Runtime, paid provider or user books.
+      - name: Verify Reader OCR stage and failure-evidence contracts
+        run: node --test ../scripts/tests/application-reader-ocr-smoke.test.mjs
       - name: Prepare OCR models for isolated regression fixtures
         run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
       - name: Reader OCR isolation and correction
         run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
       - name: Reader repeated navigation and OCR resource cleanup
         run: npm run test:reader-stability -- "$RUNNER_TEMP/reader-ocr-models"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: reader-desktop-regression
@@ -232,10 +306,11 @@ jobs:
             application/test-results/morphz-embedded-electron-*/reader-stability.json
             application/test-results/morphz-embedded-electron-*/reader-stability-failure.png
             application/test-results/morphz-embedded-electron-*/ocr-*.json
+            application/test-results/morphz-embedded-electron-*/ocr-failure.png
             application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
           if-no-files-found: ignore
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: application-desktop-failures
@@ -258,8 +333,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.13.0
           cache: npm
@@ -287,7 +362,7 @@ jobs:
       # Only the gate's bounded, redacted text/summary; never fixture databases,
       # private bindings, provider request bodies or the user's profile.
       # Cancellation attempts finalization; runner loss may leave only running.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: cognitive-runtime-contract-evidence
@@ -310,8 +385,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.13.0
           cache: npm
@@ -360,7 +435,7 @@ jobs:
           npm --prefix application run test:script-recovery
       # IPC publishes only synthetic, sanitized causal/terminal diagnostics.
       # Runner loss may prevent this upload; missing evidence is not success.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && (failure() || cancelled()) }}
         with:
           name: runtime-contract-failure-evidence

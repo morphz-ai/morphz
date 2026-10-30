@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:net";
 import {
   request as httpRequest,
   createServer as createHttpServer,
@@ -17,13 +16,6 @@ import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
-async function freePort() {
-  const s = createServer();
-  await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
-  const p = (s.address() as { port: number }).port;
-  await new Promise<void>((r) => s.close(() => r()));
-  return p;
-}
 async function platformHttp(withRuntime = false) {
   const directory = mkdtempSync(join(tmpdir(), "morphz-http-platform-"));
   const filename = join(directory, "workspace.sqlite");
@@ -52,17 +44,15 @@ async function platformHttp(withRuntime = false) {
   // setting is read, and no model endpoint is contacted.
   await runtime?.stop();
   const binding = runtime ? domains.bindRuntime(runtime) : undefined;
-  const port = await freePort();
   const server = createAppServer(store, {
-    port,
+    port: 0,
     webRoot: "/nonexistent",
     runtime,
     platformWork: domains.work,
     platformDocuments: domains.content,
   });
-  await new Promise<void>((resolve) =>
-    server.listen(port, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
   const origin = `http://127.0.0.1:${port}`;
   const client = await PlatformClient.connect(
     new HttpApplicationClient(origin),
@@ -108,7 +98,6 @@ async function platformHttp(withRuntime = false) {
   };
 }
 test("健康检查只读取连接状态，不展开旧工作区或会话历史", async () => {
-  const port = await freePort();
   const store = new WorkspaceStore(":memory:", { mode: "transport" });
   let statusReads = 0;
   const runtime = {
@@ -121,13 +110,12 @@ test("健康检查只读取连接状态，不展开旧工作区或会话历史",
     },
   } as unknown as RuntimeBridge;
   const server = createAppServer(store, {
-    port,
+    port: 0,
     webRoot: "/nonexistent",
     runtime,
   });
-  await new Promise<void>((resolve) =>
-    server.listen(port, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
   try {
     for (let index = 0; index < 3; index++) {
       const response = await fetch(`http://127.0.0.1:${port}/api/health`);
@@ -144,6 +132,58 @@ test("健康检查只读取连接状态，不展开旧工作区或会话历史",
     store.close();
   }
 });
+test("系统分配的真实监听端口可连接，零端口和外站仍不能通过 Host／Origin 校验", async () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const server = createAppServer(store, { port: 0, webRoot: "/nonexistent" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    assert.notEqual(new URL(origin).port, "0");
+    assert.equal((await fetch(origin + "/api/health")).status, 200);
+    for (const host of ["127.0.0.1:0", "localhost:0", "foreign.invalid"]) {
+      const status = await new Promise<number | undefined>(
+        (resolve, reject) => {
+          const request = httpRequest(
+            origin + "/api/health",
+            { headers: { Host: host } },
+            (response) => {
+              response.resume();
+              resolve(response.statusCode);
+            },
+          );
+          request.once("error", reject);
+          request.end();
+        },
+      );
+      assert.equal(status, 403, host);
+    }
+    for (const foreignOrigin of [
+      "http://127.0.0.1:0",
+      "http://localhost:0",
+      "https://foreign.invalid",
+    ]) {
+      assert.equal(
+        (
+          await fetch(origin + "/api/health", {
+            headers: { Origin: foreignOrigin },
+          })
+        ).status,
+        403,
+        foreignOrigin,
+      );
+    }
+    assert.equal(
+      (await fetch(origin + "/api/health", { headers: { Origin: origin } }))
+        .status,
+      200,
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
+  }
+});
+
 test("首发建会话 HTTP 契约：无效输入不创建，丢回执重试返回同一记录", async () => {
   const f = await platformHttp(true);
   try {
@@ -199,10 +239,9 @@ test("首发建会话 HTTP 契约：无效输入不创建，丢回执重试返�
   }
 });
 test("语音能力状态由提供方报告，不绑定豆包或暴露配置凭据", async () => {
-  const port = await freePort();
   const store = new WorkspaceStore(":memory:", { mode: "transport" });
   const server = createAppServer(store, {
-    port,
+    port: 0,
     webRoot: "/nonexistent",
     speech: {
       provider: { id: "test-engine", label: "测试语音" },
@@ -215,9 +254,8 @@ test("语音能力状态由提供方报告，不绑定豆包或暴露配置凭�
       },
     },
   });
-  await new Promise<void>((resolve) =>
-    server.listen(port, "127.0.0.1", resolve),
-  );
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
   try {
     const response = await fetch(`http://127.0.0.1:${port}/api/speech/status`);
     assert.equal(response.status, 200);
@@ -366,12 +404,10 @@ test("本机 API 的请求校验、幂等和 HTTP 修订冲突", async () => {
 });
 
 test("没有 Platform 配置也不能恢复旧业务读取、写入或会话订阅 HTTP 入口", async () => {
-  const port = await freePort();
   const store = new WorkspaceStore(":memory:", { mode: "transport" });
-  const server = createAppServer(store, { port, webRoot: "/nonexistent" });
-  await new Promise<void>((resolve) =>
-    server.listen(port, "127.0.0.1", resolve),
-  );
+  const server = createAppServer(store, { port: 0, webRoot: "/nonexistent" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
   const origin = `http://127.0.0.1:${port}`;
   try {
     const boot = await (await fetch(origin + "/api/platform/bootstrap")).json();

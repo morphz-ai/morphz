@@ -40,6 +40,7 @@ async fn interrupt_owner(
                 deadline: Utc::now() + Duration::hours(1),
             }),
             None,
+            None,
         )
         .await
         .unwrap()
@@ -177,6 +178,7 @@ async fn workerd_objective_parking_retains_its_exact_evaluation() {
                         Some(ObjectiveWaitCondition::Timer {
                             deadline: Utc::now() + Duration::hours(2),
                         }),
+                        None,
                         None,
                     )
                     .await

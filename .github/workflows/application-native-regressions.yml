@@ -7,23 +7,48 @@ on:
     branches: [fix/full-application-regressions-20261021]
     paths:
       - .github/workflows/application-native-regressions.yml
+      - .github/workflows/application.yml
+      - scripts/observe-ci-resources.mjs
+      - scripts/tests/observe-ci-resources.test.mjs
+      - scripts/tests/application-runtime-ci-coverage.test.mjs
       - application/apps/desktop/main.cjs
       - application/apps/desktop/preferences.cjs
       - application/apps/web/src/ApplicationHost.tsx
       - application/apps/web/src/Conversation.tsx
       - application/apps/web/src/ExchangePanel.tsx
+      - application/apps/web/src/ModelSettings.tsx
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
+      - application/tests/model-settings.spec.ts
+      - application/tests/ui-consistency.spec.ts
+      - application/tests/execution-ui-details.spec.ts
+      - application/tests/fixtures/painted-sweep.ts
+      - application/tests/painted-sweep.test.ts
+      - application/tests/exchange-draft-state.spec.ts
+      - application/tests/message-work-footer.spec.ts
       - application/tests/exchange-resize.spec.ts
       - application/tests/application-compose-race.test.ts
       - application/tests/cognitive-app-manager-mounted.test.ts
+      - application/tests/control-role-mounted.test.ts
       - application/tests/workspace-navigation-app-mounted.test.ts
+      - application/tests/workspace-navigation-host.test.ts
+      - application/tests/cognitive-browser-channel.test.ts
+      - application/tests/continuation.test.ts
+      - application/packages/application/src/runtime.ts
+      - application/apps/service/src/http.ts
+      - application/tests/http.test.ts
+      - application/tests/profile-actual-transport-fixture.ts
+      - application/tests/runtime-listener-fixture.ts
+      - application/tests/runtime-listener-fixture.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
+      - application/tests/sidebar-resize.spec.ts
       - application/tests/subject-objectives-restore.spec.ts
       - application/tests/e2e/reader-pagination.spec.ts
       - application/scripts/reader-ocr-model-fixture.mjs
+      - application/scripts/reader-ocr-desktop-smoke.mjs
+      - scripts/tests/application-reader-ocr-smoke.test.mjs
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
@@ -46,9 +71,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.97.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
       - run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24.13.0
           cache: npm
@@ -58,13 +83,16 @@ jobs:
       - run: npx playwright install --with-deps chrome
       - name: Reproduce every remaining full Web failure without retries
         run: |
-          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --forbid-only \
+            tests/model-settings.spec.ts \
+            tests/ui-consistency.spec.ts \
+            tests/execution-ui-details.spec.ts \
             tests/profile-actual-transport.spec.ts \
             tests/workspace-panels-notifications.spec.ts \
             tests/shell-layout.spec.ts \
             tests/subject-objectives-restore.spec.ts \
             tests/e2e/reader-pagination.spec.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: remaining-browser-regressions
@@ -82,7 +110,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24.13.0
           cache: npm
@@ -90,11 +118,13 @@ jobs:
       - run: npm ci
       - run: node node_modules/electron/install.js
       - run: npm run build
+      - name: Verify Reader OCR stage and failure-evidence contracts
+        run: node --test ../scripts/tests/application-reader-ocr-smoke.test.mjs
       - name: Acquire the exact public models with bounded failure diagnosis
         run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
       - run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
       - run: npm run test:reader-stability -- "$RUNNER_TEMP/reader-ocr-models"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: isolated-reader-regressions
@@ -102,6 +132,7 @@ jobs:
             application/test-results/morphz-embedded-electron-*/reader-stability.json
             application/test-results/morphz-embedded-electron-*/reader-stability-failure.png
             application/test-results/morphz-embedded-electron-*/ocr-*.json
+            application/test-results/morphz-embedded-electron-*/ocr-failure.png
             application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
           if-no-files-found: ignore
 
@@ -116,7 +147,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24.13.0
           cache: npm
@@ -151,22 +182,28 @@ jobs:
             tests/cognitive-app-document-local.test.ts
       - run: npx playwright install --with-deps chrome
       - name: Check real Desktop browser cases and the unchanged rendering budget
+        env:
+          # This isolated workflow retains profiler overhead and the original
+          # assertions. The full Application gate still measures uninstrumented.
+          MORPHZ_TEST_CONVERSATION_CPU_PROFILE: "1"
         run: |
           xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
             tests/browser-composer.spec.ts \
             tests/composer-tool-state.spec.ts \
             tests/conversation-performance.spec.ts \
+            tests/exchange-draft-state.spec.ts \
+            tests/message-work-footer.spec.ts \
             tests/exchange-resize.spec.ts \
-            tests/exchange-floating-controls.spec.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: failure() || cancelled()
+            tests/exchange-floating-controls.spec.ts --trace on
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
         with:
           name: isolated-linux-native-failures
           path: application/test-results/
           if-no-files-found: ignore
 
   macos-compose-regressions:
-    name: Isolated macOS iframe and manager lifecycle diagnosis
+    name: Isolated macOS iframe, manager and native control diagnosis
     runs-on: macos-latest
     timeout-minutes: 20
     defaults:
@@ -176,7 +213,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24.13.0
           cache: npm
@@ -188,4 +225,18 @@ jobs:
       - name: Check actual iframe and application mounts with bounded diagnosis
         env:
           MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT: "1"
-        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts tests/cognitive-app-manager-mounted.test.ts tests/workspace-navigation-app-mounted.test.ts
+        run: >-
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1
+          tests/application-compose-race.test.ts
+          tests/task-run-panel-mounted.test.ts
+          tests/cognitive-app-manager-mounted.test.ts
+          tests/control-role-mounted.test.ts
+          tests/workspace-navigation-app-mounted.test.ts
+          tests/workspace-navigation-host.test.ts
+          tests/cognitive-browser-channel.test.ts
+          tests/continuation.test.ts
+          tests/http.test.ts
+          tests/runtime-listener-fixture.test.ts
+      - run: npm run build
+      - name: Verify the previously unowned macOS sidebar contract early
+        run: npx playwright test tests/sidebar-resize.spec.ts --grep '真实 Electron 图标栏隐藏再恢复与刷新保持80，Mac系统按钮安全区和宿主工具仍可用$' --forbid-only

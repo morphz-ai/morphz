@@ -5038,6 +5038,137 @@ pub enum ThreadMutation {
     NotFound,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadEvaluationPolicyState {
+    pub thread: ThreadRecord,
+    /// An explicit control-plane choice, distinct from immutable input and
+    /// scheduled Activation settings. Absent on every unmodified Thread.
+    pub control_revision: Option<u64>,
+}
+
+impl ThreadEvaluationPolicyState {
+    /// A policy change releases only a durable wait produced by an older
+    /// physical request of this exact live Thread generation. Reading the
+    /// immutable wait Event also distinguishes explicitly uncontrolled requests
+    /// from a new request that already used the current operator policy.
+    pub(crate) fn supersedes_provider_wait(
+        &self,
+        dependency: &crate::scheduler::SchedulerDependencyRecord,
+        wait: &crate::event::Event,
+    ) -> bool {
+        let Some(revision) = self.control_revision else {
+            return false;
+        };
+        let request_revision = match wait.payload.get("thread_evaluation_policy_revision") {
+            Some(JsonValue::Null) => None,
+            Some(value) => match value.as_u64() {
+                Some(value) => Some(value),
+                None => return false,
+            },
+            None => return false,
+        };
+        request_revision.is_none_or(|request| request < revision)
+            && self.owns_provider_wait(dependency, wait)
+    }
+
+    pub(crate) fn session_replaces_provider_wait(
+        &self,
+        session: &SessionRecord,
+        dependency: &crate::scheduler::SchedulerDependencyRecord,
+        wait: &crate::event::Event,
+    ) -> bool {
+        self.thread.agent_id == session.agent_id
+            && self.thread.session_id == session.id
+            && self.thread.context_id == session.context_id
+            && self.owns_provider_wait(dependency, wait)
+            && session_policy_replaces_failure(session, wait)
+    }
+
+    fn owns_provider_wait(
+        &self,
+        dependency: &crate::scheduler::SchedulerDependencyRecord,
+        wait: &crate::event::Event,
+    ) -> bool {
+        use crate::scheduler::{
+            SchedulerDependencyKind, SchedulerDependencyOwnerKind, SchedulerDependencyStatus,
+        };
+        self.thread.lifecycle == ThreadLifecycle::Open
+            && self.thread.control_state == ThreadControlState::Active
+            && dependency.owner_kind == SchedulerDependencyOwnerKind::Thread
+            && dependency.owner_id == self.thread.id
+            && dependency.owner_generation == self.thread.generation
+            && dependency.dependency_kind == SchedulerDependencyKind::Resource
+            && dependency.status == SchedulerDependencyStatus::Pending
+            && dependency.required
+            && dependency
+                .metadata
+                .get("source")
+                .and_then(JsonValue::as_str)
+                == Some("provider_wait")
+            && dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(JsonValue::as_str)
+                == Some(wait.id.as_str())
+            && wait.payload.get("disposition").and_then(JsonValue::as_str) == Some("provider_wait")
+            && wait.payload.get("context_id").and_then(JsonValue::as_str)
+                == Some(self.thread.context_id.as_str())
+            && wait.payload.get("session_id").and_then(JsonValue::as_str)
+                == Some(self.thread.session_id.as_str())
+            && wait.payload.get("thread_id").and_then(JsonValue::as_str)
+                == Some(self.thread.id.as_str())
+            && wait
+                .payload
+                .get("thread_generation")
+                .and_then(JsonValue::as_u64)
+                == Some(self.thread.generation)
+            && wait
+                .payload
+                .get("provider_resource")
+                .and_then(JsonValue::as_str)
+                == Some(dependency.dependency_id.as_str())
+            && dependency
+                .metadata
+                .get("activation_id")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|activation| {
+                    wait.payload
+                        .get("activation_id")
+                        .and_then(JsonValue::as_str)
+                        == Some(activation)
+                })
+    }
+}
+
+/// Compare one immutable physical-request snapshot with its own live Session.
+/// A Session notification is only a hint; it is never a global config epoch.
+pub(crate) fn session_policy_replaces_failure(
+    session: &SessionRecord,
+    failure: &crate::event::Event,
+) -> bool {
+    session.status == SessionStatus::Active
+        && failure
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            == Some(session.context_id.as_str())
+        && failure
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            == Some(session.id.as_str())
+        && failure
+            .payload
+            .get("session_evaluation_policy")
+            .and_then(crate::model_selection::SessionEvaluationSnapshot::from_metadata)
+            .is_some_and(|snapshot| {
+                snapshot.changed_from(
+                    session.model_alias.as_deref(),
+                    session.reasoning_effort.as_deref(),
+                )
+            })
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleStatus {
@@ -5336,6 +5467,13 @@ pub enum ObjectiveWaitCondition {
     ResourceAvailable {
         resource: String,
     },
+}
+
+/// Provenance committed with a resource dependency; this is borrowed input to
+/// the existing transaction, not an independently persisted source of truth.
+pub(crate) struct ObjectiveWaitProvenance<'a> {
+    pub source: &'a str,
+    pub cause_event_id: Option<&'a str>,
 }
 
 /// Durable hand-off between the model's completion decision and the final
@@ -7173,6 +7311,9 @@ pub trait ActivationStore: Send + Sync {
     /// enter. The final transition remains protected by
     /// `update_thread_activation`; this query keeps blocked rows out of the
     /// in-memory admission window so they do not busy-loop.
+    /// A completed pass with an unreleased lane and its exact pending Signal
+    /// still owns that lane until its continuation materializes. Admitting a
+    /// later input in this gap would strand both it and the continuation.
     async fn dialogue_turn_activation_runnable(
         &self,
         activation_id: &str,
@@ -7687,6 +7828,19 @@ pub trait ThreadStore: Send + Sync {
         delivery_status: Option<DeliveryStatus>,
         delivery_event_id: Option<&str>,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Replace only an open Thread's task-scoped Evaluation overrides. An
+    /// absent field restores inheritance; CAS fences concurrent lifecycle or
+    /// policy changes without restarting the Thread or replaying its inputs.
+    async fn update_thread_evaluation_policy(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        selection: &crate::model_selection::ModelSelection,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread_evaluation_policy(
+        &self,
+        id: &str,
+    ) -> Result<Option<ThreadEvaluationPolicyState>, Box<dyn std::error::Error + Send + Sync>>;
     /// Revision-fenced operator control. Pause/resume only changes scheduler
     /// admission; cancel is terminal and advances the generation fence so late
     /// outcomes from already-running Activations cannot revive the Thread.
@@ -8232,6 +8386,7 @@ pub trait ObjectiveStore: Send + Sync {
         status: ObjectiveStatus,
         wait_condition: Option<ObjectiveWaitCondition>,
         reason: Option<&str>,
+        cause_event_id: Option<&str>,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Persist an audited completion decision without ending the Objective or
     /// releasing its Evaluation lease. The matching Activation consumes this

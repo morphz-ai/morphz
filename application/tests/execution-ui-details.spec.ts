@@ -1,6 +1,15 @@
 import { expect, type Page } from "@playwright/test";
+import sharp from "sharp";
+import {
+  assertPaintedSweep,
+  paintedSweepTimes,
+  type PaintedSweepFrame,
+} from "./fixtures/painted-sweep.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import {
+  disconnectedRuntime,
+  type ExecutionActivity,
+} from "../packages/core/src/conversation.js";
 import {
   mockPlatformConversation,
   test,
@@ -28,7 +37,10 @@ async function prepare(page: Page) {
     connected: true,
     available: true,
     phase: "running",
+    summary: undefined as string | undefined,
+    controlState: undefined as "active" | "paused" | undefined,
     waitKinds: undefined as string[] | undefined,
+    readScopes: undefined as ExecutionActivity["readScopes"],
     lifecycle: "open" as "open" | "completed" | "failed" | "cancelled",
   };
   const fixture = await mockPlatformConversation(page, () => ({
@@ -46,6 +58,7 @@ async function prepare(page: Page) {
       })),
       activity: {
         available: activity.available,
+        readScopes: activity.readScopes,
         truncated: false,
         threads: inputs.map((input) => ({
           ...fixture.scope,
@@ -53,9 +66,12 @@ async function prepare(page: Page) {
           inputId: input.id,
           rootId: "TEST-ui-root",
           sessionId: "TEST-ui-session",
+          contextId: "TEST-ui-context",
           kind: "execution" as const,
           title: "TEST 交付人物设定与五场戏大纲",
           phase: activity.phase,
+          summary: activity.summary,
+          controlState: activity.controlState,
           waitKinds: activity.waitKinds,
           lifecycle: activity.lifecycle,
           revision: 1,
@@ -211,10 +227,13 @@ test("查看右栏活动不是固定：未固定交流点击画布收起，执�
   // Only these typed read endpoints use POST; business/control writes remain
   // forbidden while merely inspecting activity.
   expect(
-    f.writes.filter((path) => ![
-      "/api/platform/scripts/editor/head",
-      "/api/platform/cognitive-apps/list",
-    ].includes(path)),
+    f.writes.filter(
+      (path) =>
+        ![
+          "/api/platform/scripts/editor/head",
+          "/api/platform/cognitive-apps/list",
+        ].includes(path),
+    ),
   ).toEqual([]);
 });
 
@@ -886,7 +905,7 @@ test("活动详情运行标识会动，已完成为图标，时间与工具按�
   await expect(flow).toHaveCSS("animation-name", "none");
 });
 
-test("活动的补充和停止使用短文字，明暗、窄窗与放大始终顶底及文字对齐", async ({
+test("活动顶行的补充和停止使用图标，明暗、窄窗与放大始终共用中轴", async ({
   page,
 }, info) => {
   const f = await prepare(page);
@@ -897,13 +916,51 @@ test("活动的补充和停止使用短文字，明暗、窄窗与放大始终�
   const stop = actions.getByRole("button", { name: "停止", exact: true });
   await expect(supplement).toBeEnabled();
   await expect(stop).toBeEnabled();
-  await expect(actions.locator("svg")).toHaveCount(0);
+  await expect(actions.locator("svg")).toHaveCount(2);
+  const header = f.panel.locator(".execution-detail-header");
+  await expect(
+    header.getByRole("button", { name: "返回活动列表" }),
+  ).toBeVisible();
+  await expect(header.locator(".execution-origin-status")).toHaveText("执行中");
+  await supplement.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("补充要求");
+  await supplement.focus();
+  await page.keyboard.press("Tab");
+  await expect(stop).toBeFocused();
+  await expect(page.getByRole("tooltip")).toHaveText("停止当前执行");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await expect(header).toBeVisible();
   for (const appearance of ["light", "dark"]) {
     await page.evaluate((appearance) => {
       document.documentElement.dataset.appearance = appearance;
       (document.querySelector(".app") as HTMLElement).dataset.appearance =
         appearance;
     }, appearance);
+    await settleTransitions(page);
+    const stopPaint = await stop.evaluate((node) => {
+      const css = getComputedStyle(node);
+      const glyph = getComputedStyle(node.querySelector("svg")!);
+      return {
+        background: css.backgroundColor,
+        foreground: css.color.match(/[\d.]+/g)!.map(Number),
+        glyphColor: glyph.color,
+        fill: glyph.fill,
+        strokeWidth: glyph.strokeWidth,
+      };
+    });
+    expect(stopPaint.background).toBe("rgba(0, 0, 0, 0)");
+    expect(stopPaint.foreground).toEqual(
+      appearance === "light" ? [229, 83, 94] : [255, 141, 152],
+    );
+    expect(stopPaint.foreground[0]! - stopPaint.foreground[1]!).toBeGreaterThan(
+      30,
+    );
+    expect(stopPaint.foreground[0]! - stopPaint.foreground[2]!).toBeGreaterThan(
+      30,
+    );
+    expect(stopPaint.fill).toBe(stopPaint.glyphColor);
+    expect(stopPaint.strokeWidth).toBe("0px");
     for (const [width, zoom] of [
       [1440, 1],
       [760, 1],
@@ -916,21 +973,22 @@ test("活动的补充和停止使用短文字，明暗、窄窗与放大始终�
       }, zoom);
       await settleTransitions(page);
       const geometry = await actions.evaluate((root) => {
-        const bounds = root
-          .closest(".execution-origin")!
+        const header = root.closest(".execution-detail-header")!;
+        const bounds = header.getBoundingClientRect();
+        const status = header
+          .querySelector(".execution-origin-status > svg")!
           .getBoundingClientRect();
         return [...root.querySelectorAll("button")].map((button) => {
           const box = button.getBoundingClientRect();
-          const text = document.createRange();
-          text.selectNodeContents(button);
-          const line = text.getBoundingClientRect();
+          const glyph = button.querySelector("svg")!.getBoundingClientRect();
           const css = getComputedStyle(button);
           return {
             top: box.top,
             bottom: box.bottom,
             width: box.width,
             height: box.height,
-            textCenter: (line.top + line.bottom) / 2,
+            glyphCenter: (glyph.top + glyph.bottom) / 2,
+            statusCenter: (status.top + status.bottom) / 2,
             font: css.font,
             margin: css.margin,
             inside: box.left >= bounds.left && box.right <= bounds.right,
@@ -944,14 +1002,15 @@ test("活动的补充和停止使用短文字，明暗、窄窗与放大始终�
         "bottom",
         "width",
         "height",
-        "textCenter",
+        "glyphCenter",
       ] as const)
         expect(Math.abs(a![key] - b![key])).toBeLessThan(0.5);
       expect(a!.font).toBe(b!.font);
       expect(geometry.every((button) => button.margin === "0px")).toBe(true);
       expect(geometry.every((button) => button.inside)).toBe(true);
-      await expect(supplement).toHaveText("补充");
-      await expect(stop).toHaveText("停止");
+      expect(Math.abs(a!.glyphCenter - a!.statusCenter)).toBeLessThan(0.5);
+      await expect(supplement).toHaveText("");
+      await expect(stop).toHaveText("");
       await info.attach(`${appearance}-${width}-${zoom}-actions`, {
         body: JSON.stringify(geometry),
         contentType: "application/json",
@@ -962,6 +1021,212 @@ test("活动的补充和停止使用短文字，明暗、窄窗与放大始终�
     }
   }
   await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
+
+test("当前标题使用主题色、进展可读扫光；系统及应用减少动画、暂停、终态与失联都不假装执行", async ({
+  page,
+}, info) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const f = await prepare(page);
+  f.activity.summary =
+    "两份样式表已重写完成，正在核对组件类名与构建产物是否一致";
+  await f.fixture.refresh();
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const status = f.panel.locator(".execution-origin-status");
+  const title = f.panel.locator(".execution-origin-title");
+  const summary = f.panel.locator(
+    ".execution-origin > .execution-activity-summary",
+  );
+  await expect(summary).toHaveText(f.activity.summary);
+  await expect(summary).toHaveAttribute("data-motion-active");
+  await expect(summary).toHaveCSS("animation-name", "execution-summary-sweep");
+  const position = await summary.evaluate(
+    (node) => getComputedStyle(node).backgroundPosition,
+  );
+  await expect
+    .poll(() =>
+      summary.evaluate((node) => getComputedStyle(node).backgroundPosition),
+    )
+    .not.toBe(position);
+  for (const [sample, text] of [
+    ["wrapped", f.activity.summary],
+    ["short", "编译 v8 覆盖层"],
+  ] as const) {
+    f.activity.summary = text;
+    await f.fixture.refresh();
+    await expect(summary).toHaveText(text);
+    for (const appearance of ["light", "dark"] as const) {
+      await page.evaluate((appearance) => {
+        document.documentElement.dataset.appearance = appearance;
+        document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+          appearance;
+      }, appearance);
+      await settleTransitions(page);
+      await expect(title).toHaveCSS(
+        "color",
+        await status.evaluate((node) => getComputedStyle(node).color),
+      );
+      await expect(summary).toHaveCSS("background-clip", "text");
+      await expect(summary).toHaveCSS("animation-duration", "1.8s");
+      const shine = await summary.evaluate((node) => {
+        const css = getComputedStyle(node);
+        return {
+          image: css.backgroundImage,
+          duration: css.animationDuration,
+          weight: css.fontWeight,
+        };
+      });
+      expect(shine.duration).toBe("1.8s");
+      expect(shine.image).toContain("linear-gradient");
+      expect(shine.image).not.toContain("rgb(255, 255, 255)");
+      expect(shine.weight).toBe("500");
+      for (const width of [1440, 760]) {
+        await page.setViewportSize({ width, height: 700 });
+        await settleTransitions(page);
+        // Capture the same glyphs without the specular band. Compare actual
+        // luminance gain, not CSS time or a colored pixel that only changes hue.
+        const inlineStyle = await summary.getAttribute("style");
+        await summary.evaluate((node) => {
+          const base =
+            getComputedStyle(node).backgroundImage.match(/rgba?\([^)]+\)/)![0];
+          (node as HTMLElement).style.backgroundImage =
+            `linear-gradient(${base}, ${base})`;
+        });
+        const baseline = await sharp(
+          await summary.screenshot({ animations: "allow" }),
+        )
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        await summary.evaluate((node, style) => {
+          if (style === null) node.removeAttribute("style");
+          else node.setAttribute("style", style);
+        }, inlineStyle);
+        const highlights: PaintedSweepFrame[] = [];
+        for (const time of paintedSweepTimes) {
+          await summary.evaluate(async (node, time) => {
+            const animations = node.getAnimations();
+            for (const animation of animations) {
+              animation.pause();
+              animation.currentTime = time;
+            }
+            await Promise.all(animations.map((animation) => animation.ready));
+            await new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            );
+          }, time);
+          const frame = await summary.screenshot({
+            animations: "allow",
+            path: info.outputPath(
+              `white-sweep-${sample}-${appearance}-${width}-${time}.png`,
+            ),
+          });
+          await info.attach(
+            `painted-sweep-${sample}-${appearance}-${width}-${time}`,
+            {
+              body: frame,
+              contentType: "image/png",
+            },
+          );
+          const { data, info: pixels } = await sharp(frame)
+            .removeAlpha()
+            .raw()
+            .toBuffer({ resolveWithObject: true });
+          expect(pixels.width).toBe(baseline.info.width);
+          expect(pixels.height).toBe(baseline.info.height);
+          expect(pixels.channels).toBe(baseline.info.channels);
+          const painted: [number, number][] = [];
+          let maximumGain = 0;
+          for (let y = 0; y < pixels.height; y++) {
+            for (let x = 0; x < pixels.width; x++) {
+              const offset = (y * pixels.width + x) * pixels.channels;
+              const [r, g, b] = data.subarray(offset, offset + 3);
+              const [br, bg, bb] = baseline.data.subarray(offset, offset + 3);
+              maximumGain = Math.max(maximumGain, r! - br!, g! - bg!, b! - bb!);
+              const lit = r! - br! > 35 && g! - bg! > 35 && b! - bb! > 35;
+              if (lit) painted.push([x, y]);
+            }
+          }
+          highlights.push({
+            time,
+            painted,
+            maximumGain,
+          });
+        }
+        const bounds = (await summary.boundingBox())!;
+        if (sample === "short") {
+          const parent = (await summary.locator("..").boundingBox())!;
+          expect(bounds.width).toBeLessThan(parent.width * 0.8);
+        }
+        await info.attach(
+          `painted-sweep-${sample}-${appearance}-${width}-travel`,
+          {
+            body: JSON.stringify({ highlights, width: bounds.width }),
+            contentType: "application/json",
+          },
+        );
+        assertPaintedSweep(
+          highlights,
+          bounds.width,
+          appearance === "light" ? 115 : 60,
+        );
+        await page.screenshot({
+          path: info.outputPath(
+            `activity-focus-${sample}-${appearance}-${width}.png`,
+          ),
+        });
+      }
+    }
+  }
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(summary).toHaveCSS("animation-name", "none");
+  await expect(summary).toHaveCSS("background-image", "none");
+  await expect(summary).not.toHaveCSS(
+    "-webkit-text-fill-color",
+    "rgba(0, 0, 0, 0)",
+  );
+  await expect(status).toHaveText("执行中");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page
+    .locator("html")
+    .evaluate((node) => node.setAttribute("data-app-motion", "reduce"));
+  await expect(summary).toHaveCSS("animation-name", "none");
+  await page
+    .locator("html")
+    .evaluate((node) => node.removeAttribute("data-app-motion"));
+  await expect(summary).toHaveCSS("animation-name", "execution-summary-sweep");
+  await page.emulateMedia({ forcedColors: "active" });
+  await expect(summary).toHaveCSS("animation-name", "none");
+  await expect(summary).toHaveCSS("background-image", "none");
+  await page.emulateMedia({ forcedColors: "none" });
+  const accent = await title.evaluate((node) => getComputedStyle(node).color);
+  for (const [phase, lifecycle, controlState, kind] of [
+    ["idle", "open", "paused", "paused"],
+    ["waiting", "open", "active", "waiting"],
+    ["running", "completed", "active", "ended"],
+    ["idle", "failed", "active", "failed"],
+  ] as const) {
+    Object.assign(f.activity, { phase, lifecycle, controlState });
+    await f.fixture.refresh();
+    await expect(status).toHaveAttribute("data-status", kind);
+    await expect(title).not.toHaveCSS("color", accent);
+    await expect(summary).not.toHaveAttribute("data-motion-active");
+    await expect(summary).toHaveCSS("animation-name", "none");
+    await expect(status.locator(".execution-signal-flow")).toHaveCount(0);
+  }
+  Object.assign(f.activity, {
+    phase: "running",
+    lifecycle: "open",
+    connected: false,
+  });
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "unknown");
+  await expect(summary).toHaveCount(0);
+  await expect(
+    f.panel.getByRole("button", { name: "停止", exact: true }),
+  ).toBeDisabled();
   expect(f.writes).toEqual([]);
 });
 
@@ -1070,6 +1335,73 @@ test("根活动仅实际运行时有动效，等待、失败、结束及断线�
   await expect(
     f.panel.getByRole("img", { name: "已完成", exact: true }),
   ).toHaveCount(2);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
+
+test("历史读取失败不抹掉当前执行，跨范围失败和真实断线仍保守禁用控制", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  f.activity.summary = "TEST 正在核对当前执行，不用历史结果猜状态";
+  f.activity.available = false;
+  f.activity.readScopes = [
+    {
+      contextId: "TEST-ui-context",
+      currentAvailable: true,
+      historyAvailable: false,
+    },
+    {
+      contextId: "TEST-unavailable-context",
+      currentAvailable: false,
+      historyAvailable: false,
+    },
+  ];
+  await f.fixture.refresh();
+  const status = f.panel.locator(".execution-origin-status");
+  await expect(status).toHaveAttribute("data-status", "running");
+  await expect(f.panel.locator(".execution-origin")).toContainText(
+    f.activity.summary,
+  );
+  await expect(
+    f.panel.getByRole("button", { name: "停止", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    f.panel.getByRole("button", { name: "补充", exact: true }),
+  ).toHaveCount(0);
+  await expect(f.panel).toContainText("部分后台状态暂不可用");
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    await settleTransitions(page);
+    await f.panel.screenshot({
+      path: info.outputPath(`activity-partial-read-${appearance}.png`),
+    });
+  }
+  f.activity.readScopes[0]!.currentAvailable = false;
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "unknown");
+  await expect(
+    f.panel.locator(".execution-origin .execution-activity-summary"),
+  ).toHaveCount(0);
+  f.activity.readScopes[0]!.currentAvailable = true;
+  f.activity.available = true;
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "running");
+  await expect(f.panel).toContainText("历史记录刷新失败，当前活动状态可用");
+  await f.panel.screenshot({
+    path: info.outputPath("activity-history-unavailable-dark.png"),
+  });
+  f.activity.connected = false;
+  await f.fixture.refresh();
+  await expect(status).toHaveAttribute("data-status", "unknown");
+  await expect(status.locator(".execution-signal-flow")).toHaveCount(0);
   await expect(f.input).toHaveValue("TEST 未发送的原草稿");
   expect(f.writes).toEqual([]);
 });

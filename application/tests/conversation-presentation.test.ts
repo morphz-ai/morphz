@@ -12,6 +12,7 @@ import {
 } from "../apps/web/src/conversation-presentation.js";
 import type { LiveMessage } from "../packages/core/src/live-conversation.js";
 import type { Workspace } from "../packages/core/src/model.js";
+import type { ExecutionActivity } from "../packages/core/src/conversation.js";
 
 // These static-markup assertions cover content, not CSS or browser geometry.
 // Keep the real component; only make its stylesheet inert in this Node import.
@@ -37,6 +38,55 @@ const render = (children: string) =>
       onOpen: () => {},
     }),
   );
+
+test("委派等待使用同一输入的真实子执行，不把无关、结束或过期快照当作仍在运行", () => {
+  const delivery = {
+    inputId: "i",
+    state: "running" as const,
+    error: null,
+    retryable: false,
+  };
+  const thread: ExecutionActivity["threads"][number] = {
+    id: "child",
+    kind: "execution",
+    inputId: "i",
+    projectId: "p",
+    conversationId: "c",
+    rootId: "child-root",
+    sessionId: "child-session",
+    contextId: "child-context",
+    title: "验证构建",
+    phase: "running",
+    lifecycle: "open",
+    revision: 1,
+    updatedAt: "2026-10-23T00:00:00Z",
+    delegation: {
+      id: "d",
+      requestEventId: "request",
+      parentSessionId: "s",
+      parentContextId: "ctx",
+      parentThreadId: "parent",
+    },
+  };
+  const activity = { available: true, threads: [thread], truncated: false };
+  const label = () =>
+    responseWaitingPresentation(delivery, [], true, false, activity).label;
+  assert.equal(label(), "正在执行子任务…");
+  thread.phase = "waiting";
+  assert.equal(label(), "等待子任务结果…");
+  thread.lifecycle = "completed";
+  assert.equal(label(), "等待回复…");
+  thread.lifecycle = "open";
+  thread.inputId = "unrelated";
+  assert.equal(label(), "等待回复…");
+  thread.inputId = "i";
+  activity.available = false;
+  assert.equal(label(), "等待回复…");
+  assert.equal(
+    responseWaitingPresentation(delivery, [], false, false, activity).label,
+    "连接中断，等待恢复",
+  );
+});
 
 test("等待区只展示实际模型阶段；新工具和恢复状态按各自时间接替，公开进度精确归属", () => {
   const delivery = {

@@ -207,6 +207,7 @@ impl SchedulerKernel {
                         payload.status,
                         payload.wait_condition,
                         payload.reason.as_deref(),
+                        Some(&command.header.causation_id),
                     )
                     .await
                     .map_err(store_error)?;

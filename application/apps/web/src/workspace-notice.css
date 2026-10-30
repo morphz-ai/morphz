@@ -1,3 +1,11 @@
+/* The fallback is an absolute grid child of the existing content body, not the
+   whole workspace. Its original inset now clears the app's toolbar and stays
+   in the primary column; it adds no row or new containing block for exchange. */
+.workspace-body > .workspace-notice {
+  grid-column: 1;
+  grid-row: 1;
+}
+
 /* Reading keeps the notice inside its existing scroll surface. Its own content
    width allows normal wrapping; no new panel sibling alters resize geometry.
    The sticky inset matches the reading padding, so scrolling to the latest

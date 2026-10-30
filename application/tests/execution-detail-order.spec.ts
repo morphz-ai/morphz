@@ -185,7 +185,9 @@ test("活动结束保留对勾但不隐藏失败，步骤按真实时间正序�
   });
 });
 
-test("达到最近窗口的读取上限时顺序阅读不冒称完整过程", async ({ page }) => {
+test("读取上限仍保留，移除最近项数文案；刷新与步骤标题同轴且顺序不变", async ({
+  page,
+}) => {
   await mockPlatformConversation(page, () => ({
     inputs: [],
     runtime: {
@@ -210,9 +212,12 @@ test("达到最近窗口的读取上限时顺序阅读不冒称完整过程", as
     created_at: new Date(Date.UTC(2026, 9, 2, 12, 0, 10 + index)).toISOString(),
     updated_at: stamp,
   })).reverse();
-  await page.route("**/api/executions?*", (route) =>
-    route.fulfill({ json: { jobs, approvals: [], limit: 3 } }),
-  );
+  const reads: string[] = [];
+  await page.route("**/api/executions?*", (route) => {
+    expect(route.request().method()).toBe("GET");
+    reads.push(route.request().url());
+    return route.fulfill({ json: { jobs, approvals: [], limit: 3 } });
+  });
   await page.goto("/");
   await openExecutionPanel(page);
   const panel = page.getByRole("complementary", {
@@ -220,9 +225,22 @@ test("达到最近窗口的读取上限时顺序阅读不冒称完整过程", as
     exact: true,
   });
   await panel.getByText("工具执行记录", { exact: true }).click();
-  await expect(panel.locator(".execution-history-bound")).toHaveText(
-    "当前为最近 3 项执行",
-  );
+  await expect(panel.locator(".execution-history-bound")).toHaveCount(0);
+  await expect(panel).not.toContainText("当前为最近");
+  const toolbar = panel.locator(".execution-dialog-toolbar");
+  const label = toolbar.locator(".execution-steps-label");
+  const refresh = toolbar.getByRole("button", {
+    name: "刷新执行记录",
+    exact: true,
+  });
+  const a = (await label.boundingBox())!,
+    b = (await refresh.boundingBox())!;
+  expect(Math.abs(a.y + a.height / 2 - b.y - b.height / 2)).toBeLessThan(1);
+  expect(b.x).toBeGreaterThan(a.x + a.width);
+  const before = reads.length;
+  await refresh.click();
+  await expect.poll(() => reads.length).toBeGreaterThan(before);
+  expect(new Set(reads).size).toBe(1);
   expect(
     await panel
       .locator(".execution-job")

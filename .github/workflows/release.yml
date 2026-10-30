@@ -17,6 +17,9 @@ jobs:
   session-io:
     uses: ./.github/workflows/session-io.yml
 
+  linux-sandbox:
+    uses: ./.github/workflows/linux-sandbox-service.yml
+
   validate-tag:
     name: Validate release ref
     runs-on: ubuntu-latest
@@ -45,6 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 2
+      MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
+      MORPHZ_TEST_HOST_NETNS: /opt/morphz-sandbox-ci-host-netns
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,22 +59,19 @@ jobs:
         with:
           toolchain: 1.97.1
           components: rustfmt, clippy
-      - name: Install Bubblewrap for runtime tests
+      - name: Install native sandbox dependencies without global security changes
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
           bash scripts/audit-rust-dependencies.sh
       - name: Verify locked Rust license bundle
         run: python3 scripts/generate-third-party-licenses.py rust --check
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -86,10 +88,30 @@ jobs:
           perl scripts/check-diagnostic-logs.pl
           cmp scripts/install.sh website/public/install.sh
           sh scripts/test_install.sh
+          python3 -B -m unittest discover -s tools/linux-sandbox -p 'test_*.py' -v
+      - name: Compile and install exact release-critical sandbox test images
+        run: |
+          test ! -e "$MORPHZ_TEST_HOST_NETNS"
+          sudo install -m 0444 /dev/null "$MORPHZ_TEST_HOST_NETNS"
+          sudo mount --bind /proc/self/ns/net "$MORPHZ_TEST_HOST_NETNS"
+          cargo test --locked -p morphz --lib --bin morphz --test session_io --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/release-test-artifacts.jsonl"
+          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/release-test-artifacts.jsonl" --install-service
+          sudo systemctl daemon-reload
+          sudo systemctl start morphz-sandbox.service
+          for attempt in $(seq 1 100); do
+            if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
+            sleep 0.1
+          done
+          test -S /run/morphz-sandbox/control.sock
       - name: Run release-critical tests
-        run: cargo test --locked -p morphz --lib --bin morphz --test session_io -- --test-threads=1
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: cargo test --locked -p morphz --lib --bin morphz --test session_io --test native_sandbox_contract --no-fail-fast -- --test-threads=1
       - name: Reject compiler and Clippy warnings
         run: cargo clippy --locked -p morphz --all-targets --all-features -- -D warnings
+      - name: Preserve installed sandbox diagnostics
+        if: failure()
+        run: sudo journalctl -u morphz-sandbox.service --no-pager
 
   linux-bundles:
     name: ${{ matrix.asset }}
@@ -123,7 +145,7 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binaries
         run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
       - name: Package release bundle
@@ -133,18 +155,20 @@ jobs:
           mkdir -p dist/morphz-bundle
           cp "target/${{ matrix.target }}/release/morphz" dist/morphz-bundle/
           sh scripts/stage-release-legal.sh dist/morphz-bundle
+          python3 tools/linux-sandbox/package.py dist/morphz-bundle
           archive="${{ matrix.asset }}.tar.gz"
           tar -czf "dist/$archive" -C dist/morphz-bundle \
             morphz LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
-            dashboard third_party
+            dashboard third_party linux-sandbox
           edge_asset="${{ matrix.asset }}"
           edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
           mkdir -p dist/morphz-edge-bundle
           cp "target/${{ matrix.target }}/release/morphz-edge" dist/morphz-edge-bundle/
           sh scripts/stage-release-legal.sh dist/morphz-edge-bundle
+          python3 tools/linux-sandbox/package.py dist/morphz-edge-bundle
           tar -czf "dist/$edge_asset" -C dist/morphz-edge-bundle \
             morphz-edge LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
-            dashboard third_party
+            dashboard third_party linux-sandbox
           if command -v sha256sum >/dev/null 2>&1; then
             (cd dist && sha256sum "$archive" > "$archive.sha256")
             (cd dist && sha256sum "$edge_asset" > "$edge_asset.sha256")
@@ -182,7 +206,7 @@ jobs:
           edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
           tar -tzf "dist/$edge_asset" | grep -Fx morphz-edge
           tar -tzf "dist/$edge_asset" | grep -Fx THIRD_PARTY_LICENSES_RUST.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -191,6 +215,64 @@ jobs:
             dist/morphz-edge-*.tar.gz
             dist/morphz-edge-*.tar.gz.sha256
           if-no-files-found: error
+
+  linux-bundle-sandbox:
+    name: Installed release sandbox (${{ matrix.architecture }})
+    needs: linux-bundles
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            architecture: x86_64
+          - os: ubuntu-24.04-arm
+            architecture: aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: morphz-linux-${{ matrix.architecture }}
+          path: dist
+      - name: Install distribution dependencies without changing global security settings
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor apparmor-utils libapparmor-dev libjson-c-dev bubblewrap gcc libc6-dev binutils
+      - name: Install exact packaged Runtime and source components in this isolated runner
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          runtime_image="/usr/local/libexec/morphz-release-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          edge_image="/usr/local/libexec/morphz-edge-release-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$runtime_image"
+          test ! -e "$edge_image"
+          (cd dist && sha256sum -c "morphz-linux-$ARCHITECTURE.tar.gz.sha256")
+          (cd dist && sha256sum -c "morphz-edge-linux-$ARCHITECTURE.tar.gz.sha256")
+          sudo install -d -m 0755 "$runtime_image" "$edge_image"
+          sudo tar --no-same-owner -xzf "dist/morphz-linux-$ARCHITECTURE.tar.gz" -C "$runtime_image"
+          sudo tar --no-same-owner -xzf "dist/morphz-edge-linux-$ARCHITECTURE.tar.gz" -C "$edge_image"
+          diff -r "$runtime_image/linux-sandbox" "$edge_image/linux-sandbox"
+          sudo /usr/bin/python3 -I -B "$runtime_image/linux-sandbox/install.py" \
+            --runtime "$runtime_image/morphz" --runtime "$edge_image/morphz-edge"
+          sudo systemctl daemon-reload
+          sudo systemctl start morphz-sandbox.service
+          echo "MORPHZ_PACKAGED_RUNTIME=$runtime_image/morphz" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 100); do
+            if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
+            sleep 0.1
+          done
+          test -S /run/morphz-sandbox/control.sock
+          "$edge_image/morphz-edge" --version
+      - name: Verify packaged public Runtime admission and late-file protection without a model
+        run: python3 scripts/test-session-io-release.py "$MORPHZ_PACKAGED_RUNTIME" --native-linux-sandbox
+      - name: Preserve actual packaged service diagnostics
+        if: always()
+        run: sudo journalctl -u morphz-sandbox.service --no-pager
 
   macos-bundles:
     name: ${{ matrix.asset }}
@@ -218,7 +300,7 @@ jobs:
           toolchain: 1.97.1
           targets: ${{ matrix.target }}
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binaries
         run: cargo build --locked --release --target "${{ matrix.target }}" -p morphz --bin morphz --bin morphz-edge
       - name: Package release bundle
@@ -271,7 +353,7 @@ jobs:
           else
             file "dist/morphz-bundle/morphz" | grep -F '${{ matrix.file_arch }}'
           fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.asset }}
           path: |
@@ -294,9 +376,11 @@ jobs:
         with:
           toolchain: 1.97.1
       - name: Cache Cargo registry
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binaries and sandbox helpers
-        shell: pwsh
+        # Explicit bash stops on either Cargo failure; PowerShell's final native
+        # exit code alone can hide a failed Runtime build behind successful helpers.
+        shell: bash
         run: |
           cargo build --locked --release -p morphz --bin morphz --bin morphz-edge --bin morphz-windows-sandbox-runner
           cargo build --locked --release -p morphz-windows-sandbox --bins
@@ -398,7 +482,7 @@ jobs:
               throw "packaged Windows Edge runtime is missing $_"
             }
           }
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: morphz-windows-x86_64
           path: |
@@ -411,7 +495,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [release-readiness, session-io, linux-bundles, macos-bundles, windows-bundle]
+    needs: [release-readiness, session-io, linux-sandbox, linux-bundles, linux-bundle-sandbox, macos-bundles, windows-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -419,7 +503,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true

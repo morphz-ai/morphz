@@ -112,7 +112,7 @@ function appFunctions() {
 }
 const functions = appFunctions();
 const source = `
-import React, {StrictMode, Suspense, startTransition, useEffect, useLayoutEffect, useRef, useState} from 'react';
+import React, {act, StrictMode, Suspense, startTransition, useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {createPortal, flushSync} from 'react-dom';
 import {X} from 'lucide-react';
@@ -185,12 +185,21 @@ const root=createRoot(document.getElementById('root'));
 flushSync(()=>root.render(<StrictMode><Suspense fallback={<output id="suspended">pending</output>}><App/></Suspense></StrictMode>));
 function render(next,authenticationRequired=false){currentBoot=next;auth=authenticationRequired;flushSync(()=>publish());}
 async function settle(){await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}
+async function completeReactWork(complete) {
+ const previous=globalThis.IS_REACT_ACT_ENVIRONMENT;
+ globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+ try { await act(async()=>{complete();}); }
+ finally {globalThis.IS_REACT_ACT_ENVIRONMENT=previous;}
+}
 window.appNavigationFixture={
  report(){return {host:latest&&hostIds.get(latest.host.navigation.navigationGeneration),generation:latest?.host.navigation.navigationGeneration.current,
   prefs:latest?.host.prefs,notice:document.querySelector('.workspace')?.getAttribute('data-notice')??'',private:!!document.querySelector('#private'),connection:!!document.querySelector('.connection-screen'),
   dialog:!!document.querySelector('dialog[open]'),alert:document.querySelector('[role=alert]')?.textContent??'',
-  heading:document.querySelector('.connection-screen h1')?.textContent??'',events,suspendedRenders};},
+  heading:document.querySelector('.connection-screen h1')?.textContent??'',events,suspendedRenders,
+  schedulerHeld:window.navigationReactScheduler.held(),heldReactTasks:window.navigationReactScheduler.pending()};},
  async run(action,value){
+  if(action==='scheduler-hold')window.navigationReactScheduler.hold();
+  if(action==='scheduler-release')window.navigationReactScheduler.release();
   if(action==='create')flushSync(()=>latest.setCreating(value??'project'));
   if(action==='clear')render(null);
   if(action==='restore')render(boot('A','A',value!==false));
@@ -200,8 +209,8 @@ window.appNavigationFixture={
   if(action==='logout')render(null,true);
   if(action==='human')flushSync(()=>latest.prefer({view:'inbox',projectId:'first-project'}));
   if(action==='old-private')flushSync(()=>oldPrivate.prefer({view:'dialogue'}));
-  if(action==='resolve'){pending.shift().resolve({commandId:'create-command',entityId:'created-project',workspaceRevision:2});}
-  if(action==='reject'){pending.shift().reject(new Error('exact create failure'));}
+  if(action==='resolve')await completeReactWork(()=>pending.shift().resolve({commandId:'create-command',entityId:'created-project',workspaceRevision:2}));
+  if(action==='reject')await completeReactWork(()=>pending.shift().reject(new Error('exact create failure')));
   if(action==='speculative'){suspend=true;currentBoot=boot('B');startTransition(()=>publish());}
   if(action==='cancel-speculative'){suspend=false;render(boot('A'));}
   if(action==='retry')document.querySelector('.connection-screen button').click();
@@ -228,6 +237,8 @@ type Report = {
   heading: string;
   notice: string;
   suspendedRenders: number;
+  schedulerHeld: boolean;
+  heldReactTasks: number;
   events: {
     commands: unknown[];
     writes: { key: string; route: string }[];
@@ -321,6 +332,39 @@ test(
         failedRequests: string[] = [],
         unexpectedRequests: string[] = [],
         served: string[] = [];
+      // Control the browser task source React actually uses, not production
+      // state or an invented error. Two animation frames can complete while a
+      // pending React MessageChannel commit has deliberately not run.
+      await page.addInitScript({
+        content: `(() => {
+        const NativeChannel = window.MessageChannel;
+        let held = false;
+        const pending = [];
+        Reflect.set(window, "navigationReactScheduler", {
+          hold() {
+            held = true;
+          },
+          held: () => held,
+          pending: () => pending.length,
+          release() {
+            held = false;
+            for (const resume of pending.splice(0)) resume();
+          },
+        });
+        window.MessageChannel = class extends NativeChannel {
+          constructor() {
+            super();
+            const post = this.port2.postMessage.bind(this.port2);
+            Object.defineProperty(this.port2, "postMessage", {
+              value: (...args) => {
+                if (held && args[0] === null) pending.push(() => post(...args));
+                else post(...args);
+              },
+            });
+          }
+        };
+      })();`,
+      });
       await page.route("**/*", async (route) => {
         const requested = route.request().url();
         if (requested === url || requested === url + ".js") {
@@ -478,9 +522,22 @@ test(
           ]);
           assert.equal(done.dialog, false);
           await submit();
-          done = await action("reject");
-          assert.equal(done.dialog, true);
-          assert.equal(done.alert, "exact create failure");
+          await action("scheduler-hold");
+          try {
+            done = await action("reject");
+            assert.equal(done.dialog, true);
+            assert.equal(
+              done.alert,
+              "exact create failure",
+              JSON.stringify({
+                schedulerHeld: done.schedulerHeld,
+                heldReactTasks: done.heldReactTasks,
+              }),
+            );
+            assert.equal(done.schedulerHeld, true);
+          } finally {
+            await action("scheduler-release");
+          }
           assert.equal(done.events.commands.length, 2);
           await submit();
           await action("clear");

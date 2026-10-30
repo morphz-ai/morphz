@@ -5,7 +5,7 @@ import test from "node:test";
 const workflow = readFileSync(new URL("../../.github/workflows/application.yml", import.meta.url), "utf8");
 const preparation = "npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts";
 const cache = 'printf \'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\\n\' "$RUNNER_TEMP" >> "$GITHUB_ENV"';
-const jobs = ["web", "storage-postgres", "desktop", "cognitive-runtime-contract"];
+const jobs = ["web-node", "web-browser", "storage-postgres", "desktop", "cognitive-runtime-contract"];
 
 function jobSource(source, name) {
   const header = `\n  ${name}:\n`;
@@ -30,7 +30,7 @@ function verify(source) {
     assert.equal(job.split(preparation).length, 2, `${name}: prepare exactly once`);
     const firstConsumer = name === "cognitive-runtime-contract"
       ? job.indexOf("npm exec --offline -- node scripts/ci-cognitive-runtime.mjs", steps)
-      : job.search(/\bnpm test\b/);
+      : name === "web-browser" ? job.indexOf("npm run test:e2e", steps) : job.search(/\bnpm test\b/);
     assert.ok(firstConsumer > prepare, `${name}: prepare before independent consumers`);
     // Do not fix a cold cache failure by giving the test process a network
     // fallback or by making the dependency-preparation failure non-fatal.

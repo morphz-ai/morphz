@@ -85,7 +85,7 @@ Dashboard/Operator 管理令牌通过默认管理身份访问控制面，不允�
 ```json
 {
   "error": {
-    "code": "invalid_argument | unauthorized | forbidden | not_found | conflict | internal",
+    "code": "invalid_argument | resource_exhausted | unauthorized | forbidden | not_found | conflict | unavailable | credential_missing | internal",
     "message": "human-readable detail"
   }
 }
@@ -105,7 +105,13 @@ Dashboard/Operator 管理令牌通过默认管理身份访问控制面，不允�
 - `404` 资源不存在
 - `409` ID、状态或版本冲突
 - `413` 消息正文或 HTTP Body 超过限制
+- `424` Provider 连接缺少本机凭据（`credential_missing`）；不是调用方管理令牌无效，需修复原连接凭据后重试
+- `503` 当前服务暂不可用（`unavailable`）
 - `500` Runtime 内部错误
+
+Provider 账号／路由的读取测试与目录刷新在发起上游请求前发现凭据缺失时，
+返回 `credential_missing` 及固定消息 `Provider credential is missing`，不公开
+环境变量名、Credential 引用或上游原文。它不切换模型／账户，也不重放工作。
 
 ## 3. 数据结构
 

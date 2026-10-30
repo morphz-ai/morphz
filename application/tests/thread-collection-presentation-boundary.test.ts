@@ -128,15 +128,24 @@ const fixed = {
   threadSummary:
     'const threadSummary = thread\n    ? executionActivitySummary(thread, activityAvailable && !!currentThread)\n    : "";',
 } as const;
-// Keep the captured a1acc677 hashes above immutable. These two domain owners
+// Keep the captured a1acc677 hashes above immutable. These domain owners
 // evolved independently: exact wait labels in 06efe937/8ad574a8 and nullable
 // provenance/read-only scope in 009b1826. Their negative mutations still fail.
+// 2026-10-23 explicitly extends only the parent-edge owner for verified
+// cross-Session delegation. Same-domain fences stay fixed; the new owner and
+// all identity guards below have independent behavior and counterfactual tests.
 const currentAlgorithms = {
   ...fixed.algorithms,
   executionActivityStatus:
     "6377c4bee67e8fa5dcb848a85972cbd120e7b03f1e412056f379c77d8b5a5b5b",
   executionActivityThreads:
     "e33894d20af8d765371073ae4ac28159ebf95ef85916f666b66d50b050e60fb3",
+  executionActivityDescendants:
+    "43549db35143c67ca674e62ec47f67063aad242074ee6acfafb46e553789f332",
+  executionActivityRoots:
+    "a8cca6f31304fee431c85ea58d6669c4d724be7173e2acd2dd75567af3c88899",
+  activityParent:
+    "841b35b1c6d49271983f95411faf22b65341b900096a7b8f631ad765ed29a0d1",
 };
 const paths = {
   Owner: "../apps/web/src/execution-activity.ts",
@@ -440,7 +449,10 @@ const expected = parse({
     return {activityThreads,active,recent,activeCount,activityAvailable,activityComplete};
   }`,
   Summary: `export function executionActivityOverviewSummary(runtime:ConversationRuntime,activityAvailable:boolean,activeCount:number):string{${fixed.recipes.activitySummary.raw} return activitySummary;}`,
-  Prose: fixed.threadSummary,
+  // The a1acc archive above stays immutable. Current detail freshness is
+  // independently scoped, rather than depending on every history scope.
+  Prose:
+    'const threadSummary = thread ? executionActivitySummary(thread, client.online && !!currentThread && executionActivityThreadAvailable(thread, runtime)) : "";',
 });
 function typedCoreInputs(owner: Parsed) {
   for (const [name, module, methods] of [
@@ -847,8 +859,24 @@ function validate(contents: Sources) {
     statement(prose),
     expected.get("Prose")!.source.statements[0]!,
     "original-thread-prose-phase",
+    sidebar,
   );
-  references(sidebar, prose, overview.fields, "original-thread-prose-phase");
+  references(
+    sidebar,
+    prose,
+    {
+      client: param(sidebarFn, "client"),
+      runtime: boundName(runtime),
+      currentThread: boundName(variable(sidebarFn, "currentThread")),
+      thread: boundName(variable(sidebarFn, "thread")),
+      executionActivitySummary: imported(sidebar, "executionActivitySummary"),
+      executionActivityThreadAvailable: imported(
+        sidebar,
+        "executionActivityThreadAvailable",
+      ),
+    },
+    "original-thread-prose-phase",
+  );
   const summary = variable(sidebarFn, "activitySummary"),
     summaryImport = imported(sidebar, "executionActivityOverviewSummary");
   assert.ok(
@@ -1049,12 +1077,12 @@ test("same-domain roots, actual scope/revision and date algorithms reject legal 
   for (const [before, after, rule] of [
     ["a.projectId === b.projectId", "true", "sameActivityDomain"],
     [
-      "!parent || !sameActivityDomain(thread, parent)",
-      "!parent",
+      "let parent = activityParent(current, threads);",
+      "let parent = threads[0];",
       "executionActivityRoots",
     ],
     [
-      "!sameActivityDomain(thread, child)",
+      '!found.has(activityParent(child, threads)?.id ?? "")',
       "false",
       "executionActivityDescendants",
     ],
@@ -1089,6 +1117,22 @@ test("same-domain roots, actual scope/revision and date algorithms reject legal 
     rejected(
       changed("Owner", before, after),
       "collection-domain-algorithm:" + rule,
+    );
+});
+test("cross-Session grouping keeps its exact delegation parent, scope and original-input fences", () => {
+  for (const [before, after] of [
+    ["parent.id === link.parentThreadId", "true"],
+    ["parent.sessionId === link.parentSessionId", "true"],
+    ["parent.contextId === link.parentContextId", "true"],
+    ["parent.projectId === thread.projectId", "true"],
+    ["parent.conversationId === thread.conversationId", "true"],
+    ["!!parent.inputId &&", "true &&"],
+    ["parent.inputId === thread.inputId", "true"],
+    ["sameActivityDomain(thread, parent)", "true"],
+  ] as const)
+    rejected(
+      changed("Owner", before, after),
+      "collection-domain-algorithm:activityParent",
     );
 });
 test("real input import, direct alias and captured item-online guard reject wrappers, latest values and shadowing", () => {
@@ -1130,6 +1174,31 @@ test("real input import, direct alias and captured item-online guard reject wrap
   );
 });
 test("overview uses the original captured render facts and keeps collect-prose-summary in one evaluation phase", () => {
+  const parsed = parse(sources).get("Sidebar")!,
+    component = fn(parsed, "ExecutionSidebar");
+  const prose = statement(variable(component, "threadSummary")).getText();
+  for (const [before, after] of [
+    ["client.online &&\n          !!currentThread &&", "!!currentThread &&"],
+    [
+      "!!currentThread &&\n          executionActivityThreadAvailable",
+      "executionActivityThreadAvailable",
+    ],
+    ["executionActivityThreadAvailable(thread, runtime)", "activityAvailable"],
+    [
+      "executionActivityThreadAvailable(thread, runtime)",
+      "executionActivityThreadAvailable(thread, client.boot!.runtime)",
+    ],
+  ] as const) {
+    assert.equal(
+      prose.split(before).length,
+      2,
+      "one detail freshness mutation",
+    );
+    rejected(
+      changed("Sidebar", prose, prose.replace(before, after)),
+      "original-thread-prose-phase",
+    );
+  }
   rejected(
     changed(
       "Sidebar",
@@ -1162,10 +1231,7 @@ test("overview uses the original captured render facts and keeps collect-prose-s
     ),
     "overview-summary-direct-consumer",
   );
-  const parsed = parse(sources).get("Sidebar")!,
-    component = fn(parsed, "ExecutionSidebar");
-  const summary = statement(variable(component, "activitySummary")).getText(),
-    prose = statement(variable(component, "threadSummary")).getText();
+  const summary = statement(variable(component, "activitySummary")).getText();
   const reordered = {
     ...sources,
     Sidebar: sources.Sidebar.replace(summary, "").replace(

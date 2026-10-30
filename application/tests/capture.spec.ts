@@ -544,14 +544,39 @@ test("截图先预览，确认才上传，并保留当前对象关联", async ({
     if (request.url().endsWith("/api/assets") && request.method() === "POST")
       uploads++;
   });
+  let creationResponseReady = false;
+  let releaseCreation!: () => void;
+  const creationGate = new Promise<void>((resolve) => {
+    releaseCreation = resolve;
+  });
+  await page.route("**/api/platform/documents", async (route) => {
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const receipt = await response.json();
+    expect(receipt.contentId).toEqual(expect.any(String));
+    creationResponseReady = true;
+    await creationGate;
+    await route.fulfill({ response });
+  });
   await page.goto("/");
   await openLibrary(page);
   await page.getByLabel("其他内容创作", { exact: true }).click();
   await page.getByRole("button", { name: "手动写文档", exact: true }).click();
   await page.getByLabel("新对象标题").fill("截图关联来源");
   await page.getByRole("button", { name: "创建", exact: true }).click();
-  await openInput(page);
-  await openComposerMedia(page);
+  try {
+    // A click is not the creation/open receipt. Keep the real creation response
+    // pending, then wait for its destination before using the shared composer;
+    // otherwise a late, legitimate navigation closes the old page's menu.
+    await expect.poll(() => creationResponseReady).toBe(true);
+    await expect(page.locator(".object-paper > h1")).not.toBeVisible();
+    releaseCreation();
+    await expect(page.locator(".object-paper > h1")).toHaveText("截图关联来源");
+    await openInput(page);
+    await openComposerMedia(page);
+  } finally {
+    releaseCreation();
+  }
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
   await expect(dialog.getByAltText("待确认的截图")).toBeVisible();

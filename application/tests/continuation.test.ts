@@ -9,7 +9,10 @@ import { WorkspaceStore } from "../packages/application/src/store.js";
 import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { Application } from "../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
-import { continuationTarget } from "../packages/application/src/continuation.js";
+import {
+  ContinuationConflict,
+  continuationTarget,
+} from "../packages/application/src/continuation.js";
 import { localAccess, type Receipt } from "../packages/core/src/model.js";
 import { continuationInputFormat } from "../packages/application/src/session-io.js";
 import type { InputContinuation } from "../packages/core/src/continuation.js";
@@ -36,6 +39,8 @@ async function fixture() {
     closeAtAdmission = false,
     supportsDirectedInput = true;
   let capabilityResponseGate:
+    { observed: () => void; released: Promise<void> } | undefined;
+  let closedThreadResponseGate:
     { observed: () => void; released: Promise<void> } | undefined;
   const server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -105,6 +110,12 @@ async function fixture() {
       });
     if (path.includes("/threads/")) {
       const t = threads.get(path.split("/").at(-1)!);
+      if (t?.lifecycle === "completed" && closedThreadResponseGate) {
+        const gate = closedThreadResponseGate;
+        closedThreadResponseGate = undefined;
+        gate.observed();
+        await gate.released;
+      }
       return send(t ? 200 : 404, {
         snapshot: {
           thread: t,
@@ -304,6 +315,14 @@ async function fixture() {
     closeAtAdmission() {
       closeAtAdmission = true;
     },
+    holdClosedThreadResponse() {
+      assert.equal(closedThreadResponseGate, undefined);
+      let observed!: () => void, release!: () => void;
+      const reached = new Promise<void>((resolve) => (observed = resolve));
+      const released = new Promise<void>((resolve) => (release = resolve));
+      closedThreadResponseGate = { observed, released };
+      return { reached, release };
+    },
     disableDirectedInput() {
       supportsDirectedInput = false;
     },
@@ -469,6 +488,60 @@ test("结束竞态不偷偷创建新执行；用户改为普通消息后仅创�
     await f.bridge.tick();
     assert.equal(f.accepted.size, 2);
   } finally {
+    await f.close();
+  }
+});
+
+test("补充拒绝复核期间不发布临时 invalid，关闭原因与错误一次性确认", async () => {
+  const f = await fixture();
+  let gate: ReturnType<typeof f.holdClosedThreadResponse> | undefined;
+  try {
+    const original = await f.send(f.ordinary("报告 A"));
+    await f.waitForRoot(original.entityId);
+    await f.bridge.tick();
+    const command = f.supplement(f.target());
+    f.closeAtAdmission();
+    gate = f.holdClosedThreadResponse();
+    const result = f.send(command).then(
+      (receipt) => ({ receipt, error: undefined }),
+      (error: unknown) => ({ receipt: undefined, error }),
+    );
+    await gate.reached;
+    // Observe the same public confirmation while the authoritative thread
+    // recheck is held. A provisional rejection must not escape through it.
+    const confirmation = f.bridge.confirmSupplement(command.commandId).then(
+      () => ({ settled: true, error: undefined }),
+      (error: unknown) => ({ settled: true, error }),
+    );
+    assert.deepEqual(
+      await Promise.race([
+        confirmation,
+        new Promise<{ settled: false }>((resolve) =>
+          setImmediate(() => resolve({ settled: false })),
+        ),
+      ]),
+      { settled: false },
+    );
+    gate.release();
+    const [sent, confirmed] = await Promise.all([result, confirmation]);
+    assert.equal((sent.error as { code?: string })?.code, "work_closed");
+    assert.ok(confirmed.error instanceof ContinuationConflict);
+    assert.equal(confirmed.error.reason, "closed");
+    assert.equal(f.accepted.size, 1);
+    assert.equal(
+      f.attempts.filter(
+        (request) => request.client_message_id === command.commandId,
+      ).length,
+      1,
+    );
+    const delivery = (await f.runtime()).deliveries.find(
+      (item) => item.inputId === command.commandId,
+    )!;
+    assert.equal(delivery.rejection, "closed");
+    assert.equal(delivery.supplement, "rejected");
+    assert.notEqual(delivery.error, null);
+  } finally {
+    gate?.release();
     await f.close();
   }
 });

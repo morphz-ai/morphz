@@ -197,6 +197,47 @@ mod tests {
     }
 
     #[test]
+    fn lease_contention_does_not_claim_that_the_provider_call_has_started() {
+        let diagnostics = RefreshDiagnostics::new(Some("synthetic-phases".into()));
+        let requests: Vec<_> = (0..4).map(|_| diagnostics.request()).collect();
+        for _ in 0..3 {
+            diagnostics.contention();
+        }
+        let claimed = diagnostics.snapshot();
+        assert_eq!((claimed.requests_active, claimed.lease_contentions), (4, 3));
+        assert_eq!(
+            (
+                claimed.provider_calls_started,
+                claimed.provider_calls_active
+            ),
+            (0, 0)
+        );
+        assert_eq!(claimed.credential_publications, 0);
+
+        let call = diagnostics.provider_call();
+        let entered = diagnostics.snapshot();
+        assert_eq!(
+            (
+                entered.provider_calls_started,
+                entered.provider_calls_active
+            ),
+            (1, 1)
+        );
+        drop(call);
+        diagnostics.publication();
+        for request in requests {
+            request.finish(true);
+        }
+        let after = diagnostics.snapshot();
+        assert_eq!(
+            (after.requests_succeeded, after.credential_publications),
+            (4, 1)
+        );
+        assert_eq!((after.requests_active, after.provider_calls_active), (0, 0));
+        assert!(!after.incomplete);
+    }
+
+    #[test]
     fn counter_overflow_missing_identity_and_poison_invalidate_evidence_without_panicking() {
         let missing = RefreshDiagnostics::new(None);
         assert!(missing.snapshot().incomplete);

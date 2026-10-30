@@ -7,6 +7,8 @@ import {
   linuxCounters,
   linuxProcessMemory,
   parseCounters,
+  parseCpuMax,
+  parsePressure,
   sample,
   unifiedCgroupPath,
 } from "../observe-ci-resources.mjs";
@@ -50,7 +52,11 @@ test("only bounded numeric counters are parsed; missing values are not success o
     linuxCounters(() => {
       throw new Error("unavailable");
     }),
-    { memoryKiB: null, cgroup: null },
+    {
+      memoryKiB: null,
+      pressure: { cpu: null, io: null, memory: null },
+      cgroup: null,
+    },
   );
 });
 
@@ -82,6 +88,12 @@ test("resource snapshot retains actual OOM and PID events without guessing unsup
     ["/sys/fs/cgroup/test/pids.current", "17"],
     ["/sys/fs/cgroup/test/pids.max", "1024"],
     ["/sys/fs/cgroup/test/pids.events", "max 0"],
+    ["/sys/fs/cgroup/test/cpu.max", "200000 100000"],
+    [
+      "/sys/fs/cgroup/test/cpu.stat",
+      "usage_usec 12345\nnr_periods 50\nnr_throttled 7\nthrottled_usec 800",
+    ],
+    ["/proc/pressure/cpu", "some avg10=9.50 avg60=3.00 avg300=1.25 total=3000"],
   ]);
   const result = linuxCounters((path) => {
     if (!files.has(path)) throw new Error("missing");
@@ -89,6 +101,11 @@ test("resource snapshot retains actual OOM and PID events without guessing unsup
   });
   assert.deepEqual(result, {
     memoryKiB: { MemTotal: 2048, MemAvailable: 512, SwapTotal: 0, SwapFree: 0 },
+    pressure: {
+      cpu: { some: { avg10: 9.5, avg60: 3, avg300: 1.25, totalMicros: 3000 } },
+      io: null,
+      memory: null,
+    },
     cgroup: {
       path: "/sys/fs/cgroup/test",
       memoryCurrentBytes: 1024,
@@ -98,6 +115,13 @@ test("resource snapshot retains actual OOM and PID events without guessing unsup
       pidsCurrent: 17,
       pidsLimit: 1024,
       pidsEvents: { max: 0 },
+      cpuMax: { quotaMicros: 200000, periodMicros: 100000, quotaCores: 2 },
+      cpuStat: {
+        usage_usec: 12345,
+        nr_periods: 50,
+        nr_throttled: 7,
+        throttled_usec: 800,
+      },
     },
   });
 });
@@ -107,10 +131,15 @@ test("real sampling is read-only and emits no process arguments or environment",
   assert.equal(value.platform, process.platform);
   assert(value.memoryBytes.total > 0);
   assert.equal(value.load.length, 3);
+  assert(
+    Number.isSafeInteger(value.availableParallelism) &&
+      value.availableParallelism > 0,
+  );
   assert.deepEqual(
     Object.keys(value).sort(),
     [
       "at",
+      "availableParallelism",
       "filesystem",
       "linux",
       "load",
@@ -122,23 +151,81 @@ test("real sampling is read-only and emits no process arguments or environment",
   );
 });
 
+test("CPU quota and pressure retain measured limits without inventing unsupported or unlimited values", () => {
+  assert.deepEqual(parseCpuMax("200000 100000\n"), {
+    quotaMicros: 200000,
+    periodMicros: 100000,
+    quotaCores: 2,
+  });
+  assert.deepEqual(parseCpuMax("max 100000"), {
+    quotaMicros: "max",
+    periodMicros: 100000,
+    quotaCores: null,
+  });
+  for (const text of [
+    null,
+    "unavailable",
+    "0 100000",
+    "200000 0",
+    "-1 100000",
+    "999999999999999999999 100000",
+  ])
+    assert.equal(parseCpuMax(text), null);
+  assert.deepEqual(
+    parsePressure(
+      "some avg10=9.50 avg60=3.00 avg300=1.25 total=3000\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0",
+    ),
+    {
+      some: { avg10: 9.5, avg60: 3, avg300: 1.25, totalMicros: 3000 },
+      full: { avg10: 0, avg60: 0, avg300: 0, totalMicros: 0 },
+    },
+  );
+  for (const text of [
+    null,
+    "private process arguments",
+    "some avg10=NaN avg60=0 avg300=0 total=0",
+  ])
+    assert.equal(parsePressure(text), null);
+});
+
 test("process memory is aggregated without exposing process names or reading arguments", () => {
   const paths = [];
-  const result = linuxProcessMemory((path) => {
-    paths.push(path);
-    if (path === "/proc/1/status") return "Name:\ttsc\nVmRSS:\t100 kB\n";
-    if (path === "/proc/2/status") return "Name:\ttsc\nVmRSS:\t200 kB\n";
-    if (path === "/proc/3/status") return "Name:\tprivate-name\nVmRSS:\t40 kB\n";
-    throw new Error("process exited");
-  }, () => ["self", "1", "2", "3", "4", "../bad"], () => {
-    throw new Error("executable unavailable");
+  const result = linuxProcessMemory(
+    (path) => {
+      paths.push(path);
+      if (path === "/proc/1/status") return "Name:\ttsc\nVmRSS:\t100 kB\n";
+      if (path === "/proc/2/status") return "Name:\ttsc\nVmRSS:\t200 kB\n";
+      if (path === "/proc/3/status")
+        return "Name:\tprivate-name\nVmRSS:\t40 kB\n";
+      throw new Error("process exited");
+    },
+    () => ["self", "1", "2", "3", "4", "../bad"],
+    () => {
+      throw new Error("executable unavailable");
+    },
+  );
+  assert.deepEqual(result, {
+    observed: 3,
+    groups: {
+      tsc: { processes: 2, residentKiB: 300, largestKiB: 200 },
+      other: { processes: 1, residentKiB: 40, largestKiB: 40 },
+    },
   });
-  assert.deepEqual(result, { observed: 3, groups: {
-    tsc: { processes: 2, residentKiB: 300, largestKiB: 200 },
-    other: { processes: 1, residentKiB: 40, largestKiB: 40 },
-  } });
-  assert.deepEqual(paths, ["/proc/1/status", "/proc/2/status", "/proc/3/status", "/proc/4/status"]);
-  assert.equal(linuxProcessMemory(() => "", () => { throw new Error("unavailable"); }), null);
+  assert.deepEqual(paths, [
+    "/proc/1/status",
+    "/proc/2/status",
+    "/proc/3/status",
+    "/proc/4/status",
+  ]);
+  assert.equal(
+    linuxProcessMemory(
+      () => "",
+      () => {
+        throw new Error("unavailable");
+      },
+    ),
+    null,
+  );
 });
 
 test(

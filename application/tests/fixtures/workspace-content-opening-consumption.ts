@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { inversePrivateProjectConversationScope } from "./private-project-conversation-scope-consumption.js";
 import { virtualTypeScriptSnapshot } from "./virtual-typescript.js";
+import { assertSyntaxIdentity } from "./assert-syntax-identity.js";
 import {
   NodeFlags,
   SyntaxKind,
@@ -204,7 +205,7 @@ export function expandWorkspaceContentOpeningConsumption(
       "fixed actual Git complete " + name,
     );
     const candidate = fn(owner, name);
-    assert.equal(
+    assertSyntaxIdentity(
       candidate.parent,
       factory.body,
       "content opening belongs to the existing factory",
@@ -281,8 +282,10 @@ export function expandWorkspaceContentOpeningConsumption(
   const statements = [...factory.body!.statements];
   const slot = statements.indexOf(openObject);
   assert.deepEqual(
-    statements.slice(slot + 1, slot + 4),
-    [openUser, openReading, launch],
+    statements
+      .slice(slot + 1, slot + 4)
+      .map((node, index) => node === [openUser, openReading, launch][index]),
+    [true, true, true],
     "only the original content-opening slot",
   );
   assert.equal(
@@ -503,7 +506,7 @@ function currentContentMethod(
         node.end < factory.end,
     );
   assert.equal(found.length, 1, "unique owned content-opening method " + name);
-  assert.equal(
+  assertSyntaxIdentity(
     found[0]!.parent,
     factory.body,
     "content opening belongs to the existing factory",
@@ -553,7 +556,7 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
       "fixed actual Git complete " + name,
     );
     const candidate = currentContentMethod(owner, factory, name);
-    assert.equal(
+    assertSyntaxIdentity(
       candidate.parent,
       factory.body,
       "content opening belongs to the existing factory",
@@ -615,7 +618,7 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
     [SyntaxKind.ExportKeyword],
     "synchronous current navigation factory",
   );
-  assert.equal(
+  assertSyntaxIdentity(
     factory.asteriskToken,
     undefined,
     "non-generator navigation factory",

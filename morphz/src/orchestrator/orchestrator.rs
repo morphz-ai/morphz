@@ -2011,6 +2011,29 @@ struct ActivationRoute {
 struct EffectiveModelRequestPolicy {
     model_alias: String,
     reasoning_effort: String,
+    thread_control_revision: Option<u64>,
+    session_snapshot: crate::model_selection::SessionEvaluationSnapshot,
+}
+
+/// The policy and Provider binding belong to the same failed physical request.
+/// Keep that evidence together instead of passing unrelated recovery scalars.
+struct FailedModelRequest<'a> {
+    configuration_snapshot: Option<(DateTime<Utc>, &'a ModelAttemptBinding)>,
+    provider_resource_snapshot: Option<&'a str>,
+    policy: &'a EffectiveModelRequestPolicy,
+}
+
+impl<'a> FailedModelRequest<'a> {
+    fn from_completion(
+        error: &'a ModelCompletionError,
+        policy: &'a EffectiveModelRequestPolicy,
+    ) -> Self {
+        Self {
+            configuration_snapshot: error.model_configuration_snapshot(),
+            provider_resource_snapshot: error.provider_resource_snapshot.as_deref(),
+            policy,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2058,6 +2081,9 @@ struct ModelCompletionError {
     /// an old catalog/settings snapshot from a failure under the current one.
     model_request_started_at: Option<DateTime<Utc>>,
     model_binding: Option<ModelAttemptBinding>,
+    /// Admission can fail before an immutable account binding exists. Retain
+    /// that request's exact resource instead of consulting mutable defaults.
+    provider_resource_snapshot: Option<String>,
     origin: ModelCompletionErrorOrigin,
 }
 
@@ -2421,6 +2447,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::Provider,
         }
     }
@@ -2434,6 +2461,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::RuntimePersistence,
         }
     }
@@ -2447,6 +2475,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::RuntimeInternal,
         }
     }
@@ -2460,6 +2489,7 @@ impl ModelCompletionError {
             provider_continuation: None,
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin: ModelCompletionErrorOrigin::RuntimeInput,
         }
     }
@@ -2478,6 +2508,7 @@ impl ModelCompletionError {
             provider_continuation: accumulator.provider_continuation.clone(),
             model_request_started_at: None,
             model_binding: None,
+            provider_resource_snapshot: None,
             origin,
         }
     }
@@ -2499,6 +2530,13 @@ impl ModelCompletionError {
 
     fn model_configuration_snapshot(&self) -> Option<(DateTime<Utc>, &ModelAttemptBinding)> {
         Some((self.model_request_started_at?, self.model_binding.as_ref()?))
+    }
+
+    fn with_provider_resource_snapshot(mut self, resource: String) -> Self {
+        // A later, bound-resource admission may already be more precise than
+        // the first logical-route admission. Never overwrite that evidence.
+        self.provider_resource_snapshot.get_or_insert(resource);
+        self
     }
 
     fn is_runtime_failure(&self) -> bool {
@@ -4266,10 +4304,13 @@ impl Orchestrator {
             return;
         }
         let resource = resource.to_string();
-        if failure.kind.is_request_scoped_latency() {
+        if binding.is_none() || failure.kind.is_request_scoped_latency() {
             // A large request with a slow first byte, or one stalled stream,
             // is request-local evidence. Wake only its owning Context after a
             // short delay; never poison the endpoint+model shared circuit.
+            // Without a complete authorized binding there is no account to
+            // probe: the Client default may belong to another model/Principal.
+            // Retry the original work through its normal authorization path.
             let delay =
                 std::time::Duration::from_secs(failure.retry_after_secs.unwrap_or(5).clamp(1, 300));
             let bus = Arc::clone(&self.bus);
@@ -4288,6 +4329,12 @@ impl Orchestrator {
             });
             return;
         }
+
+        // Only an immutable, Agent-authorized binding may be probed. An
+        // unbound request has already taken the request-local retry path.
+        let Some(binding) = binding else {
+            return;
+        };
 
         let circuit = self
             .provider_circuits
@@ -4344,11 +4391,7 @@ impl Orchestrator {
                         return;
                     }
                 }
-                let probe_result = if let Some(binding) = binding.as_ref() {
-                    client.probe_health_bound(binding).await
-                } else {
-                    client.probe_health().await
-                };
+                let probe_result = client.probe_health_bound(&binding).await;
                 match probe_result {
                     Ok(()) => {
                         let mut contexts = {
@@ -4537,6 +4580,82 @@ impl Orchestrator {
             {
                 continue;
             }
+            let policy_phase = event
+                .payload
+                .get("recovery_phase")
+                .and_then(serde_json::Value::as_str);
+            if matches!(
+                policy_phase,
+                Some("thread_evaluation_policy_changed" | "session_evaluation_policy_changed")
+            ) {
+                let revision = event
+                    .payload
+                    .get("thread_evaluation_policy_revision")
+                    .and_then(serde_json::Value::as_u64);
+                if (policy_phase == Some("thread_evaluation_policy_changed")
+                    && (event
+                        .payload
+                        .get("thread_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(thread.id.as_str())
+                        || event
+                            .payload
+                            .get("thread_generation")
+                            .and_then(serde_json::Value::as_u64)
+                            != Some(thread.generation)))
+                    || event
+                        .payload
+                        .get("session_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(thread.session_id.as_str())
+                    || !event
+                        .payload
+                        .get("scheduler_dependency_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|ids| {
+                            ids.iter()
+                                .any(|id| id.as_str() == Some(dependency.id.as_str()))
+                        })
+                {
+                    continue;
+                }
+                let Some(wait_event_id) = dependency
+                    .metadata
+                    .get("wait_event_id")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let wait = self
+                    .store
+                    .query(QueryFilter {
+                        event_ids: vec![wait_event_id.to_string()],
+                        context_id: Some(thread.context_id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .next();
+                let current = session_store
+                    .get_thread_evaluation_policy(&thread.id)
+                    .await?;
+                let session = session_store.get_session(&thread.session_id).await?;
+                if !current
+                    .as_ref()
+                    .zip(wait.as_ref())
+                    .is_some_and(|(current, wait)| {
+                        (policy_phase == Some("thread_evaluation_policy_changed")
+                            && revision.is_some()
+                            && current.control_revision == revision
+                            && current.supersedes_provider_wait(&dependency, wait))
+                            || session.as_ref().is_some_and(|session| {
+                                current.session_replaces_provider_wait(session, &dependency, wait)
+                            })
+                    })
+                {
+                    continue;
+                }
+            }
             let wake_event_id = crate::scheduler::stable_command_id(
                 "provider-recovered-event",
                 &format!("{}\0{}", dependency.id, event.id),
@@ -4661,28 +4780,110 @@ impl Orchestrator {
     }
 
     async fn recover_provider_waits(&self) -> Result<(), DynError> {
+        // The policy CAS is durable even if the process exits before publishing
+        // its wake Event. Reconcile exact stale waits before redispatching any
+        // Activation; no periodic model call or business-input replay is needed.
+        self.recover_obsolete_thread_policy_waits().await?;
         let Some(store) = self.plan_store.as_ref() else {
             return Ok(());
         };
-        let resource = self.client.provider_resource_key();
-        let contexts = persistent_provider_wait_contexts(store.as_ref(), &resource).await?;
-        if contexts.is_empty() {
-            return Ok(());
+        let resources = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .map(|dependency| dependency.dependency_id)
+            .filter(|resource| {
+                resource.starts_with("model-route:") || resource.starts_with("model-provider:")
+            })
+            .collect::<BTreeSet<_>>();
+        for resource in resources {
+            // This helper rechecks live owner generation and Objective wait
+            // identity; a dependency row alone is not authority to wake work.
+            let contexts = persistent_provider_wait_contexts(store.as_ref(), &resource).await?;
+            if contexts.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                provider_resource = %resource,
+                waiting_contexts = contexts.len(),
+                event_code = "orchestrator.provider_probe.recovered_after_restart",
+                "Recovered exact Provider waiting resources after Runtime restart"
+            );
+            let failure = ModelFailure::new(
+                ModelFailureKind::ServerUnavailable,
+                "Runtime restart recovered persistent Provider waits",
+            )
+            .with_retry_after(Some(1));
+            for context_id in contexts {
+                self.record_provider_failure(&context_id, &resource, None, &failure)
+                    .await;
+            }
         }
-        tracing::info!(
-            provider_resource = %resource,
-            waiting_contexts = contexts.len(),
-            event_code = "orchestrator.provider_probe.recovered_after_restart",
-            "Recovered Provider waiting probes after Runtime restart"
-        );
-        let failure = ModelFailure::new(
-            ModelFailureKind::ServerUnavailable,
-            "Runtime restart recovered persistent Provider waits",
-        )
-        .with_retry_after(Some(1));
-        for context_id in contexts {
-            self.record_provider_failure(&context_id, &resource, None, &failure)
-                .await;
+        Ok(())
+    }
+
+    async fn recover_obsolete_thread_policy_waits(&self) -> Result<(), DynError> {
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let dependencies = store
+            .list_scheduler_dependencies(SchedulerDependencyFilter {
+                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
+                dependency_kind: Some(SchedulerDependencyKind::Resource),
+                status: Some(SchedulerDependencyStatus::Pending),
+                required_only: true,
+                ..Default::default()
+            })
+            .await?;
+        for dependency in dependencies {
+            let Some(current) = session_store
+                .get_thread_evaluation_policy(&dependency.owner_id)
+                .await?
+            else {
+                continue;
+            };
+            let Some(event_id) = dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let wait = self
+                .store
+                .query(QueryFilter {
+                    event_ids: vec![event_id.to_string()],
+                    context_id: Some(current.thread.context_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            let session = session_store
+                .get_session(&current.thread.session_id)
+                .await?;
+            if let Some(wait) = wait.filter(|wait| {
+                current.supersedes_provider_wait(&dependency, wait)
+                    || session.as_ref().is_some_and(|session| {
+                        current.session_replaces_provider_wait(session, &dependency, wait)
+                    })
+            }) {
+                self.release_obsolete_thread_policy_wait_for_thread(
+                    &current.thread.id,
+                    current.thread.generation,
+                    &dependency.dependency_id,
+                    &wait.id,
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -10948,19 +11149,53 @@ impl Orchestrator {
             .get_session(session_id)
             .await?
             .ok_or_else(|| format!("Session '{session_id}' does not exist"))?;
-        let mut policy = self.effective_model_request_policy_from_session(&session, attempt_id);
+        let mut route = self.activation_route(attempt_id);
+        let mut thread_control_revision = None;
+        if let Some(route) = route.as_mut() {
+            let current = session_store
+                .get_thread_evaluation_policy(&route.thread_id)
+                .await?
+                .ok_or("Model request policy Thread disappeared")?;
+            let thread = current.thread;
+            if thread.session_id != session.id
+                || thread.context_id != session.context_id
+                || thread.agent_id != session.agent_id
+                || thread.generation != route.thread_generation
+                || thread.lifecycle != ThreadLifecycle::Open
+            {
+                return Err("Model request policy is outside its live Thread generation".into());
+            }
+            // Unmodified tasks retain accepted Schedule/Activation precedence.
+            // Only a durable operator choice supersedes that old snapshot;
+            // its explicit clear must not resurrect the old input binding.
+            if current.control_revision.is_some() {
+                thread_control_revision = current.control_revision;
+                route.explicit_model_alias = thread.model_alias;
+                route.explicit_reasoning_effort = thread.reasoning_effort;
+                // These fields are immutable admission snapshots, not a
+                // fourth inheritance layer after an explicit operator clear.
+                route.model_alias = self.client.model().unwrap_or_else(|| "direct".into());
+                route.reasoning_effort = self
+                    .client
+                    .reasoning_effort()
+                    .map(|effort| effort.as_str().to_string())
+                    .unwrap_or_else(|| "provider_default".into());
+            }
+        }
+        let mut policy = self.effective_model_request_policy_from_session(&session, route.as_ref());
+        policy.thread_control_revision = thread_control_revision;
         if let (Some(supervisor), Some(binding)) = (
             &self.objective_supervisor,
             self.objective_evaluations.get_for_activation(attempt_id),
         ) {
             if let Some(objective) = supervisor.get(&binding.objective_id).await? {
-                let route = self.activation_route(attempt_id);
                 if !route
                     .as_ref()
                     .is_some_and(|route| route.explicit_model_alias.is_some())
                 {
                     if let Some(model) = objective.model_alias {
                         policy.model_alias = model;
+                        policy.session_snapshot.inherits_model = false;
                     }
                 }
                 if !route
@@ -10969,6 +11204,7 @@ impl Orchestrator {
                 {
                     if let Some(effort) = objective.reasoning_effort {
                         policy.reasoning_effort = effort;
+                        policy.session_snapshot.inherits_reasoning_effort = false;
                     }
                 }
             }
@@ -10979,9 +11215,8 @@ impl Orchestrator {
     fn effective_model_request_policy_from_session(
         &self,
         session: &SessionRecord,
-        attempt_id: &str,
+        route: Option<&ActivationRoute>,
     ) -> EffectiveModelRequestPolicy {
-        let route = self.activation_route(attempt_id);
         let model_alias = route
             .as_ref()
             .and_then(|route| route.explicit_model_alias.clone())
@@ -10998,11 +11233,18 @@ impl Orchestrator {
                     .reasoning_effort()
                     .map(|effort| effort.as_str().to_string())
             })
-            .or_else(|| route.map(|route| route.reasoning_effort))
+            .or_else(|| route.map(|route| route.reasoning_effort.clone()))
             .unwrap_or_else(|| "provider_default".to_string());
         EffectiveModelRequestPolicy {
             model_alias,
             reasoning_effort,
+            thread_control_revision: None,
+            session_snapshot: crate::model_selection::SessionEvaluationSnapshot::new(
+                session.model_alias.as_deref(),
+                session.reasoning_effort.as_deref(),
+                route.is_none_or(|route| route.explicit_model_alias.is_none()),
+                route.is_none_or(|route| route.explicit_reasoning_effort.is_none()),
+            ),
         }
     }
 
@@ -11136,6 +11378,28 @@ impl Orchestrator {
         input: ModelCompletionInput<'_>,
         request_policy: &EffectiveModelRequestPolicy,
     ) -> Result<ModelCompletion, ModelCompletionError> {
+        let admission_resource = self
+            .client
+            .provider_resource_key_for_requested_model(Some(&request_policy.model_alias));
+        self.request_model_completion_for_resource(
+            session_id,
+            attempt_id,
+            input,
+            request_policy,
+            &admission_resource,
+        )
+        .await
+        .map_err(|error| error.with_provider_resource_snapshot(admission_resource))
+    }
+
+    async fn request_model_completion_for_resource(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        input: ModelCompletionInput<'_>,
+        request_policy: &EffectiveModelRequestPolicy,
+        admission_resource: &str,
+    ) -> Result<ModelCompletion, ModelCompletionError> {
         let ModelCompletionInput {
             messages,
             tools,
@@ -11181,11 +11445,8 @@ impl Orchestrator {
                         .get_for_activation(&route.activation_id)
                         .is_none()
             });
-        let admission_resource = self
-            .client
-            .provider_resource_key_for_requested_model(Some(&request_policy.model_alias));
         self.admit_provider_circuit(
-            &admission_resource,
+            admission_resource,
             &stream_context_id,
             explicit_dialogue_attempt,
         )
@@ -11308,7 +11569,10 @@ impl Orchestrator {
                 explicit_dialogue_attempt,
             )
             .await
-            .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
+            .map_err(|failure| {
+                ModelCompletionError::provider(Box::new(failure) as DynError)
+                    .with_provider_resource_snapshot(bound_provider_resource.clone())
+            })?;
         }
         let model_request_started_at = Utc::now();
         let effective_reasoning_effort = crate::provider::normalize_reasoning_effort_for_model(
@@ -15369,7 +15633,7 @@ impl Orchestrator {
                                 "critical_maintenance_minimum_projection",
                                 &failure,
                                 context.parent_session_id.as_deref(),
-                                error.model_configuration_snapshot(),
+                                FailedModelRequest::from_completion(&error, &request_policy),
                             ))
                             .await;
                         }
@@ -15576,7 +15840,7 @@ impl Orchestrator {
                             "reasoning_continuation",
                             &failure,
                             context.parent_session_id.as_deref(),
-                            None,
+                            FailedModelRequest { configuration_snapshot: None, provider_resource_snapshot: None, policy: &request_policy },
                         ))
                         .await;
                     }
@@ -15634,7 +15898,7 @@ impl Orchestrator {
                             "safety_refusal",
                             &failure,
                             context.parent_session_id.as_deref(),
-                            error.model_configuration_snapshot(),
+                            FailedModelRequest::from_completion(&error, &request_policy),
                         ))
                         .await;
                     }
@@ -15769,7 +16033,7 @@ impl Orchestrator {
                         "llm_completion",
                         &failure,
                         context.parent_session_id.as_deref(),
-                        error.model_configuration_snapshot(),
+                        FailedModelRequest::from_completion(&error, &request_policy),
                     ))
                     .await;
                 }
@@ -18585,11 +18849,16 @@ impl Orchestrator {
         error_text: &str,
         incident: &RuntimeFailureObservation,
         user_message: &str,
+        request_policy: &EffectiveModelRequestPolicy,
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
             .ok_or("Provider wait is missing its Activation route")?;
         let mut wait_payload = vec![
+            (
+                "session_evaluation_policy".into(),
+                json!(&request_policy.session_snapshot),
+            ),
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
@@ -18603,6 +18872,10 @@ impl Orchestrator {
                 }),
             ),
             ("provider_resource".to_string(), json!(provider_resource)),
+            (
+                "thread_evaluation_policy_revision".into(),
+                json!(request_policy.thread_control_revision),
+            ),
             (
                 "provider_wait_generation".to_string(),
                 json!(route.trigger_sequence.max(1)),
@@ -18658,7 +18931,121 @@ impl Orchestrator {
                 failure,
             )
             .await;
+            self.release_obsolete_thread_policy_wait(&route, provider_resource)
+                .await?;
         }
+        Ok(())
+    }
+
+    /// The operator update may precede the failed old request's wait commit.
+    /// Re-read after commit so that either this path or the update publisher
+    /// releases the exact old dependency; neither changes a physical request.
+    async fn release_obsolete_thread_policy_wait(
+        &self,
+        route: &ActivationRoute,
+        resource: &str,
+    ) -> Result<(), DynError> {
+        self.release_obsolete_thread_policy_wait_for_thread(
+            &route.thread_id,
+            route.thread_generation,
+            resource,
+            &route.activation_id,
+        )
+        .await
+    }
+
+    async fn release_obsolete_thread_policy_wait_for_thread(
+        &self,
+        thread_id: &str,
+        thread_generation: u64,
+        resource: &str,
+        source_id: &str,
+    ) -> Result<(), DynError> {
+        let Some(store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let Some(current) = store.get_thread_evaluation_policy(thread_id).await? else {
+            return Ok(());
+        };
+        let session = store.get_session(&current.thread.session_id).await?;
+        if current.thread.generation != thread_generation
+            || current.thread.lifecycle != ThreadLifecycle::Open
+            || current.thread.control_state != crate::memory::ThreadControlState::Active
+        {
+            return Ok(());
+        }
+        let Some(dependency_store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let dependencies = dependency_store
+            .list_scheduler_dependencies_for_owners(
+                SchedulerDependencyOwnerKind::Thread,
+                std::slice::from_ref(&current.thread.id),
+            )
+            .await?
+            .into_iter()
+            .filter(|dependency| {
+                dependency.owner_generation == current.thread.generation
+                    && dependency.status == SchedulerDependencyStatus::Pending
+                    && dependency.required
+                    && dependency.dependency_kind == SchedulerDependencyKind::Resource
+                    && dependency.dependency_id == resource
+            })
+            .collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for dependency in dependencies {
+            let Some(event_id) = dependency
+                .metadata
+                .get("wait_event_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let wait = self
+                .store
+                .query(QueryFilter {
+                    event_ids: vec![event_id.to_string()],
+                    context_id: Some(current.thread.context_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .next();
+            if wait.as_ref().is_some_and(|wait| {
+                current.supersedes_provider_wait(&dependency, wait)
+                    || session.as_ref().is_some_and(|session| {
+                        current.session_replaces_provider_wait(session, &dependency, wait)
+                    })
+            }) {
+                ids.push(dependency.id);
+            }
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let session_policy = session.as_ref().map(|session| {
+            crate::model_selection::SessionEvaluationSnapshot::new(
+                session.model_alias.as_deref(),
+                session.reasoning_effort.as_deref(),
+                true,
+                true,
+            )
+        });
+        self.bus.publish(Event::new(
+            crate::scheduler::stable_command_id("thread-policy-late-wait", &format!("{source_id}\0{ids:?}\0{:?}\0{session_policy:?}", current.control_revision)),
+            "Runtime-ThreadModelConfiguration".into(), "runtime_control".into(),
+            "runtime/resource_available".into(),
+            json!({
+                "context_id": current.thread.context_id, "session_id": current.thread.session_id,
+                "thread_id": current.thread.id, "thread_ids": [current.thread.id],
+                "thread_generation": current.thread.generation,
+                "thread_evaluation_policy_revision": current.control_revision,
+                "scheduler_dependency_ids": ids,
+                "objective_ids": [], "resource": resource,
+                "recovery_phase": "thread_evaluation_policy_changed",
+                "recovery_reason": "old_request_failed_after_task_or_session_policy_change",
+            }).as_object().unwrap().clone(),
+        )).await?;
         Ok(())
     }
 
@@ -18669,14 +19056,23 @@ impl Orchestrator {
         stage: &str,
         failure: &ModelFailure,
         parent_session_id: Option<&str>,
-        model_configuration_snapshot: Option<(DateTime<Utc>, &ModelAttemptBinding)>,
+        request: FailedModelRequest<'_>,
     ) -> Result<(), DynError> {
+        let FailedModelRequest {
+            configuration_snapshot: model_configuration_snapshot,
+            provider_resource_snapshot,
+            policy: request_policy,
+        } = request;
         let context_id = self.context_id_for_session(session_id)?;
         let error_text: String = failure.to_string().chars().take(2_000).collect();
         let provider_resource = model_configuration_snapshot
             .as_ref()
             .map(|(_, binding)| self.client.provider_resource_key_for_binding(binding))
-            .unwrap_or_else(|| self.client.provider_resource_key());
+            .or_else(|| provider_resource_snapshot.map(ToOwned::to_owned))
+            .unwrap_or_else(|| {
+                self.client
+                    .provider_resource_key_for_requested_model(Some(&request_policy.model_alias))
+            });
         let wait_resource = match failure.kind {
             ModelFailureKind::ContextLimit => {
                 format!("context-maintenance:{context_id}")
@@ -18854,6 +19250,7 @@ impl Orchestrator {
                     &error_text,
                     &incident,
                     &user_message,
+                    request_policy,
                 ),
             )
             .await?;
@@ -18861,11 +19258,19 @@ impl Orchestrator {
         }
         let mut attributes = vec![
             (
+                "session_evaluation_policy".into(),
+                json!(&request_policy.session_snapshot),
+            ),
+            (
+                "thread_evaluation_policy_revision".to_string(),
+                json!(request_policy.thread_control_revision),
+            ),
+            (
                 "runtime_failure_kind".to_string(),
                 json!(failure.kind.as_str()),
             ),
             ("runtime_failure_stage".to_string(), json!(stage)),
-            ("provider_resource".to_string(), json!(provider_resource)),
+            ("provider_resource".to_string(), json!(&provider_resource)),
             (
                 "runtime_failure_incident_id".to_string(),
                 json!(&incident.id),
@@ -18881,6 +19286,8 @@ impl Orchestrator {
         if let Some(seconds) = failure.retry_after_secs {
             attributes.push(("retry_after_secs".to_string(), json!(seconds)));
         }
+        let needs_unbound_retry =
+            model_configuration_snapshot.is_none() && failure.kind.uses_provider_recovery();
         if let Some((started_at, model_binding)) = model_configuration_snapshot {
             attributes.push(("model_request_started_at".to_string(), json!(started_at)));
             attributes.push(("model_binding".to_string(), json!(model_binding)));
@@ -18894,7 +19301,7 @@ impl Orchestrator {
                 parent_session_id,
                 attributes,
             )
-            .await
+            .await?;
         } else {
             attributes.push((
                 "runtime_failure_user_notice_suppressed".to_string(),
@@ -18906,8 +19313,16 @@ impl Orchestrator {
                 parent_session_id,
                 attributes,
             )
-            .await
+            .await?;
         }
+        if needs_unbound_retry {
+            // Objective failure handling commits its resource wait while
+            // publishing the outcome above. Arm recovery afterwards, just as
+            // the ordinary Thread path does after its durable wait commit.
+            self.record_provider_failure(&context_id, &provider_resource, None, failure)
+                .await;
+        }
+        Ok(())
     }
 
     async fn record_model_attempt_started(
@@ -26575,6 +26990,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_wait_resources_admission_rejection_retains_the_exact_blocked_route() {
+        struct AdmissionClient(AtomicUsize);
+
+        #[async_trait::async_trait]
+        impl crate::llm::Client for AdmissionClient {
+            fn provider_resource_key(&self) -> String {
+                "model-route:unrelated-process-default".into()
+            }
+
+            fn provider_resource_key_for_requested_model(&self, _: Option<&str>) -> String {
+                "model-route:requested".into()
+            }
+
+            async fn bind_requested_model_attempt(
+                &self,
+                request: &crate::llm::ModelRequestContext,
+                requested: Option<&str>,
+            ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ModelAttemptBinding {
+                    requested_alias: requested.unwrap().into(),
+                    route_id: "bound-route".into(),
+                    route_revision: "test-v1".into(),
+                    provider_instance_id: "model-route:bound".into(),
+                    auth_account_id: "agent-owned-account".into(),
+                    physical_model: "bound-physical-model".into(),
+                    protocol: "custom".into(),
+                    provider_adapter: "direct-client".into(),
+                    provider_adapter_version: "test".into(),
+                    endpoint: "http://127.0.0.1/synthetic-admission".into(),
+                    request_session_id: Some(request.session_id.clone()),
+                    capabilities: Vec::new(),
+                    model_input_limits: Default::default(),
+                })
+            }
+
+            async fn create_completion(
+                &self,
+                _: Vec<Message>,
+                _: Vec<ToolDefinition>,
+            ) -> Result<crate::llm::Response, DynError> {
+                panic!("rejected admission must never send a Provider request")
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("exact-admission.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "admission-agent".into(),
+                    title: "Admission Agent".into(),
+                    root_context_id: "admission-context".into(),
+                },
+                NewCognitiveContext {
+                    id: "admission-context".into(),
+                    agent_id: "admission-agent".into(),
+                    title: "Admission Context".into(),
+                },
+                NewSession {
+                    id: "admission-session".into(),
+                    agent_id: "admission-agent".into(),
+                    context_id: "admission-context".into(),
+                    parent_session_id: None,
+                    title: "Admission Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let config = crate::config::OrchestratorConfig::default();
+        let client = Arc::new(AdmissionClient(AtomicUsize::new(0)));
+        let orchestrator = Orchestrator::new_test_with_context_engine(
+            Arc::new(InMemoryEventBus::new()),
+            store.clone() as Arc<dyn EventStore>,
+            None,
+            store.clone() as Arc<dyn crate::memory::ActionGroupStore>,
+            client.clone(),
+            Arc::new(Registry::new()),
+            config.clone(),
+            Arc::new(
+                ContextEngine::new(store.clone() as Arc<dyn EventStore>, config)
+                    .with_session_store(store.clone() as Arc<dyn crate::memory::SessionStore>),
+            ),
+            Arc::new(TimerEngine::new(store.clone() as Arc<dyn TimerStore>)),
+            None,
+        )
+        .unwrap();
+        orchestrator.register_session_context("admission-session", "admission-context");
+        let policy = super::EffectiveModelRequestPolicy {
+            model_alias: "requested".into(),
+            reasoning_effort: "provider_default".into(),
+            thread_control_revision: None,
+            session_snapshot: crate::model_selection::SessionEvaluationSnapshot::new(
+                Some("requested"),
+                None,
+                true,
+                true,
+            ),
+        };
+        for (resource, binding_count) in [("model-route:requested", 0), ("model-route:bound", 1)] {
+            orchestrator.provider_circuits.clear();
+            orchestrator.provider_circuits.insert(
+                resource.into(),
+                Arc::new(std::sync::Mutex::new(ProviderCircuitState {
+                    phase: ProviderCircuitPhase::Open,
+                    consecutive_failures: 3,
+                    generation: 1,
+                    retry_at: tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                    health_probe_in_flight: false,
+                    waiting_contexts: HashSet::new(),
+                })),
+            );
+            let result = orchestrator
+                .request_model_completion_with_policy(
+                    "admission-session",
+                    "automatic-admission-attempt",
+                    super::ModelCompletionInput {
+                        messages: Vec::new(),
+                        tools: Vec::new(),
+                        prompt_measurement: None,
+                        internal_return: None,
+                    },
+                    &policy,
+                )
+                .await;
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("automatic work must respect the exact open circuit"),
+            };
+            assert_eq!(
+                error.origin,
+                ModelCompletionErrorOrigin::Provider,
+                "{resource}: {error}"
+            );
+            assert_eq!(
+                error.failure().kind,
+                ModelFailureKind::ServerUnavailable,
+                "{resource}: {error}"
+            );
+            assert!(error.to_string().contains("Provider circuit open"));
+            assert_eq!(client.0.load(Ordering::SeqCst), binding_count);
+            assert_eq!(error.provider_resource_snapshot.as_deref(), Some(resource));
+            assert!(error.model_configuration_snapshot().is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn provider_restart_recovery_includes_objective_owned_resource_waits() {
         let tmp = TempDir::new().unwrap();
         let store = SqliteStore::new(
@@ -26635,6 +27202,7 @@ mod tests {
                         resource: "model-route:test".to_string(),
                     }),
                     Some("Provider unavailable"),
+                    None,
                 )
                 .await
                 .unwrap(),

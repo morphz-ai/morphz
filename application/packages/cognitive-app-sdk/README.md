@@ -23,7 +23,7 @@ Agent 无需 GUI，沿真实输入或后台来源调用同一领域网关；Huma
 - `@morphz/cognitive-app-sdk/browser`：可选沙箱消息桥和严格 UI wire 类型；
   不从主入口自动导出或建立连接。
 
-唯一运行依赖为固定版本 `zod@4.5.4`。本包不导入 Node、Host、Runtime、数据库
+唯一运行依赖为固定版本 `zod@4.6.6`。本包不导入 Node、Host、Runtime、数据库
 或浏览器私有实现，不读取环境、凭据或文件，也不自动发起网络请求。
 
 声明消费已验证 `ES2023 + DOM` 标准库、`types: []`、严格模式且不跳过

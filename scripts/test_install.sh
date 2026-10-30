@@ -70,6 +70,12 @@ MORPHZ_RELEASE_BASE_URL="file://$temporary/arm-release" \
 
 [ -x "$temporary/arm-bin/morphz" ]
 grep -F '[2/5] Downloading morphz-linux-aarch64.tar.gz' "$temporary/arm-output" >/dev/null
+grep -F 'This user-level installer does not install or authorize privileged sandbox components.' "$temporary/arm-output" >/dev/null
+grep -F 'linux-sandbox/INSTALL.md' "$temporary/arm-output" >/dev/null
+if grep -F 'enable unprivileged user namespaces' "$temporary/arm-output" >/dev/null; then
+  printf '%s\n' 'installer suggested changing global security settings instead of explicit sandbox installation' >&2
+  exit 1
+fi
 
 mkdir -p "$temporary/legacy-mac-bin"
 printf '%s\n' \

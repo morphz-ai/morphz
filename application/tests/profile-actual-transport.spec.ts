@@ -319,6 +319,82 @@ function assertEmptyCustom(text: string) {
       `No active Custom marker: ${marker.slice(0, 80)}`,
     ).toBe(false);
 }
+test("历史复核持续竞争不伪装应用断线，真实资料仍可读取与保存且旧工作不冒充新鲜", async ({
+  page,
+}, testInfo) => {
+  const initial = (await fixture.read()).agent;
+  await fixture.update({
+    subject: "agent",
+    expectedRevision: initial.revision,
+    commandId: randomUUID(),
+    enabled: true,
+    data: { ...initial.data, traits: { ...initial.data.traits, humor: 5 } },
+  });
+  let moving = false;
+  let movingReads = 0;
+  await page.route(
+    /\/api\/platform\/runtime-navigation(?:\?.*)?$/,
+    async (route) => {
+      const response = await route.fetch();
+      const value = await response.json();
+      // Synthetic read-contention injection only. The real Rust Runtime, Host,
+      // grants, Profile writes/readbacks and response payloads otherwise remain
+      // unchanged. The mounted-Client test separately mutates the real read token.
+      await route.fulfill({
+        response,
+        json: moving
+          ? {
+              ...value,
+              historyVersion: (++movingReads).toString(16).padStart(64, "0"),
+            }
+          : value,
+      });
+    },
+  );
+  await enter(page);
+  const editor = await agentEditor(page);
+  await preferences(editor);
+  await expect(
+    editor.getByRole("slider", { name: "幽默程度", exact: true }),
+  ).toHaveValue("5");
+  moving = true;
+  const human = (await fixture.read()).human;
+  await fixture.update({
+    subject: "human",
+    expectedRevision: human.revision,
+    commandId: randomUUID(),
+    enabled: true,
+    data: { ...human.data, name: "TEST history contention" },
+  });
+  await expect.poll(() => movingReads).toBeGreaterThanOrEqual(6);
+  await expect(page.getByText("应用连接中断", { exact: true })).toHaveCount(0);
+  await expect(
+    editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
+  ).toBeEnabled();
+  const name = await editText(editor, "编辑智能体名字", "智能体的名字");
+  await name.fill("TEST saved through history contention");
+  await name.press("Enter");
+  const saved = await settled(editor);
+  expect(saved.data.name).toBe("TEST saved through history contention");
+  expect(fixture.requests).toHaveLength(0);
+  await page.screenshot({
+    path: testInfo.outputPath("profile-history-contention-complete.png"),
+  });
+  moving = false;
+  const changed = (await fixture.read()).human;
+  await fixture.update({
+    subject: "human",
+    expectedRevision: changed.revision,
+    commandId: randomUUID(),
+    enabled: true,
+    data: { ...changed.data, name: "TEST coherent history restored" },
+  });
+  await expect(
+    editor.getByRole("button", { name: "编辑智能体名字", exact: true }),
+  ).toBeEnabled();
+  expect(fixture.requests).toHaveLength(0);
+});
+
 test("真实 UI 空资料总开关on/off/reload持久且零Custom；稀疏0/5、停用保留与旧Thread固定版本", async ({
   page,
 }, testInfo) => {

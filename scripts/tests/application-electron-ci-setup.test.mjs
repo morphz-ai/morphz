@@ -7,7 +7,8 @@ const workflow = readFileSync(
   "utf8",
 );
 const jobs = [
-  "web",
+  "web-node",
+  "web-browser",
   "storage-postgres",
   "desktop",
   "cognitive-runtime-contract",
@@ -33,7 +34,8 @@ function verify(source) {
     const command = installer(name);
     const prepare = job.indexOf(command);
     const dependencies = job.indexOf("npm ci");
-    const tests = job.search(/\bnpm(?: --prefix application)? test\b/);
+    const tests = name === "web-browser" ? job.indexOf("npm run test:e2e") :
+      job.search(/\bnpm(?: --prefix application)? test\b/);
     assert.ok(
       dependencies >= 0 && prepare > dependencies && tests > prepare,
       `${name}: install Electron after npm ci and before parallel test consumers`,
@@ -45,7 +47,7 @@ function verify(source) {
     );
     assert.doesNotMatch(step, /continue-on-error|\|\|\s*true/);
   }
-  for (const name of ["web", "storage-postgres"]) {
+  for (const name of ["web-node", "storage-postgres"]) {
     const job = jobSource(source, name);
     assert.match(job, /apt-get install[^\n]*\bxvfb\b[^\n]*\bxauth\b/);
     assert.match(job, /xvfb-run -a npm test/);
@@ -54,10 +56,10 @@ function verify(source) {
       `${name}: a virtual display must exist before the full native inventory`,
     );
   }
-  const web = jobSource(source, "web");
+  const web = jobSource(source, "web-browser");
   assert.match(
     web,
-    /^      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e\s*$/m,
+    /^      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --shard=\$\{\{ matrix.shard \}\}\/2 --forbid-only\s*$/m,
     "the complete browser inventory needs an authenticated native display too",
   );
 }
@@ -78,7 +80,7 @@ for (const name of jobs) {
   });
 }
 
-for (const name of ["web", "storage-postgres"]) {
+for (const name of ["web-node", "storage-postgres"]) {
   test(`${name}: full Node inventory cannot silently lose its native display`, () => {
     const job = jobSource(workflow, name);
     for (const changed of [
@@ -90,7 +92,7 @@ for (const name of ["web", "storage-postgres"]) {
 }
 
 test("Web browser inventory keeps its display without filtering native or performance cases", () => {
-  const job = jobSource(workflow, "web");
+  const job = jobSource(workflow, "web-browser");
   const command = 'xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e';
   for (const replacement of [
     "npm run test:e2e",
@@ -123,4 +125,31 @@ test("small macOS runner bounds file workers without narrowing the full test inv
   const desktop = jobSource(workflow, "desktop");
   assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
   assert.doesNotMatch(desktop, /npm test -- --test-concurrency=1.*\.test\.ts/);
+});
+
+test("complete macOS inventory leaves bounded room for native validation and cleanup", () => {
+  function verifyBudget(source) {
+    const desktop = jobSource(source, "desktop");
+    const minutes = Number(/^    timeout-minutes: (\d+)$/m.exec(desktop)?.[1]);
+    assert.ok(minutes >= 120 && minutes <= 150);
+    assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
+    for (const command of [
+      "npm run test:embedded",
+      "npm run test:platform-embedded-desktop",
+      "npm run test:platform-desktop",
+      "npm run test:draft-restart",
+      "npm run test:reader-ocr",
+      "npm run test:reader-stability",
+    ])
+      assert.ok(desktop.includes(command), `missing ${command}`);
+  }
+  verifyBudget(workflow);
+  const desktop = jobSource(workflow, "desktop");
+  for (const changed of [
+    desktop.replace("timeout-minutes: 120", "timeout-minutes: 90"),
+    desktop.replace("timeout-minutes: 120", "timeout-minutes: 360"),
+    desktop.replace("npm run test:reader-stability", "echo omitted"),
+    desktop.replace("npm test -- --test-concurrency=1", "npm test -- tests/one.test.ts"),
+  ])
+    assert.throws(() => verifyBudget(workflow.replace(desktop, changed)));
 });

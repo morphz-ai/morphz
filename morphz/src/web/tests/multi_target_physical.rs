@@ -701,6 +701,39 @@ async fn exercise_two_physical_targets(store: Arc<dyn RuntimeStore>, root: &std:
         })
         .await
         .unwrap();
+    // Exercise a real registry revision change deterministically, rather than
+    // relying on a stale/online heartbeat race to expose retry rebinding.
+    for (target_id, route) in [(&a.1, &routes.source), (&b.1, &routes.destination)] {
+        let mut target = runtime
+            .get_execution_target(target_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let updated = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match runtime
+                    .set_execution_target_status(
+                        target_id,
+                        target.revision,
+                        crate::memory::ExecutionTargetStatus::Online,
+                    )
+                    .await
+                    .unwrap()
+                {
+                    crate::memory::ExecutionTargetMutation::Updated(updated) => break updated,
+                    crate::memory::ExecutionTargetMutation::Conflict { current } => {
+                        target = current
+                    }
+                    crate::memory::ExecutionTargetMutation::NotFound => {
+                        panic!("the admitted Target disappeared")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("the isolated Target revision update must commit");
+        assert!(updated.revision > route.target_revision);
+    }
     let replay = runtime
         .submit_artifact_transfer(&principal_id, a.0.id(), request)
         .await
@@ -708,6 +741,11 @@ async fn exercise_two_physical_targets(store: Arc<dyn RuntimeStore>, root: &std:
     assert_eq!(replay.job.id, transfer.job.id);
     assert_eq!(replay.thread.id, transfer.thread.id);
     assert_eq!(replay.activation.id, transfer.activation.id);
+    assert_eq!(replay.job.request, transfer.job.request);
+    assert_eq!(
+        crate::execution_target::artifact_transfer_routes_from_job(&replay.job).unwrap(),
+        routes
+    );
     assert_eq!(
         replay.request_event_sequence,
         transfer.request_event_sequence

@@ -9,6 +9,10 @@ import {
   type NotesGuiPack,
 } from "./fixtures/cognitive-notes-gui-transports.js";
 import type { InputDraft } from "../apps/web/src/host/exchange-drafts.js";
+import {
+  isNotesOperationSuccess,
+  waitForNotesOperationStatus,
+} from "./fixtures/cognitive-notes-operation-status.js";
 import { parseCognitiveAppViewResponse } from "../packages/core/src/cognitive-app-view-api.js";
 import {
   parseDomainReceipt,
@@ -28,6 +32,8 @@ before(() => {
 after(() => packed?.close());
 const adapters = ["Web", "Local", "Remote"] as const;
 async function status(m: NotesGuiMounted, pattern: string) {
+  if (isNotesOperationSuccess(pattern))
+    return waitForNotesOperationStatus(m.guest, pattern);
   await m.guest.waitForFunction(
     (pattern) =>
       document.getElementById("status")?.textContent?.includes(pattern),

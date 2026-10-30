@@ -550,6 +550,39 @@ const postLayoutReference = parse({
   }, [contentVersion, positionKey]);
 }`,
 }).get("PostLayout")!;
+// Explicit 2026-10-24 behavior change: upward scrolling may request one page.
+// Keep the immutable archive and every other action/effect unchanged. This
+// reviewed contract adds the synchronous pending-anchor guard and directional
+// trigger; complete mounted tests exercise real scroll events and geometry.
+const paginationReference = parse({
+  Pagination: `
+async function loadEarlier() {
+  if (!onLoadEarlierHistory || loadingEarlier || prependPosition.current?.key === positionKey) return;
+  const el = scroller.current;
+  if (el) prependPosition.current = {
+    key: positionKey, height: el.scrollHeight, top: el.scrollTop,
+  };
+  setLoadingEarlier(true);
+  setEarlierError("");
+  try { await onLoadEarlierHistory(); }
+  catch (error) {
+    prependPosition.current = null;
+    setEarlierError(error instanceof Error ? error.message : "旧消息暂时无法读取，请重试。");
+  } finally { setLoadingEarlier(false); }
+}
+const onScroll = () => {
+  const el = scroller.current;
+  if (!el) return;
+  const previousTop = positions.get(positionKey)?.top;
+  following.current = shouldFollow(el.scrollHeight - el.clientHeight - el.scrollTop);
+  updateLatestIndicator();
+  positions.set(positionKey, {
+    top: el.scrollTop, following: following.current, revealed: revealed.current,
+  });
+  if (hasEarlierHistory && previousTop !== undefined &&
+      el.scrollTop < previousTop && el.scrollTop < 80) void loadEarlier();
+};`,
+}).get("Pagination")!;
 // The consumed cognitive focus and the user-approved all-exchanges default,
 // not a re-recorded viewport archive. The original viewport contract is intact.
 const cognitiveReference = parse({
@@ -838,7 +871,10 @@ function validate(sources: Sources) {
     );
     same(
       declaration,
-      reference.source.statements
+      (name === "loadEarlier"
+        ? paginationReference
+        : reference
+      ).source.statements
         .filter(isFunctionDeclaration)
         .find((node) => node.name?.text === name)!,
       owner,
@@ -882,7 +918,10 @@ function validate(sources: Sources) {
     );
     same(
       binding.initializer,
-      declaration(reference.source, name).initializer!,
+      declaration(
+        name === "onScroll" ? paginationReference.source : reference.source,
+        name,
+      ).initializer!,
       owner,
       "viewport-action:" + name,
     );
@@ -1740,9 +1779,21 @@ test("viewport private registration rejects public writers, clones and substitut
 test("viewport actions preserve exact preload, read/focus ordering and return-latest behavior", () => {
   rejects(
     "Owner",
-    "if (!onLoadEarlierHistory || loadingEarlier) return;",
+    "if (\n      !onLoadEarlierHistory ||\n      loadingEarlier ||\n      prependPosition.current?.key === positionKey\n    )\n      return;",
     "if (!onLoadEarlierHistory) return;",
     "viewport-action:loadEarlier",
+  );
+  rejects(
+    "Owner",
+    "el.scrollTop < previousTop",
+    "el.scrollTop > previousTop",
+    "viewport-action:onScroll",
+  );
+  rejects(
+    "Owner",
+    "el.scrollTop < 80",
+    "el.scrollTop < 80000",
+    "viewport-action:onScroll",
   );
   rejects(
     "Owner",

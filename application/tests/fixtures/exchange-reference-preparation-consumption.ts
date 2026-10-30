@@ -2091,6 +2091,18 @@ export function verifyExchangeReferencePreparationConsumption(
     originProperty.name,
     "reference captured origin lifetime authority",
   );
+  // These borrowed bindings belong to the render's lexical scope. A block-local
+  // input used by unrelated history filtering is not the composer ref. Keep
+  // validating the original declaration and resolved uses below, rather than
+  // requiring one spelling across every nested block of the whole App.
+  const renderBindings = (root: typeof main) =>
+    root.body!.statements.flatMap<Node>((statement) =>
+      isFunctionDeclaration(statement)
+        ? [statement]
+        : isVariableStatement(statement)
+          ? [...statement.declarationList.declarations]
+          : [],
+    );
   for (const key of [
     "state",
     "drafts",
@@ -2104,7 +2116,7 @@ export function verifyExchangeReferencePreparationConsumption(
     "exchange",
   ]) {
     const candidate = one(
-      ownedNodes(main).filter(
+      renderBindings(main).filter(
         (n) =>
           (isFunctionDeclaration(n) || isVariableDeclaration(n)) &&
           n.name?.getText() === key,
@@ -2112,7 +2124,7 @@ export function verifyExchangeReferencePreparationConsumption(
       "reference borrowed live binding " + key,
     );
     const original = one(
-      ownedNodes(currentFunction(witness, "WorkspaceApp")).filter(
+      renderBindings(currentFunction(witness, "WorkspaceApp")).filter(
         (n) =>
           (isFunctionDeclaration(n) || isVariableDeclaration(n)) &&
           n.name?.getText() === key,

@@ -129,8 +129,9 @@ test("legal Client counterfactuals fail real import, captures, placement, hooks,
   const removed = changed(client, executionRegistration, "");
   const moved = changed(
     removed,
-    "  function refresh() {",
-    executionRegistration + "  function refresh() {",
+    "  function refresh(options?: { refreshActivity?: boolean }) {",
+    executionRegistration +
+      "  function refresh(options?: { refreshActivity?: boolean }) {",
   );
   assert.throws(() => validate(moved), {
     name: "AssertionError",

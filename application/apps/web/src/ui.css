@@ -2171,6 +2171,9 @@ body:has(dialog[open]) .cognitive-application-frame {
   margin: 0;
   overflow-wrap: anywhere;
 }
+.model-settings > [role="alert"] {
+  color: var(--danger);
+}
 .model-default-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2235,9 +2238,16 @@ body:has(dialog[open]) .cognitive-application-frame {
 }
 .model-account-list li > .model-account-actions {
   display: flex;
-  flex: 0 1 auto;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex: 0 0 auto;
+  gap: var(--ui-space-1);
+}
+.model-account-removal {
+  display: grid;
+  gap: var(--ui-space-2);
+}
+.model-account-removal .dialog-actions {
+  display: flex;
+  gap: var(--ui-space-1);
 }
 .model-connection-editor,
 .model-connection-editor form {

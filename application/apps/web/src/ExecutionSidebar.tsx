@@ -1,5 +1,10 @@
-import { useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  MessageSquarePlus,
+  Square,
+} from "lucide-react";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -21,12 +26,14 @@ import {
   executionActivityRoots,
   executionActivityDescendants,
   executionActivityGroupStatus,
+  executionActivityThreadAvailable,
   executionActivityOrigin,
   type ActivityThread,
 } from "./execution-activity.js";
 import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ExecutionProgress } from "./ExecutionProgress.js";
+import { Tooltip } from "./ui/Tooltip.js";
 import {
   executionModelLabel,
   executionModelDescription,
@@ -44,6 +51,7 @@ export function ExecutionSidebar({
   onOpenScript,
   viewOptions,
   embedded = false,
+  headerLeading,
   leading,
   onRefresh,
 }: {
@@ -58,6 +66,7 @@ export function ExecutionSidebar({
   onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
   embedded?: boolean;
+  headerLeading?: ReactNode;
   leading?: ReactNode;
   onRefresh?: () => void | Promise<void>;
 }) {
@@ -121,25 +130,56 @@ export function ExecutionSidebar({
     runtime,
   );
   const threadSummary = thread
-    ? executionActivitySummary(thread, activityAvailable && !!currentThread)
+    ? executionActivitySummary(
+        thread,
+        client.online &&
+          !!currentThread &&
+          executionActivityThreadAvailable(thread, runtime),
+      )
     : "";
   const threadStatus = thread
     ? executionActivityGroupStatus(
         thread,
         activityThreads,
-        activityAvailable && !!currentThread,
+        (value) =>
+          client.online &&
+          !!currentThread &&
+          executionActivityThreadAvailable(value, runtime),
       )
     : undefined;
+  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const [summaryVisible, setSummaryVisible] = useState(true);
+  useEffect(() => {
+    const node = summaryRef.current;
+    if (!node || threadStatus?.kind !== "running") return;
+    let intersecting = true;
+    const sync = () =>
+      setSummaryVisible(intersecting && document.visibilityState !== "hidden");
+    const observer = new IntersectionObserver(([entry]) => {
+      intersecting = !!entry?.isIntersecting;
+      sync();
+    });
+    observer.observe(node);
+    document.addEventListener("visibilitychange", sync);
+    sync();
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [threadStatus?.kind, threadSummary]);
   const supplementAction = supplementTarget && onSupplement && (
-    <button
-      className="secondary-action execution-supplement"
-      disabled={
-        !client.online || !runtime.connected || !runtime.activity?.available
-      }
-      onClick={() => onSupplement(supplementTarget)}
-    >
-      补充
-    </button>
+    <Tooltip label="补充要求">
+      <button
+        className="icon-button execution-supplement"
+        aria-label="补充"
+        disabled={
+          !client.online || !runtime.connected || !runtime.activity?.available
+        }
+        onClick={() => onSupplement(supplementTarget)}
+      >
+        <MessageSquarePlus aria-hidden="true" />
+      </button>
+    </Tooltip>
   );
   const activitySummary = executionActivityOverviewSummary(
     runtime,
@@ -197,14 +237,60 @@ export function ExecutionSidebar({
       setStopping(false);
     }
   }
+  const detailStatus = scope.threadId && (
+    <span
+      className="execution-origin-status"
+      data-status={threadStatus?.kind ?? "unknown"}
+    >
+      <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
+      {threadStatus?.label ?? "此分支不在当前快照中"}
+    </span>
+  );
+  const detailActions = (
+    <div className="execution-origin-actions">
+      {supplementAction}
+      {scope.threadId && !readOnly && currentThread?.lifecycle === "open" && (
+        <Tooltip
+          label={
+            stopping
+              ? "正在请求停止"
+              : stopRequested
+                ? "停止请求已发送"
+                : "停止当前执行"
+          }
+        >
+          <button
+            className="icon-button execution-stop-thread"
+            aria-label="停止"
+            aria-busy={stopping}
+            disabled={
+              stopping || stopRequested || !activityAvailable || !client.online
+            }
+            onClick={stopThread}
+          >
+            <Square aria-hidden="true" />
+          </button>
+        </Tooltip>
+      )}
+      {(stopping || stopRequested) && scope.threadId && (
+        <span className="sr-only" role="status">
+          {stopping ? "正在请求停止" : "停止请求已发送"}
+        </span>
+      )}
+    </div>
+  );
   const row = (t: ActivityThread) => {
     const status = executionActivityGroupStatus(
       t,
       activityThreads,
-      activityAvailable,
+      (value) =>
+        client.online && executionActivityThreadAvailable(value, runtime),
     );
     const children = executionActivityDescendants(t, activityThreads);
-    const summary = executionActivitySummary(t, activityAvailable);
+    const summary = executionActivitySummary(
+      t,
+      client.online && executionActivityThreadAvailable(t, runtime),
+    );
     const origin = executionActivityOrigin(
       t,
       state,
@@ -296,6 +382,13 @@ export function ExecutionSidebar({
   };
   const content = (
     <div className="execution-sidebar-scroll">
+      {embedded && detail && (
+        <div className="execution-detail-header">
+          {headerLeading}
+          {detailStatus}
+          {detailActions}
+        </div>
+      )}
       {!detail && (
         <small className="sr-only execution-scope-count">
           {activitySummary}
@@ -313,7 +406,13 @@ export function ExecutionSidebar({
       )}
       {runtime.connected && !runtime.activity?.available && (
         <p className="execution-activity-notice" role="status">
-          <span>后台状态暂不可用，以下保留上次记录。</span>
+          <span>
+            {runtime.activity?.readScopes?.some(
+              (value) => value.currentAvailable,
+            )
+              ? "部分后台状态暂不可用，未核对部分保留上次记录。"
+              : "后台状态暂不可用，以下保留上次记录。"}
+          </span>
           {onRefresh && (
             <button disabled={refreshing} onClick={() => void refresh()}>
               {refreshing ? "刷新中" : "刷新"}
@@ -321,6 +420,20 @@ export function ExecutionSidebar({
           )}
         </p>
       )}
+      {runtime.connected &&
+        runtime.activity?.available &&
+        runtime.activity.readScopes?.some(
+          (value) => !value.historyAvailable,
+        ) && (
+          <p className="execution-activity-notice" role="status">
+            <span>历史记录刷新失败，当前活动状态可用。</span>
+            {onRefresh && (
+              <button disabled={refreshing} onClick={() => void refresh()}>
+                {refreshing ? "刷新中" : "刷新"}
+              </button>
+            )}
+          </p>
+        )}
       {!detail && error && (
         <p className="delivery-error" role="alert">
           {error}
@@ -353,16 +466,31 @@ export function ExecutionSidebar({
           ))}
         </section>
       )}
+      {!detail && runtime.activity?.delegationsAvailable === false && (
+        <p className="muted" role="status">
+          子任务状态暂不可用，请刷新后核对。
+        </p>
+      )}
       {detail ? (
         <>
-          {!scope.threadId && supplementAction}
           {scope.threadId && (
-            <section className="execution-origin">
+            <section
+              className="execution-origin"
+              data-status={threadStatus?.kind ?? "unknown"}
+            >
               <p className="execution-origin-title" title={thread?.title}>
                 {thread?.title ?? "执行分支"}
               </p>
               {threadSummary && (
-                <p className="execution-activity-summary" title={threadSummary}>
+                <p
+                  ref={summaryRef}
+                  className="execution-activity-summary"
+                  title={threadSummary}
+                  data-motion-active={
+                    (threadStatus?.kind === "running" && summaryVisible) ||
+                    undefined
+                  }
+                >
                   {threadSummary}
                 </p>
               )}
@@ -370,47 +498,8 @@ export function ExecutionSidebar({
                 className="execution-model"
                 title={executionModelDescription(thread?.executionModel)}
               >
-                最近调用：{executionModelLabel(thread?.executionModel)}
+                {executionModelLabel(thread?.executionModel)}
               </p>
-              <div>
-                <span
-                  className="execution-origin-status"
-                  data-status={threadStatus?.kind ?? "unknown"}
-                >
-                  <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
-                  {threadStatus?.label ?? "此分支不在当前快照中"}
-                </span>
-                <div className="execution-origin-actions">
-                  {supplementAction}
-                  {!readOnly && currentThread?.lifecycle === "open" && (
-                    <button
-                      className="secondary-action execution-stop-thread"
-                      aria-busy={stopping}
-                      title={
-                        stopping
-                          ? "正在请求停止"
-                          : stopRequested
-                            ? "停止请求已发送"
-                            : undefined
-                      }
-                      disabled={
-                        stopping ||
-                        stopRequested ||
-                        !activityAvailable ||
-                        !client.online
-                      }
-                      onClick={stopThread}
-                    >
-                      停止
-                    </button>
-                  )}
-                  {(stopping || stopRequested) && (
-                    <span className="sr-only" role="status">
-                      {stopping ? "正在请求停止" : "停止请求已发送"}
-                    </span>
-                  )}
-                </div>
-              </div>
               {error && (
                 <p className="delivery-error" role="alert">
                   {error}
@@ -484,6 +573,18 @@ export function ExecutionSidebar({
           {!scope.threadId && branches.length > 0 && (
             <section aria-label="执行分支">{branches.map(row)}</section>
           )}
+          {scope.threadId &&
+            activityThreads.some(
+              (t) => t.delegation?.parentThreadId === scope.threadId,
+            ) && (
+              <section aria-label="委派子任务">
+                {executionActivityRoots(
+                  activityThreads.filter(
+                    (t) => t.delegation?.parentThreadId === scope.threadId,
+                  ),
+                ).map(row)}
+              </section>
+            )}
           <ExecutionProgress
             messages={messages}
             running={threadStatus?.kind === "running"}
@@ -594,6 +695,14 @@ export function ExecutionSidebar({
       onClose={onClose}
       focusOnMount={false}
       viewOptions={viewOptions}
+      actions={
+        detail ? (
+          <>
+            {detailStatus}
+            {detailActions}
+          </>
+        ) : undefined
+      }
       leading={
         detail && (
           <button

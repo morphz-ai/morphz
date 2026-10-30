@@ -1,7 +1,13 @@
 import { _electron, expect } from "@playwright/test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -56,6 +62,7 @@ const electronEnv = {
 };
 delete electronEnv.ELECTRON_RUN_AS_NODE;
 let app;
+let window;
 let electronErrors = "";
 try {
   if (service) {
@@ -99,7 +106,7 @@ try {
     return opened.windows().find((page) => page.url() === "morphz://app/");
   };
   app = await launch();
-  let window = await mainWindow(app);
+  window = await mainWindow(app);
   const browserErrors = [];
   const watch = (page) =>
     page.on("console", (message) => {
@@ -382,10 +389,33 @@ try {
     .getByRole("region", { name: "应用", exact: true })
     .getByRole("button", { name: "阅读 1.0.0" })
     .click();
+  // Exercise the actual Host persistence-error path, not a manually inserted
+  // banner. The alert must remain visible while PDF controls are operated.
+  await window.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Reflect.set(window, "platformSmokeOriginalSetItem", original);
+    Storage.prototype.setItem = function (key, value) {
+      if (key.endsWith(":recent-content"))
+        throw new DOMException(
+          "TEST recent storage full",
+          "QuotaExceededError",
+        );
+      return original.call(this, key, value);
+    };
+  });
   await window.getByRole("button", { name: "阅读：TEST Desktop 原件" }).click();
   await expect(
     window.locator(".reading-app:visible .reader-pdf-page canvas"),
   ).toBeVisible();
+  await expect(
+    window.locator(".workspace-notice").getByRole("alert"),
+  ).toHaveText("最近打开记录暂时无法保存，内容不受影响。");
+  await window.evaluate(() => {
+    Storage.prototype.setItem = Reflect.get(
+      window,
+      "platformSmokeOriginalSetItem",
+    );
+  });
   const pdfReader = window.locator(".reading-app:visible");
   await pdfReader
     .getByRole("button", { name: "阅读设置", exact: true })
@@ -456,6 +486,56 @@ try {
   console.log(
     `PASS: Platform ${embedded ? "embedded" : "remote"} Desktop project, document, task status and PDF original survive restart`,
   );
+} catch (error) {
+  // Capture the actual failed surface before the owned fixture is closed.
+  // Diagnostic capture must never replace or suppress the original failure.
+  try {
+    if (window && !window.isClosed()) {
+      mkdirSync("test-results", { recursive: true });
+      const diagnostics = mkdtempSync("test-results/platform-desktop-failure-");
+      await window.screenshot({ path: join(diagnostics, "window.png") });
+      const state = await window.evaluate(() => {
+        const settings = document.querySelector(
+          '.reading-app button[aria-label="阅读设置"]',
+        );
+        const rect = settings?.getBoundingClientRect();
+        const hit = rect
+          ? document.elementFromPoint(
+              rect.left + rect.width / 2,
+              rect.top + rect.height / 2,
+            )
+          : null;
+        return {
+          viewport: { width: innerWidth, height: innerHeight },
+          notices: [...document.querySelectorAll(".workspace-notice")].map(
+            (notice) => ({
+              text: notice.textContent,
+              bounds: notice.getBoundingClientRect().toJSON(),
+            }),
+          ),
+          settings: rect?.toJSON() ?? null,
+          hit: hit
+            ? {
+                tag: hit.tagName,
+                className: hit.getAttribute("class"),
+                label: hit.getAttribute("aria-label"),
+              }
+            : null,
+        };
+      });
+      writeFileSync(
+        join(diagnostics, "surface.json"),
+        JSON.stringify(state, null, 2),
+      );
+      console.error(`Desktop failure surface captured in ${diagnostics}`);
+    }
+  } catch (captureError) {
+    console.error(
+      "Desktop failure capture did not complete:",
+      captureError.message,
+    );
+  }
+  throw error;
 } finally {
   await app?.close().catch(() => {});
   if (service && service.exitCode === null && service.signalCode === null) {

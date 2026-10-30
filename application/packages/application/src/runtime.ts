@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { threadWaitProjection } from "./thread-wait-projection.js";
+import {
+  delegationRecordSchema,
+  delegationRequestLink,
+  requireDelegationLink,
+  type DelegationRecord,
+} from "./delegation-read.js";
 import { messageSourceSummary } from "../../core/src/message-source.js";
 import { objectiveControlSchema } from "../../core/src/objective-control.js";
 import {
@@ -103,7 +109,6 @@ import { activityAnnotationFields } from "./response-annotations.js";
 import {
   authorizedExecutionThreadTree,
   readExecutionRecords,
-  executionRecordThread,
 } from "./execution-thread-tree.js";
 import {
   DomainError,
@@ -124,6 +129,7 @@ import {
   type ExecutionReadScope,
   type ExecutionSnapshot,
   type ExecutionAttention,
+  type DelegationLink,
 } from "../../../packages/core/src/execution.js";
 import {
   type ConversationRuntime,
@@ -765,6 +771,14 @@ class RuntimeTransportError extends Error {
     super("无法连接 Morphz Runtime，请检查连接后重试。", { cause });
   }
 }
+/** Classified Runtime read failure after independent Platform authorization. */
+export class RuntimeConversationHistoryUnavailable extends Error {
+  constructor(cause: unknown) {
+    super("对话历史暂时无法读取；已保留现有消息，请恢复连接后重试。", {
+      cause,
+    });
+  }
+}
 const terminal = new Set([
   "session/io_state",
   "chat/reply",
@@ -1364,8 +1378,13 @@ export class RuntimeBridge {
       if (!(error instanceof UpstreamError && error.status === 404))
         throw error;
     }
-    const baseline = (await this.platformConversationHistory(scope, access))
-      .runtime.messages;
+    // A live subscription starts with a real latest page. An unavailable
+    // Runtime must not turn the Host's old local queue into a fresh head.
+    const baseline = (
+      await this.platformConversationHistory(scope, access, {
+        requireAvailable: true,
+      })
+    ).runtime.messages;
     type RootRoute = {
       inputId: string;
       source: PlatformInputSource;
@@ -2439,6 +2458,12 @@ export class RuntimeBridge {
   // Disposable provenance only. Runtime roots remain authoritative; current
   // Platform grants are checked when exposing a view, never cached here.
   private activitySources = new Map<string, PlatformInputSource>();
+  // Disposable read evidence only, never execution authority or persisted work.
+  // Keys bind the Runtime, actor, Context and exact registered Session domain.
+  private activitySnapshotCache = new Map<
+    string,
+    { active?: unknown; history?: unknown }
+  >();
   private activityRootRoutes = new Map<
     string,
     {
@@ -2918,6 +2943,8 @@ export class RuntimeBridge {
     access: AccessContext,
     active: () => void,
   ) {
+    if (scope.runtime.delegation)
+      return this.platformDelegatedExecutionRead(scope, access, active);
     const owner = this.teamIdentity
       ? this.principalId(access.principalId)
       : access.principalId;
@@ -3064,13 +3091,202 @@ export class RuntimeBridge {
         return {
           ...value,
           approvals: [],
-          threads: records.threads.map(executionRecordThread),
         };
       },
       result: async (jobId: string) => {
         await recheck();
         const value = await viewer.result(scope, jobId);
         await recheck();
+        return value;
+      },
+    };
+  }
+
+  /** Cross-Session delegate reads follow the original durable request. The
+   * child is never registered as a new Platform conversation or write scope. */
+  private async delegationSource(
+    reference: DelegationLink,
+    access: AccessContext,
+    facts?: { record: DelegationRecord; event: RuntimeEvent },
+  ) {
+    const record =
+      facts?.record ??
+      delegationRecordSchema.parse(
+        await this.request(
+          `/api/delegations/${encodeURIComponent(reference.id)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+          "json",
+          true,
+        ),
+      );
+    const binding = this.state.sessions[record.parent_session_id];
+    if (
+      !binding?.platform ||
+      this.contextId(binding.projectId) !== record.parent_context_id
+    )
+      throw new DomainError("forbidden", "子任务不属于已登记的工作对话。");
+    const event =
+      facts?.event ??
+      z
+        .object({ event: eventSchema })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(record.parent_session_id)}/events/${encodeURIComponent(reference.requestEventId)}`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+            "json",
+            true,
+          ),
+        ).event;
+    const link = requireDelegationLink(record, event, reference);
+    let root: RuntimeEvent | null = null;
+    try {
+      root = z
+        .object({ event: eventSchema })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(record.parent_session_id)}/events/${encodeURIComponent(link.rootId)}`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+            "json",
+            true,
+          ),
+        ).event;
+    } catch (error) {
+      // A logical turn ID need not be an Event ID. Only absence may use the
+      // existing exact turn-source proof; authorization/protocol failures stay
+      // failures and never grant a different source or child read scope.
+      if (!(error instanceof UpstreamError && error.status === 404))
+        throw error;
+    }
+    if (!root || !payloadString(root, "client_message_id")) {
+      root = z
+        .object({ input_event: eventSchema.nullable() })
+        .parse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(record.parent_session_id)}/turns/${encodeURIComponent(link.rootId)}/source`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+            "json",
+            true,
+          ),
+        ).input_event;
+    }
+    const inputId = root && payloadString(root, "client_message_id");
+    const source =
+      root && inputId
+        ? platformSourceFromRuntimeRoot(
+            root,
+            record.parent_session_id,
+            inputId,
+            (id) => (this.teamIdentity ? this.principalId(id) : null),
+          )
+        : null;
+    if (
+      !source ||
+      !inputId ||
+      source.sharedDefault !== binding.sharedDefault ||
+      this.contextId(source.projectId) !== record.parent_context_id ||
+      this.objectSessionId(
+        source.projectId,
+        source.conversationId,
+        source.sharedDefault,
+      ) !== record.parent_session_id
+    )
+      throw new DomainError("forbidden", "子任务缺少可核验的原始输入。");
+    return { record, link, source, inputId };
+  }
+
+  private async platformDelegatedExecutionRead(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const reference = scope.runtime.delegation!;
+    const verify = async () => {
+      active();
+      const proof = await this.delegationSource(reference, access);
+      if (
+        proof.record.child_session_id !== scope.runtime.sessionId ||
+        proof.record.child_context_id !== scope.runtime.contextId ||
+        !this.authorizePlatformRead
+      )
+        throw new DomainError("forbidden", "子任务的读取范围不匹配。");
+      const parentScope = {
+        projectId: proof.source.projectId,
+        conversationId: proof.source.conversationId,
+      };
+      const grant = await this.authorizePlatformRead(parentScope, access);
+      if (
+        !this.platformSourceReadable(proof.source, parentScope, access, grant)
+      )
+        throw new DomainError("forbidden", "原始工作的读取权限已变化。");
+      active();
+      return proof;
+    };
+    const proof = await verify();
+    const request = async (path: string, method?: string, body?: unknown) => {
+      active();
+      if ((method && method !== "GET") || body !== undefined)
+        throw new DomainError("forbidden", "子任务入口仅允许读取记录。");
+      return this.request(
+        path,
+        "GET",
+        undefined,
+        access,
+        undefined,
+        "json",
+        true,
+      );
+    };
+    const records = await readExecutionRecords(request, {
+      sessionId: scope.runtime.sessionId,
+      contextId: scope.runtime.contextId,
+      threadId: scope.threadId,
+      includeDescendants: true,
+    });
+    if (
+      records.threads.some(
+        (t) =>
+          t.initiating_principal_id !== proof.record.initiating_principal_id,
+      )
+    )
+      throw new DomainError("forbidden", "子任务的所属身份不匹配。");
+    const viewer = new ExecutionControls(request, () => ({
+      sessionId: scope.runtime.sessionId,
+      contextId: scope.runtime.contextId,
+      threadId: scope.threadId,
+      rootId: records.threads[0]!.root_turn_id,
+      records,
+      additionalRoot: async (rootId, threadId) =>
+        records.threads.some(
+          (t) => t.id === threadId && t.root_turn_id === rootId,
+        ),
+    }));
+    await verify();
+    return {
+      snapshot: async () => {
+        await verify();
+        const value = await viewer.snapshot(scope, false);
+        await verify();
+        return {
+          ...value,
+          approvals: [],
+        };
+      },
+      result: async (jobId: string) => {
+        await verify();
+        const value = await viewer.result(scope, jobId);
+        await verify();
         return value;
       },
     };
@@ -3383,7 +3599,7 @@ export class RuntimeBridge {
         limit: 100,
         ...(selectedTree
           ? {
-              threads: selectedTree.threads,
+              threads: views.flatMap((view) => view.threads ?? []),
               threadsTruncated: selectedTree.truncated,
             }
           : {}),
@@ -4244,6 +4460,32 @@ export class RuntimeBridge {
     return { createdAt, text };
   }
 
+  /** A progress Event may finish seconds after its words first appeared.
+   * Use the same authenticated publication as live rendering; its timestamp
+   * must not change when a stream becomes immutable or another Host reads it.
+   * Provider-recovery notices and non-streamed progress keep their own time. */
+  private async platformProgressCreatedAt(
+    sessionId: string,
+    inputRootId: string,
+    event: RuntimeEvent,
+    access: AccessContext,
+  ): Promise<string> {
+    if (event.topic !== "chat/progress" || providerRecoveryFromEvent(event))
+      return event.timestamp;
+    const attemptId =
+      payloadString(event, "publication_key") ??
+      payloadString(event, "model_attempt_id") ??
+      payloadString(event, "attempt_id");
+    if (!attemptId) return event.timestamp;
+    const output = await this.platformPublicOutput(
+      sessionId,
+      inputRootId,
+      attemptId,
+      access,
+    );
+    return output?.createdAt ?? event.timestamp;
+  }
+
   /** Resolve the stable publication at Runtime's exact timeline key. Its
    * authenticated input may differ from a Goal's synthetic execution root. */
   private async platformPublicationEvent(
@@ -4418,7 +4660,14 @@ export class RuntimeBridge {
           !published
         )
           return null;
-        createdAt = publication?.createdAt ?? event.timestamp;
+        createdAt =
+          publication?.createdAt ??
+          (await this.platformProgressCreatedAt(
+            sessionId,
+            root.id,
+            event,
+            access,
+          ));
         text = published;
       }
     }
@@ -4969,7 +5218,7 @@ export class RuntimeBridge {
     );
     const limit = Math.min(Math.max(page.limit ?? 100, 1), 100);
     const accepted: HistoryEntry[] = [];
-    const pageFailureSources = new Map<string, RuntimeEvent>();
+    const pageMessageSources = new Map<string, SessionTimelineItem>();
     let before = page.before
       ? {
           visible_at_micros: historyTimeMicros(page.before.createdAt),
@@ -5005,7 +5254,8 @@ export class RuntimeBridge {
       } catch (error) {
         if (error instanceof UpstreamError && error.status === 404) break;
         if (this.runtimeReadUnavailable(error)) {
-          if (page.requireAvailable) throw error;
+          if (page.requireAvailable)
+            throw new RuntimeConversationHistoryUnavailable(error);
           // Do not present an incomplete scan or cached accepted history as a
           // fresh Runtime read. The local portion below retains only exact
           // not-yet-accepted inputs authorized for this reader.
@@ -5026,11 +5276,8 @@ export class RuntimeBridge {
         );
         if (mapped) {
           accepted.push(mapped);
-          if (
-            mapped.kind === "message" &&
-            mapped.value.failure?.phase === "terminal"
-          )
-            pageFailureSources.set(mapped.id, item.event);
+          if (mapped.kind === "message")
+            pageMessageSources.set(mapped.id, item);
         }
         if (accepted.length > limit) break;
       }
@@ -5110,9 +5357,26 @@ export class RuntimeBridge {
     // or forward model captures. Historical Events and message text stay intact.
     await Promise.all(
       pageItems.map(async (item) => {
+        if (item.kind !== "message") return;
+        const timeline = pageMessageSources.get(item.id);
+        if (
+          timeline?.event.topic === "chat/progress" &&
+          timeline.input_event &&
+          !providerRecoveryFromEvent(timeline.event)
+        ) {
+          // Only the displayed message time changes. HistoryEntry.createdAt
+          // stays Runtime's SQL ordering key, so pagination neither skips nor
+          // repeats rows when first-visible and persisted times differ.
+          item.value.createdAt = await this.platformProgressCreatedAt(
+            sessionId,
+            timeline.input_event.id,
+            timeline.event,
+            access,
+          );
+        }
         if (item.kind !== "message" || item.value.failure?.phase !== "terminal")
           return;
-        const source = pageFailureSources.get(item.id);
+        const source = timeline?.event;
         const attempt = item.value.failure.attemptId;
         const root = source?.payload.root_turn_id;
         if (
@@ -5192,6 +5456,11 @@ export class RuntimeBridge {
           ? {
               activity: {
                 ...this.state.activity,
+                readScopes: this.platformActivityReadScopes(
+                  readableProjects,
+                  visibleInputs,
+                  access,
+                ),
                 threads: this.platformActivityThreads(
                   readableProjects,
                   visibleInputs,
@@ -5395,6 +5664,30 @@ export class RuntimeBridge {
     });
   }
 
+  /** Freshness is read evidence, not authority to disclose another Context.
+   * Derive its visible domain from the same current Platform grants/owned
+   * unassociated executions as the actual activity projection. */
+  private platformActivityReadScopes(
+    projects: ReadonlySet<string>,
+    inputs: ReadonlySet<string>,
+    access: AccessContext,
+    includeUnassociated = false,
+  ) {
+    const scopes = this.state.activity?.readScopes;
+    if (!scopes) return;
+    const contexts = new Set(
+      [...projects].map((projectId) => this.contextId(projectId)),
+    );
+    for (const thread of this.platformActivityThreads(
+      projects,
+      inputs,
+      access,
+      includeUnassociated,
+    ))
+      if (thread.contextId) contexts.add(thread.contextId);
+    return scopes.filter((scope) => contexts.has(scope.contextId));
+  }
+
   /** Compact, authorization-scoped navigation state. Runtime remains the
    * source of message/activity time; Platform supplies current project grants.
    * No message body or history is copied into the global workspace refresh. */
@@ -5487,6 +5780,12 @@ export class RuntimeBridge {
           ? {
               activity: {
                 ...this.state.activity,
+                readScopes: this.platformActivityReadScopes(
+                  readable,
+                  allowedInputIds,
+                  access,
+                  true,
+                ),
                 threads: this.platformActivityThreads(
                   readable,
                   allowedInputIds,
@@ -5531,6 +5830,39 @@ export class RuntimeBridge {
     );
   }
   private activityRefresh: Promise<void> | null = null;
+  private reportActivityReadFailure(
+    scope: string,
+    stage: "current" | "history" | "projection",
+    error: unknown,
+  ) {
+    const cause = error instanceof RuntimeTransportError ? error.cause : error;
+    const timeout =
+      cause instanceof Error &&
+      ["TimeoutError", "AbortError"].includes(cause.name);
+    const kind =
+      error instanceof z.ZodError
+        ? `schema-${Math.min(error.issues.length, 99)}`
+        : error instanceof UpstreamError
+          ? `http-${error.status}`
+          : error instanceof DomainError && error.code === "forbidden"
+            ? "forbidden"
+            : timeout
+              ? "timeout"
+              : error instanceof RuntimeTransportError
+                ? "transport"
+                : "unexpected";
+    // The existing private reporter redacts messages/body/credentials and
+    // bounds/rate-limits records. Only fixed stage, hash and error class enter
+    // its operation field; never put a Context/Session ID or schema value here.
+    try {
+      this.host.reportFailure?.(
+        `runtime.activity.${stage}:scope-${scope.slice(0, 12)}:${kind}`,
+        error,
+      );
+    } catch {
+      // Diagnostic failure is secondary, never a new business/read outcome.
+    }
+  }
   private refreshActivity() {
     if (!this.activityRefresh)
       this.activityRefresh = this.refreshActivityNow().finally(() => {
@@ -5561,6 +5893,44 @@ export class RuntimeBridge {
       threads: [],
     };
     const sessions = this.activeSessions();
+    const contextIds = [
+      ...new Set(sessions.map((session) => this.contextId(session.projectId))),
+    ];
+    const readScopeKey = (contextId: string, domain = sessions) =>
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            this.config.namespace,
+            this.config.url,
+            this.actor().principalId,
+            this.actor().actantId,
+            contextId,
+            domain
+              .filter(
+                (session) => this.contextId(session.projectId) === contextId,
+              )
+              .map((session) => [
+                session.id,
+                session.projectId,
+                session.conversationId ?? null,
+                session.sharedDefault,
+                session.runtimePrincipalId,
+              ])
+              .sort(([left], [right]) =>
+                String(left).localeCompare(String(right)),
+              ),
+          ]),
+        )
+        .digest("hex");
+    const initialKeys = new Map(contextIds.map((id) => [id, readScopeKey(id)]));
+    const currentKeys = new Set(initialKeys.values());
+    for (const key of this.activitySnapshotCache.keys())
+      if (!currentKeys.has(key)) this.activitySnapshotCache.delete(key);
+    activity.readScopes = contextIds.map((contextId) => ({
+      contextId,
+      currentAvailable: false,
+      historyAvailable: false,
+    }));
     const sessionsById = new Map(
       sessions.map((session) => [session.id, session]),
     );
@@ -5755,6 +6125,7 @@ export class RuntimeBridge {
         updated_at: z.string(),
       });
       const schema = z.object({
+        context_id: z.string().optional(),
         schedules: z.array(scheduleLink).optional(),
         detail_bounds: z
           .object({
@@ -5864,6 +6235,8 @@ export class RuntimeBridge {
       });
       const snapshots: {
         contextId: string;
+        currentAvailable: boolean;
+        historyAvailable: boolean;
         active: z.infer<typeof schema>;
         history: z.infer<typeof schema>;
       }[] = [];
@@ -5902,20 +6275,115 @@ export class RuntimeBridge {
           return null;
         return resolveRoot(source.session_id, source.root_turn_id, contextId);
       };
-      for (const contextId of new Set(
-        sessions.map((s) => this.contextId(s.projectId)),
-      )) {
-        const [active, history] = await Promise.all(
-          [false, true].map(async (terminal) =>
-            schema.parse(
+      for (const contextId of contextIds) {
+        const key = initialKeys.get(contextId)!;
+        const cached = this.activitySnapshotCache.get(key);
+        const read = async (terminal: boolean) => {
+          try {
+            const value = schema.parse(
               await this.request(
                 `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=200`,
               ),
-            ),
-          ),
-        );
-        snapshots.push({ contextId, active: active!, history: history! });
+            );
+            if (value.context_id !== undefined)
+              z.literal(contextId).parse(value.context_id);
+            return { value, denied: false };
+          } catch (error) {
+            this.reportActivityReadFailure(
+              key,
+              terminal ? "history" : "current",
+              error,
+            );
+            return {
+              value: undefined,
+              denied:
+                (error instanceof UpstreamError &&
+                  [401, 403, 404].includes(error.status)) ||
+                (error instanceof DomainError &&
+                  ["forbidden", "not_found"].includes(error.code)),
+            };
+          }
+        };
+        const [currentRead, historyRead] = await Promise.all([
+          read(false),
+          read(true),
+        ]);
+        const changed = key !== readScopeKey(contextId, this.activeSessions());
+        const denied = currentRead.denied || historyRead.denied || changed;
+        if (changed)
+          this.reportActivityReadFailure(
+            key,
+            "current",
+            new DomainError("forbidden", "Activity read scope changed."),
+          );
+        const currentAvailable = !denied && !!currentRead.value;
+        const historyAvailable = !denied && !!historyRead.value;
+        if (denied) this.activitySnapshotCache.delete(key);
+        else {
+          const next = {
+            ...cached,
+            ...(currentRead.value ? { active: currentRead.value } : {}),
+            ...(historyRead.value ? { history: historyRead.value } : {}),
+          };
+          if (next.active || next.history) {
+            this.activitySnapshotCache.delete(key);
+            this.activitySnapshotCache.set(key, next);
+          }
+          while (this.activitySnapshotCache.size > 16)
+            this.activitySnapshotCache.delete(
+              this.activitySnapshotCache.keys().next().value!,
+            );
+        }
+        const empty: z.infer<typeof schema> = {
+          threads: [],
+          objectives: [],
+          schedules: [],
+        };
+        const previousActive = schema.safeParse(cached?.active);
+        const previousHistory = schema.safeParse(cached?.history);
+        const active = denied
+          ? empty
+          : (currentRead.value ??
+            (previousActive.success ? previousActive.data : empty));
+        // A failed historical read may retain known terminal facts, never a
+        // previous open Thread/timer/goal that current inventory did not read.
+        const history = denied
+          ? empty
+          : (historyRead.value ??
+            (previousHistory.success
+              ? {
+                  ...previousHistory.data,
+                  threads: previousHistory.data.threads
+                    .filter((value) =>
+                      ["completed", "failed", "cancelled"].includes(
+                        value.thread.lifecycle,
+                      ),
+                    )
+                    .map((value) => ({ ...value, schedules: [] })),
+                  objectives: previousHistory.data.objectives?.filter((value) =>
+                    ["completed", "failed", "cancelled"].includes(
+                      value.objective.status,
+                    ),
+                  ),
+                  schedules: [],
+                }
+              : empty));
+        snapshots.push({
+          contextId,
+          currentAvailable,
+          historyAvailable,
+          active,
+          history,
+        });
       }
+      activity.readScopes = snapshots.map(
+        ({ contextId, currentAvailable, historyAvailable }) => ({
+          contextId,
+          currentAvailable,
+          historyAvailable,
+        }),
+      );
+      activity.available = snapshots.every((value) => value.currentAvailable);
       for (const { contextId, active, history } of snapshots) {
         const known = new Map(
           [...history.threads, ...active.threads].flatMap(({ thread }) =>
@@ -5979,9 +6447,11 @@ export class RuntimeBridge {
       // This Host's tracked Platform Sessions define the authority domain.
       // An empty registry is a complete empty domain, not a statement about
       // unrelated Runtime Sessions; connection/availability remain separate.
-      activity.openWorkComplete = snapshots.length > 0 || sessions.length === 0;
-      for (const { active } of snapshots) {
+      activity.openWorkComplete =
+        activity.available && (snapshots.length > 0 || sessions.length === 0);
+      for (const { active, currentAvailable } of snapshots) {
         activity.openWorkComplete &&=
+          currentAvailable &&
           !!active.detail_bounds &&
           !active.detail_bounds.has_more_threads &&
           active.detail_bounds.has_more_objectives === false &&
@@ -6038,7 +6508,16 @@ export class RuntimeBridge {
             );
         }
       }
-      for (const { contextId, active, history } of snapshots) {
+      for (const {
+        contextId,
+        active,
+        history,
+        historyAvailable,
+      } of snapshots) {
+        if (!historyAvailable) {
+          activity.truncated = true;
+          activity.objectivesTruncated = true;
+        }
         activity.truncated ||= [active, history].some(
           (view) =>
             view.detail_bounds?.has_more_threads ?? view.threads.length >= 200,
@@ -6183,6 +6662,7 @@ export class RuntimeBridge {
               thread.waitKinds = waitKinds;
           activity.objectives!.push({
             id: objective.id,
+            contextId,
             projectId: route.source.projectId,
             conversationId: route.source.conversationId,
             inputId: route.inputId,
@@ -6305,13 +6785,75 @@ export class RuntimeBridge {
           });
         }
       }
+      await this.appendDelegatedActivity(activity, sources);
       activity.schedulesAvailable = snapshots.every(
-        ({ active }) => active.schedules !== undefined,
+        ({ active, currentAvailable }) =>
+          currentAvailable && active.schedules !== undefined,
       );
+      // Other Context/event reads can await after an earlier scope succeeded.
+      // Recheck the exact registered domain once more at publication: removal
+      // cannot publish old facts, and a newly registered Context is not read.
+      const finalSessions = this.activeSessions();
+      const changedContexts = new Set(
+        [...initialKeys].flatMap(([contextId, key]) =>
+          key !== readScopeKey(contextId, finalSessions) ? [contextId] : [],
+        ),
+      );
+      for (const contextId of changedContexts) {
+        const key = initialKeys.get(contextId)!;
+        this.activitySnapshotCache.delete(key);
+        this.reportActivityReadFailure(
+          key,
+          "current",
+          new DomainError("forbidden", "Activity publication scope changed."),
+        );
+      }
+      for (const scope of activity.readScopes!)
+        if (changedContexts.has(scope.contextId)) {
+          scope.currentAvailable = false;
+          scope.historyAvailable = false;
+        }
+      for (const contextId of new Set(
+        finalSessions.map((session) => this.contextId(session.projectId)),
+      ))
+        if (!initialKeys.has(contextId))
+          activity.readScopes!.push({
+            contextId,
+            currentAvailable: false,
+            historyAvailable: false,
+          });
+      if (changedContexts.size) {
+        activity.threads = activity.threads.filter(
+          (thread) =>
+            !changedContexts.has(thread.contextId ?? "") &&
+            !changedContexts.has(thread.delegation?.parentContextId ?? ""),
+        );
+        activity.objectives = activity.objectives?.filter(
+          (objective) => !changedContexts.has(objective.contextId ?? ""),
+        );
+        activity.schedules = activity.schedules?.filter(
+          (schedule) => !changedContexts.has(schedule.contextId),
+        );
+        const retainedInputs = new Set([
+          ...activity.threads.flatMap((thread) =>
+            thread.inputId ? [thread.inputId] : [],
+          ),
+          ...(activity.objectives ?? []).map((value) => value.inputId),
+          ...(activity.schedules ?? []).map((value) => value.inputId),
+        ]);
+        for (const inputId of sources.keys())
+          if (!retainedInputs.has(inputId)) sources.delete(inputId);
+      }
+      activity.available = activity.readScopes!.every(
+        (scope) => scope.currentAvailable,
+      );
+      activity.openWorkComplete &&= activity.available;
+      activity.schedulesAvailable &&= activity.available;
       this.state.activity = activity;
       this.activitySources = sources;
       for (const thread of activity.threads)
         if (
+          !thread.delegation &&
           thread.projectId !== null &&
           thread.conversationId !== null &&
           thread.inputId !== null
@@ -6322,17 +6864,221 @@ export class RuntimeBridge {
             conversationId: thread.conversationId,
             inputId: thread.inputId,
           };
-    } catch {
-      // Keep the last known records but explicitly mark them stale. A scheduler
-      // read failure must not cause message redelivery or fictitious completion.
+    } catch (error) {
+      this.reportActivityReadFailure(
+        createHash("sha256")
+          .update([...currentKeys].sort().join(":"))
+          .digest("hex"),
+        "projection",
+        error,
+      );
+      // Expected read failures retain scoped cached facts above. An unexpected
+      // projection failure must not copy a different actor's prior global view.
       this.state.activity = {
-        ...(this.state.activity ?? activity),
+        ...activity,
         available: false,
+        readScopes: contextIds.map((contextId) => ({
+          contextId,
+          currentAvailable: false,
+          historyAvailable: false,
+        })),
         schedulesAvailable: false,
         openWorkComplete: false,
       };
+      this.activitySources = sources;
     }
     this.notifyWorkspaceChanges();
+  }
+
+  private async appendDelegatedActivity(
+    activity: z.infer<typeof activitySchema>,
+    sources: Map<string, PlatformInputSource>,
+  ) {
+    activity.delegationsAvailable = true;
+    activity.delegationsTruncated = false;
+    const childView = z.object({
+      detail_bounds: z.object({ has_more_threads: z.boolean() }).optional(),
+      threads: z
+        .array(
+          z.object({
+            phase: z.string(),
+            intent: z.string().nullish(),
+            execution_model: executionModelSchema.nullish(),
+            response_annotations: z.unknown().optional(),
+            thread: z.object({
+              id: z.string(),
+              kind: z.string(),
+              session_id: z.string(),
+              context_id: z.string(),
+              root_turn_id: z.string(),
+              initiating_principal_id: z.string().nullable(),
+              generation: z.number().optional(),
+              executor_kind: z.string().optional(),
+              lifecycle: z.string(),
+              control_state: z.string(),
+              revision: z.number(),
+              created_at: z.string(),
+              updated_at: z.string(),
+              supervision: z
+                .object({ parent_thread_id: z.string().nullish() })
+                .optional(),
+            }),
+          }),
+        )
+        .max(64),
+    });
+    let remaining = 16;
+    // Each query is bounded and related to an already registered Context.
+    // Active inventory wins over bounded terminal history; no global scan.
+    for (const contextId of new Set(
+      this.activeSessions().map((s) => this.contextId(s.projectId)),
+    )) {
+      try {
+        const records = new Map<string, DelegationRecord>();
+        for (const terminal of [true, false]) {
+          const page = z
+            .object({
+              delegations: z.array(delegationRecordSchema).max(64),
+              has_more: z.boolean(),
+            })
+            .parse(
+              await this.request(
+                `/api/delegations?${new URLSearchParams({
+                  context_id: contextId,
+                  include_terminal: String(terminal),
+                  limit: "64",
+                })}`,
+              ),
+            );
+          activity.delegationsTruncated ||= page.has_more;
+          for (const record of page.delegations)
+            if (
+              record.parent_context_id === contextId &&
+              this.state.sessions[record.parent_session_id]?.platform
+            )
+              records.set(record.id, record);
+        }
+        if (!records.size) continue;
+        const requests = z
+          .object({
+            context_id: z.literal(contextId),
+            events: z.array(eventSchema).max(200),
+            scan_exhaustive: z.boolean(),
+          })
+          .parse(
+            await this.request(
+              `/api/contexts/${encodeURIComponent(contextId)}/events?topic=chat%2Fdelegate&limit=200`,
+            ),
+          );
+        for (const record of [...records.values()].sort(
+          (a, b) =>
+            Number(["queued", "running"].includes(b.status)) -
+            Number(["queued", "running"].includes(a.status)),
+        )) {
+          const event = requests.events.find((e) =>
+            delegationRequestLink(record, e),
+          );
+          if (!event) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
+          const link = delegationRequestLink(record, event)!;
+          const parent = activity.threads.find(
+            (t) =>
+              t.id === link.parentThreadId &&
+              t.sessionId === record.parent_session_id &&
+              t.contextId === record.parent_context_id &&
+              t.rootId === link.rootId,
+          );
+          if (!parent) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
+          if (remaining-- <= 0) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
+          const proof = await this.delegationSource(link, this.actor(), {
+            record,
+            event,
+          });
+          if (
+            proof.inputId !== parent.inputId ||
+            proof.source.projectId !== parent.projectId ||
+            proof.source.conversationId !== parent.conversationId
+          )
+            continue;
+          const { rootId: _rootId, ...reference } = link;
+          if (
+            ["queued", "running"].includes(record.status) &&
+            parent.lifecycle === "open"
+          )
+            parent.waitKinds = [
+              ...new Set([...(parent.waitKinds ?? []), "delegation"]),
+            ];
+          const views = await Promise.all(
+            [true, false].map(async (terminal) =>
+              childView.parse(
+                await this.request(
+                  `/api/contexts/${encodeURIComponent(record.child_context_id)}/scheduler?include_terminal=${terminal}&limit=64`,
+                ),
+              ),
+            ),
+          );
+          activity.delegationsTruncated ||= views.some(
+            (v) => v.detail_bounds?.has_more_threads ?? v.threads.length >= 64,
+          );
+          const children = new Map(
+            views.flatMap((v) => v.threads).map((v) => [v.thread.id, v]),
+          );
+          for (const value of children.values()) {
+            const t = value.thread;
+            if (
+              t.session_id !== record.child_session_id ||
+              t.context_id !== record.child_context_id ||
+              t.initiating_principal_id !== record.initiating_principal_id ||
+              t.kind !== "execution"
+            )
+              continue;
+            sources.set(proof.inputId, proof.source);
+            activity.threads.push({
+              id: t.id,
+              kind: t.kind,
+              sessionId: t.session_id,
+              contextId: t.context_id,
+              rootId: t.root_turn_id,
+              inputId: proof.inputId,
+              projectId: proof.source.projectId,
+              conversationId: proof.source.conversationId,
+              initiatingPrincipalId: t.initiating_principal_id,
+              title:
+                t.executor_kind === "plan_infer"
+                  ? ""
+                  : value.intent?.trim() || record.task,
+              ...(value.execution_model
+                ? { executionModel: value.execution_model }
+                : {}),
+              ...(activityAnnotationFields(value.response_annotations, t) ??
+                {}),
+              phase: value.phase,
+              lifecycle: t.lifecycle,
+              controlState: t.control_state,
+              parentThreadId: t.supervision?.parent_thread_id,
+              delegation: reference,
+              revision: t.revision,
+              createdAt: t.created_at,
+              updatedAt: t.updated_at,
+            });
+          }
+        }
+      } catch {
+        activity.delegationsAvailable = false;
+        activity.delegationsTruncated = true;
+      }
+    }
+    // Registered Platform inventory and cross-Context delegation reads have
+    // distinct bounds. Never silently redefine openWorkComplete's existing
+    // domain; clients use the explicit delegation availability/bounds above.
   }
   private async refreshAttention() {
     try {
@@ -8066,27 +8812,29 @@ export class RuntimeBridge {
           }
           delivery.error = null;
         } catch (error) {
-          delivery.state = "failed";
-          if (delivery.supplement) {
-            delivery.supplement =
+          // Confirmation reads this same live delivery while the authoritative
+          // thread recheck awaits. Publish the final rejection and its message
+          // together, never the provisional "invalid" classification.
+          let supplement = delivery.supplement;
+          let rejection = delivery.rejection;
+          if (supplement) {
+            supplement =
               error instanceof UpstreamError &&
               [400, 403, 404, 409, 422].includes(error.status)
                 ? "rejected"
                 : "unknown";
             if (error instanceof ContinuationConflict) {
-              delivery.supplement = "rejected";
-              delivery.rejection = error.reason;
+              supplement = "rejected";
+              rejection = error.reason;
             } else if (error instanceof DomainError) {
-              delivery.supplement = "rejected";
-              delivery.rejection =
-                error.code === "forbidden" ? "forbidden" : "invalid";
+              supplement = "rejected";
+              rejection = error.code === "forbidden" ? "forbidden" : "invalid";
             }
             if (
               error instanceof UpstreamError &&
               [400, 403, 404, 409, 422].includes(error.status)
             ) {
-              delivery.rejection =
-                error.status === 403 ? "forbidden" : "invalid";
+              rejection = error.status === 403 ? "forbidden" : "invalid";
               const source = delivery.platformSource;
               const target = source?.continuation;
               if (source && target) {
@@ -8099,16 +8847,18 @@ export class RuntimeBridge {
                     ),
                   );
                 } catch (e) {
-                  if (e instanceof ContinuationConflict)
-                    delivery.rejection = e.reason;
+                  if (e instanceof ContinuationConflict) rejection = e.reason;
                 }
               }
             }
           }
+          delivery.state = "failed";
+          delivery.supplement = supplement;
+          delivery.rejection = rejection;
           delivery.error =
-            delivery.rejection === "closed"
+            rejection === "closed"
               ? new ContinuationConflict("closed").message
-              : delivery.rejection === "changed"
+              : rejection === "changed"
                 ? new ContinuationConflict("changed").message
                 : error instanceof UpstreamError
                   ? error.message

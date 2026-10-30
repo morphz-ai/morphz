@@ -40,14 +40,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Prepare isolated PostgreSQL fixtures
         run: |
           sudo apt-get update
-          sudo apt-get install --yes postgresql-client-16 bubblewrap
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          sudo apt-get install --yes postgresql-client-16
           for database in morphz_io_test_ingress morphz_io_test_concurrency morphz_io_test_fence_current morphz_io_test_fence_legacy morphz_io_test_fence_live; do
             "$MORPHZ_SESSION_IO_POSTGRES_BIN_DIR/createdb" --host=127.0.0.1 --username=morphz "$database"
           done

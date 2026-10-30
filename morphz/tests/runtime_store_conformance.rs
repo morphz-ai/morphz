@@ -1876,6 +1876,220 @@ where
         1,
         "a stale supersede retry must not duplicate its durable correction"
     );
+    assert_thread_evaluation_policy_conformance(store).await;
+}
+
+async fn assert_thread_evaluation_policy_conformance<S>(store: Arc<S>)
+where
+    S: morphz::memory::RuntimeStore + 'static,
+{
+    use morphz::model_selection::ModelSelection;
+    let original = NewThread {
+        response_annotations: morphz::response_annotations::Protocol::On,
+        model_alias: Some("original-route".into()),
+        reasoning_effort: Some("max".into()),
+        id: "conformance-policy-thread".into(),
+        agent_id: "conformance-agent".into(),
+        context_id: "conformance-context".into(),
+        session_id: "conformance-session".into(),
+        initiating_principal_id: None,
+        root_turn_id: "conformance-policy-root".into(),
+        kind: ThreadKind::Execution,
+        executor_kind: "self".into(),
+        executor_id: None,
+        target_id: Some("policy-stable-target".into()),
+        supervision: ThreadSupervision::legacy(),
+    };
+    let before = store.ensure_thread(original.clone()).await.unwrap();
+    let source = Event::new(
+        "conformance-policy-input".into(),
+        "TEST-Human".into(),
+        morphz::event::TYPE_USER_MESSAGE.into(),
+        "chat/user_message".into(),
+        json!({"context_id": before.context_id, "session_id": before.session_id,
+               "root_turn_id": before.root_turn_id, "text":"TEST original immutable input",
+               "model_alias":"original-route", "reasoning_effort":"max"})
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(source.clone()).await.unwrap();
+    let schedule = store
+        .ensure_schedule(morphz::memory::NewSchedule {
+            id: "conformance-policy-schedule".into(),
+            thread_id: before.id.clone(),
+            source_turn_id: before.root_turn_id.clone(),
+            intent: "TEST keep exact scheduled work".into(),
+            model_alias: None,
+            reasoning_effort: Some("high".into()),
+            not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            interval_seconds: Some(3600),
+            dependency_thread_ids: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_thread_evaluation_policy(&before.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .control_revision,
+        None
+    );
+    let barrier = Arc::new(Barrier::new(3));
+    let spawn = |model: &str| {
+        let store = store.clone();
+        let barrier = barrier.clone();
+        let id = before.id.clone();
+        let revision = before.revision;
+        let model = model.to_string();
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .update_thread_evaluation_policy(
+                    &id,
+                    revision,
+                    &ModelSelection {
+                        model: Some(model),
+                        reasoning_effort: Some("none".into()),
+                    },
+                )
+                .await
+                .unwrap()
+        })
+    };
+    let a = spawn("replacement-a");
+    let b = spawn("replacement-b");
+    barrier.wait().await;
+    let results = [a.await.unwrap(), b.await.unwrap()];
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, ThreadMutation::Updated(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, ThreadMutation::Conflict { .. }))
+            .count(),
+        1
+    );
+    let selected = store
+        .get_thread_evaluation_policy(&before.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected.control_revision, Some(selected.thread.revision));
+    assert_eq!(selected.thread.reasoning_effort.as_deref(), Some("none"));
+    let cleared = match store
+        .update_thread_evaluation_policy(
+            &before.id,
+            selected.thread.revision,
+            &ModelSelection::default(),
+        )
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(thread) => thread,
+        other => panic!("Expected a revision-fenced clear, got {other:?}"),
+    };
+    let mut expected = before.clone();
+    expected.revision = cleared.revision;
+    expected.updated_at = cleared.updated_at;
+    expected.model_alias = None;
+    expected.reasoning_effort = None;
+    assert_eq!(
+        cleared, expected,
+        "No work identity, generation, supervision, target or lifecycle field changes"
+    );
+    assert_eq!(
+        store
+            .get_thread_evaluation_policy(&before.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .control_revision,
+        Some(cleared.revision)
+    );
+    assert_eq!(
+        store.ensure_thread(original).await.unwrap(),
+        cleared,
+        "Original admission retry must not restore old settings"
+    );
+    assert_eq!(
+        serde_json::to_value(store.get_schedule(&schedule.id).await.unwrap().unwrap()).unwrap(),
+        serde_json::to_value(schedule).unwrap()
+    );
+    let stored_source = store
+        .query(QueryFilter {
+            event_id: Some(source.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored_source.len(), 1);
+    assert_eq!(
+        stored_source[0].payload, source.payload,
+        "Original accepted input is not edited or resubmitted"
+    );
+    assert!(store
+        .update_thread_evaluation_policy(
+            &before.id,
+            cleared.revision,
+            &ModelSelection {
+                model: Some(" ".into()),
+                reasoning_effort: None
+            }
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        store.get_thread(&before.id).await.unwrap().unwrap(),
+        cleared
+    );
+    let terminal = match store
+        .update_thread(
+            &before.id,
+            cleared.revision,
+            None,
+            Some(ThreadLifecycle::Completed),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(thread) => thread,
+        other => panic!("Expected completion, got {other:?}"),
+    };
+    assert!(matches!(
+        store
+            .update_thread_evaluation_policy(
+                &before.id,
+                terminal.revision,
+                &ModelSelection::default()
+            )
+            .await
+            .unwrap(),
+        ThreadMutation::Conflict { .. }
+    ));
+    assert!(matches!(
+        store
+            .update_thread_evaluation_policy("absent-policy-thread", 1, &ModelSelection::default())
+            .await
+            .unwrap(),
+        ThreadMutation::NotFound
+    ));
+    assert!(store
+        .get_thread_evaluation_policy("absent-policy-thread")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 async fn assert_thread_family_read_conformance<S>(store: Arc<S>)
@@ -2957,6 +3171,7 @@ where
     S: morphz::memory::RuntimeStore + 'static,
 {
     dialogue_maintenance_interrupt::assert_maintenance_interrupt(store.as_ref()).await;
+    dialogue_maintenance_interrupt::assert_maintenance_handoff_keeps_lane(store.as_ref()).await;
     let session_id = "conformance-dialogue-interruption";
     store
         .create_session(NewSession {
@@ -5248,6 +5463,7 @@ where
                 ObjectiveStatus::Paused,
                 None,
                 Some("store conformance pause"),
+                None,
             )
             .await
             .unwrap(),
@@ -7540,6 +7756,158 @@ where
     );
 }
 
+async fn assert_objective_wait_cause_conformance<S>(store: &S)
+where
+    S: ObjectiveStore + SchedulerDependencyStore + Send + Sync,
+{
+    let created = store
+        .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
+            id: "conformance-objective-wait-cause".into(),
+            agent_id: "conformance-agent".into(),
+            context_id: "conformance-context".into(),
+            coordinator_session_id: "conformance-session".into(),
+            delivery_session_id: "conformance-session".into(),
+            parent_objective_id: None,
+            source_event_id: "conformance-cause-source".into(),
+            initiating_principal_id: None,
+            stated_objective: "verify exact resource wait cause".into(),
+            token_budget: None,
+        })
+        .await
+        .unwrap();
+    let wait = Some(ObjectiveWaitCondition::ResourceAvailable {
+        resource: "model-provider:cause-test".into(),
+    });
+    let ObjectiveMutation::Updated(first) = store
+        .update_objective_state(
+            &created.id,
+            created.revision,
+            ObjectiveStatus::Active,
+            wait.clone(),
+            Some("first cause"),
+            Some("physical-failure-a"),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("first wait must commit")
+    };
+    let filter = SchedulerDependencyFilter {
+        owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+        owner_id: Some(created.id.clone()),
+        ..Default::default()
+    };
+    let first_edges = store
+        .list_scheduler_dependencies(filter.clone())
+        .await
+        .unwrap();
+    assert_eq!(first_edges.len(), 1);
+    assert_eq!(
+        first_edges[0].metadata["cause_event_id"],
+        json!("physical-failure-a")
+    );
+    assert_eq!(first_edges[0].dependency_generation, first.revision);
+    let ObjectiveMutation::Updated(repeated) = store
+        .update_objective_state(
+            &first.id,
+            first.revision,
+            ObjectiveStatus::Active,
+            wait.clone(),
+            Some("same cause"),
+            Some("physical-failure-a"),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("same cause must commit")
+    };
+    assert_eq!(
+        store
+            .list_scheduler_dependencies(filter.clone())
+            .await
+            .unwrap(),
+        first_edges
+    );
+    assert!(matches!(
+        store
+            .update_objective_state(
+                &first.id,
+                first.revision,
+                ObjectiveStatus::Active,
+                wait.clone(),
+                Some("stale cause"),
+                Some("physical-failure-b")
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Conflict { .. }
+    ));
+    assert_eq!(
+        store
+            .list_scheduler_dependencies(filter.clone())
+            .await
+            .unwrap(),
+        first_edges
+    );
+    let ObjectiveMutation::Updated(second) = store
+        .update_objective_state(
+            &repeated.id,
+            repeated.revision,
+            ObjectiveStatus::Active,
+            wait.clone(),
+            Some("new cause same resource"),
+            Some("physical-failure-b"),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("new cause must commit")
+    };
+    let edges = store
+        .list_scheduler_dependencies(filter.clone())
+        .await
+        .unwrap();
+    assert_eq!(edges.len(), 2);
+    assert_eq!(
+        edges
+            .iter()
+            .find(|edge| edge.id == first_edges[0].id)
+            .unwrap()
+            .status,
+        SchedulerDependencyStatus::Cancelled
+    );
+    let pending = edges
+        .iter()
+        .filter(|edge| edge.status == SchedulerDependencyStatus::Pending)
+        .collect::<Vec<_>>();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].metadata["cause_event_id"],
+        json!("physical-failure-b")
+    );
+    assert_eq!(pending[0].dependency_generation, second.revision);
+    let ObjectiveMutation::Updated(_) = store
+        .update_objective_state(
+            &second.id,
+            second.revision,
+            ObjectiveStatus::Active,
+            wait,
+            Some("repeat without new edge"),
+            Some("physical-failure-b"),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("repeat must commit")
+    };
+    assert_eq!(
+        store.list_scheduler_dependencies(filter).await.unwrap(),
+        edges
+    );
+}
+
 async fn assert_objective_lease_conformance<S>(store: Arc<S>)
 where
     S: EventStore
@@ -7581,6 +7949,7 @@ where
                 resource: "conformance-resource".to_string(),
             }),
             Some("conformance wait"),
+            None,
         )
         .await
         .unwrap()
@@ -7791,6 +8160,7 @@ where
             ObjectiveStatus::Active,
             None,
             Some("resource available"),
+            None,
         )
         .await
         .unwrap()
@@ -8173,6 +8543,7 @@ where
         1,
         "successive Objective Evaluations must reuse one primary Execution Thread"
     );
+    assert_objective_wait_cause_conformance(store.as_ref()).await;
 }
 
 async fn assert_action_group_conformance<S>(store: Arc<S>)
@@ -12480,6 +12851,31 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
             .unwrap(),
         fixed_definition
     );
+    // A database with every prior marker still has to upgrade the old
+    // running-only lane predicate. Merely editing an earlier migration would
+    // leave these installations vulnerable to the hand-off race.
+    let running_only_definition =
+        fixed_definition.replace("activation.status = 'completed'", "FALSE");
+    assert_ne!(running_only_definition, fixed_definition);
+    sqlx::query(&running_only_definition)
+        .execute(store.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
+        .bind("20261022_01_dialogue_maintenance_handoff_lane")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    store.pool().close().await;
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(function_definition_sql)
+            .fetch_one(store.pool())
+            .await
+            .unwrap(),
+        fixed_definition,
+        "the new marker must replace the admission function without clearing any old marker"
+    );
     let applied_migrations =
         sqlx::query_scalar::<_, String>("SELECT version FROM schema_migrations ORDER BY version")
             .fetch_all(store.pool())
@@ -12517,6 +12913,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260901_01_agent_provider_bindings",
         "20261004_01_agent_provider_policy_modes",
         "20260911_01_scheduler_dependency_ready_fifo",
+        "20261022_01_dialogue_maintenance_handoff_lane",
     ] {
         assert!(
             applied_migrations.contains(version),
@@ -12859,7 +13256,83 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .unwrap();
     migration_reset.commit().await.unwrap();
 
+    let cause_filter = SchedulerDependencyFilter {
+        owner_kind: Some(SchedulerDependencyOwnerKind::Objective),
+        owner_id: Some("conformance-objective-wait-cause".into()),
+        ..Default::default()
+    };
+    let cause_edges = store
+        .list_scheduler_dependencies(cause_filter.clone())
+        .await
+        .unwrap();
+    // This private schema simulates rerunning the old projection backfill.
+    // A newer Objective display revision must not invent a cause-less edge.
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version = '20260731_02_objective_wait_dependencies'",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
     let independent_store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert_eq!(
+        independent_store
+            .list_scheduler_dependencies(cause_filter.clone())
+            .await
+            .unwrap(),
+        cause_edges
+    );
+    let pending = cause_edges
+        .iter()
+        .find(|edge| edge.status == SchedulerDependencyStatus::Pending)
+        .unwrap();
+    let confirmed = Event::new(
+        "conformance-resource-confirmed".into(),
+        "Store-Conformance".into(),
+        "runtime_control".into(),
+        "runtime/resource_available".into(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "resource": pending.dependency_id,
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(confirmed.clone()).await.unwrap();
+    assert!(matches!(
+        store
+            .satisfy_scheduler_dependency(
+                &pending.id,
+                pending.owner_generation,
+                pending.dependency_generation,
+                &confirmed.id
+            )
+            .await
+            .unwrap(),
+        SchedulerDependencyMutation::Updated(_)
+    ));
+    let terminal_edges = store
+        .list_scheduler_dependencies(cause_filter.clone())
+        .await
+        .unwrap();
+    assert!(terminal_edges.iter().all(|edge| edge.status.is_terminal()));
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version = '20260731_02_objective_wait_dependencies'",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    let backfill_checked = PostgresStore::new(&scoped_url, 2).await.unwrap();
+    assert_eq!(
+        backfill_checked
+            .list_scheduler_dependencies(cause_filter)
+            .await
+            .unwrap(),
+        terminal_edges,
+        "backfill must not resurrect a completed dependency from stale display state"
+    );
+    backfill_checked.pool().close().await;
     assert!(independent_store
         .query_session_projections(
             "conformance-context",

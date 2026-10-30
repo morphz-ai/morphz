@@ -1,15 +1,35 @@
 import { useLayoutEffect, useRef } from "react";
-import { X } from "lucide-react";
+import { RotateCw, X } from "lucide-react";
 import "./workspace-notice.css";
+
+/** A read failure belongs only to its still-selected authorized conversation. */
+export function ConversationHistoryNotice({
+  error,
+  projectId,
+  conversationId,
+  onRetry,
+}: {
+  error: { projectId: string; conversationId: string; message: string } | null;
+  projectId: string;
+  conversationId: string;
+  onRetry: () => void;
+}) {
+  return error?.projectId === projectId &&
+    error.conversationId === conversationId ? (
+    <WorkspaceNotice message={error.message} scrollable onRetry={onRetry} />
+  ) : null;
+}
 
 /** The same real notice is placed in the active reading surface or workspace. */
 export function WorkspaceNotice({
   message,
   onDismiss,
+  onRetry,
   scrollable = false,
 }: {
   message: string;
-  onDismiss: () => void;
+  onDismiss?: () => void;
+  onRetry?: () => void;
   scrollable?: boolean;
 }) {
   const notice = useRef<HTMLDivElement>(null);
@@ -57,14 +77,26 @@ export function WorkspaceNotice({
       <span role="alert" tabIndex={scrollable ? 0 : undefined}>
         {message}
       </span>
-      <button
-        type="button"
-        className="icon-button"
-        aria-label="关闭提示"
-        onClick={onDismiss}
-      >
-        <X />
-      </button>
+      {onRetry && (
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="重试读取对话历史"
+          onClick={onRetry}
+        >
+          <RotateCw />
+        </button>
+      )}
+      {onDismiss && (
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="关闭提示"
+          onClick={onDismiss}
+        >
+          <X />
+        </button>
+      )}
     </div>
   );
 }

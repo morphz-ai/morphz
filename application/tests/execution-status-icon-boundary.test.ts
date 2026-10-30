@@ -153,6 +153,15 @@ function parse(contents: Record<string, string>): Map<string, Parsed> {
 function syntax(node: Node, normalized = false): unknown {
   if (node.kind === SyntaxKind.JsxText && !node.getText().trim())
     return undefined;
+  if (normalized && isCallExpression(node)) {
+    // Only these independently checked display-read arguments changed. The
+    // existing row/glyph/lifecycle digests remain immutable; arbitrary helper
+    // calls, wrong Contexts and unconditional live values do not normalize.
+    const reviewed = reviewedAvailabilityCalls.find(
+      (value) => JSON.stringify(syntax(node)) === value.current,
+    );
+    if (reviewed) return syntax(reviewed.original, true);
+  }
   if (
     normalized &&
     isJsxSelfClosingElement(node) &&
@@ -204,7 +213,40 @@ const templates = parse({
   SidebarDetailCall:
     "const glyph = <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />;",
   SidebarDetailFacts:
-    "const threadStatus = thread ? executionActivityGroupStatus(thread, activityThreads, activityAvailable && !!currentThread) : undefined;",
+    "const threadStatus = thread ? executionActivityGroupStatus(thread, activityThreads, (value) => client.online && !!currentThread && executionActivityThreadAvailable(value, runtime)) : undefined;",
+  SidebarDetailSummary:
+    'const threadSummary = thread ? executionActivitySummary(thread, client.online && !!currentThread && executionActivityThreadAvailable(thread, runtime)) : "";',
+  SidebarRowFacts: `
+    const status = executionActivityGroupStatus(t, activityThreads, (value) => client.online && executionActivityThreadAvailable(value, runtime));
+    const summary = executionActivitySummary(t, client.online && executionActivityThreadAvailable(t, runtime));`,
+  SidebarOriginalRowFacts: `
+    const status = executionActivityGroupStatus(t, activityThreads, activityAvailable);
+    const summary = executionActivitySummary(t, activityAvailable);`,
+  // User-approved 5ddfb935/aae741c7 visibility-only motion. Exclude only these
+  // exact calls AND their original local bindings from the old lifecycle
+  // digest. Keep every historical digest unchanged; inspect the React owner
+  // and exact cardinality separately below. No timer, request or control write.
+  SidebarMotion: `
+    const summaryRef = useRef<HTMLParagraphElement>(null);
+    const [summaryVisible, setSummaryVisible] = useState(true);
+    useEffect(() => {
+      const node = summaryRef.current;
+      if (!node || threadStatus?.kind !== "running") return;
+      let intersecting = true;
+      const sync = () =>
+        setSummaryVisible(intersecting && document.visibilityState !== "hidden");
+      const observer = new IntersectionObserver(([entry]) => {
+        intersecting = !!entry?.isIntersecting;
+        sync();
+      });
+      observer.observe(node);
+      document.addEventListener("visibilitychange", sync);
+      sync();
+      return () => {
+        observer.disconnect();
+        document.removeEventListener("visibilitychange", sync);
+      };
+    }, [threadStatus?.kind, threadSummary]);`,
   DialogCall:
     "const glyph = <ExecutionStatusIcon kind={status?.kind} size={18} />;",
 });
@@ -215,6 +257,20 @@ const oldGlyphs = templates
 const oldMap = JSON.stringify(
   syntax(templates.get("Original")!.nodes.find(isObjectLiteralExpression)!),
 );
+const reviewedAvailabilityCalls = ["status", "summary"].map((name) => {
+  const initializer = (template: string) => {
+    const declaration = templates
+      .get(template)!
+      .nodes.filter(isVariableDeclaration)
+      .find((node) => node.name.getText() === name);
+    assert.ok(declaration?.initializer);
+    return declaration.initializer;
+  };
+  return {
+    current: JSON.stringify(syntax(initializer("SidebarRowFacts"))),
+    original: initializer("SidebarOriginalRowFacts"),
+  };
+});
 const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function attribute(element: Node, name: string) {
@@ -225,6 +281,23 @@ function attribute(element: Node, name: string) {
   return nodes
     .filter(isJsxAttribute)
     .find((node) => node.name.getText() === name);
+}
+const reviewedMotionCalls = templates
+  .get("SidebarMotion")!
+  .nodes.filter(isCallExpression)
+  .filter((node) => /^use[A-Z]/.test(node.expression.getText()));
+function visibilityHookShape(node: Node) {
+  return [
+    syntax(node),
+    isVariableDeclaration(node.parent) ? syntax(node.parent.name) : undefined,
+  ];
+}
+function reviewedVisibilityHook(node: Node) {
+  return reviewedMotionCalls.some(
+    (expected) =>
+      JSON.stringify(visibilityHookShape(node)) ===
+      JSON.stringify(visibilityHookShape(expected)),
+  );
 }
 function scopes(parsed: Parsed, owner: "Sidebar" | "Dialog") {
   const component = parsed.nodes
@@ -237,7 +310,8 @@ function scopes(parsed: Parsed, owner: "Sidebar" | "Dialog") {
   });
   const hooks = inside
     .filter(isCallExpression)
-    .filter((node) => /^use[A-Z]/.test(node.expression.getText()));
+    .filter((node) => /^use[A-Z]/.test(node.expression.getText()))
+    .filter((node) => owner !== "Sidebar" || !reviewedVisibilityHook(node));
   let scope: unknown;
   if (owner === "Sidebar") {
     const row = inside
@@ -330,6 +404,24 @@ function inspect(sources: Sources) {
   );
   for (const owner of ["Sidebar", "Dialog"] as const) {
     const consumer = parsed.get(owner)!;
+    if (owner === "Sidebar")
+      rule("Sidebar-exact-read-only-motion-visibility", () => {
+        const hooks = consumer.nodes
+          .filter(isCallExpression)
+          .filter(reviewedVisibilityHook);
+        assert.equal(hooks.length, 3);
+        assert.deepEqual(
+          hooks.map(visibilityHookShape),
+          reviewedMotionCalls.map(visibilityHookShape),
+        );
+        for (const hook of hooks) {
+          assert.ok(isIdentifier(hook.expression));
+          assert.equal(
+            consumer.symbols.get(hook.expression),
+            imported(consumer, "react", hook.expression.text),
+          );
+        }
+      });
     rule(`${owner}-actual-import-kind-size`, () => {
       const symbol = imported(
         consumer,
@@ -397,6 +489,40 @@ function inspect(sources: Sources) {
         );
       }
     });
+    if (owner === "Sidebar")
+      rule("Sidebar-per-Context-authorized-read-freshness", () => {
+        const helper = imported(
+          consumer,
+          "./execution-activity.js",
+          "executionActivityThreadAvailable",
+        );
+        const calls = consumer.nodes
+          .filter(isCallExpression)
+          .filter((node) => consumer.symbols.get(node.expression) === helper);
+        assert.equal(
+          calls.length,
+          4,
+          "all four real Sidebar display reads use the exact imported helper",
+        );
+        const declarations = [
+          ["threadSummary", "SidebarDetailSummary"],
+          ["threadStatus", "SidebarDetailFacts"],
+          ["status", "SidebarRowFacts"],
+          ["summary", "SidebarRowFacts"],
+        ];
+        for (const [name, template] of declarations) {
+          const actual = consumer.nodes
+            .filter(isVariableDeclaration)
+            .filter((node) => node.name.getText() === name);
+          const expected = templates
+            .get(template!)!
+            .nodes.filter(isVariableDeclaration)
+            .find((node) => node.name.getText() === name);
+          assert.equal(actual.length, 1);
+          assert.ok(expected);
+          assert.deepEqual(syntax(actual[0]!), syntax(expected));
+        }
+      });
     if (owner === "Sidebar")
       rule("Sidebar-detail-authoritative-live-facts", () => {
         const status = consumer.nodes
@@ -484,7 +610,7 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     for (const [before, after] of changes) {
       assert.ok(
         source[file].includes(before),
-        `${file}: actual source must change`,
+        `${file}: actual source must change at ${JSON.stringify(before).slice(0, 120)}`,
       );
       const candidate = {
         ...source,
@@ -531,10 +657,14 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     "Sidebar",
     "Sidebar-original-facts-span-tree-and-lifecycle",
     ["data-status={status.kind}", ""],
-    ["activityAvailable,\n    );", "true,\n    );"],
+    ["executionActivityThreadAvailable(t, runtime)", "true"],
     [
       "  const [refreshing, setRefreshing] = useState(false);",
       "  const [refreshing, setRefreshing] = useState(false); const [allWork, setAllWork] = useState(false);",
+    ],
+    [
+      "  const [refreshing, setRefreshing] = useState(false);",
+      "  const [refreshing, setRefreshing] = useState(false); const [otherVisibility, setOtherVisibility] = useState(true);",
     ],
     ["          origin,\n", ""],
   );
@@ -552,16 +682,88 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     'className="execution-signal-flow"',
     'className="execution-signal-base"',
   ]);
+  const lucideImport = parse({ Sidebar: source.Sidebar })
+    .get("Sidebar")!
+    .nodes.filter(isImportDeclaration)
+    .find(
+      (node) =>
+        isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === "lucide-react",
+    );
+  assert.ok(lucideImport);
   reject("Sidebar", "Sidebar-sole-shared-glyph-consumption", [
-    'import { ArrowLeft, ChevronRight } from "lucide-react";',
-    'import { ArrowLeft, ChevronRight, CircleHelp } from "lucide-react";',
+    lucideImport.getText(),
+    `import { CircleHelp } from "lucide-react";\n${lucideImport.getText()}`,
   ]);
+  const detailStatus = parse({ Sidebar: source.Sidebar })
+    .get("Sidebar")!
+    .nodes.filter(isVariableDeclaration)
+    .find((node) => node.name.getText() === "threadStatus");
+  assert.ok(
+    detailStatus?.initializer &&
+      isConditionalExpression(detailStatus.initializer),
+  );
+  const detailCall = detailStatus.initializer.whenTrue;
+  assert.ok(isCallExpression(detailCall));
+  const callback = detailCall.arguments[2];
+  assert.ok(callback && isArrowFunction(callback));
+  const detailAvailability = callback.body.getText();
   reject("Sidebar", "Sidebar-detail-authoritative-live-facts", [
-    "activityAvailable && !!currentThread,\n      )",
-    "true,\n      )",
+    detailAvailability,
+    "true",
   ]);
+  reject(
+    "Sidebar",
+    "Sidebar-per-Context-authorized-read-freshness",
+    [
+      detailAvailability,
+      detailAvailability.replace(
+        "executionActivityThreadAvailable(value, runtime)",
+        "executionActivityThreadAvailable(thread, runtime)",
+      ),
+    ],
+    [
+      detailAvailability,
+      detailAvailability.replace(/^client.online\s*&&\s*/, ""),
+    ],
+    [
+      "client.online && executionActivityThreadAvailable(t, runtime)",
+      "executionActivityThreadAvailable(t, runtime)",
+    ],
+    [
+      "executionActivityThreadAvailable(t, runtime)",
+      "executionActivityThreadAvailable(t, { ...runtime, activity: { ...runtime.activity, available: true } })",
+    ],
+    [
+      "executionActivityThreadAvailable(thread, runtime)",
+      "executionActivityThreadAvailable({ ...thread, contextId: 'wrong-context' }, runtime)",
+    ],
+    [
+      "executionActivityThreadAvailable,",
+      "executionActivityThreadAvailableFake as executionActivityThreadAvailable,",
+    ],
+    ['from "./execution-activity.js"', 'from "./untrusted-activity.js"'],
+  );
   reject("Sidebar", "Sidebar-actual-import-kind-size", [
     "kind={threadStatus?.kind} size={18}",
     'kind={"running"} size={18}',
   ]);
+  reject(
+    "Sidebar",
+    "Sidebar-exact-read-only-motion-visibility",
+    [
+      'setSummaryVisible(intersecting && document.visibilityState !== "hidden")',
+      'client.cancelInput("TEST-forbidden-motion-control")',
+    ],
+    [
+      'document.removeEventListener("visibilitychange", sync)',
+      'document.addEventListener("visibilitychange", sync)',
+    ],
+    ["const summaryRef =", "const unrelatedRef ="],
+    [
+      "const summaryRef = useRef<HTMLParagraphElement>(null);",
+      "const summaryRef = useRef<HTMLParagraphElement>(null); { const summaryRef = useRef<HTMLParagraphElement>(null); }",
+    ],
+    ["observer.disconnect()", "observer.observe(node)"],
+  );
 });

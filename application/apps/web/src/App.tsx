@@ -67,7 +67,10 @@ import {
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { exchangeDraftLengthError } from "./host/exchange-draft-validation.js";
-import { WorkspaceNotice } from "./WorkspaceNotice.js";
+import {
+  ConversationHistoryNotice,
+  WorkspaceNotice,
+} from "./WorkspaceNotice.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import "./features/exchange/composer-collapsed-entry.css";
 import { CollapsedComposerEntry } from "./features/exchange/CollapsedComposerEntry.js";
@@ -931,6 +934,33 @@ function WorkspaceApp({
     state?.inputs.filter((i) =>
       inConversation(state!, conversationId, i, sharedDefault),
     ) ?? [];
+  const historyScopeKey = JSON.stringify([
+    conversationProjectId,
+    conversationId,
+  ]);
+  const openingSavedInputs = useRef({
+    scope: historyScopeKey,
+    ids: new Set(client.boot!.localSavedInputIds),
+  });
+  if (openingSavedInputs.current.scope !== historyScopeKey)
+    openingSavedInputs.current = {
+      scope: historyScopeKey,
+      ids: new Set(client.boot!.localSavedInputIds),
+    };
+  const loadingConversationHistory =
+    // An unsent conversation draft deliberately has no server history scope.
+    // Its retained local inputs are the draft itself, not a stale history head.
+    !selectedDraft &&
+    (client.displayedHistoryScope?.projectId !== conversationProjectId ||
+      client.displayedHistoryScope.conversationId !== conversationId);
+  for (const input of inputs)
+    if (client.boot!.localInputSubmissions[input.id]?.state === "sending")
+      openingSavedInputs.current.ids.delete(input.id);
+  // Restored failures are not a latest-history head. Wait for this exact
+  // scope's first coherent read, without delaying newly staged live inputs.
+  const displayedInputs = loadingConversationHistory
+    ? inputs.filter((input) => !openingSavedInputs.current.ids.has(input.id))
+    : inputs;
   const stream = useConversationStream(
     conversationProjectId,
     conversationId,
@@ -3176,11 +3206,46 @@ function WorkspaceApp({
                     : undefined
                 }
               >
-                {conversationVisible && (
+                {conversationVisible &&
+                loadingConversationHistory &&
+                !displayedInputs.length &&
+                !replies.length ? (
+                  <section
+                    className="conversation"
+                    aria-label="当前对话"
+                    aria-busy="true"
+                  >
+                    {client.error ? (
+                      <ConversationHistoryNotice
+                        error={{
+                          projectId: conversationProjectId,
+                          conversationId,
+                          message: client.error,
+                        }}
+                        projectId={conversationProjectId}
+                        conversationId={conversationId}
+                        onRetry={() => void client.refresh()}
+                      />
+                    ) : (
+                      <div className="conversation-empty" role="status">
+                        <p>正在读取对话…</p>
+                      </div>
+                    )}
+                  </section>
+                ) : conversationVisible ? (
                   <Conversation
                     searchProjectId={project.id}
                     notice={
-                      notice ? (
+                      client.historyError?.projectId ===
+                        conversationProjectId &&
+                      client.historyError.conversationId === conversationId ? (
+                        <ConversationHistoryNotice
+                          error={client.historyError}
+                          projectId={conversationProjectId}
+                          conversationId={conversationId}
+                          onRetry={() => void client.refresh()}
+                        />
+                      ) : notice ? (
                         <WorkspaceNotice
                           message={notice}
                           scrollable
@@ -3199,7 +3264,11 @@ function WorkspaceApp({
                         />
                       ) : undefined
                     }
-                    hasEarlierHistory={!!client.olderHistoryCursor}
+                    hasEarlierHistory={
+                      !selectedDraft &&
+                      !loadingConversationHistory &&
+                      !!client.olderHistoryCursor
+                    }
                     onLoadEarlierHistory={client.loadEarlierHistory}
                     onOpenQuote={(quote) => void openTextQuote(quote)}
                     quoteReveal={
@@ -3223,7 +3292,7 @@ function WorkspaceApp({
                     focusedArtifactId={conversationFocus.artifactId}
                     focusedCognitiveObject={conversationFocus.cognitiveObject}
                     key={conversationId}
-                    inputs={inputs}
+                    inputs={displayedInputs}
                     messages={replies}
                     streamConnected={stream.connected}
                     seenReplies={seenReplies}
@@ -3277,7 +3346,7 @@ function WorkspaceApp({
                       );
                     }}
                   />
-                )}
+                ) : null}
                 <div className="composer-dock">
                   {projectStatus(project) === "active" &&
                     !selectedConversation?.archivedAt && (
@@ -4103,6 +4172,9 @@ function WorkspaceApp({
               </ExchangePanel>
             </div>
           </div>
+          {notice && !conversationVisible && (
+            <WorkspaceNotice message={notice} onDismiss={() => setNotice("")} />
+          )}
         </div>
         {(executions || subjectView) &&
           !understandingOpen &&
@@ -4140,9 +4212,10 @@ function WorkspaceApp({
                     ?.click(),
                 );
               }}
-              activity={
+              activity={(navigation) => (
                 <ExecutionSidebar
                   embedded
+                  headerLeading={navigation}
                   key={
                     activityScope.threadId ??
                     activityScope.inputId ??
@@ -4163,7 +4236,7 @@ function WorkspaceApp({
                   onOpen={openUser}
                   onOpenScript={openScript}
                   onRefresh={async () => {
-                    await client.refresh();
+                    await client.refresh({ refreshActivity: true });
                   }}
                   leading={
                     <SubjectObjectives
@@ -4182,7 +4255,7 @@ function WorkspaceApp({
                     />
                   }
                 />
-              }
+              )}
             />
           )}
         {understandingOpen && (
@@ -4221,9 +4294,6 @@ function WorkspaceApp({
             onResize={resizeInspector}
             onClose={closeInspector}
           />
-        )}
-        {notice && !conversationVisible && (
-          <WorkspaceNotice message={notice} onDismiss={() => setNotice("")} />
         )}
       </div>
       <input
