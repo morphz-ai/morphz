@@ -489,6 +489,23 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build release binary
         run: cargo build --release --workspace
+      - name: Require three complete concurrent Provider recovery passes
+        run: |
+          for round in 1 2 3; do
+            python3 scripts/verify-provider-wait.py --binary target/release/morphz --output "$RUNNER_TEMP/provider-wait-$round"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: failure() || cancelled()
+        with:
+          name: concurrent-provider-wait-failure
+          path: |
+            ${{ runner.temp }}/provider-wait-*/binary.json
+            ${{ runner.temp }}/provider-wait-*/results.json
+            ${{ runner.temp }}/provider-wait-*/*/result.json
+            ${{ runner.temp }}/provider-wait-*/*/runtime.log
+            ${{ runner.temp }}/provider-wait-*/*/waiting.json
+            ${{ runner.temp }}/provider-wait-*/*/provider-requests.json
+          if-no-files-found: ignore
 
   dashboard:
     name: Dashboard

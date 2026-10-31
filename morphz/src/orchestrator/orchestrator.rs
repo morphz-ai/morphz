@@ -2395,13 +2395,15 @@ async fn publish_provider_probe_available(
         _ => "half_open",
     };
     for context_id in contexts {
+        let event_id = match new_publication_event_id("provider_recovery_probe") {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::error!(event_code = "orchestrator.provider.half_open_event_identity_failed", %error, provider_resource = %resource, "Failed to create the Provider recovery Event identity");
+                return;
+            }
+        };
         let event = Event::new(
-            format!(
-                "provider_recovery_probe_{}_{}_{}",
-                generation,
-                replaced_probe_id.unwrap_or_default(),
-                Utc::now().timestamp_nanos_opt().unwrap_or_default()
-            ),
+            event_id,
             "Runtime-ProviderRecovery".to_string(),
             "runtime_control".to_string(),
             "runtime/resource_available".to_string(),
@@ -3767,12 +3769,7 @@ async fn persist_model_attempt_state(
     payload.extend_from_slice(attributes);
     payload.extend_from_slice(route);
     bus.publish(Event::new(
-        format!(
-            "model_attempt_state_{}_{}_{}",
-            attempt_id,
-            state,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ),
+        new_publication_event_id("model_attempt_state")?,
         "Runtime-Orchestrator".to_string(),
         "runtime_control".to_string(),
         "runtime/model_attempt_state".to_string(),
@@ -8123,11 +8120,7 @@ impl Orchestrator {
             return Ok(());
         }
 
-        let failure_id = format!(
-            "delegation_recovery_failed_{}_{}",
-            delegation.id,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        );
+        let failure_id = new_publication_event_id("delegation_recovery_failed")?;
         session_store
             .update_delegation_status(&delegation.id, DelegationStatus::Failed, Some(&failure_id))
             .await?;
@@ -8226,11 +8219,7 @@ impl Orchestrator {
                 }
             }
             let failure = Event::new(
-                format!(
-                    "delegation_failed_{}_{}",
-                    delegation_id,
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_publication_event_id("delegation_failed")?,
                 "System-Delegation".to_string(),
                 TYPE_TOOL_OUTPUT.to_string(),
                 "chat/tool_output".to_string(),
@@ -8606,11 +8595,7 @@ impl Orchestrator {
         }
         self.bus
             .publish(Event::new(
-                format!(
-                    "delegation_start_{}_{}",
-                    delegation_id,
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_publication_event_id("delegation_start")?,
                 "System-Delegation".to_string(),
                 TYPE_USER_MESSAGE.to_string(),
                 "chat/user_message".to_string(),
@@ -8909,11 +8894,7 @@ impl Orchestrator {
             }
         }
         let result_event = Event::new(
-            format!(
-                "delegation_result_{}_{}",
-                delegation.id,
-                Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            ),
+            new_publication_event_id("delegation_result")?,
             format!("Sub-Agent-{}", delegation.child_session_id),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
@@ -9531,11 +9512,7 @@ impl Orchestrator {
         // before it participates in Context Encoding again. User messages already do
         // this atomically in `claim_message`; this branch covers tool/background wakes.
         if session.attention_state == SessionAttentionState::Retired {
-            let restore_event_id = format!(
-                "session_restored_{}_{}",
-                session_id,
-                Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            );
+            let restore_event_id = new_publication_event_id("session_restored")?;
             let mut restore_event = Event::new(
                 restore_event_id.clone(),
                 "Runtime-Orchestrator".to_string(),
@@ -12172,11 +12149,15 @@ impl Orchestrator {
                         ("stream".to_string(), json!(stream_event)),
                     ];
                     payload.extend(forward_route.clone());
+                    let event_id = match new_publication_event_id("model_stream") {
+                        Ok(id) => id,
+                        Err(error) => {
+                            tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_identity_failed", %error, "Failed to create an ephemeral model-stream Event identity");
+                            continue;
+                        }
+                    };
                     let mut event = Event::new(
-                        format!(
-                            "model_stream_{}",
-                            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                        ),
+                        event_id,
                         "Model-Provider".to_string(),
                         "runtime_ephemeral".to_string(),
                         "runtime/model_stream".to_string(),
@@ -16855,11 +16836,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!(
-                    "safety_refusal_recovery_{}_{}",
-                    if cleared { "cleared" } else { "armed" },
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_publication_event_id("safety_refusal_recovery")?,
                 "Runtime-Orchestrator".to_string(),
                 "runtime_control".to_string(),
                 SAFETY_REFUSAL_RECOVERY_TOPIC.to_string(),
@@ -17020,10 +16997,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!(
-                    "reasoning_continuation_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_publication_event_id("reasoning_continuation")?,
                 "Runtime-Orchestrator".to_string(),
                 "runtime_control".to_string(),
                 "runtime/reasoning_continuation".to_string(),
@@ -17054,10 +17028,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!(
-                    "reasoning_continuation_exhausted_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_publication_event_id("reasoning_continuation_exhausted")?,
                 "Runtime-Orchestrator".to_string(),
                 "runtime_error".to_string(),
                 "runtime/reasoning_continuation_exhausted".to_string(),
@@ -17117,10 +17088,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!(
-                    "response_protocol_fused_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
+                new_publication_event_id("response_protocol_fused")?,
                 "Runtime-Orchestrator".to_string(),
                 "runtime_error".to_string(),
                 "runtime/response_protocol_fused".to_string(),
@@ -17446,7 +17414,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let event = Event::new(
-            new_evaluation_outcome_event_id("no_reply")?,
+            new_publication_event_id("no_reply")?,
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/no_reply".to_string(),
@@ -17613,7 +17581,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let mut event = Event::new(
-            new_evaluation_outcome_event_id("reply")?,
+            new_publication_event_id("reply")?,
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/reply".to_string(),
@@ -17688,7 +17656,7 @@ impl Orchestrator {
                 attempt_id
             )
         })?;
-        let result_event_id = new_evaluation_outcome_event_id("thread_result")?;
+        let result_event_id = new_publication_event_id("thread_result")?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -18841,10 +18809,7 @@ impl Orchestrator {
                 if annotation_bundle.is_some() {
                     format!("call_{attempt_id}_final")
                 } else {
-                    format!(
-                        "thread_waiting_{}",
-                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                    )
+                    new_publication_event_id("thread_waiting")?
                 },
                 "Runtime".to_string(),
                 TYPE_AGENT_CALL.to_string(),
@@ -19008,7 +18973,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                format!("progress_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+                new_publication_event_id("progress")?,
                 "Agent-Morphz".to_string(),
                 TYPE_AGENT_CALL.to_string(),
                 "chat/progress".to_string(),
@@ -19345,10 +19310,7 @@ impl Orchestrator {
             self.append_activation_route(attempt_id, &mut payload);
             self.bus
                 .publish(Event::new(
-                    format!(
-                        "runtime_error_{}",
-                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                    ),
+                    new_publication_event_id("runtime_error")?,
                     "Runtime-Orchestrator".to_string(),
                     "runtime_error".to_string(),
                     "chat/runtime_error".to_string(),
@@ -23252,11 +23214,15 @@ impl Orchestrator {
             ("visible_input_ids".to_string(), json!(visible_input_ids)),
         ];
         self.append_activation_route(attempt_id, &mut payload);
+        let event_id = match new_publication_event_id("model_request_snapshot") {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::debug!(event_code = "orchestrator.model_request.snapshot_identity_failed", %error, "Failed to create an ephemeral model-request snapshot identity");
+                return;
+            }
+        };
         let event = Event::new(
-            format!(
-                "model_request_snapshot_{}",
-                Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            ),
+            event_id,
             "System-ContextKernel".to_string(),
             crate::event::TYPE_PROPOSAL.to_string(),
             "runtime/model_request_snapshot".to_string(),
@@ -24746,21 +24712,28 @@ fn durable_activation_revocation_reason_for_record(
     None
 }
 
-/// An Event is one immutable publication, not the entire Evaluation. Keep a
-/// later failure notice distinct from an already committed reply; the Store's
-/// Activation fence suppresses that duplicate outcome. Persistence retries
-/// reuse the constructed Event, and therefore retain exactly its original ID.
-fn new_evaluation_outcome_event_id(kind: &str) -> Result<String, DynError> {
+/// Each new publication has its own identity, independent of wall-clock
+/// precision, Context, Provider generation and physical Model Attempt. A later
+/// notice must remain distinct from a committed reply; existing Activation
+/// fences still suppress duplicate outcomes. Retries reuse the immutable Event.
+fn new_publication_event_id(kind: &str) -> Result<String, DynError> {
     static NEXT_PUBLICATION: AtomicU64 = AtomicU64::new(0);
-    let mut random = [0_u8; 16];
-    getrandom::fill(&mut random)
-        .map_err(|error| format!("Failed to generate Evaluation outcome identity: {error}"))?;
-    let nonce = random
-        .into_iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let sequence = NEXT_PUBLICATION.fetch_add(1, Ordering::Relaxed);
-    Ok(format!("{kind}_{nonce}_{sequence:016x}"))
+    let mut bytes = [0_u8; 24];
+    getrandom::fill(&mut bytes[..16]).map_err(|error| {
+        format!("Failed to generate Runtime Event publication identity: {error}")
+    })?;
+    bytes[16..].copy_from_slice(
+        &NEXT_PUBLICATION
+            .fetch_add(1, Ordering::Relaxed)
+            .to_be_bytes(),
+    );
+    // 128 random bits protect separate processes; the 64-bit counter also makes
+    // same-process uniqueness independent of entropy/timer resolution. Encoding
+    // all 24 bytes keeps every current publication prefix within 64 characters.
+    Ok(format!(
+        "{kind}_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    ))
 }
 
 fn delivery_flush_timer_id(session_id: &str) -> String {
@@ -28675,7 +28648,7 @@ mod tests {
                     ("text".into(), json!(text)),
                 ]);
                 Event::new(
-                    super::new_evaluation_outcome_event_id(kind).unwrap(),
+                    super::new_publication_event_id(kind).unwrap(),
                     "Agent-Morphz".into(),
                     crate::event::TYPE_AGENT_CALL.into(),
                     "runtime/outcome_fixture".into(),
@@ -28690,6 +28663,137 @@ mod tests {
             );
             assert!(original.id.starts_with(&format!("{kind}_")));
             assert!(original.id.len() <= 64);
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_recovery_publications_keep_identical_probe_metadata_distinct() {
+        use base64::Engine as _;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("provider-publications.db");
+        let store = Arc::new(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
+        let bus = Arc::new(InMemoryEventBus::new());
+        let sink = Arc::clone(&store);
+        bus.subscribe_durable(
+            "runtime/resource_available".into(),
+            Arc::new(move |event| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move { sink.append(event).await.map(|_| ()) })
+            }),
+        );
+        let barrier = Arc::new(Barrier::new(65));
+        let mut publishers = Vec::new();
+        for _ in 0..64 {
+            let bus = Arc::clone(&bus);
+            let barrier = Arc::clone(&barrier);
+            publishers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                super::publish_provider_probe_available(
+                    &bus,
+                    "model-route:shared",
+                    0,
+                    None,
+                    "health_probe_succeeded",
+                    vec!["context-a".into(), "context-b".into()],
+                )
+                .await;
+            }));
+        }
+        barrier.wait().await;
+        for publisher in publishers {
+            publisher.await.unwrap();
+        }
+        let events = store
+            .query(QueryFilter {
+                topic: Some("runtime/resource_available".into()),
+                latest_k: Some(128),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            events.len(),
+            128,
+            "every Context gets every distinct publication"
+        );
+        let mut counters = HashSet::new();
+        for event in &events {
+            assert!(event.id.len() <= 64);
+            let suffix = event.id.strip_prefix("provider_recovery_probe_").unwrap();
+            let identity = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(suffix)
+                .unwrap();
+            assert_eq!(
+                identity.len(),
+                24,
+                "probe metadata and clock ticks are not a publication identity"
+            );
+            assert!(
+                counters.insert(identity[16..].to_vec()),
+                "the process counter is unique even if clock/entropy repeat"
+            );
+            assert_eq!(event.payload["resource"], "model-route:shared");
+            assert_eq!(event.payload["generation"], 0);
+            assert_eq!(event.payload["replaced_probe_id"], serde_json::Value::Null);
+            assert_eq!(event.payload["recovery_phase"], "closed");
+        }
+        for context in ["context-a", "context-b"] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.payload["context_id"] == context)
+                    .count(),
+                64
+            );
+        }
+        drop(bus);
+        drop(store);
+        let restarted = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        for event in &events {
+            restarted.append(event.clone()).await.unwrap();
+        }
+        assert_eq!(
+            restarted
+                .query(QueryFilter {
+                    topic: Some("runtime/resource_available".into()),
+                    latest_k: Some(128),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            128
+        );
+    }
+
+    #[test]
+    fn runtime_publication_prefixes_fit_the_current_identity_budget() {
+        for prefix in [
+            "reply",
+            "no_reply",
+            "thread_result",
+            "provider_recovery_probe",
+            "model_attempt_state",
+            "model_stream",
+            "model_request_snapshot",
+            "delegation_recovery_failed",
+            "delegation_failed",
+            "delegation_start",
+            "delegation_result",
+            "session_restored",
+            "safety_refusal_recovery",
+            "reasoning_continuation",
+            "reasoning_continuation_exhausted",
+            "response_protocol_fused",
+            "thread_waiting",
+            "progress",
+            "runtime_error",
+        ] {
+            assert!(
+                super::new_publication_event_id(prefix).unwrap().len() <= 64,
+                "{prefix}"
+            );
         }
     }
 
@@ -28711,7 +28815,7 @@ mod tests {
                     let session = format!("session-{}", index / 2);
                     let attempt = format!("attempt-{}", index / 2);
                     let mut event = Event::new(
-                        super::new_evaluation_outcome_event_id(kind).unwrap(),
+                        super::new_publication_event_id(kind).unwrap(),
                         "Agent-Morphz".into(),
                         crate::event::TYPE_AGENT_CALL.into(),
                         "runtime/same_clock_outcome_fixture".into(),

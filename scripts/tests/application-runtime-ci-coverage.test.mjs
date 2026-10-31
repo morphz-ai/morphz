@@ -604,3 +604,21 @@ test("parallel storage files, a narrowed inventory or a dropped required backend
       verifyStorageInventory(workflow.replace(storage, changed)),
     );
 });
+
+test("optimized Runtime CI requires three complete concurrent Provider recovery passes without retries", () => {
+  const source = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  function verify(candidate) {
+    const job = jobSource(candidate, "build");
+    assert.match(job, /cargo build --release --workspace/);
+    assert.match(job, /for round in 1 2 3; do/);
+    assert.match(job, /python3 scripts\/verify-provider-wait\.py --binary target\/release\/morphz --output "\$RUNNER_TEMP\/provider-wait-\$round"/);
+    assert.doesNotMatch(job, /continue-on-error|\|\|\s*true|--test-name-pattern|--retries/);
+    assert.ok(job.indexOf("cargo build --release") < job.indexOf("python3 scripts/verify-provider-wait.py"));
+  }
+  verify(source);
+  const job = jobSource(source, "build");
+  for (const changed of [job.replace("for round in 1 2 3; do", "for round in 1; do"),
+    job.replace("python3 scripts/verify-provider-wait.py", "echo omitted"),
+    job.replace('--output "$RUNNER_TEMP/provider-wait-$round"', '--output "$RUNNER_TEMP/provider-wait-$round" || true')])
+    assert.throws(() => verify(source.replace(job, changed)));
+});
