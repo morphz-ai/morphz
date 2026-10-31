@@ -198,12 +198,15 @@ test("Intel signature and native Notes regressions keep five complete real passe
     assert.match(job, /npm test -- --test-concurrency=1 tests\/desktop-bundle-native\.test\.ts tests\/cognitive-notes-native-production\.test\.ts/);
     assert.ok(job.indexOf("node node_modules/electron/install.js") < job.indexOf("npm test"));
     assert.ok(job.indexOf("scripts/prepare-cognitive-author-dependencies.ts") < job.indexOf("npm test"));
+    assert.ok(job.indexOf("npx playwright install chromium") > 0 &&
+      job.indexOf("npx playwright install chromium") < job.indexOf("npm test"));
     assert.doesNotMatch(job, /continue-on-error|\|\|\s*true|--test-name-pattern|--test-skip-pattern/);
   }
   verify(source);
   const job = jobSource(source, "macos-intel-publication-regressions");
   for (const changed of [job.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
     job.replace("tests/desktop-bundle-native.test.ts tests/cognitive-notes-native-production.test.ts", "tests/desktop-bundle-native.test.ts"),
+    job.replace("npx playwright install chromium", "echo missing-browser"),
     job.replace("MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres", "MORPHZ_TEST_REQUIRED_CAPABILITIES: none")])
     assert.throws(() => verify(source.replace(job, changed)));
 });

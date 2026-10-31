@@ -244,6 +244,7 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       - run: brew install postgresql@16
+      - run: npx playwright install chromium
       - name: Require five complete signature and native Notes passes without retries
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
