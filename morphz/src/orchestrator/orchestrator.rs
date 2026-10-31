@@ -17446,7 +17446,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let event = Event::new(
-            format!("no_reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            evaluation_outcome_event_id("no_reply", session_id, attempt_id),
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/no_reply".to_string(),
@@ -17613,7 +17613,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let mut event = Event::new(
-            format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            evaluation_outcome_event_id("reply", session_id, attempt_id),
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/reply".to_string(),
@@ -17682,17 +17682,13 @@ impl Orchestrator {
         attributes: Vec<(String, serde_json::Value)>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
-        let route = self.activation_route(attempt_id).ok_or_else(|| {
+        self.activation_route(attempt_id).ok_or_else(|| {
             format!(
                 "Work result '{}' is missing its Evaluation route",
                 attempt_id
             )
         })?;
-        let result_event_id = format!(
-            "thread_result_{}_{}",
-            route.thread_id,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        );
+        let result_event_id = evaluation_outcome_event_id("thread_result", session_id, attempt_id);
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -24750,6 +24746,18 @@ fn durable_activation_revocation_reason_for_record(
     None
 }
 
+/// Each Evaluation has one authoritative outcome. Bind its Event identity to
+/// that durable scope, not wall-clock precision: concurrent Evaluations can
+/// finish in the same clock tick, and retrying a commit must keep its identity.
+fn evaluation_outcome_event_id(kind: &str, session_id: &str, attempt_id: &str) -> String {
+    let mut digest = Sha256::new();
+    for part in ["evaluation-outcome-v1", kind, session_id, attempt_id] {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    format!("{kind}_{:x}", digest.finalize())
+}
+
 fn delivery_flush_timer_id(session_id: &str) -> String {
     let digest = Sha256::digest(format!("delivery-flush:{session_id}").as_bytes());
     format!("delivery-flush:{digest:x}")
@@ -28650,6 +28658,90 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with(&format!("runtime:{}:", std::process::id())));
         assert!(second.starts_with(&format!("runtime:{}:", std::process::id())));
+    }
+
+    #[test]
+    fn evaluation_outcome_identity_is_retry_stable_and_scope_separated() {
+        let id = super::evaluation_outcome_event_id;
+        assert_eq!(
+            id("reply", "session", "attempt"),
+            id("reply", "session", "attempt")
+        );
+        let scopes = [
+            ("reply", "session", "attempt"),
+            ("no_reply", "session", "attempt"),
+            ("thread_result", "session", "attempt"),
+            ("reply", "other-session", "attempt"),
+            ("reply", "session", "other-attempt"),
+            ("reply", "session:a", "b"),
+            ("reply", "session", "a:b"),
+        ];
+        let ids = scopes.map(|(kind, session, attempt)| id(kind, session, attempt));
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), scopes.len());
+    }
+
+    #[tokio::test]
+    async fn evaluation_outcomes_in_one_clock_tick_persist_independently_and_replay_once() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("same-clock-outcomes.db");
+        let store = Arc::new(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
+        let timestamp = chrono::DateTime::from_timestamp(1_793_405_220, 890_411_000).unwrap();
+        let barrier = Arc::new(Barrier::new(49));
+        let mut publishers = Vec::new();
+        for kind in ["reply", "no_reply", "thread_result"] {
+            for index in 0..16 {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                publishers.push(tokio::spawn(async move {
+                    let session = format!("session-{index}");
+                    let attempt = format!("attempt-{index}");
+                    let mut event = Event::new(
+                        super::evaluation_outcome_event_id(kind, &session, &attempt),
+                        "Agent-Morphz".into(),
+                        crate::event::TYPE_AGENT_CALL.into(),
+                        "runtime/same_clock_outcome_fixture".into(),
+                        json!({"session_id":session,"attempt_id":attempt,"text":kind})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    );
+                    event.timestamp = timestamp;
+                    barrier.wait().await;
+                    store.append(event.clone()).await.unwrap();
+                    event
+                }));
+            }
+        }
+        barrier.wait().await;
+        let mut events = Vec::new();
+        for publisher in publishers {
+            events.push(publisher.await.unwrap());
+        }
+        drop(store);
+        let restarted = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        for event in &events {
+            restarted.append(event.clone()).await.unwrap();
+        }
+        let persisted = restarted
+            .query(QueryFilter {
+                topic: Some("runtime/same_clock_outcome_fixture".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted.len(),
+            48,
+            "independent replies survive; replay adds no duplicates"
+        );
+        assert!(persisted.iter().all(|event| event.timestamp == timestamp));
+        assert_eq!(
+            persisted
+                .iter()
+                .map(|event| &event.id)
+                .collect::<HashSet<_>>(),
+            events.iter().map(|event| &event.id).collect::<HashSet<_>>()
+        );
     }
 
     #[test]
