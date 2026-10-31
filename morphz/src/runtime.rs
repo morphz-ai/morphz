@@ -13283,6 +13283,10 @@ mod scheduler_lifecycle_tests;
 mod plan_child_lifecycle_tests;
 
 #[cfg(test)]
+#[path = "runtime/harness_maintenance_tests.rs"]
+mod harness_maintenance_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ProviderConfig, ProviderModelConfig};

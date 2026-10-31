@@ -846,14 +846,15 @@ fn harness_relay_tool_scope(
         // Runtime-owned roots settle directly. Historical admission-failure
         // recovery may still reach a model, but cannot start a second domain
         // loop. Child inference keeps its statically derived scope below.
-        // Objective lifecycle settlement remains necessary even after the
-        // entry returns. Existing Objective admission still checks identity,
-        // generation and evidence; it does not grant domain work tools.
-        Some(if bound_objective {
-            HashSet::from(["objective_update".to_string()])
-        } else {
-            HashSet::new()
-        })
+        // Critical pressure can defer the root program before its first Job.
+        // Keep native memory maintenance available so the same Evaluation
+        // can release capacity and resume its exact entry. These cognitive
+        // tools grant no physical/domain effects or interpreter re-entry.
+        let mut scope = HashSet::from(["context_tx".to_string(), "recall".to_string()]);
+        if bound_objective {
+            scope.insert("objective_update".to_string());
+        }
+        Some(scope)
     } else {
         model_scope
     }
@@ -30029,7 +30030,10 @@ mod tests {
         let scope = Some(HashSet::from(["read".to_string()]));
         assert_eq!(
             harness_relay_tool_scope(Some(EvaluationOwner::Runtime), "self", false, scope.clone()),
-            Some(HashSet::new())
+            Some(HashSet::from([
+                "context_tx".to_string(),
+                "recall".to_string()
+            ]))
         );
         assert_eq!(
             harness_relay_tool_scope(
@@ -30047,7 +30051,34 @@ mod tests {
         assert_eq!(harness_relay_tool_scope(None, "self", false, None), None);
         assert_eq!(
             harness_relay_tool_scope(Some(EvaluationOwner::Runtime), "self", true, scope),
-            Some(HashSet::from(["objective_update".to_string()]))
+            Some(HashSet::from([
+                "context_tx".to_string(),
+                "recall".to_string(),
+                "objective_update".to_string(),
+            ]))
+        );
+    }
+
+    #[test]
+    fn runtime_harness_capacity_maintenance_cannot_reenter_domain_work() {
+        let scope = harness_relay_tool_scope(
+            Some(crate::sexpr_eval::EvaluationOwner::Runtime),
+            "self",
+            false,
+            Some(HashSet::from(["host_market_batch".to_string()])),
+        );
+        let mut tools = named_tools(&[
+            "context_tx",
+            "recall",
+            "eval",
+            "host_market_batch",
+            "exec",
+            "read",
+        ]);
+        restrict_tools_to_scope(&mut tools, scope.as_ref());
+        assert_eq!(
+            tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>(),
+            vec!["context_tx", "recall"]
         );
     }
 

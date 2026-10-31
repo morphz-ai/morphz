@@ -211,7 +211,7 @@ jobs:
     # the standard Intel fleet; dedicated Reader/GUI jobs retain arm64.
     # Every case, native-focus requirement and deadline below stays mandatory.
     runs-on: macos-26-intel
-    # On the 7 GiB runner, the complete single-worker Node inventory took 84m20s.
+    # On the Intel runner, the complete single-worker Node inventory took 88m52s.
     # Native/OCR assertions also passed, but the old 90m budget cancelled final
     # cleanup. Preserve every case and its own deadlines; budget the whole job.
     timeout-minutes: 120
@@ -244,8 +244,8 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          # The macOS runner has 7 GiB RAM. Four simultaneous browser/TypeScript
-          # workers caused memory pressure and load averages above 70. Retain
+          # The Intel runner reports 14 GiB RAM. Four simultaneous browser/TypeScript
+          # workers previously caused memory pressure and high load. Retain
           # every case and its internal concurrency; bound file scheduling only.
           MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1
       - name: Require actual browser foreground and background receipt behavior
