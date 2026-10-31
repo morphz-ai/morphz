@@ -157,6 +157,17 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
         run: ./scripts/cargo-dev.sh test --locked --all --verbose --no-fail-fast -- --test-threads=1
+      - name: Require five exact clock-independent Context encoding passes
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          set -euo pipefail
+          for round in 1 2 3 4 5; do
+            printf 'Context encoding clock pass %s/5\n' "$round"
+            log="$RUNNER_TEMP/context-clock-$round.log"
+            cargo test --locked -p morphz --lib orchestrator::context::tests::custom_survives_measurement_and_recovery_without_changing_empty_encoding -- --exact --test-threads=1 | tee "$log"
+            python3 -c 'from pathlib import Path; import sys; sys.exit(0 if any(line.startswith("test result: ok. 1 passed; 0 failed;") for line in Path(sys.argv[1]).read_text().splitlines()) else "The exact Context clock fixture did not run successfully")' "$log"
+          done
       - name: Require five complete native question cold-restart passes
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py

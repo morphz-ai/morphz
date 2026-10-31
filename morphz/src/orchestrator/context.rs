@@ -1382,6 +1382,7 @@ fn select_session_working_set(
 /// Cognitive Context's mutex. The Orchestrator and `context_tx` tool share the same instance.
 pub struct ContextEngine {
     typed_chat: bool,
+    capture_local_time: fn() -> crate::local_time::LocalTimeSnapshot,
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
     context_store: Option<Arc<dyn ContextStore>>,
@@ -1543,6 +1544,7 @@ impl ContextEngine {
         Self {
             store,
             typed_chat: false,
+            capture_local_time: crate::local_time::LocalTimeSnapshot::capture,
             session_store: None,
             context_store: None,
             session_projection_store: None,
@@ -4689,6 +4691,7 @@ impl ContextEngine {
         let sexpr = if include_encoding {
             {
                 render_context(ContextRenderInput {
+                    local_clock: (self.capture_local_time)(),
                     custom: None,
                     context_id,
                     active_session_id,
@@ -4942,6 +4945,7 @@ impl ContextEngine {
             return Ok(());
         }
         view.sexpr = render_context(ContextRenderInput {
+            local_clock: (self.capture_local_time)(),
             custom: view.compiled_custom.as_ref(),
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
@@ -5193,6 +5197,7 @@ impl ContextEngine {
 
     fn rerender_context_view(&self, view: &mut ContextView) {
         view.sexpr = render_context(ContextRenderInput {
+            local_clock: (self.capture_local_time)(),
             custom: view.compiled_custom.as_ref(),
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
@@ -8932,6 +8937,7 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
 }
 
 struct ContextRenderInput<'a> {
+    local_clock: crate::local_time::LocalTimeSnapshot,
     custom: Option<&'a SExpr>,
     context_id: &'a str,
     active_session_id: &'a str,
@@ -9932,6 +9938,7 @@ fn render_execution_targets(
 
 fn render_context(input: ContextRenderInput<'_>) -> String {
     let ContextRenderInput {
+        local_clock,
         custom,
         context_id,
         active_session_id,
@@ -10427,7 +10434,6 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     // protocol and append-mostly Inbox must precede all ordinary per-request
     // state. Retiring an old observation intentionally changes the Inbox and
     // starts a new cache lineage; ordinary wake/budget/Mind changes do not.
-    let local_clock = crate::local_time::LocalTimeSnapshot::capture();
     let mut context = vec![
         atom("context"),
         render_protocol(),
@@ -17689,6 +17695,7 @@ mod tests {
             updated_at: Utc::now(),
         }];
         let rendered = render_context(ContextRenderInput {
+            local_clock: crate::local_time::LocalTimeSnapshot::capture(),
             custom: None,
             context_id: "context-1",
             active_session_id: "s1",
@@ -17843,6 +17850,7 @@ mod tests {
         let mut warning_pressure = pressure.clone();
         warning_pressure.level = "warning".to_string();
         let warning = render_context(ContextRenderInput {
+            local_clock: crate::local_time::LocalTimeSnapshot::capture(),
             custom: None,
             context_id: "context-1",
             active_session_id: "s1",
@@ -17911,6 +17919,7 @@ mod tests {
         let kernel_offset = rendered.find(" (kernel (context context-1)").unwrap();
         budget.attempt = 2;
         let changed = render_context(ContextRenderInput {
+            local_clock: crate::local_time::LocalTimeSnapshot::capture(),
             custom: None,
             context_id: "context-1",
             active_session_id: "s2",
@@ -17956,6 +17965,7 @@ mod tests {
             .usage
             .recall_count_total = 1;
         let state_changed = render_context(ContextRenderInput {
+            local_clock: crate::local_time::LocalTimeSnapshot::capture(),
             custom: None,
             context_id: "context-1",
             active_session_id: "s1",
@@ -21589,7 +21599,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let engine = ContextEngine::new(
+        let mut engine = ContextEngine::new(
             store.clone() as Arc<dyn EventStore>,
             OrchestratorConfig {
                 context_soft_token_limit: 100,
@@ -21599,11 +21609,26 @@ mod tests {
             },
         )
         .with_session_store(store.clone() as Arc<dyn SessionStore>);
+        // Compare identical render inputs, rather than requiring asynchronous
+        // Store operations and multiple encodings to finish in the same second.
+        // This clock belongs only to this engine; concurrent tests keep theirs.
+        const BEFORE_MIDNIGHT: &str = "2020-01-01T23:59:59+08:00";
+        const AFTER_MIDNIGHT: &str = "2020-01-02T00:00:00+08:00";
+        engine.capture_local_time = || crate::local_time::LocalTimeSnapshot {
+            current: BEFORE_MIDNIGHT.parse().unwrap(),
+            time_zone: "Asia/Shanghai".into(),
+        };
         let mut view = engine
             .build_context_encoding_for_activation(context, &activation, &HashSet::new())
             .await
             .unwrap();
         let legacy = view.sexpr.clone();
+        assert_eq!(
+            parse(&legacy)
+                .unwrap()
+                .get_path(&["evaluation-environment", "local-time", "current"]),
+            Some(&SExpr::Atom(BEFORE_MIDNIGHT.into())),
+        );
         engine
             .mount_thread_custom(
                 &mut view,
@@ -21709,6 +21734,19 @@ mod tests {
         assert_eq!(
             view.state, unchanged_mind,
             "Custom rendering must not mutate Mind"
+        );
+        // A later render still refreshes the real clock dependency. Crossing a
+        // second/day is deterministic and cannot change any other Context byte.
+        let before = view.sexpr.clone();
+        assert_eq!(before.matches(BEFORE_MIDNIGHT).count(), 1);
+        engine.capture_local_time = || crate::local_time::LocalTimeSnapshot {
+            current: AFTER_MIDNIGHT.parse().unwrap(),
+            time_zone: "Asia/Shanghai".into(),
+        };
+        engine.rerender_context_view(&mut view);
+        assert_eq!(
+            view.sexpr,
+            before.replacen(BEFORE_MIDNIGHT, AFTER_MIDNIGHT, 1)
         );
     }
 
