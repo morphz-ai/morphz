@@ -208,6 +208,12 @@ jobs:
     container:
       image: ubuntu:22.04
     steps:
+      - name: Install Linux build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+            build-essential ca-certificates clang cmake curl git libssl-dev \
+            perl pkg-config bubblewrap python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
@@ -215,14 +221,8 @@ jobs:
       - name: Verify frozen release source
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
-          git diff --exit-code
-      - name: Install Linux build dependencies
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install --yes \
-            build-essential ca-certificates clang cmake curl git libssl-dev \
-            perl pkg-config bubblewrap python3
+          test "$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
