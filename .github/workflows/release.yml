@@ -1,8 +1,8 @@
-name: Release
+name: v0.1.5 parallel preparation and gated publication
 
 on:
   push:
-    tags: ["v*"]
+    branches: ["codex/prebuild-v015-76b1d35b"]
   workflow_dispatch:
 
 permissions:
@@ -11,15 +11,15 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
-  MORPHZ_BUILD_GIT_COMMIT: ${{ github.sha }}
+  MORPHZ_BUILD_GIT_COMMIT: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
 
 jobs:
   session-io:
-    needs: [validate-tag, complete-ci]
+    needs: validate-tag
     uses: ./.github/workflows/session-io.yml
 
   linux-sandbox:
-    needs: [validate-tag, complete-ci]
+    needs: validate-tag
     uses: ./.github/workflows/linux-sandbox-service.yml
 
   validate-tag:
@@ -34,7 +34,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -46,19 +52,20 @@ jobs:
         id: policy
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: v0.1.5
           RELEASE_EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           package_version="$(python3 -c 'import tomllib; print(tomllib.load(open("morphz/Cargo.toml", "rb"))["package"]["version"])')"
           if [[ "$RELEASE_EVENT" != "push" ]]; then
-            echo "dry-run release validation for v$package_version at $GITHUB_SHA"
+            echo "dry-run release validation for v$package_version at $MORPHZ_BUILD_GIT_COMMIT"
             RELEASE_TAG="v$package_version"
           fi
           node scripts/release-policy.cjs "$package_version" "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
   complete-ci:
     name: Same-commit complete CI admission
+    timeout-minutes: 180
     needs: validate-tag
     runs-on: ubuntu-latest
     permissions:
@@ -67,7 +74,28 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
+      - name: Wait for the existing complete CI without delaying package builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GODEBUG: http2client=0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess
+          source = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          for run_id in (41199133535, 41199133544):
+              data = json.loads(subprocess.check_output(["gh", "api", f"repos/morphz-ai/morphz/actions/runs/{run_id}"], text=True))
+              assert data["head_sha"] == source and data["head_branch"] == "main" and data["event"] == "push" and data["run_attempt"] == 1
+              subprocess.run(["gh", "run", "watch", str(run_id), "--repo", "morphz-ai/morphz", "--interval", "30", "--exit-status"], check=True)
+          PY
       - name: Require latest successful full push CI from the canonical branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,7 +104,7 @@ jobs:
           set -euo pipefail
           python3 -B scripts/verify-release-ci.py \
             --repository "$GITHUB_REPOSITORY" \
-            --commit "$GITHUB_SHA" \
+            --commit "$MORPHZ_BUILD_GIT_COMMIT" \
             --branch "$RELEASE_BRANCH" | tee release-ci-admission.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -86,7 +114,7 @@ jobs:
 
   release-readiness:
     name: Release readiness
-    needs: [validate-tag, complete-ci]
+    needs: validate-tag
     # Match the accepted AppArmor/Bubblewrap baseline used by CI's native gates.
     # ubuntu-latest can move to a kernel/userspace not covered by that contract.
     runs-on: ubuntu-24.04
@@ -97,7 +125,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -159,7 +193,7 @@ jobs:
 
   linux-bundles:
     name: ${{ matrix.asset }}
-    needs: [validate-tag, complete-ci]
+    needs: validate-tag
     strategy:
       fail-fast: false
       matrix:
@@ -176,7 +210,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - name: Install Linux build dependencies
         run: |
           apt-get update
@@ -277,7 +317,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: morphz-linux-${{ matrix.architecture }}
@@ -321,7 +367,7 @@ jobs:
 
   macos-bundles:
     name: ${{ matrix.asset }}
-    needs: [validate-tag, complete-ci]
+    needs: validate-tag
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     strategy:
@@ -338,7 +384,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -411,12 +463,18 @@ jobs:
 
   windows-bundle:
     name: morphz-windows-x86_64
-    needs: [validate-tag, complete-ci]
+    needs: validate-tag
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -552,7 +610,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
@@ -566,7 +630,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: v0.1.5
           RELEASE_PRERELEASE: ${{ needs.validate-tag.outputs.prerelease }}
           RELEASE_MAKE_LATEST: ${{ needs.validate-tag.outputs.make_latest }}
           RELEASE_BRANCH: ${{ needs.validate-tag.outputs.release_branch }}
@@ -574,10 +638,9 @@ jobs:
           set -euo pipefail
           # Recheck after packaging too: neither a moved tag nor a subsequent
           # failed/cancelled CI attempt may borrow the admission from hours ago.
-          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$GITHUB_SHA"
           python3 -B scripts/verify-release-ci.py \
             --repository "$GITHUB_REPOSITORY" \
-            --commit "$GITHUB_SHA" \
+            --commit "$MORPHZ_BUILD_GIT_COMMIT" \
             --branch "$RELEASE_BRANCH" > dist/release-ci-admission.json
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "release $RELEASE_TAG already exists; release assets are immutable" >&2
@@ -597,6 +660,31 @@ jobs:
           python3 -B scripts/verify-release-assets.py dist > "$RUNNER_TEMP/release-assets.txt"
           mapfile -t release_assets < "$RUNNER_TEMP/release-assets.txt"
           test "${#release_assets[@]}" -eq 23
+          # Only the workflow token creates the already-authorized stable tag.
+          # Its push does not launch a second copy of the tag release workflow.
+          python3 - <<'PY'
+          import json, subprocess
+          result = subprocess.run(["gh", "api", "repos/morphz-ai/morphz/releases/tags/v0.1.5"], capture_output=True, text=True)
+          assert result.returncode != 0 and json.loads(result.stdout)["message"] == "Not Found" and "HTTP 404" in result.stderr
+          old_run = json.loads(subprocess.check_output(["gh", "api", "repos/morphz-ai/morphz/actions/runs/41189050555"], text=True))
+          assert old_run["head_sha"] == "1e9e6521f7f31bbb27395a95d9b902b5572e8e8b" and old_run["status"] == "completed" and old_run["conclusion"] == "failure"
+          head = json.loads(subprocess.check_output(["gh", "api", "repos/morphz-ai/morphz/git/ref/heads/main"], text=True))
+          assert head["object"]["sha"] == "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          PY
+          gh auth setup-git
+          old_tag="4a637c3de43b15fbdb7693e95197181840170962"
+          backup_ref="refs/tags/codex/rejected-v0.1.5-1e9e6521"
+          git fetch --no-tags origin refs/tags/v0.1.5:refs/tags/v0.1.5
+          test "$(git rev-parse refs/tags/v0.1.5)" = "$old_tag"
+          test "$(git rev-parse refs/tags/v0.1.5^{})" = "1e9e6521f7f31bbb27395a95d9b902b5572e8e8b"
+          backup_remote="$(git ls-remote --refs origin "$backup_ref")"
+          if [ -n "$backup_remote" ]; then
+            test "$(printf '%s' "$backup_remote" | cut -f1)" = "$old_tag"
+          fi
+          git update-ref "$backup_ref" "$old_tag" ""
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" tag -a -f v0.1.5 "$MORPHZ_BUILD_GIT_COMMIT" -m "Morphz v0.1.5; complete same-source CI and all release checks passed"
+          git push --atomic --force-with-lease="refs/tags/v0.1.5:$old_tag" origin "$backup_ref:$backup_ref" refs/tags/v0.1.5:refs/tags/v0.1.5
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$MORPHZ_BUILD_GIT_COMMIT"
           gh release create "$RELEASE_TAG" "${release_assets[@]}" \
             --verify-tag \
             --title "$RELEASE_TAG" \

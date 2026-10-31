@@ -50,7 +50,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.97.1
@@ -136,7 +142,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: 76b1d35b8d35db8383ccbfc2d57469afdacbfb77
           persist-credentials: false
+      - name: Verify frozen release source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "76b1d35b8d35db8383ccbfc2d57469afdacbfb77"
+          git diff --exit-code
       - name: Install distribution AppArmor without changing global security settings
         run: |
           sudo apt-get update
