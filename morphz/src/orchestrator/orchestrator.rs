@@ -17028,7 +17028,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
-                new_publication_event_id("reasoning_continuation_exhausted")?,
+                new_publication_event_id("reasoning_exhausted")?,
                 "Runtime-Orchestrator".to_string(),
                 "runtime_error".to_string(),
                 "runtime/reasoning_continuation_exhausted".to_string(),
@@ -28784,7 +28784,7 @@ mod tests {
             "session_restored",
             "safety_refusal_recovery",
             "reasoning_continuation",
-            "reasoning_continuation_exhausted",
+            "reasoning_exhausted",
             "response_protocol_fused",
             "thread_waiting",
             "progress",
