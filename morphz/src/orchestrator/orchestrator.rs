@@ -17446,7 +17446,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let event = Event::new(
-            evaluation_outcome_event_id("no_reply", session_id, attempt_id),
+            new_evaluation_outcome_event_id("no_reply")?,
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/no_reply".to_string(),
@@ -17613,7 +17613,7 @@ impl Orchestrator {
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let mut event = Event::new(
-            evaluation_outcome_event_id("reply", session_id, attempt_id),
+            new_evaluation_outcome_event_id("reply")?,
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
             "chat/reply".to_string(),
@@ -17688,7 +17688,7 @@ impl Orchestrator {
                 attempt_id
             )
         })?;
-        let result_event_id = evaluation_outcome_event_id("thread_result", session_id, attempt_id);
+        let result_event_id = new_evaluation_outcome_event_id("thread_result")?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -24746,16 +24746,21 @@ fn durable_activation_revocation_reason_for_record(
     None
 }
 
-/// Each Evaluation has one authoritative outcome. Bind its Event identity to
-/// that durable scope, not wall-clock precision: concurrent Evaluations can
-/// finish in the same clock tick, and retrying a commit must keep its identity.
-fn evaluation_outcome_event_id(kind: &str, session_id: &str, attempt_id: &str) -> String {
-    let mut digest = Sha256::new();
-    for part in ["evaluation-outcome-v1", kind, session_id, attempt_id] {
-        digest.update((part.len() as u64).to_be_bytes());
-        digest.update(part.as_bytes());
-    }
-    format!("{kind}_{:x}", digest.finalize())
+/// An Event is one immutable publication, not the entire Evaluation. Keep a
+/// later failure notice distinct from an already committed reply; the Store's
+/// Activation fence suppresses that duplicate outcome. Persistence retries
+/// reuse the constructed Event, and therefore retain exactly its original ID.
+fn new_evaluation_outcome_event_id(kind: &str) -> Result<String, DynError> {
+    static NEXT_PUBLICATION: AtomicU64 = AtomicU64::new(0);
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random)
+        .map_err(|error| format!("Failed to generate Evaluation outcome identity: {error}"))?;
+    let nonce = random
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let sequence = NEXT_PUBLICATION.fetch_add(1, Ordering::Relaxed);
+    Ok(format!("{kind}_{nonce}_{sequence:016x}"))
 }
 
 fn delivery_flush_timer_id(session_id: &str) -> String {
@@ -28661,23 +28666,31 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_outcome_identity_is_retry_stable_and_scope_separated() {
-        let id = super::evaluation_outcome_event_id;
-        assert_eq!(
-            id("reply", "session", "attempt"),
-            id("reply", "session", "attempt")
-        );
-        let scopes = [
-            ("reply", "session", "attempt"),
-            ("no_reply", "session", "attempt"),
-            ("thread_result", "session", "attempt"),
-            ("reply", "other-session", "attempt"),
-            ("reply", "session", "other-attempt"),
-            ("reply", "session:a", "b"),
-            ("reply", "session", "a:b"),
-        ];
-        let ids = scopes.map(|(kind, session, attempt)| id(kind, session, attempt));
-        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), scopes.len());
+    fn evaluation_outcome_publications_keep_success_and_later_failure_distinct() {
+        for kind in ["reply", "no_reply", "thread_result"] {
+            let make = |text: &str| {
+                let payload = serde_json::Map::from_iter([
+                    ("session_id".into(), json!("same-session")),
+                    ("attempt_id".into(), json!("same-attempt")),
+                    ("text".into(), json!(text)),
+                ]);
+                Event::new(
+                    super::new_evaluation_outcome_event_id(kind).unwrap(),
+                    "Agent-Morphz".into(),
+                    crate::event::TYPE_AGENT_CALL.into(),
+                    "runtime/outcome_fixture".into(),
+                    payload,
+                )
+            };
+            let original = make("committed result");
+            let later_notice = make("post-commit dispatch failed");
+            assert_ne!(
+                original.id, later_notice.id,
+                "a later failure must not masquerade as replay of the successful Event"
+            );
+            assert!(original.id.starts_with(&format!("{kind}_")));
+            assert!(original.id.len() <= 64);
+        }
     }
 
     #[tokio::test]
@@ -28686,21 +28699,23 @@ mod tests {
         let path = tmp.path().join("same-clock-outcomes.db");
         let store = Arc::new(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
         let timestamp = chrono::DateTime::from_timestamp(1_793_405_220, 890_411_000).unwrap();
-        let barrier = Arc::new(Barrier::new(49));
+        let barrier = Arc::new(Barrier::new(97));
         let mut publishers = Vec::new();
         for kind in ["reply", "no_reply", "thread_result"] {
-            for index in 0..16 {
+            for index in 0..32 {
                 let store = Arc::clone(&store);
                 let barrier = Arc::clone(&barrier);
                 publishers.push(tokio::spawn(async move {
-                    let session = format!("session-{index}");
-                    let attempt = format!("attempt-{index}");
+                    // Two publications per Evaluation exercise a later notice
+                    // as well as independently completed concurrent work.
+                    let session = format!("session-{}", index / 2);
+                    let attempt = format!("attempt-{}", index / 2);
                     let mut event = Event::new(
-                        super::evaluation_outcome_event_id(kind, &session, &attempt),
+                        super::new_evaluation_outcome_event_id(kind).unwrap(),
                         "Agent-Morphz".into(),
                         crate::event::TYPE_AGENT_CALL.into(),
                         "runtime/same_clock_outcome_fixture".into(),
-                        json!({"session_id":session,"attempt_id":attempt,"text":kind})
+                        json!({"session_id":session,"attempt_id":attempt,"text":format!("{kind}-{index}")})
                             .as_object()
                             .unwrap()
                             .clone(),
@@ -28731,8 +28746,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             persisted.len(),
-            48,
-            "independent replies survive; replay adds no duplicates"
+            96,
+            "independent publications survive; replay adds no duplicates"
         );
         assert!(persisted.iter().all(|event| event.timestamp == timestamp));
         assert_eq!(
