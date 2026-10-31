@@ -93,3 +93,37 @@ test("publish needs exact-commit complete CI and explicit channel flags", () => 
   assert.match(release, /node scripts\/release-policy\.cjs "\$package_version" "\$RELEASE_TAG"/);
   assert.equal((release.match(/MORPHZ_VERSION="\$\{\{ needs.validate-tag.outputs.tag \}\}"/g) ?? []).length, 2);
 });
+
+test("release sandbox validation keeps the same accepted native baseline as main CI", () => {
+  const release = fs.readFileSync(path.join(root, ".github/workflows/release.yml"), "utf8");
+  const ci = fs.readFileSync(path.join(root, ".github/workflows/ci.yml"), "utf8");
+  const service = fs.readFileSync(path.join(root, ".github/workflows/linux-sandbox-service.yml"), "utf8");
+  const installation = fs.readFileSync(path.join(root, "tools/linux-sandbox/INSTALL.md"), "utf8");
+  function job(source, name) {
+    const header = `\n  ${name}:\n`;
+    const start = source.indexOf(header);
+    assert.notEqual(start, -1, `missing ${name}`);
+    return source.slice(start + header.length).split(/\n  [a-z][a-z0-9-]*:\n/, 1)[0];
+  }
+  function verify(source) {
+    assert.match(installation, /tested baseline is Ubuntu 24\.04, AppArmor 4, Bubblewrap 0\.9/);
+    for (const [workflow, name] of [[source, "release-readiness"], [ci, "test"],
+      [ci, "native-sandbox-linux"], [service, "runtime-admission"]]) {
+      assert.match(job(workflow, name), /^    runs-on: ubuntu-24\.04$/m);
+    }
+    const readiness = job(source, "release-readiness");
+    assert.match(readiness, /MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"/);
+    assert.match(readiness, /stage_runtime_tests\.py .* --install-service/);
+    assert.match(readiness, /run: cargo test --locked -p morphz --lib --bin morphz --test session_io --test native_sandbox_contract --no-fail-fast -- --test-threads=1/);
+    assert.doesNotMatch(readiness, /continue-on-error|--skip|--test-skip-pattern/);
+  }
+  verify(release);
+  const readiness = job(release, "release-readiness");
+  for (const changed of [
+    readiness.replace("runs-on: ubuntu-24.04", "runs-on: ubuntu-latest"),
+    readiness.replace("runs-on: ubuntu-24.04", "runs-on: ubuntu-26.04"),
+    readiness.replace('MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"', 'MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "0"'),
+    readiness.replace("--test native_sandbox_contract --no-fail-fast -- --test-threads=1", "--test native_sandbox_contract --no-fail-fast -- --test-threads=1 --skip sandbox"),
+  ])
+    assert.throws(() => verify(release.replace(readiness, changed)));
+});

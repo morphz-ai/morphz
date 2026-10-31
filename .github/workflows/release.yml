@@ -87,7 +87,9 @@ jobs:
   release-readiness:
     name: Release readiness
     needs: [validate-tag, complete-ci]
-    runs-on: ubuntu-latest
+    # Match the accepted AppArmor/Bubblewrap baseline used by CI's native gates.
+    # ubuntu-latest can move to a kernel/userspace not covered by that contract.
+    runs-on: ubuntu-24.04
     env:
       CARGO_BUILD_JOBS: 2
       MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
