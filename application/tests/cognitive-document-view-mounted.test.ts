@@ -7,6 +7,11 @@ import { appContentSecurityPolicy } from "../packages/core/src/resource-policy.j
 import type { CognitiveAppViewUi } from "../packages/core/src/cognitive-app-view-api.js";
 import { withViewTransport } from "./fixtures/cognitive-app-view-transport-fixture.js";
 
+// Protocol acknowledgments and SQL completion are independent of paint. The
+// default rAF poll can stop observing an already-delivered acknowledgment when
+// Chromium suppresses rendering. Keep the same 5s wall-clock deadline.
+const protocolObservation = { polling: 25 } as const;
+
 async function report(page: Page): Promise<any> {
   return page.evaluate(() =>
     Reflect.get(window, "documentViewFixture").report(),
@@ -24,18 +29,23 @@ async function action(
   );
 }
 async function connected(page: Page): Promise<Frame> {
-  await page.waitForFunction(() => {
-    const state = Reflect.get(window, "documentViewFixture").report();
-    const frame = state.frames[0];
-    return (
-      frame?.className === "cognitive-application-frame" &&
-      state.authorEvents.some(
-        (item: any) =>
-          item.proof === new URL(frame.src).searchParams.get("documentProof") &&
-          item.event.phase === "connected",
-      )
-    );
-  });
+  await page.waitForFunction(
+    () => {
+      const state = Reflect.get(window, "documentViewFixture").report();
+      const frame = state.frames[0];
+      return (
+        frame?.className === "cognitive-application-frame" &&
+        state.authorEvents.some(
+          (item: any) =>
+            item.proof ===
+              new URL(frame.src).searchParams.get("documentProof") &&
+            item.event.phase === "connected",
+        )
+      );
+    },
+    undefined,
+    protocolObservation,
+  );
   // Resolve the currently mounted native Frame from its actual iframe element,
   // not an index in asynchronously retiring StrictMode childFrames().
   const outerElement = await page
@@ -43,7 +53,11 @@ async function connected(page: Page): Promise<Frame> {
     .elementHandle();
   const outer = await outerElement!.contentFrame();
   assert.ok(outer);
-  await outer.waitForFunction(() => document.querySelector("iframe"));
+  await outer.waitForFunction(
+    () => document.querySelector("iframe"),
+    undefined,
+    protocolObservation,
+  );
   const guestElement = await outer.locator("iframe").elementHandle();
   const guest = await guestElement!.contentFrame();
   assert.ok(guest);
@@ -126,7 +140,11 @@ test(
         source: CognitiveAppViewUi,
         resourceRequests: string[],
       ) => Promise<void>,
-      settings: { initiallyValid?: boolean; holdAuthorize?: boolean } = {},
+      settings: {
+        initiallyValid?: boolean;
+        holdAuthorize?: boolean;
+        pausePaint?: boolean;
+      } = {},
     ) {
       await withViewTransport(
         backend,
@@ -221,10 +239,10 @@ test(
               }
             },
           );
-          await page.addInitScript(
-            (settings) => Reflect.set(window, "documentViewSettings", settings),
-            settings,
-          );
+          await page.addInitScript((settings) => {
+            Reflect.set(window, "documentViewSettings", settings);
+            if (settings.pausePaint) window.requestAnimationFrame = () => 0;
+          }, settings);
           // Only the controlled React parent is served by the fixture; fixed
           // Document bytes/security headers remain the actual authenticated service.
           await page.route(f.origin + "/", (route) =>
@@ -239,8 +257,10 @@ test(
           );
           try {
             await page.goto(f.origin + "/");
-            await page.waitForFunction(() =>
-              Reflect.get(window, "documentViewFixture"),
+            await page.waitForFunction(
+              () => Reflect.get(window, "documentViewFixture"),
+              undefined,
+              protocolObservation,
             );
             try {
               await work(page, source, resourceRequests);
@@ -367,10 +387,15 @@ test(
             await guest.evaluate(() =>
               Reflect.get(window, "documentViewAuthor").save(),
             );
-            await page.waitForFunction(() =>
-              Reflect.get(window, "documentViewFixture")
-                .report()
-                .authorEvents.some((item: any) => item.event.phase === "saved"),
+            await page.waitForFunction(
+              () =>
+                Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .authorEvents.some(
+                    (item: any) => item.event.phase === "saved",
+                  ),
+              undefined,
+              protocolObservation,
             );
             assert.deepEqual(
               await guest.evaluate(
@@ -382,14 +407,17 @@ test(
               },
             );
             await action(page, "presentation", light);
-            await page.waitForFunction(() =>
-              Reflect.get(window, "documentViewFixture")
-                .report()
-                .authorEvents.some(
-                  (item: any) =>
-                    item.event.phase === "context" &&
-                    item.event.context.theme.accent === "coral",
-                ),
+            await page.waitForFunction(
+              () =>
+                Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .authorEvents.some(
+                    (item: any) =>
+                      item.event.phase === "context" &&
+                      item.event.context.theme.accent === "coral",
+                  ),
+              undefined,
+              protocolObservation,
             );
             assert.equal((await report(page)).sameFrame, true);
             assert.equal(
@@ -419,6 +447,72 @@ test(
           });
         },
       );
+    await t.test(
+      "real protocol completion remains observable without paint; the old rAF waiter misses the delivered acknowledgment",
+      async () => {
+        await run(
+          "sqlite",
+          async (page) => {
+            await page.waitForFunction(
+              () =>
+                Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .calls.some((call: any) => !call.done),
+              undefined,
+              protocolObservation,
+            );
+            assert.deepEqual((await report(page)).authorEvents, []);
+            // Reproduce the former observation bug against the same native
+            // Document/SDK/SQL transaction, rather than mocking its result.
+            const paintWait = page
+              .waitForFunction(() => {
+                Reflect.set(window, "documentViewPaintWaitStarted", true);
+                return Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .authorEvents.some(
+                    (item: any) => item.event.phase === "connected",
+                  );
+              })
+              .then(
+                () => "unexpected success",
+                (error: Error) => error.name,
+              );
+            await page.waitForFunction(
+              () => Reflect.get(window, "documentViewPaintWaitStarted"),
+              undefined,
+              protocolObservation,
+            );
+            const actualConnection = connected(page);
+            await action(page, "release");
+            const guest = await actualConnection;
+            await guest.evaluate(() =>
+              Reflect.get(window, "documentViewAuthor").save(),
+            );
+            await page.waitForFunction(
+              () =>
+                Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .authorEvents.some(
+                    (item: any) => item.event.phase === "saved",
+                  ),
+              undefined,
+              protocolObservation,
+            );
+            assert.deepEqual(
+              await guest.evaluate(
+                () => Reflect.get(window, "documentViewAuthor").outcomes.save,
+              ),
+              {
+                ok: true,
+                value: { revision: 2, state: { view: "warm-original" } },
+              },
+            );
+            assert.equal(await paintWait, "TimeoutError");
+          },
+          { holdAuthorize: true, pausePaint: true },
+        );
+      },
+    );
     await t.test(
       "external owner invalidation is synchronous on committed layout; replacing callbacks cannot resurrect captured lease",
       async () => {
@@ -461,17 +555,23 @@ test(
         await run(
           "sqlite",
           async (page) => {
-            await page.waitForFunction(() =>
-              Reflect.get(window, "documentViewFixture")
-                .report()
-                .calls.some((call: any) => !call.done),
+            await page.waitForFunction(
+              () =>
+                Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .calls.some((call: any) => !call.done),
+              undefined,
+              protocolObservation,
             );
             assert.equal(await action(page, "unmount"), 0);
             await action(page, "release");
-            await page.waitForFunction(() =>
-              Reflect.get(window, "documentViewFixture")
-                .report()
-                .calls.every((call: any) => call.done),
+            await page.waitForFunction(
+              () =>
+                Reflect.get(window, "documentViewFixture")
+                  .report()
+                  .calls.every((call: any) => call.done),
+              undefined,
+              protocolObservation,
             );
             const r = await report(page);
             assert.equal(r.frames.length, 0);
