@@ -123,16 +123,6 @@ async fn critical_maintenance_resumes_the_exact_finite_harness_entry_once() {
         ),
     )
     .unwrap();
-    let store: Arc<dyn RuntimeStore> = Arc::new(
-        SqliteStore::new(database.path().to_str().unwrap())
-            .await
-            .unwrap(),
-    );
-    let client = Arc::new(MaintenanceClient {
-        store: store.clone(),
-        context_id: Mutex::new(String::new()),
-        calls: AtomicUsize::new(0),
-    });
     let mut config = AppConfig::default();
     config.orchestrator.context_soft_token_limit = 2_000;
     config.orchestrator.context_hard_token_limit = 3_000;
@@ -140,6 +130,21 @@ async fn critical_maintenance_resumes_the_exact_finite_harness_entry_once() {
     config.permissions.mode = crate::permission::PermissionMode::Custom;
     config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
     config.permissions.reviewer = ReviewerKind::Deny;
+    let store: Arc<dyn RuntimeStore> = Arc::new(
+        SqliteStore::new_for_runtime(
+            database.path().to_str().unwrap(),
+            &config.storage.sqlite,
+            config.storage.cognitive_store,
+            true,
+        )
+        .await
+        .unwrap(),
+    );
+    let client = Arc::new(MaintenanceClient {
+        store: store.clone(),
+        context_id: Mutex::new(String::new()),
+        calls: AtomicUsize::new(0),
+    });
     let runtime = MorphzRuntime::builder(config, client.clone())
         .store("TEST finite maintenance SQLite", store.clone())
         .harness_package(package)
