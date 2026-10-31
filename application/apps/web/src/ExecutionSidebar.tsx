@@ -290,6 +290,8 @@ export function ExecutionSidebar({
               t,
               client.online && executionActivityThreadAvailable(t, runtime),
             );
+    const stateLabel = needsInput ? "等待你的输入" : status.label;
+    const visibleSummary = summary === stateLabel ? "" : summary;
     const origin = executionActivityOrigin(
       t,
       state,
@@ -314,8 +316,8 @@ export function ExecutionSidebar({
           data-root-id={t.rootId}
           aria-label={[
             t.title || "执行事项",
-            needsInput ? "等待你的输入" : status.label,
-            needsInput ? "" : summary,
+            stateLabel,
+            visibleSummary,
             origin,
             executionActivityClock(t),
             model,
@@ -327,57 +329,67 @@ export function ExecutionSidebar({
           <span
             className="execution-activity-icon"
             data-status={status.kind}
-            title={needsInput ? "等待你的输入" : status.label}
+            title={stateLabel}
           >
             <ExecutionStatusIcon kind={status.kind} size={19} />
           </span>
           <span className="execution-activity-body">
             <strong title={t.title}>{t.title || "执行事项"}</strong>
-            {summary && (
+            {visibleSummary && (
               <span
                 className="execution-activity-summary"
                 data-user-input={needsInput || undefined}
                 data-approval={status.kind === "approval" || undefined}
-                title={summary}
+                title={visibleSummary}
               >
-                {summary}
+                {visibleSummary}
               </span>
             )}
-            <span className="execution-activity-meta" title={metadata}>
-              <time
-                dateTime={
-                  t.outcome?.terminalKind === t.lifecycle
-                    ? t.outcome.createdAt
-                    : t.updatedAt
-                }
+            <span className="execution-activity-footer">
+              <span
+                className="execution-activity-state"
+                data-status={status.kind}
+                data-user-input={needsInput || undefined}
+                title={stateLabel}
               >
-                {executionActivityClock(t)}
-              </time>
-              {t.executionModel && (
-                <>
-                  {" · "}
-                  <span
-                    className="execution-model-meta"
-                    title={executionModelDescription(t.executionModel)}
-                  >
-                    {model}
-                  </span>
-                </>
-              )}
-              {origin && (
-                <>
-                  {" · "}
-                  <span className="execution-activity-project" title={origin}>
-                    {origin}
-                  </span>
-                </>
-              )}
-              {children.length > 0 && (
-                <>
-                  {" · "}
-                  {children.length} 个子任务
-                </>
-              )}
+                {stateLabel}
+              </span>
+              <span className="execution-activity-meta" title={metadata}>
+                <time
+                  dateTime={
+                    t.outcome?.terminalKind === t.lifecycle
+                      ? t.outcome.createdAt
+                      : t.updatedAt
+                  }
+                >
+                  {executionActivityClock(t)}
+                </time>
+                {t.executionModel && (
+                  <>
+                    {" · "}
+                    <span
+                      className="execution-model-meta"
+                      title={executionModelDescription(t.executionModel)}
+                    >
+                      {model}
+                    </span>
+                  </>
+                )}
+                {origin && (
+                  <>
+                    {" · "}
+                    <span className="execution-activity-project" title={origin}>
+                      {origin}
+                    </span>
+                  </>
+                )}
+                {children.length > 0 && (
+                  <>
+                    {" · "}
+                    {children.length} 个子任务
+                  </>
+                )}
+              </span>
             </span>
           </span>
           <ChevronRight size={14} aria-hidden="true" />
