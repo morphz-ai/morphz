@@ -509,6 +509,8 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
       - run: npm audit --audit-level=low
+      - name: Verify patched glob matching and lint export compatibility
+        run: node --test ../scripts/tests/minimatch-security.test.mjs
       - name: Verify locked Dashboard license bundle
         working-directory: .
         run: python3 scripts/generate-third-party-licenses.py dashboard --check
@@ -548,6 +550,8 @@ jobs:
           cache-dependency-path: website/package-lock.json
       - run: npm ci
       - run: npm audit --audit-level=low
+      - name: Verify patched glob matching and lint export compatibility
+        run: node --test ../scripts/tests/minimatch-security.test.mjs
       - run: npm run lint
       - run: npm test
       - name: Verify generated documentation is current

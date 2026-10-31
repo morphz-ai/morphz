@@ -11,11 +11,8 @@ const fixture = mkdtempSync(join(tmpdir(), "morphz-dependency-install-"));
 try {
   const vendor = join(fixture, "third_party", "npm");
   mkdirSync(vendor, { recursive: true });
-  const tarball = "braces-3.0.4-morphz.1.tgz";
-  copyFileSync(
-    join(root, "third_party", "npm", tarball),
-    join(vendor, tarball),
-  );
+  for (const tarball of ["braces-3.0.4-morphz.1.tgz", "minimatch-11.0.1+morphz.1.tgz"])
+    copyFileSync(join(root, "third_party", "npm", tarball), join(vendor, tarball));
   for (const workspace of ["dashboard", "website"]) {
     const directory = join(fixture, workspace);
     mkdirSync(directory);
@@ -42,9 +39,14 @@ try {
         require("braces").compile("{".repeat(4000) + "a,b" + "}".repeat(4000)),
       /nesting depth/,
     );
-    console.log(
-      `${workspace}: clean locked install and actual recursion guard passed`,
-    );
+    const minimatch = require("minimatch");
+    assert.equal(require("minimatch/package.json").version, "11.0.1+morphz.1");
+    assert.equal(minimatch("src/file.ts", "src/**/*.ts"), true);
+    assert.equal(minimatch.minimatch("src/file.ts", "src/**/*.ts"), true);
+    assert.equal(new minimatch.Minimatch(Array(30).fill("**/../a/b").join("/"), {
+      optimizationLevel: 2, braceExpandMax: 64,
+    }).set.length, 64);
+    console.log(`${workspace}: clean locked install and actual dependency security guards passed`);
     rmSync(directory, { recursive: true, force: true });
   }
 } finally {

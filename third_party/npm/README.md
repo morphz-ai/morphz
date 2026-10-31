@@ -5,6 +5,7 @@ migrations. Keep lockfiles and bundled licenses synchronized.
 
 | Advisory | Workspace | Remediation |
 | --- | --- | --- |
+| GHSA-g3hv-75wg-m249 | dashboard, website | unchanged official minimatch 11.0.1 matcher, one CommonJS export adapter for installed legacy lint plugins; see [minimatch/PATCH.md](minimatch/PATCH.md) |
 | GHSA-wq5f-xc86-pv6w | website | miniflare's sharp upgraded to 0.35.5 |
 | GHSA-68fv-2mgg-jv7q | application, dashboard, website | source-map-js upgraded to 1.2.2 |
 | GHSA-rj75-hqrm-r3gf | dashboard | postcss-selector-parser upgraded to 7.1.6 |
@@ -20,7 +21,7 @@ the lockfile integrity digest. No install-time rewriting or network fork is used
 Verification:
 
 ```sh
-node --test scripts/tests/dependency-security.test.mjs
+node --test scripts/tests/dependency-security.test.mjs scripts/tests/minimatch-security.test.mjs
 node scripts/tests/dependency-security-clean-install.mjs
 npm --prefix application audit
 npm --prefix dashboard audit

@@ -1,0 +1,14 @@
+{
+  "version": "11.0.1",
+  "integrity": "sha512-t+Vn6DX4wPCxS23y03C0uhF7S1jpi1GfqPrnlEipCJaA2ykiNbMkVlDutZtmvLfRcUN6R8AYVlzTsQrT4RZoLQ==",
+  "code_sha256": {
+    "dist/commonjs/assert-valid-pattern.js": "fcd3b0e6efee67b11249804cc64bf4d22c883395491f79bfb484869d61823600",
+    "dist/esm/assert-valid-pattern.js": "90e8d3327d573b9d2391edf03dc7d50c1c0b468d720a4c0fb4a08a36ee5c50dc",
+    "dist/commonjs/escape.js": "54b57f8f50c8e834f35a30c1848ac3f79acf8dd85894505f046afaf3965e63a0",
+    "dist/esm/escape.js": "8418e37c202bcd247e76b1c205d4eff9474f15fb76c1db1ef0688cb6a8ec3c94",
+    "dist/commonjs/index.js": "d89e8ca7dda77bd9dc9efed6920b0ed09deb2f478ada54110980daa3080d3f9b",
+    "dist/esm/index.js": "c2ac65e82b196476009b53e1939811c788cb001d910304c6108a1f665fac3c3d",
+    "dist/commonjs/unescape.js": "bec1bb4483a2c325599949dd6668b5b7daa2dcbe046c5a09899bc8c5b51c08c1",
+    "dist/esm/unescape.js": "2cd61ba96e616969f152445c61ec2ca129a0afd2028ea71309b862a4222304d6"
+  }
+}
