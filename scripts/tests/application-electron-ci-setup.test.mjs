@@ -217,7 +217,7 @@ test("Intel mounted resource and view regression keeps five complete passes and 
   function verify(candidate) {
     const job = jobSource(candidate, "macos-mounted-resource-regressions");
     assert.match(job, /runs-on: macos-26-intel/);
-    assert.match(job, /timeout-minutes: 30/);
+    assert.match(job, /timeout-minutes: 60/);
     assert.doesNotMatch(job, /^    if:|continue-on-error/m);
     const step = job.split("\n      - ").find(part => part.includes("name: Require five complete mounted resource and view passes without retries"));
     assert.ok(step);
@@ -233,6 +233,8 @@ test("Intel mounted resource and view regression keeps five complete passes and 
   verify(source);
   const job = jobSource(source, "macos-mounted-resource-regressions");
   for (const changed of [
+    job.replace("timeout-minutes: 60", "timeout-minutes: 30"),
+    job.replace("timeout-minutes: 60", "timeout-minutes: 360"),
     job.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
     ...files.map(file => job.replace(`tests/${file}.test.ts \\\n`, "")),
     job.replace("set -euo pipefail", "set -eu"),

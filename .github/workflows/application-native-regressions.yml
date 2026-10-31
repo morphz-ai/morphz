@@ -227,7 +227,9 @@ jobs:
   macos-mounted-resource-regressions:
     name: Intel macOS mounted resource and view stability
     runs-on: macos-26-intel
-    timeout-minutes: 30
+    # The first complete cold Intel pass measured 565830 ms for 37 cases.
+    # Budget all five passes plus setup; every 5s/10s operation limit stays.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: application
