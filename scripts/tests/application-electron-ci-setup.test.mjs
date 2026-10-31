@@ -120,7 +120,7 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
     assert.doesNotMatch(entry, /^    if:|continue-on-error|github\.event_name|github\.ref/m);
     assert.match(candidate, /^  workflow_call:/m);
     for (const name of ["remaining-browser-regressions", "macos-reader-regressions",
-      "linux-native-regressions", "macos-compose-regressions"]) {
+      "linux-native-regressions", "macos-compose-regressions", "macos-intel-publication-regressions"]) {
       const job = jobSource(candidate, name);
       assert.doesNotMatch(job, /^    if:|github\.event_name|github\.ref/m,
         `${name}: native coverage cannot silently skip for its caller event`);
@@ -185,4 +185,25 @@ test("PostgreSQL 16 inventories keep their proven Ubuntu image instead of a movi
     const body = jobSource(source, job);
     assert.throws(() => verifyPostgres16Runner(source.replace(body, body.replace("runs-on: ubuntu-24.04", "runs-on: ubuntu-latest")), job));
   }
+});
+
+
+test("Intel signature and native Notes regressions keep five complete real passes", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  function verify(candidate) {
+    const job = jobSource(candidate, "macos-intel-publication-regressions");
+    assert.match(job, /runs-on: macos-26-intel/);
+    assert.match(job, /for round in 1 2 3 4 5; do/);
+    assert.match(job, /MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres/);
+    assert.match(job, /npm test -- --test-concurrency=1 tests\/desktop-bundle-native\.test\.ts tests\/cognitive-notes-native-production\.test\.ts/);
+    assert.ok(job.indexOf("node node_modules/electron/install.js") < job.indexOf("npm test"));
+    assert.ok(job.indexOf("scripts/prepare-cognitive-author-dependencies.ts") < job.indexOf("npm test"));
+    assert.doesNotMatch(job, /continue-on-error|\|\|\s*true|--test-name-pattern|--test-skip-pattern/);
+  }
+  verify(source);
+  const job = jobSource(source, "macos-intel-publication-regressions");
+  for (const changed of [job.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    job.replace("tests/desktop-bundle-native.test.ts tests/cognitive-notes-native-production.test.ts", "tests/desktop-bundle-native.test.ts"),
+    job.replace("MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres", "MORPHZ_TEST_REQUIRED_CAPABILITIES: none")])
+    assert.throws(() => verify(source.replace(job, changed)));
 });

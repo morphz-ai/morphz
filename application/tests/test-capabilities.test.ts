@@ -175,7 +175,11 @@ const declarations = [
 const darwin = [
   {
     file: "desktop-bundle-native.test.ts",
-    name: "fresh macOS development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+    name: "fresh macOS vendor development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+  },
+  {
+    file: "desktop-bundle-native.test.ts",
+    name: "fresh macOS unsigned development bundle seals the actual engine and unchanged reopen preserves every signed byte",
   },
   {
     file: "desktop-identity.test.ts",

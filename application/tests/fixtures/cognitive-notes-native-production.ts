@@ -307,10 +307,9 @@ export async function openNotesNativeProduction(
         >;
       },
       async diagnostics(label: string) {
-        const screenshot = join(
-          tmpdir(),
-          `morphz-notes-native-${label}-${f.tenantId}-oct06.png`,
-        );
+        const evidence = resolve("test-results", "notes-native-production");
+        mkdirSync(evidence, { recursive: true });
+        const screenshot = join(evidence, `${label}-${f.tenantId}.png`);
         await page.screenshot({ path: screenshot });
         console.log(
           JSON.stringify({
@@ -318,6 +317,9 @@ export async function openNotesNativeProduction(
             screenshot,
             bootstrap,
             responses,
+            remote: await electron!.evaluate(() =>
+              Reflect.get(globalThis, "__notesNativeRemoteTrace"),
+            ),
             errors,
             stderr,
             frames: page.frames().map((frame) => frame.url()),

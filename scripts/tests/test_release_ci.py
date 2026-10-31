@@ -142,6 +142,13 @@ class ReleaseCiTests(unittest.TestCase):
             job["name"] = "caller / " + job["name"]
         CI.verify_jobs(pages(inventory), run(), "ci.yml")
 
+    def test_intel_signature_and_notes_stability_gate_is_mandatory(self):
+        name = "Intel macOS fresh signatures and native Notes stability"
+        self.assertIn(name, CI.REQUIRED_JOBS["ci.yml"])
+        inventory = [job for job in jobs() if job["name"] != name]
+        with self.assertRaisesRegex(CI.AdmissionError, "Required complete CI jobs"):
+            CI.verify_jobs(pages(inventory), run(), "ci.yml")
+
     def test_full_verifier_fetches_both_workflows_and_exact_attempt_jobs_without_retries(self):
         calls = []
         def fetch(endpoint):

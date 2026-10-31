@@ -80,10 +80,11 @@ function verifyNotesGuiStability(source) {
 test("macOS repeats complete Notes GUI and connection resize files five times before the long inventory without narrowing or retrying", () => {
   const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
   verifyNotesGuiStability(source);
+  const guiJob = jobSource(source, "macos-compose-regressions");
   for (const changed of [
     source.replace("    needs: macos-reader-regressions\n", ""),
     source.replaceAll("runs-on: macos-26\n", "runs-on: macos-26-intel\n"),
-    source.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    source.replace(guiJob, guiJob.replace("for round in 1 2 3 4 5; do", "for round in 1; do")),
     source.replaceAll("scripts/prepare-cognitive-author-dependencies.ts", "scripts/omitted.ts"),
     source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "--test-name-pattern=fast\n          done"),
     source.replace("tests/connection-read-diagnostics-mounted.test.ts\n          done", "tests/connection-read-diagnostics-mounted.test.ts || true\n          done"),

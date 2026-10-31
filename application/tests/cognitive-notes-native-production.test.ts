@@ -10,7 +10,7 @@ import {
 import {
   buildNotesProductionUi,
   notesProductionLoginToken,
-  openNotesProductionApp,
+  openNotesProductionCenter,
 } from "./fixtures/cognitive-notes-production-app.js";
 import {
   buildNotesNativeProduction,
@@ -69,7 +69,10 @@ for (const backend of ["sqlite", "postgres"] as const)
     { timeout: 180_000 },
     async () => {
       const f = await openNotesGuiTransports(backend, packed);
-      const center = await openNotesProductionApp(f, ui.webRoot).catch(
+      // Native Remote needs the actual HTTP center, not a second full Chromium
+      // App competing for focus/GPU/memory. Web production coverage independently
+      // opens that browser; every native SQL/IdentityCenter/author assertion stays.
+      const center = await openNotesProductionCenter(f, ui.webRoot).catch(
         async (error) => {
           await f.close();
           throw error;

@@ -246,7 +246,7 @@ export async function buildNotesProductionUi() {
   }
 }
 
-export async function openNotesProductionApp(
+export async function openNotesProductionCenter(
   f: NotesGuiTransports,
   webRoot: string,
 ) {
@@ -294,6 +294,68 @@ export async function openNotesProductionApp(
     webRoot,
   });
   const resolutionHolds = notesResolutionResponseHolds(server, f);
+  const requests: {
+    method: string;
+    path: string;
+    status: number;
+    elapsedMs: number;
+  }[] = [];
+  server.on("request", (request, response) => {
+    const started = performance.now();
+    const path = new URL(request.url || "/", "http://127.0.0.1").pathname;
+    response.once("finish", () => {
+      requests.push({
+        method: request.method || "GET",
+        path,
+        status: response.statusCode,
+        elapsedMs: Math.round(performance.now() - started),
+      });
+      if (requests.length > 128) requests.shift();
+    });
+  });
+  const close = async () => {
+    try {
+      resolutionHolds.close();
+    } finally {
+      if (server.listening)
+        await new Promise<void>((done, fail) =>
+          server.close((error) => (error ? fail(error) : done())),
+        );
+    }
+  };
+  try {
+    server.listen(port, "127.0.0.1");
+    await once(server, "listening");
+    return {
+      server,
+      resolutionHolds,
+      versions,
+      origin: `http://127.0.0.1:${port}`,
+      close,
+      async diagnostics(label: string) {
+        console.log(
+          JSON.stringify({
+            label,
+            requests,
+            versions,
+            grants: await f.rows("cognitive_app_grants"),
+            connections: await f.rows("cognitive_app_connections"),
+          }),
+        );
+      },
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+export async function openNotesProductionApp(
+  f: NotesGuiTransports,
+  webRoot: string,
+) {
+  const { server, origin, resolutionHolds, versions } =
+    await openNotesProductionCenter(f, webRoot);
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
   let network: CDPSession | undefined;
@@ -317,9 +379,6 @@ export async function openNotesProductionApp(
     }
   };
   try {
-    server.listen(port, "127.0.0.1");
-    await once(server, "listening");
-    const origin = `http://127.0.0.1:${port}`;
     const executablePath =
       process.env.MORPHZ_TEST_BROWSER_EXECUTABLE || chromium.executablePath();
     assert.ok(
@@ -389,8 +448,10 @@ export async function openNotesProductionApp(
       // Both observers read the same physical response, never another fetch.
       // Playwright can retain a complete body even when a later abort produces
       // loadingFailed on our CDP session; CDP retains it across renderer disposal.
-      const { manifest: _manifest, ...source } =
-        parseCognitiveAppViewResponse("readUi", value);
+      const { manifest: _manifest, ...source } = parseCognitiveAppViewResponse(
+        "readUi",
+        value,
+      );
       const key = JSON.stringify(source);
       if (!observedSources.has(key)) {
         observedSources.add(key);
@@ -580,7 +641,9 @@ export async function openNotesProductionApp(
               try {
                 observeReadUi(value);
               } catch (error) {
-                errors.push(`Invalid actual read-ui response: ${String(error)}`);
+                errors.push(
+                  `Invalid actual read-ui response: ${String(error)}`,
+                );
               }
             }
             trace.push({

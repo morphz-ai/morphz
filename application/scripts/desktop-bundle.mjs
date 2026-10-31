@@ -7,6 +7,9 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  openSync,
+  readSync,
+  closeSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -70,6 +73,92 @@ function metadataStamp(contents, name) {
   return existsSync(prior) ? prior : resource;
 }
 
+function unsignedCode(signature) {
+  return (
+    signature.status !== 0 &&
+    /code object is not signed at all/.test(signature.stderr ?? "")
+  );
+}
+
+function sealFreshUnsignedFrameworkChildren(framework) {
+  const root = realpathSync(framework);
+  const executable = execFileSync(
+    "/usr/libexec/PlistBuddy",
+    [
+      "-c",
+      "Print :CFBundleExecutable",
+      join(framework, "Resources", "Info.plist"),
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  const main = realpathSync(join(framework, executable));
+  if (!main.startsWith(root + "/"))
+    throw new Error("Fresh framework executable escapes its copied bundle.");
+  const magic = new Set([
+    "feedface",
+    "cefaedfe",
+    "feedfacf",
+    "cffaedfe",
+    "cafebabe",
+    "bebafeca",
+    "cafebabf",
+    "bfbafeca",
+  ]);
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      // Follow only ordinary copied directories/files, never a framework link
+      // back into node_modules or another application.
+      if (entry.isDirectory()) {
+        visit(path);
+        continue;
+      }
+      if (!entry.isFile() || path === main) continue;
+      const header = Buffer.alloc(4);
+      const descriptor = openSync(path, "r");
+      let length;
+      try {
+        length = readSync(descriptor, header, 0, 4, 0);
+      } finally {
+        closeSync(descriptor);
+      }
+      if (length !== 4 || !magic.has(header.toString("hex"))) continue;
+      // CAFEBABE can also identify Java data. The platform inspector must
+      // confirm actual Mach-O code before it can acquire a local code seal.
+      if (
+        !/^Mach-O\b/.test(
+          execFileSync("/usr/bin/file", ["--brief", path], {
+            encoding: "utf8",
+          }),
+        )
+      )
+        continue;
+      try {
+        execFileSync("/usr/bin/codesign", ["--verify", "--strict", path], {
+          stdio: "pipe",
+        });
+      } catch (failure) {
+        const signature = spawnSync(
+          "/usr/bin/codesign",
+          ["--display", "--verbose=4", path],
+          { encoding: "utf8" },
+        );
+        if (!unsignedCode(signature)) throw failure;
+        // No --force: an existing vendor signature is never replaced here.
+        execFileSync(
+          "/usr/bin/codesign",
+          ["--sign", "-", "--timestamp=none", path],
+          { stdio: "pipe" },
+        );
+        execFileSync("/usr/bin/codesign", ["--verify", "--strict", path], {
+          stdio: "pipe",
+        });
+      }
+    }
+  };
+  visit(root);
+}
+
 function sealFreshDevelopmentFrameworks(frameworks) {
   for (const entry of readdirSync(frameworks, { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.endsWith(".framework")) continue;
@@ -89,28 +178,36 @@ function sealFreshDevelopmentFrameworks(frameworks) {
         ["--display", "--verbose=4", framework],
         { encoding: "utf8" },
       );
-      if (
-        signature.status !== 0 ||
-        !signature.stderr.includes("linker-signed") ||
-        !signature.stderr.includes("Signature=adhoc") ||
-        !signature.stderr.includes("Sealed Resources=none") ||
-        !signature.stderr.includes("TeamIdentifier=not set")
-      )
-        throw failure;
+      const linkerOnly =
+        signature.status === 0 &&
+        signature.stderr.includes("linker-signed") &&
+        signature.stderr.includes("Signature=adhoc") &&
+        signature.stderr.includes("Sealed Resources=none") &&
+        signature.stderr.includes("TeamIdentifier=not set");
+      if (!linkerOnly && !unsignedCode(signature)) throw failure;
       // Some development distributions contain valid Mach-O linker signatures
       // but no bundle resource seal. Authenticate the code before adding that
       // missing local ad-hoc seal, only in this newly copied development app.
       // Invalid existing vendor signatures and installed apps are never repaired.
+      if (linkerOnly)
+        execFileSync(
+          "/usr/bin/codesign",
+          ["--verify", "--strict", "--ignore-resources", framework],
+          { stdio: "pipe" },
+        );
+      // The pinned Intel Electron development distribution may contain wholly
+      // unsigned code. Seal only that new copy's unsigned nested Mach-O files;
+      // corrupt signed inputs and every already installed app remain rejected.
+      sealFreshUnsignedFrameworkChildren(framework);
       execFileSync(
         "/usr/bin/codesign",
-        ["--verify", "--strict", "--ignore-resources", framework],
-        {
-          stdio: "pipe",
-        },
-      );
-      execFileSync(
-        "/usr/bin/codesign",
-        ["--force", "--sign", "-", "--timestamp=none", framework],
+        [
+          ...(linkerOnly ? ["--force"] : []),
+          "--sign",
+          "-",
+          "--timestamp=none",
+          framework,
+        ],
         {
           stdio: "pipe",
         },

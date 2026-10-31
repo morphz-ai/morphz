@@ -220,6 +220,45 @@ jobs:
           path: application/test-results/
           if-no-files-found: ignore
 
+  macos-intel-publication-regressions:
+    name: Intel macOS fresh signatures and native Notes stability
+    # Reproduce the actual Intel failures early, without replacing the full
+    # Desktop inventory or weakening any signature/read assertion deadline.
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: brew install postgresql@16
+      - name: Require five complete signature and native Notes passes without retries
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
+        run: |
+          for round in 1 2 3 4 5; do
+            printf 'Intel signature and native Notes pass %s/5\n' "$round"
+            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/desktop-bundle-native.test.ts tests/cognitive-notes-native-production.test.ts
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: failure() || cancelled()
+        with:
+          name: intel-signature-notes-regressions
+          path: application/test-results/
+          if-no-files-found: ignore
+
   macos-compose-regressions:
     name: Isolated macOS iframe, manager and native control diagnosis
     # Keep one ARM allocation eligible at a time while the two long Intel

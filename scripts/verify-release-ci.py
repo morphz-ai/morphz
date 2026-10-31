@@ -25,6 +25,7 @@ REQUIRED_JOBS = {
         "Public pinned OCR acquisition and real Desktop reader",
         "Isolated Linux native and timing regression diagnosis",
         "Isolated macOS iframe, manager and native control diagnosis",
+        "Intel macOS fresh signatures and native Notes stability",
         "Installed service and actual Runtime exec / PTY",
         "Typed compiler and actual AppArmor literal paths",
     }),

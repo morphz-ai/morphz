@@ -161,7 +161,12 @@ const optionalTests = [
   ],
   [
     "desktop-bundle-native.test.ts",
-    "fresh macOS development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+    "fresh macOS vendor development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+    "darwin",
+  ],
+  [
+    "desktop-bundle-native.test.ts",
+    "fresh macOS unsigned development bundle seals the actual engine and unchanged reopen preserves every signed byte",
     "darwin",
   ],
   [
