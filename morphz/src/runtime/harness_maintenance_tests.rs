@@ -13,6 +13,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Mutex;
 
 const SEED: &str = "finite-maintenance-seed";
+const RETAINED_FRAME: &str = "maintenance-retained";
 
 struct MaintenanceClient {
     store: Arc<dyn RuntimeStore>,
@@ -51,7 +52,12 @@ impl Client for MaintenanceClient {
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, RuntimeError> {
-        assert_eq!(self.calls.fetch_add(1, Ordering::SeqCst), 0);
+        assert_eq!(
+            self.calls.fetch_add(1, Ordering::SeqCst),
+            0,
+            "unexpected model continuation: {:?}",
+            messages.last()
+        );
         assert!(messages.iter().any(|message| message
             .content
             .contains("The Runtime has entered critical-maintenance")));
@@ -89,7 +95,7 @@ impl Client for MaintenanceClient {
                 r#type: "function".into(),
                 func_name: "context_tx".into(),
                 arguments: serde_json::json!({"transaction": format!(
-                    "(context-tx (base-version {}) (reason \"historical fixture summarized\") (create maintenance/retained (summary \"historical evidence remains recorded\")) (retire {SEED}))",
+                    "(context-tx (base-version {}) (reason \"historical fixture summarized\") (create {RETAINED_FRAME} (summary \"historical evidence remains recorded\")) (retire {SEED}))",
                     state.version
                 )}).to_string(),
             }],
@@ -162,7 +168,7 @@ async fn critical_maintenance_resumes_the_exact_finite_harness_entry_once() {
     runtime.bind_default_principal(session.id()).await.unwrap();
     let seed = Event::new(
         SEED.into(),
-        "TEST".into(),
+        "System-Executor".into(),
         crate::event::TYPE_TOOL_OUTPUT.into(),
         "chat/tool_output".into(),
         serde_json::json!({
@@ -201,10 +207,7 @@ async fn critical_maintenance_resumes_the_exact_finite_harness_entry_once() {
         .unwrap()
         .state;
     assert!(state.retired.contains(SEED));
-    assert!(state
-        .frames
-        .iter()
-        .any(|frame| frame.id == "maintenance/retained"));
+    assert!(state.frames.iter().any(|frame| frame.id == RETAINED_FRAME));
     let original = store
         .query(QueryFilter {
             event_id: Some(SEED.into()),
