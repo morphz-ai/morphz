@@ -38,10 +38,27 @@ test("唯一 Host 工具说明符合真实 Runtime 的 16000 字节上限", () =
 });
 
 test("当前 Host 模型工具契约保持稳定：已批准的阅读器操作说明不随业务读取变化", () => {
-  // Pinned after the explicit reader discovery/selector fixes in 558c07d8 and
-  // 18f8b4b8. Business calls and annotation settings must not mutate it.
+  // Keep the reader witness from 558c07d8/18f8b4b8 unchanged. Only the
+  // explicitly approved xhigh addition to both task reasoning slots is
+  // projected out after checking the complete current enum at each slot.
+  const definitions = JSON.parse(JSON.stringify(workToolDefinitions));
+  assert.equal(definitions.length, 1);
+  for (const slot of [1, 4]) {
+    const choice =
+      definitions[0].parameters.properties.workTask.oneOf[slot].properties
+        .reasoningEffort.anyOf[0];
+    assert.deepEqual(choice.enum, [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    choice.enum.splice(4, 1);
+  }
   assert.deepEqual(
-    workToolDefinitions.map((definition) => ({
+    definitions.map((definition: (typeof workToolDefinitions)[number]) => ({
       name: definition.name,
       sha256: createHash("sha256")
         .update(JSON.stringify(definition))

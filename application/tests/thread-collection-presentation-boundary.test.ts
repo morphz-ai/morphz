@@ -1390,21 +1390,49 @@ test("core typed ports reject unrelated source and local fake types at the exact
   );
 });
 test("true core type-import aliases and local process data parameters remain pure and borrowed", () => {
+  // Locate and rename the real type binding; adding another imported type or
+  // formatting its declaration across lines must not invalidate this fixture.
+  const parsedOwner = parse({ Owner: sources.Owner }).get("Owner")!;
+  const scopeImports = parsedOwner.source.statements
+    .filter(isImportDeclaration)
+    .flatMap((declaration) => {
+      const entries = declaration.importClause?.namedBindings;
+      return entries && isNamedImports(entries)
+        ? entries.elements.filter(
+            (entry) =>
+              (entry.propertyName ?? entry.name).text === "ExecutionReadScope",
+          )
+        : [];
+    });
+  assert.equal(scopeImports.length, 1);
+  const scopeName = scopeImports[0]!.name;
+  const binding = parsedOwner.symbols.get(scopeName);
+  assert.ok(binding !== undefined);
+  let aliasedScope = sources.Owner;
+  for (const identifier of parsedOwner.nodes
+    .filter(isIdentifier)
+    .filter((node) => parsedOwner.symbols.get(node) === binding)
+    .sort((left, right) => right.getStart() - left.getStart())) {
+    const replacement =
+      identifier === scopeName
+        ? "ExecutionReadScope as BorrowedScope"
+        : "BorrowedScope";
+    aliasedScope =
+      aliasedScope.slice(0, identifier.getStart()) +
+      replacement +
+      aliasedScope.slice(identifier.end);
+  }
   const owner =
-    sources.Owner.replace(
-      "type ConversationRuntime,",
-      "type ConversationRuntime as BorrowedRuntime,",
-    )
+    aliasedScope
+      .replace(
+        "type ConversationRuntime,",
+        "type ConversationRuntime as BorrowedRuntime,",
+      )
       .replaceAll(": ConversationRuntime", ": BorrowedRuntime")
       .replace("type RecordedInput,", "type RecordedInput as BorrowedInput,")
       .replaceAll("Pick<RecordedInput", "Pick<BorrowedInput")
       .replace("type Workspace,", "type Workspace as BorrowedWorkspace,")
-      .replaceAll(": Workspace", ": BorrowedWorkspace")
-      .replace(
-        "import type { ExecutionReadScope }",
-        "import type { ExecutionReadScope as BorrowedScope }",
-      )
-      .replaceAll(": ExecutionReadScope", ": BorrowedScope") +
+      .replaceAll(": Workspace", ": BorrowedWorkspace") +
     "\nexport const localPure=(process:{value:number})=>process.value+1;\n" +
     "\nexport const localMap=(process:readonly number[])=>process.map(value=>value+1);\n" +
     "\nexport const localGlobalMap=(globalThis:readonly number[])=>globalThis.map(value=>value+1);\n";

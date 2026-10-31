@@ -195,7 +195,7 @@ test("Runtime 真实 HTTP 协议：丢回执后幂等重试、版本固定、重
       current: "test-model",
       reasoning: {
         current: null,
-        levels: ["none", "low", "medium", "high", "max"],
+        levels: ["none", "low", "medium", "high", "xhigh", "max"],
       },
       options: [
         { id: "test-model", label: "当前模型" },

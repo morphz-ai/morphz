@@ -204,6 +204,8 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
       const threadId = path.split("/").at(-1)!,
         root = threadRoots.get(threadId);
       const item = [...received.values()].find((r) => r.root === root);
+      if (!inferThreads.has(threadId) && !root)
+        return send(404, { error: "Thread not found" });
       return send(200, {
         snapshot: {
           thread: inferThreads.get(threadId) ?? {
@@ -526,6 +528,10 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
         requested: { read_roots: ["/fixture"], network: false },
       },
     });
+    pendingApprovals = [pending(a), pending(b)];
+    await bridge.tick();
+    assert.equal((await navigation()).attention?.available, true);
+    assert.equal((await navigation()).attention?.approvals.length, 2);
     pendingApprovals = [
       pending(a),
       pending(b),
@@ -563,6 +569,25 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
       "全局摘要只读取一次审批，不按消息展开工具历史",
     );
     assert.equal((await navigation()).activity?.threads[0]?.kind, "execution");
+    const partial = (await navigation()).attention!;
+    assert.equal(
+      partial.available,
+      false,
+      "unattributed or inconsistent local approvals cannot claim a complete inventory",
+    );
+    assert.equal(
+      partial.approvals.length,
+      2,
+      "known authorized approvals remain visible while completeness is unknown",
+    );
+    pendingApprovals = [pending(a), pending(b)];
+    const completeReads = approvalReads;
+    await bridge.tick();
+    assert.equal(
+      approvalReads - completeReads,
+      1,
+      "repairing the exact inventory still performs one bounded approval read",
+    );
     const attention = (await navigation()).attention!;
     assert.equal(attention.available, true);
     assert.deepEqual(

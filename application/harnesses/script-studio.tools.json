@@ -428,7 +428,7 @@
                 "anyOf": [
                   {
                     "type": "string",
-                    "enum": ["none", "low", "medium", "high", "max"]
+                    "enum": ["none", "low", "medium", "high", "xhigh", "max"]
                   },
                   { "type": "null" }
                 ]
@@ -594,7 +594,7 @@
                 "anyOf": [
                   {
                     "type": "string",
-                    "enum": ["none", "low", "medium", "high", "max"]
+                    "enum": ["none", "low", "medium", "high", "xhigh", "max"]
                   },
                   { "type": "null" }
                 ]
