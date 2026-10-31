@@ -120,7 +120,7 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
     assert.doesNotMatch(entry, /^    if:|continue-on-error|github\.event_name|github\.ref/m);
     assert.match(candidate, /^  workflow_call:/m);
     for (const name of ["remaining-browser-regressions", "macos-reader-regressions",
-      "linux-native-regressions", "macos-compose-regressions", "macos-intel-publication-regressions"]) {
+      "linux-native-regressions", "macos-compose-regressions", "macos-intel-publication-regressions", "macos-mounted-resource-regressions"]) {
       const job = jobSource(candidate, name);
       assert.doesNotMatch(job, /^    if:|github\.event_name|github\.ref/m,
         `${name}: native coverage cannot silently skip for its caller event`);
@@ -209,4 +209,36 @@ test("Intel signature and native Notes regressions keep five complete real passe
     job.replace("npx playwright install chromium", "echo missing-browser"),
     job.replace("MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres", "MORPHZ_TEST_REQUIRED_CAPABILITIES: none")])
     assert.throws(() => verify(source.replace(job, changed)));
+});
+
+test("Intel mounted resource and view regression keeps five complete passes and bounded original waits", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  const files = ["cognitive-document-view-mounted", "create-dialog-mounted", "exchange-reference-preparation-mounted", "object-annotations-mounted"];
+  function verify(candidate) {
+    const job = jobSource(candidate, "macos-mounted-resource-regressions");
+    assert.match(job, /runs-on: macos-26-intel/);
+    assert.match(job, /timeout-minutes: 30/);
+    assert.doesNotMatch(job, /^    if:|continue-on-error/m);
+    const step = job.split("\n      - ").find(part => part.includes("name: Require five complete mounted resource and view passes without retries"));
+    assert.ok(step);
+    assert.match(step, /set -euo pipefail/);
+    assert.match(step, /for round in 1 2 3 4 5; do/);
+    assert.match(step, /MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres/);
+    assert.match(step, /MORPHZ_TEST_POSTGRES_BIN_DIR="\$\(brew --prefix postgresql@16\)\/bin" npm test -- --test-concurrency=1/);
+    for (const file of files) assert.ok(step.includes(`tests/${file}.test.ts \\\n`));
+    for (const prerequisite of ["npm ci --prefix ../dashboard", "node node_modules/electron/install.js", "brew install postgresql@16", "npx playwright install chromium"])
+      assert.ok(job.indexOf(prerequisite) >= 0 && job.indexOf(prerequisite) < job.indexOf("npm test"));
+    assert.doesNotMatch(step, /--test-name-pattern|--test-skip-pattern|--grep|--shard|--retries|continue-on-error|\bif:|\|\||\buntil\b/);
+  }
+  verify(source);
+  const job = jobSource(source, "macos-mounted-resource-regressions");
+  for (const changed of [
+    job.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    ...files.map(file => job.replace(`tests/${file}.test.ts \\\n`, "")),
+    job.replace("set -euo pipefail", "set -eu"),
+    job.replace("--test-concurrency=1", "--test-concurrency=1 --test-name-pattern=fast"),
+    job.replace("npm ci --prefix ../dashboard", "echo missing-dashboard"),
+    job.replace("npx playwright install chromium", "echo missing-browser"),
+    job.replace("MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres", "MORPHZ_TEST_REQUIRED_CAPABILITIES: none"),
+  ]) assert.throws(() => verify(source.replace(job, changed)));
 });

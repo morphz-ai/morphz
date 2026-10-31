@@ -3,12 +3,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import { isFunctionDeclaration, type Node } from "typescript/unstable/ast";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
+import { chromium, type BrowserContext, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import { beforeReviewedModalChanges } from "./fixtures/modal-keyboard-boundary.js";
@@ -294,13 +294,33 @@ test(
     context.after(() =>
       context.diagnostic(JSON.stringify({ phase, errors, queries })),
     );
-    async function pair(kind: "document" | "project") {
-      const pages: Page[] = [];
+    async function pair(subtest: TestContext, kind: "document" | "project") {
+      assert.equal(
+        browser.contexts().length,
+        0,
+        "previous paired contexts must be released",
+      );
+      const pages: Page[] = [],
+        contexts: BrowserContext[] = [];
+      const close = async () => {
+        const closed = await Promise.allSettled(
+          contexts.map((context) => context.close()),
+        );
+        for (const result of closed)
+          if (result.status === "rejected") throw result.reason;
+        const retained = browser.contexts();
+        assert.ok(
+          contexts.every((context) => !retained.includes(context)),
+          "paired teardown must release pages and contexts",
+        );
+      };
+      // Register before setup; a failed page load must release the same scope.
+      subtest.after(close);
       for (const mode of ["fixed", "production"]) {
         const isolated = await browser.newContext({
           viewport: { width: 1440, height: 900 },
         });
-        context.after(() => isolated.close());
+        contexts.push(isolated);
         await isolated.addInitScript(
           ({ kind }) => {
             sessionStorage.setItem("morphzwork:window", "fixed-window");
@@ -359,9 +379,6 @@ test(
           await page.getByLabel(label, { exact: true }).fill(value);
         return parity(await read());
       };
-      const close = async () => {
-        for (const page of pages) await page.close();
-      };
       return { pages, read, run, parity, both, fill, close };
     }
     const events = (s: Snapshot, name: string) =>
@@ -373,9 +390,9 @@ test(
 
     await context.test(
       "document recovers legacy draft/window identity, keeps stable actual portal and state despite render-time reads, cancel/reopen and keyed scope",
-      async () => {
+      async (subtest) => {
         phase = "document recovery";
-        const lane = await pair("document");
+        const lane = await pair(subtest, "document");
         let s = lane.parity(await lane.read());
         assert.equal(s.draftOwner, "fixed-window");
         assert.equal(s.fields.title, "cached project-A");
@@ -427,9 +444,9 @@ test(
     );
     await context.test(
       "document captures storage once, keeps busy fields editable and captured execute bytes, clears old scope before ordinary callback/open",
-      async () => {
+      async (subtest) => {
         phase = "document write";
-        const lane = await pair("document");
+        const lane = await pair(subtest, "document");
         let s = await lane.fill("新对象标题", "  原始标题  ");
         s = await lane.fill("新文档正文", "原始Markdown");
         s = await lane.both("scope");
@@ -481,9 +498,9 @@ test(
     );
     await context.test(
       "empty guard and persistence/clear failures preserve original banner and do not repeat a successful write",
-      async () => {
+      async (subtest) => {
         phase = "storage failure";
-        const lane = await pair("document");
+        const lane = await pair(subtest, "document");
         let s = await lane.fill("新对象标题", "   ");
         s = await lane.both("submit");
         assert.equal(events(s, "execute").length, 0);
@@ -507,9 +524,9 @@ test(
     );
     await context.test(
       "project has no document storage IO, keeps no-key fields, uses actual modal focus/selection and exact prepare/receipt order",
-      async () => {
+      async (subtest) => {
         phase = "project modal";
-        const lane = await pair("project");
+        const lane = await pair(subtest, "project");
         let s = lane.parity(await lane.read());
         assert.deepEqual(events(s, "read"), []);
         assert.deepEqual(events(s, "write"), []);
@@ -566,9 +583,9 @@ test(
     );
     await context.test(
       "native modal cancel and keyboard loop use the actual hook and restore initiating selection",
-      async () => {
+      async (subtest) => {
         phase = "modal keyboard";
-        const lane = await pair("project");
+        const lane = await pair(subtest, "project");
         for (const page of lane.pages) {
           const controls = page.locator(
             "dialog button:not(:disabled),dialog input",
@@ -601,10 +618,10 @@ test(
     );
     await context.test(
       "execute Error/non-Error/synchronous failure retains draft and releases busy with exact original error text",
-      async () => {
+      async (subtest) => {
         for (const failure of ["error", "non-error", "sync"]) {
           phase = "execute " + failure;
-          const lane = await pair("document");
+          const lane = await pair(subtest, "document");
           await lane.fill("新对象标题", "错误前草稿");
           if (failure === "sync") await lane.both("syncExecuteError", true);
           let s = await lane.both("submit");
@@ -630,9 +647,9 @@ test(
     );
     await context.test(
       "prepare outside try preserves original unhandled rejection and busy lock; callback errors remain inside catch after successful write",
-      async () => {
+      async (subtest) => {
         phase = "prepare outside try";
-        const lane = await pair("project");
+        const lane = await pair(subtest, "project");
         await lane.fill("项目名称", "准备失败");
         await lane.both("throwPrepare", true);
         let s = await lane.both("submit");
@@ -651,7 +668,7 @@ test(
         await lane.close();
         for (const callback of ["throwPrepared", "throwOrdinary"]) {
           phase = callback;
-          const next = await pair("project");
+          const next = await pair(subtest, "project");
           await next.fill("项目名称", "回调失败");
           await next.both(callback, true);
           await next.both("submit");
@@ -679,9 +696,9 @@ test(
     );
     await context.test(
       "late document receipts clear only captured draft while replacement UI stays untouched; prepared project callback survives unmount, ordinary callbacks do not",
-      async () => {
+      async (subtest) => {
         phase = "late document success";
-        const lane = await pair("document");
+        const lane = await pair(subtest, "document");
         await lane.fill("新对象标题", "旧项目请求");
         await lane.both("submit");
         let s = await lane.both("project", "project-B");
@@ -696,7 +713,7 @@ test(
         assert.equal(events(s, "openObject").length, 0);
         await lane.close();
         phase = "late document failure";
-        const failure = await pair("document");
+        const failure = await pair(subtest, "document");
         await failure.both("submit");
         await failure.both("project", "project-B");
         s = await failure.both("reject", "error");
@@ -705,7 +722,7 @@ test(
         assert.equal(s.buttons.find((b) => b.text === "创建")!.disabled, false);
         await failure.close();
         phase = "late project success";
-        const project = await pair("project");
+        const project = await pair(subtest, "project");
         await project.fill("项目名称", "迟到项目");
         await project.both("submit");
         await project.both("close");
@@ -720,7 +737,7 @@ test(
     );
     await context.test(
       "actual styles and stable portal/native geometry stay equal across four accents, light/dark, narrow widths and CSS zoom",
-      async () => {
+      async (subtest) => {
         const observations: {
           kind: string;
           accent: string;
@@ -730,7 +747,7 @@ test(
           geometry: Snapshot["geometry"];
         }[] = [];
         for (const kind of ["document", "project"] as const) {
-          const lane = await pair(kind);
+          const lane = await pair(subtest, kind);
           for (const accent of ["cyan", "iris", "coral", "mono"])
             for (const appearance of ["light", "dark"])
               for (const width of [1440, 760])

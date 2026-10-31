@@ -158,6 +158,15 @@ test(
           const page = await context.newPage();
           page.setDefaultTimeout(5_000);
           const pending = new Map<string, AbortController>();
+          const activePorts = new Map<
+            string,
+            { method: string; started: number }
+          >();
+          const portTimings: Array<{
+            method: string;
+            elapsedMs: number;
+            completed: boolean;
+          }> = [];
           const errors: string[] = [];
           const resourceRequests: string[] = [];
           page.on("request", (request) => {
@@ -183,11 +192,16 @@ test(
               );
               const controller = new AbortController();
               pending.set(id, controller);
+              const started = performance.now();
+              activePorts.set(id, { method, started });
+              let completed = false;
               try {
-                return await f.local.call(method, parameters as never, {
+                const value = await f.local.call(method, parameters as never, {
                   signal: controller.signal,
                   identityGeneration: f.localCsrf,
                 });
+                completed = true;
+                return value;
               } catch (error) {
                 console.error(
                   "Actual document component Local port failure",
@@ -197,6 +211,12 @@ test(
                 );
                 throw error;
               } finally {
+                portTimings.push({
+                  method,
+                  elapsedMs: Math.round(performance.now() - started),
+                  completed,
+                });
+                activePorts.delete(id);
                 pending.delete(id);
               }
             },
@@ -225,6 +245,24 @@ test(
             try {
               await work(page, source, resourceRequests);
             } catch (error) {
+              console.error("Actual document component port timings", {
+                completed: portTimings,
+                active: [...activePorts.values()].map(
+                  ({ method, started }) => ({
+                    method,
+                    elapsedMs: Math.round(performance.now() - started),
+                  }),
+                ),
+              });
+              if (backend === "postgres")
+                console.error(
+                  "Actual document component PostgreSQL wait states",
+                  await f.q
+                    .all(
+                      "SELECT state,wait_event_type,wait_event,ROUND(EXTRACT(EPOCH FROM(clock_timestamp()-query_start))*1000) AS running_ms FROM pg_stat_activity WHERE datname=current_database() AND usename=current_user AND state<>'idle' AND pid<>pg_backend_pid() ORDER BY query_start LIMIT 16",
+                    )
+                    .catch(() => ({ unavailable: true })),
+                );
               console.error(
                 "Actual document component browser report",
                 JSON.stringify(await report(page)),
@@ -271,6 +309,9 @@ test(
           } finally {
             for (const controller of pending.values()) controller.abort();
             await context.close();
+            t.diagnostic(
+              JSON.stringify({ backend, documentViewPortTimings: portTimings }),
+            );
           }
         },
         { html },

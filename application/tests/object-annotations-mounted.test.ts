@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -18,7 +18,12 @@ import {
 } from "typescript/unstable/ast";
 import { format } from "prettier";
 import react from "@vitejs/plugin-react";
-import { chromium, type Browser, type Page } from "@playwright/test";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import {
   createLogger,
   createServer,
@@ -505,12 +510,36 @@ test(
     context.after(() =>
       context.diagnostic(JSON.stringify({ phase, errors, businessReads })),
     );
-    async function pair(options: Partial<Snapshot["facts"]> = {}) {
-      const pages: Page[] = [];
+    async function pair(
+      subtest: TestContext,
+      options: Partial<Snapshot["facts"]> = {},
+    ) {
+      assert.equal(
+        browser!.contexts().length,
+        0,
+        "previous paired contexts must be released",
+      );
+      const pages: Page[] = [],
+        contexts: BrowserContext[] = [];
+      const close = async () => {
+        const closed = await Promise.allSettled(
+          contexts.map((context) => context.close()),
+        );
+        for (const result of closed)
+          if (result.status === "rejected") throw result.reason;
+        const retained = browser!.contexts();
+        assert.ok(
+          contexts.every((context) => !retained.includes(context)),
+          "paired teardown must release pages and contexts",
+        );
+      };
+      // Register before setup; a failed page load must release the same scope.
+      subtest.after(close);
       for (const lane of ["fixed", "actual"]) {
         const isolated = await browser!.newContext({
           viewport: { width: 1440, height: 900 },
         });
+        contexts.push(isolated);
         await isolated.addInitScript(
           (options) => Reflect.set(window, "annotationOptions", options),
           options,
@@ -561,9 +590,6 @@ test(
             ),
           ),
         );
-      const close = async () => {
-        for (const page of pages) await page.close();
-      };
       return { pages, read, parity, both, close };
     }
     const active = (s: Snapshot) =>
@@ -572,9 +598,9 @@ test(
 
     await context.test(
       "cold hidden/no artifact, StrictMode, retained loading/items/error and stable dispatcher across hiding",
-      async () => {
+      async (subtest) => {
         phase = "cold hidden";
-        const lane = await pair();
+        const lane = await pair(subtest);
         let s = lane.parity(await lane.read());
         assert.equal(s.result, null);
         assert.equal(s.queries.length, 0);
@@ -608,7 +634,7 @@ test(
         assert.equal(s.queries.length, 2);
         await lane.close();
         phase = "initial visible StrictMode";
-        const replay = await pair({ visible: true });
+        const replay = await pair(subtest, { visible: true });
         s = replay.parity(await replay.read());
         assert.equal(s.queries.length, 2);
         assert.equal(s.queries[0]!.aborted, true);
@@ -626,9 +652,9 @@ test(
     );
     await context.test(
       "only five original dependencies retrigger, no Client object/history/title/name dependency, next effect captures trigger render",
-      async () => {
+      async (subtest) => {
         phase = "five dependencies";
-        const lane = await pair({ visible: true });
+        const lane = await pair(subtest, { visible: true });
         let s = lane.parity(await lane.read());
         s = await lane.both("resolve", { index: active(s), items: [note()] });
         const count = s.queries.length,
@@ -673,9 +699,9 @@ test(
     );
     await context.test(
       "original functional receipt refresh uses the same global React setter, including captured callback while hidden and batched updates",
-      async () => {
+      async (subtest) => {
         phase = "global receipt setter";
-        const lane = await pair();
+        const lane = await pair(subtest);
         let s = await lane.both("capture");
         const setter = s.setterId;
         s = await lane.both("captured", 0);
@@ -699,9 +725,9 @@ test(
     );
     await context.test(
       "real abort cleanup rejects reversed A/B, hidden and unmounted completions without clearing retained state",
-      async () => {
+      async (subtest) => {
         phase = "reverse completion";
-        const lane = await pair({ visible: true });
+        const lane = await pair(subtest, { visible: true });
         let s = lane.parity(await lane.read());
         const a = active(s);
         s = await lane.both("set", {
@@ -741,9 +767,9 @@ test(
     );
     await context.test(
       "original Error/non-Error, retry/loading/empty and same-ID historical revisions remain object-wide",
-      async () => {
+      async (subtest) => {
         phase = "error history";
-        const lane = await pair({ visible: true });
+        const lane = await pair(subtest, { visible: true });
         let s = lane.parity(await lane.read());
         s = await lane.both("reject", {
           index: active(s),
@@ -784,9 +810,9 @@ test(
     );
     await context.test(
       "complete panel preserves author/version/page/text DOM, escaping/order/key identity and actual menu contracts",
-      async () => {
+      async (subtest) => {
         phase = "complete panel DOM";
-        const lane = await pair({ visible: true });
+        const lane = await pair(subtest, { visible: true });
         let s = lane.parity(await lane.read());
         const unknown = {
           ...note("unknown", "A", 4),
@@ -844,9 +870,9 @@ test(
     );
     await context.test(
       "mount-only real heading focus and continued-input witness survive receipt/reading updates and Escape without draft mutation",
-      async () => {
+      async (subtest) => {
         phase = "mount focus";
-        const lane = await pair();
+        const lane = await pair(subtest);
         let s = await lane.both("set", { visible: true });
         assert.equal(s.active.tag, "H2");
         const panel = s.dom.panelId;
@@ -886,9 +912,9 @@ test(
     );
     await context.test(
       "actual layout, keyboard/pointer resize, overlay and 48 theme/viewport/zoom geometry comparisons have effective center widths",
-      async () => {
+      async (subtest) => {
         phase = "real resize";
-        const lane = await pair({ visible: true });
+        const lane = await pair(subtest, { visible: true });
         let s = lane.parity(await lane.read());
         assert.equal(s.layout.mode, "docked");
         assert.equal(s.dom.separator!.value, "340");

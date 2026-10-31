@@ -58,6 +58,10 @@ on:
       - scripts/tests/application-reader-ocr-smoke.test.mjs
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
+      - application/tests/cognitive-document-view-mounted.test.ts
+      - application/tests/create-dialog-mounted.test.ts
+      - application/tests/exchange-reference-preparation-mounted.test.ts
+      - application/tests/object-annotations-mounted.test.ts
   workflow_dispatch:
   workflow_call:
 
@@ -218,6 +222,51 @@ jobs:
         with:
           name: isolated-linux-native-failures
           path: application/test-results/
+          if-no-files-found: ignore
+
+  macos-mounted-resource-regressions:
+    name: Intel macOS mounted resource and view stability
+    runs-on: macos-26-intel
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: |
+            application/package-lock.json
+            dashboard/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix ../dashboard
+      - run: node node_modules/electron/install.js
+      - run: brew install postgresql@16
+      - run: npx playwright install chromium
+      - name: Require five complete mounted resource and view passes without retries
+        shell: bash
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
+        run: |
+          set -euo pipefail
+          for round in 1 2 3 4 5; do
+            printf 'Intel mounted resource and view pass %s/5\n' "$round"
+            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 \
+              tests/cognitive-document-view-mounted.test.ts \
+              tests/create-dialog-mounted.test.ts \
+              tests/exchange-reference-preparation-mounted.test.ts \
+              tests/object-annotations-mounted.test.ts \
+              | tee "$RUNNER_TEMP/mounted-resource-pass-$round.log"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: intel-mounted-resource-regressions
+          path: ${{ runner.temp }}/mounted-resource-pass-*.log
           if-no-files-found: ignore
 
   macos-intel-publication-regressions:

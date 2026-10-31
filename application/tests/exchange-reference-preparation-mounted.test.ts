@@ -3,9 +3,14 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, type Browser, type Page } from "@playwright/test";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import {
   createLogger,
   createServer,
@@ -245,12 +250,34 @@ test(
     context.after(() =>
       context.diagnostic(JSON.stringify({ phase, errors, businessReads })),
     );
-    async function pair() {
-      const pages: Page[] = [];
+    async function pair(subtest: TestContext) {
+      assert.equal(
+        browser!.contexts().length,
+        0,
+        "the previous subtest must release both browser contexts",
+      );
+      const pages: Page[] = [],
+        contexts: BrowserContext[] = [];
+      // Own each context before page setup can fail. Leaving the old/new pages
+      // alive until the parent finishes accumulates full editor renderers and
+      // exhausts the Intel CI worker during later, otherwise bounded cases.
+      subtest.after(async () => {
+        const closed = await Promise.allSettled(
+          contexts.map((isolated) => isolated.close()),
+        );
+        for (const result of closed)
+          if (result.status === "rejected") throw result.reason;
+        assert.equal(
+          browser!.contexts().length,
+          0,
+          "subtest teardown must release every old/new page and context",
+        );
+      });
       for (const lane of ["fixed", "actual"]) {
         const isolated = await browser!.newContext({
           viewport: { width: 1440, height: 900 },
         });
+        contexts.push(isolated);
         await isolated.addInitScript(
           `sessionStorage.setItem("morphz:window", "fixture-window"); Object.defineProperty(crypto, "randomUUID", { value: () => "00000000-0000-4000-8000-000000000001" }); window.focusCalls = []; const original = HTMLElement.prototype.focus; HTMLElement.prototype.focus = function (options) { window.focusCalls.push({ id: this.id, label: this.getAttribute("aria-label"), options: options ?? null }); original.call(this, options); };`,
         );
@@ -336,9 +363,9 @@ test(
     };
     await context.test(
       "original state/effect slots, stable actual setter, same-default surfaces retain reveal and different conversation retires",
-      async () => {
+      async (subtest) => {
         phase = "state lifecycle";
-        const h = await pair(),
+        const h = await pair(subtest),
           initial = await h.read();
         assert.equal(initial.quoteReveal, null);
         const setter = initial.setterId;
@@ -370,9 +397,9 @@ test(
     );
     await context.test(
       "actual SearchDocuments closes before exact quote navigation; held completion preserves captured draft and real scoped storage",
-      async () => {
+      async (subtest) => {
         phase = "SearchDocuments quote";
-        const h = await pair();
+        const h = await pair(subtest);
         await h.dom((page) => page.locator("#search-trigger").click());
         assert.ok((await h.read()).dom.searchModal);
         await Promise.all(
@@ -418,9 +445,9 @@ test(
     );
     await context.test(
       "direct search returns void, reversed/undefined generations keep original rejection and focus-inside policy",
-      async () => {
+      async (subtest) => {
         phase = "generation and search focus";
-        const h = await pair();
+        const h = await pair(subtest);
         assert.equal((await h.run("searchQuote")).returned, "undefined");
         await h.run("searchQuote");
         await h.dom((page) => page.locator("#inside").focus());
@@ -478,9 +505,9 @@ test(
     }
     await context.test(
       "actual ArtifactEditor/SelectionActions selection keeps exact historical revision and original clearing without send guard",
-      async () => {
+      async (subtest) => {
         phase = "actual artifact selection";
-        const h = await pair();
+        const h = await pair(subtest);
         await h.run("set", { revision: 1, disabled: true });
         await selectDocument(h.pages, true);
         let result = await h.dom((page) =>
@@ -514,9 +541,9 @@ test(
     );
     await context.test(
       "actual Provider comment portal/function merge and chip edit/remove retain draft and distinct preventScroll focus",
-      async () => {
+      async (subtest) => {
         phase = "actual Provider comment";
-        const h = await pair();
+        const h = await pair(subtest);
         await selectDocument(h.pages);
         await h.dom((page) =>
           page
@@ -559,9 +586,9 @@ test(
     );
     await context.test(
       "Provider scope retirement, disabled contract and actual Search native cancel preserve focus/text selection",
-      async () => {
+      async (subtest) => {
         phase = "retirement and modal cancel";
-        const h = await pair();
+        const h = await pair(subtest);
         await selectDocument(h.pages);
         await h.dom((page) =>
           page
@@ -619,9 +646,9 @@ test(
     );
     await context.test(
       "unmount aborts actual recent/search consumers, late controlled completion does not touch retired draft storage",
-      async () => {
+      async (subtest) => {
         phase = "unmount";
-        const h = await pair();
+        const h = await pair(subtest);
         await h.run("searchQuote");
         await h.run("set", { searchOpen: true });
         const before = await h.read();
@@ -648,9 +675,9 @@ test(
     );
     await context.test(
       "actual search ancestor geometry and unsuppressed motion compare all four themes/light-dark/viewport/zoom",
-      async () => {
+      async (subtest) => {
         phase = "geometry/motion";
-        const h = await pair();
+        const h = await pair(subtest);
         await h.dom((page) => page.locator("#search-trigger").click());
         const observations: unknown[] = [],
           widths = new Map<string, number>();
