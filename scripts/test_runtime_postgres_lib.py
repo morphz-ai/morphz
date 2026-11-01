@@ -17,6 +17,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = (
+    "memory::postgres::tests::message_claim_locks_session_before_principal_binding_postgres",
     "memory::postgres::tests::runtime_directory_keyset_pages_postgres",
     "memory::postgres::tests::thread_projection_dependencies_seek_current_edges_postgres",
     "memory::postgres::tests::thread_event_sources_seek_each_topic_before_limit_postgres",

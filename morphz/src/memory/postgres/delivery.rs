@@ -658,6 +658,10 @@ async fn claim_parallel_message_fast_path(
     let statement_started = std::time::Instant::now();
     let row = sqlx::query(
         r#"WITH
+           locked_session AS MATERIALIZED (
+             SELECT id, agent_id, context_id, status, attention_state
+             FROM sessions WHERE id = $1 FOR UPDATE
+           ),
            authority AS MATERIALIZED (
              SELECT session.id, session.agent_id, session.context_id, session.status,
                     session.attention_state,
@@ -668,9 +672,7 @@ async fn claim_parallel_message_fast_path(
                         AND binding.unbound_at IS NULL
                       FOR SHARE
                     ) AS principal_is_bound
-             FROM sessions session
-             WHERE session.id = $1
-             FOR UPDATE
+             FROM locked_session session
            ),
            request_insert AS (
              INSERT INTO session_message_requests
@@ -964,6 +966,19 @@ async fn claim_ordered_message_fast_path(
                       hashtext($1)
                     ) AS acquired
            ),
+           locked_session AS MATERIALIZED (
+             SELECT session.id, session.agent_id, session.context_id, session.status,
+                    session.attention_state
+             FROM sessions session
+             WHERE session.id = $1
+               AND (SELECT acquired FROM ordered_guard)
+               -- Keep the statement snapshot guard on the locked native row.
+               AND pg_visible_in_snapshot(
+                     (session.xmin::text)::xid8,
+                     pg_current_snapshot()
+                   )
+             FOR UPDATE SKIP LOCKED
+           ),
            authority AS MATERIALIZED (
              SELECT session.agent_id, session.context_id, session.status,
                     session.attention_state,
@@ -974,19 +989,7 @@ async fn claim_ordered_message_fast_path(
                         AND binding.unbound_at IS NULL
                       FOR SHARE
                     ) AS principal_is_bound
-             FROM sessions session
-             WHERE session.id = $1
-               AND (SELECT acquired FROM ordered_guard)
-               -- A statement snapshot is fixed before lock acquisition. If a
-               -- predecessor commits while this statement is waiting, EPQ can
-               -- expose its newer Session tuple while all other reads still
-               -- use the older snapshot. Refuse that mixed-time View and let
-               -- the caller retry after a separate Session-lock statement.
-               AND pg_visible_in_snapshot(
-                     (session.xmin::text)::xid8,
-                     pg_current_snapshot()
-                   )
-             FOR UPDATE SKIP LOCKED
+             FROM locked_session session
            ),
            request_insert AS (
              INSERT INTO session_message_requests
@@ -1772,7 +1775,11 @@ impl DeliveryIngressStore for PostgresStore {
             session_ids.sort();
             session_ids.dedup();
             for row in sqlx::query(
-                r#"SELECT session.id, session.agent_id, session.context_id, session.status,
+                r#"WITH locked_sessions AS MATERIALIZED (
+                     SELECT id, agent_id, context_id, status
+                     FROM sessions WHERE id = ANY($1) ORDER BY id FOR UPDATE
+                   )
+                   SELECT session.id, session.agent_id, session.context_id, session.status,
                           EXISTS(
                             SELECT 1 FROM session_principal_bindings binding
                             WHERE binding.session_id = session.id
@@ -1780,8 +1787,7 @@ impl DeliveryIngressStore for PostgresStore {
                               AND binding.unbound_at IS NULL
                             FOR SHARE
                           ) AS principal_is_bound
-                   FROM sessions session WHERE session.id = ANY($1)
-                   ORDER BY id FOR UPDATE"#,
+                   FROM locked_sessions session ORDER BY session.id"#,
             )
             .bind(&session_ids)
             .bind(event_principal_id)
@@ -1801,7 +1807,14 @@ impl DeliveryIngressStore for PostgresStore {
         }
         let authority_started = std::time::Instant::now();
         let session = sqlx::query(if referenced_session_ids.is_empty() {
-            r#"SELECT session.agent_id, session.context_id, session.status,
+            // Lock the Session before evaluating the binding subquery. A
+            // projection-level FOR SHARE can otherwise run before FOR UPDATE,
+            // invert the ingress lock order and deadlock concurrent retries.
+            r#"WITH locked_session AS MATERIALIZED (
+                 SELECT id, agent_id, context_id, status, attention_state, attention_revision
+                 FROM sessions WHERE id = $1 FOR UPDATE
+               )
+               SELECT session.agent_id, session.context_id, session.status,
                       session.attention_state, session.attention_revision,
                       EXISTS(
                         SELECT 1 FROM session_principal_bindings binding
@@ -1810,7 +1823,7 @@ impl DeliveryIngressStore for PostgresStore {
                           AND binding.unbound_at IS NULL
                         FOR SHARE
                       ) AS principal_is_bound
-               FROM sessions session WHERE session.id = $1 FOR UPDATE"#
+               FROM locked_session session"#
         } else {
             r#"SELECT session.agent_id, session.context_id, session.status,
                       session.attention_state, session.attention_revision,

@@ -9763,6 +9763,132 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
+    async fn message_claim_locks_session_before_principal_binding_postgres() {
+        use super::*;
+        use crate::memory::{
+            DeliveryIngressStore, MessageClaim, MessageDispatchMode, NewAgent, NewCognitiveContext,
+            NewPrincipal, NewSession, SessionDirectoryStore, SessionMountKind,
+        };
+        use serde_json::json;
+        use std::{sync::Arc, time::Duration};
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL required");
+        let schema = format!(
+            "morphz_claim_order_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        let admin = PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let scoped = format!("{url}{separator}options=-csearch_path%3D{schema}%2Cpublic%20-capplication_name%3D{schema}");
+        let store = Arc::new(PostgresStore::new(&scoped, 4).await.unwrap());
+        store
+            .create_agent(NewAgent {
+                id: "lock-agent".into(),
+                title: "TEST".into(),
+                root_context_id: "lock-context".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "lock-context".into(),
+                agent_id: "lock-agent".into(),
+                title: "TEST".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "lock-session".into(),
+                agent_id: "lock-agent".into(),
+                context_id: "lock-context".into(),
+                parent_session_id: None,
+                title: "TEST".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_principal(NewPrincipal {
+                id: "lock-principal".into(),
+                provider_id: "TEST".into(),
+                assurance: "verified".into(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("lock-session", "lock-principal")
+            .await
+            .unwrap();
+        for (index, mode) in [MessageDispatchMode::Parallel, MessageDispatchMode::FollowUp]
+            .into_iter()
+            .enumerate()
+        {
+            let mut blocker = store.pool.begin().await.unwrap();
+            let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *blocker)
+                .await
+                .unwrap();
+            sqlx::query("SELECT id FROM sessions WHERE id='lock-session' FOR UPDATE")
+                .execute(&mut *blocker)
+                .await
+                .unwrap();
+            let event = Event::new(format!("lock-event-{index}"),"TEST".into(),crate::event::TYPE_USER_MESSAGE.into(),"chat/user_message".into(),json!({"context_id":"lock-context","session_id":"lock-session","principal_id":"lock-principal","text":"TEST"}).as_object().unwrap().clone());
+            let claimant = Arc::clone(&store);
+            let claim = tokio::spawn(async move {
+                claimant
+                    .claim_message(
+                        "lock-session",
+                        &format!("lock-client-{index}"),
+                        &event,
+                        mode,
+                    )
+                    .await
+            });
+            // Observe the real database wait instead of sleeping and hoping the
+            // claimant has reached its locking statement.
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name=$1 AND $2=ANY(pg_blocking_pids(pid)))").bind(&schema).bind(blocker_pid).fetch_one(&admin).await.unwrap();
+                    if waiting { break; }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }).await.expect("the claim must reach the held Session lock");
+            sqlx::query("SET LOCAL lock_timeout='200ms'")
+                .execute(&mut *blocker)
+                .await
+                .unwrap();
+            let binding_write = sqlx::query("UPDATE session_principal_bindings SET bound_at=bound_at WHERE session_id='lock-session' AND principal_id='lock-principal'").execute(&mut *blocker).await;
+            assert!(binding_write.is_ok(),"a Session-blocked claimant must not already hold its principal binding: {binding_write:?}");
+            blocker.commit().await.unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(3), claim)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(result, MessageClaim::Accepted { .. }),
+                "{result:?}"
+            );
+        }
+        store.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
     async fn thread_projection_dependencies_seek_current_edges_postgres() {
         use super::*;
         use crate::scheduler::SchedulerDependencyStore;
