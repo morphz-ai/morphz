@@ -31,7 +31,8 @@ jobs:
       - name: Diagnose twenty complete native starts without retries
         env:
           MORPHZ_TEST_SOFTWARE_RENDERING: "1"
-        run: npx playwright test tests/capture-window.spec.ts --repeat-each=20 --forbid-only
+          PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/native-startup-report.json
+        run: npx playwright test tests/capture-window.spec.ts --repeat-each=20 --forbid-only --reporter=list,json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
