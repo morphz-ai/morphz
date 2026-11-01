@@ -165,10 +165,10 @@ import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
 import { DashboardApiError } from './api/client'
 import { DASHBOARD_API, getDashboardToken } from './api/runtime'
 import { submitThreadControl } from './app/threadControl'
+import { visibleReads } from './app/visibleReads'
 import { objectiveControlReceipt } from './app/objectiveControl'
 import {
   invalidatedQueriesForTopic,
-  invalidationsRequireSessionRefresh,
   type AuthoritativeQuery,
 } from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
@@ -3548,6 +3548,7 @@ export default function App() {
   const lastProgrammaticScroll = useRef(0)
   const lastExecutionProgrammaticScroll = useRef(0)
   const viewFrameRef = useRef<HTMLDivElement>(null)
+  const dialogueThreadReloadRef = useRef<() => Promise<void>>(async () => {})
   const sessionLoadInFlight = useRef(false)
   const sessionLoadQueued = useRef<{ sessionId: string, contextId: string } | null>(null)
   const loadSessionRef = useRef<(sessionId: string, contextId: string) => Promise<void>>(async () => {})
@@ -3969,7 +3970,7 @@ export default function App() {
   }, [loadCatalog])
 
   const loadSession = useCallback(async (sessionId: string, contextId: string) => {
-    if (!sessionId || !contextId) return
+    if (!sessionId || !contextId || !['dialogue', 'scheduler', 'cognition', 'overview'].includes(activeViewRef.current)) return
     if (sessionLoadInFlight.current) {
       // Never lose the last WebSocket-driven refresh. Without this queue, a
       // terminal event arriving while a previous snapshot was loading could
@@ -4664,23 +4665,19 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSessionId || !selectedContextId) return
-    if (view === 'overview' && !route.contextId) return
+    if ((view === 'overview' && !route.contextId) || !['dialogue', 'scheduler', 'cognition', 'overview'].includes(view)) return
     const initial = window.setTimeout(() => void loadSession(selectedSessionId, selectedContextId), 0)
-    const interval = window.setInterval(() => void loadSession(selectedSessionId, selectedContextId), 15000)
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [loadSession, route.contextId, schedulerHistoryLimit, selectedContextId, selectedSessionId, view])
 
   useEffect(() => {
     if (!selectedContextId || selectedSessionId) return
-    if (view === 'overview' && !route.contextId) return
+    if (view !== 'overview' || !route.contextId) return
     const initial = window.setTimeout(() => void loadOverview(selectedContextId, ''), 0)
-    const interval = window.setInterval(() => void loadOverview(selectedContextId, ''), 15000)
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [loadOverview, route.contextId, selectedContextId, selectedSessionId, view])
 
@@ -4688,33 +4685,25 @@ export default function App() {
     const globalOverview = view === 'overview' && !route.contextId
     if (!globalOverview && view !== 'runtime') return
     const initial = window.setTimeout(() => void loadRuntimeOverview(), 0)
-    // The Runtime monitor is invalidation-driven while visible. Do not add a
-    // periodic scheduler scan merely to animate a dashboard; durable Runtime
-    // events already invalidate this bounded projection. Keep the established
-    // global Overview fallback interval only on its original page.
-    const interval = globalOverview
-      ? window.setInterval(() => void loadRuntimeOverview(), 10_000)
-      : undefined
-    return () => {
-      window.clearTimeout(initial)
-      if (interval !== undefined) window.clearInterval(interval)
-    }
+    return () => window.clearTimeout(initial)
   }, [loadRuntimeOverview, route.contextId, view])
 
   useEffect(() => {
-    if (view !== 'runtime') return
+    if (view !== 'runtime' && view !== 'events' && !(view === 'overview' && !route.contextId) && selectedSessionId) return
     let socket: WebSocket | undefined
     let refreshTimer: number | undefined
-    let jobsRefreshTimer: number | undefined
     let reconnectTimer: number | undefined
     let disposed = false
-    const scheduleRefresh = () => {
+    const pending = new Set<AuthoritativeQuery>()
+    const scheduleRefresh = (queries: readonly AuthoritativeQuery[]) => {
+      for (const query of queries) pending.add(query)
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-      refreshTimer = window.setTimeout(() => void loadRuntimeOverview(), 500)
-    }
-    const scheduleExecutionJobsRefresh = () => {
-      if (jobsRefreshTimer !== undefined) window.clearTimeout(jobsRefreshTimer)
-      jobsRefreshTimer = window.setTimeout(() => void loadExecutionJobs(), 500)
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined
+        const queries = [...pending]
+        pending.clear()
+        authoritativeRefreshRef.current(queries)
+      }, 500)
     }
     const connect = () => {
       if (disposed) return
@@ -4727,16 +4716,20 @@ export default function App() {
       socket = nextSocket
       nextSocket.onopen = () => {
         if (disposed || socket !== nextSocket) return
-        scheduleRefresh()
-        scheduleExecutionJobsRefresh()
+        scheduleRefresh(['overview', 'scheduler', 'events', 'execution-jobs'])
       }
       nextSocket.onmessage = messageEvent => {
         if (disposed || socket !== nextSocket) return
         try {
           const event = JSON.parse(messageEvent.data) as MorphzEvent
+          const globalPage = view === 'runtime' || (view === 'overview' && !route.contextId)
           const invalidated = invalidatedQueriesForTopic(event.topic)
-          if (invalidated.includes('overview')) scheduleRefresh()
-          if (invalidated.includes('execution-jobs')) scheduleExecutionJobsRefresh()
+          if (!globalPage && event.payload.context_id !== selectedContextId) {
+            if (invalidated.includes('catalog')) scheduleRefresh(['catalog'])
+            return
+          }
+          if (!event.topic.startsWith('runtime/model_')) invalidated.push('events')
+          if (invalidated.length) scheduleRefresh(invalidated)
         } catch {
           // The primary Session socket owns user-facing parse diagnostics.
           // This connection is only an invalidation channel.
@@ -4759,10 +4752,9 @@ export default function App() {
       disposed = true
       socket?.close()
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-      if (jobsRefreshTimer !== undefined) window.clearTimeout(jobsRefreshTimer)
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
     }
-  }, [loadExecutionJobs, loadRuntimeOverview, view])
+  }, [route.contextId, selectedContextId, selectedSessionId, view])
 
   const selectedSession = sessions.find(item => item.id === selectedSessionId)
 
@@ -4796,13 +4788,8 @@ export default function App() {
       () => void loadContextProjection(selectedSessionId, selectedContextId),
       0,
     )
-    const interval = window.setInterval(
-      () => void loadContextProjection(selectedSessionId, selectedContextId),
-      30000,
-    )
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [loadContextProjection, selectedContextId, selectedSessionId, view])
 
@@ -4838,10 +4825,8 @@ export default function App() {
   useEffect(() => {
     if (view !== 'events' || !selectedContextId) return
     const initial = window.setTimeout(() => void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence), 0)
-    const interval = window.setInterval(() => void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence), 15000)
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [eventHistoryBeforeSequence, eventHistoryFilters, loadEventHistory, selectedContextId, view])
 
@@ -4854,13 +4839,8 @@ export default function App() {
       () => void loadThreadDetail(selectedContextId, route.threadId ?? ''),
       0,
     )
-    const interval = window.setInterval(
-      () => void loadThreadDetail(selectedContextId, route.threadId ?? ''),
-      5000,
-    )
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [loadThreadDetail, route.threadId, selectedContextId, view])
 
@@ -4886,56 +4866,47 @@ export default function App() {
         }
       }
     }
+    dialogueThreadReloadRef.current = load
     const initial = window.setTimeout(() => void load(), 0)
-    const interval = window.setInterval(() => void load(), 3000)
     return () => {
       cancelled = true
+      dialogueThreadReloadRef.current = async () => {}
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [dialogueActivityOpen, expandedDialogueThreadId, selectedContextId, view])
 
   useEffect(() => {
     if (view !== 'cognition' || cognitionView !== 'mind' || !selectedContextId) return
     const initial = window.setTimeout(() => void loadMindTransactions(selectedContextId), 0)
-    const interval = window.setInterval(() => void loadMindTransactions(selectedContextId), 15000)
     return () => {
       window.clearTimeout(initial)
-      window.clearInterval(interval)
     }
   }, [cognitionView, loadMindTransactions, selectedContextId, view])
 
   useEffect(() => {
     authoritativeRefreshRef.current = (invalidated: readonly AuthoritativeQuery[]) => {
-      if (invalidated.includes('catalog')) void loadCatalog()
-      const refreshesSession = invalidationsRequireSessionRefresh(invalidated)
-      if (refreshesSession) void loadSession(selectedSessionId, selectedContextId)
-      if (!refreshesSession && invalidated.includes('overview')) {
-        void loadOverview(selectedContextId, selectedSessionId)
-      }
-      if (
-        activeViewRef.current === 'overview'
-        && !route.contextId
-        && invalidated.includes('overview')
-      ) {
-        void loadRuntimeOverview()
-      }
-      if (view === 'cognition' && invalidated.includes('session')) {
+      const reads = visibleReads({view, cognitionView, globalOverview: view === 'overview' && !route.contextId,
+        hasContext: !!selectedContextId, hasSession: !!selectedSessionId, eventHistoryBeforeSequence,
+        threadId: route.threadId, dialogueActivityOpen, expandedDialogueThreadId}, invalidated)
+      if (reads.catalog) void loadCatalog()
+      if (reads.session) void loadSession(selectedSessionId, selectedContextId)
+      if (reads.overview) void loadOverview(selectedContextId, selectedSessionId)
+      if (reads.runtimeOverview) void loadRuntimeOverview()
+      if (reads.executionJobs) void loadExecutionJobs()
+      if (reads.contextProjection) {
         setContextEncoding(null)
         void loadContextProjection(selectedSessionId, selectedContextId)
       }
-      if (view === 'events' && invalidated.includes('events')) {
-        void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence)
-      }
-      if (view === 'cognition' && cognitionView === 'mind' && invalidated.includes('mind-transactions')) {
-        void loadMindTransactions(selectedContextId)
-      }
-      if (view === 'scheduler' && route.threadId && invalidated.includes('thread')) {
-        void loadThreadDetail(selectedContextId, route.threadId)
-      }
+      if (reads.eventHistory) void loadEventHistory(selectedContextId, eventHistoryFilters, eventHistoryBeforeSequence)
+      if (reads.mindTransactions) void loadMindTransactions(selectedContextId)
+      if (reads.thread) void loadThreadDetail(selectedContextId, route.threadId!)
+      if (reads.dialogueThread) void dialogueThreadReloadRef.current()
     }
   }, [
     cognitionView,
+    dialogueActivityOpen,
+    expandedDialogueThreadId,
+    loadExecutionJobs,
     eventHistoryBeforeSequence,
     eventHistoryFilters,
     loadEventHistory,
@@ -4954,7 +4925,7 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (!selectedSessionId) return
+    if (!selectedSessionId || !['dialogue', 'scheduler', 'cognition', 'overview'].includes(view)) return
     if (view === 'overview' && !route.contextId) return
     let socket: WebSocket | undefined
     let reconnectTimer: number | undefined
@@ -4967,6 +4938,7 @@ export default function App() {
       if (['chat/reply', 'chat/no_reply', 'chat/cancelled', 'chat/runtime_error',
         'runtime/thread_completed', 'runtime/thread_cancelled', 'runtime/thread_failed'].includes(topic) || topic.startsWith('objective/'))
         schedulerHistoryVersionRef.current++
+      if (!topic.startsWith('runtime/model_')) pendingAuthoritativeQueries.add('events')
       for (const query of invalidatedQueriesForTopic(topic)) {
         pendingAuthoritativeQueries.add(query)
       }
