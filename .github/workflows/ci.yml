@@ -285,6 +285,13 @@ jobs:
           cargo test --locked -p morphz --test session_io -- --test-threads=1
       - name: Verify one-shot approval boundary
         run: cargo test -p morphz tool::tests::exec_ -- --nocapture
+      - name: Verify committed SQLite peer notifications and retained OS locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/sqlite-native-notifications.log"
+          cargo test --locked -p morphz --lib memory::event_changes::tests:: -- --test-threads=1 --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=re.sub(r"\x1b\[[0-9;]*[mK]", "", pathlib.Path(sys.argv[1]).read_text()); assert "test result: ok. 4 passed; 0 failed; 1 ignored;" in text' "$log"
       - name: Verify selected-route Provider recovery
         run: |
           cargo test --locked -p morphz --lib --test attempt_loop --no-fail-fast provider_wait_resources_ -- --test-threads=1
@@ -476,6 +483,16 @@ jobs:
         run: |
           cargo test --locked -p morphz --lib session_io:: -- --test-threads=1
           cargo test --locked -p morphz --test session_io -- --test-threads=1
+      - name: Verify committed SQLite peer notifications and retained OS locks
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP "sqlite-native-notifications.log"
+          cargo test --locked -p morphz --lib memory::event_changes::tests:: -- --test-threads=1 --nocapture 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $text = (Get-Content -Raw $log) -replace "\x1b\[[0-9;]*[mK]", ""
+          if ($text -notmatch "test result: ok\. 4 passed; 0 failed; 1 ignored;") {
+            throw "The complete native SQLite notification and lock suite did not execute successfully."
+          }
       - name: Assemble separate main and Edge Windows bundles
         shell: pwsh
         run: |
