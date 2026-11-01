@@ -37,6 +37,44 @@ pub struct ThreadResponseAnnotations {
     /// Tail sources are bounded. Incomplete history never pretends to know
     /// the first valid whole-task title; clients retain their original intent.
     pub truncated: bool,
+    /// Request proof bounds can omit a step without invalidating the independently
+    /// verified whole-task title or claiming the omitted step was inspected.
+    #[serde(default)]
+    pub steps_truncated: bool,
+}
+
+struct AnnotationJob<'a> {
+    id: String,
+    thread_id: String,
+    agent_id: String,
+    context_id: String,
+    session_id: String,
+    activation_id: String,
+    tool_call_id: Option<String>,
+    tool_name: String,
+    target_id: String,
+    status: crate::memory::ExecutionJobStatus,
+    result_event_id: Option<String>,
+    request: Option<&'a serde_json::Value>,
+}
+macro_rules! annotation_job {
+    ($job:expr, $request:expr, $call_id:expr) => {{
+        let job = $job;
+        AnnotationJob {
+            id: job.id.clone(),
+            thread_id: job.thread_id.clone(),
+            agent_id: job.agent_id.clone(),
+            context_id: job.context_id.clone(),
+            session_id: job.session_id.clone(),
+            activation_id: job.activation_id.clone(),
+            tool_call_id: $call_id,
+            tool_name: job.tool_name.clone(),
+            target_id: job.target_id.clone(),
+            status: job.status,
+            result_event_id: job.result_event_id.clone(),
+            request: $request,
+        }
+    }};
 }
 
 fn text<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
@@ -105,6 +143,22 @@ impl MorphzRuntime {
         context_id: &str,
         snapshots: &mut [SchedulerThreadSnapshot],
     ) -> Result<(), RuntimeError> {
+        self.attach_response_annotations_with_headers(context_id, snapshots, &[])
+            .await
+    }
+
+    pub(super) async fn attach_response_annotations_with_headers(
+        &self,
+        context_id: &str,
+        snapshots: &mut [SchedulerThreadSnapshot],
+        headers: &[crate::memory::job_header::JobHeader],
+    ) -> Result<(), RuntimeError> {
+        // Only an actual visible candidate intent can request an argument proof.
+        // Cache each exact point once; headers and public responses never acquire
+        // physical arguments. A page has a 1 MiB total / 256 KiB per-Job bound.
+        let mut proof_budget = 1024 * 1024usize;
+        let mut proof_cache =
+            HashMap::<String, crate::memory::job_header::ProjectionRequest>::new();
         let ids = snapshots
             .iter()
             .filter(|snapshot| {
@@ -250,8 +304,35 @@ impl MorphzRuntime {
                         && outcome.terminal_kind == thread.lifecycle
                 })
                 .and_then(|outcome| outcome.terminal_event_sequence);
+            let terminal_sequence = if terminal_sequence.is_none() && thread.lifecycle.is_terminal()
+            {
+                self.inner.store.thread_terminal_sequence(thread).await?
+            } else {
+                terminal_sequence
+            };
             let mut records = Vec::<AnnotationRecord>::new();
             let mut steps = BTreeMap::<String, ThreadStepAnnotation>::new();
+            let mut steps_truncated = headers
+                .iter()
+                .any(|job| job.thread_id == thread.id && job.tool_call_id.is_none());
+            let job_witnesses = snapshot
+                .activations
+                .iter()
+                .flat_map(|activation| activation.jobs.iter())
+                .map(|snapshot| {
+                    annotation_job!(
+                        &snapshot.job,
+                        Some(&snapshot.job.request),
+                        Some(snapshot.job.tool_call_id.clone())
+                    )
+                })
+                .chain(
+                    headers
+                        .iter()
+                        .filter(|job| job.thread_id == thread.id)
+                        .map(|job| annotation_job!(job, None, job.tool_call_id.clone())),
+                )
+                .collect::<Vec<_>>();
             for source in thread_sources {
                 if terminal_sequence.is_some_and(|sequence| {
                     source
@@ -334,52 +415,75 @@ impl MorphzRuntime {
                         .retain(|record| record.kind != AnnotationKind::Title);
                 }
                 for record in bundle.records {
-                    let mut jobs = snapshot
-                        .activations
-                        .iter()
-                        .flat_map(|activation| activation.jobs.iter())
-                        .map(|s| &s.job);
+                    let mut jobs = job_witnesses.iter();
                     match record.kind {
                         AnnotationKind::Intent => {
                             // A model attempt ID is not a physical Activation ID.
                             // Follow the actual source Event's route, never call_id alone.
-                            if let Some(job) = jobs
-                                .filter(|job| {
-                                    job.thread_id == thread.id
-                                        && job.agent_id == thread.agent_id
-                                        && job.context_id == thread.context_id
-                                        && job.session_id == thread.session_id
-                                        && job.activation_id == activation_id
-                                        && Some(job.tool_call_id.as_str())
-                                            == record.call_id.as_deref()
-                                })
-                                .find(|job| {
-                                    source
-                                        .payload
-                                        .get("tool_calls")
-                                        .and_then(serde_json::Value::as_array)
-                                        .is_some_and(|calls| {
-                                            calls.iter().any(|call| {
-                                                call.get("id").and_then(serde_json::Value::as_str)
-                                                    == Some(job.tool_call_id.as_str())
-                                                    && call
-                                                        .pointer("/function/name")
-                                                        .and_then(serde_json::Value::as_str)
-                                                        == Some(job.tool_name.as_str())
-                                                    && call
-                                                        .pointer("/function/arguments")
-                                                        .and_then(serde_json::Value::as_str)
-                                                        .is_some_and(|arguments| {
-                                                            intent_arguments_match(
-                                                                arguments,
-                                                                &job.request,
-                                                                &job.target_id,
-                                                            )
-                                                        })
-                                            })
+                            let mut matched = None;
+                            for job in jobs.filter(|job| {
+                                job.thread_id == thread.id
+                                    && job.agent_id == thread.agent_id
+                                    && job.context_id == thread.context_id
+                                    && job.session_id == thread.session_id
+                                    && job.activation_id == activation_id
+                                    && job.tool_call_id.as_deref() == record.call_id.as_deref()
+                            }) {
+                                let arguments = source
+                                    .payload
+                                    .get("tool_calls")
+                                    .and_then(serde_json::Value::as_array)
+                                    .and_then(|calls| {
+                                        calls.iter().find(|call| {
+                                            call.get("id").and_then(serde_json::Value::as_str)
+                                                == job.tool_call_id.as_deref()
+                                                && call
+                                                    .pointer("/function/name")
+                                                    .and_then(serde_json::Value::as_str)
+                                                    == Some(job.tool_name.as_str())
                                         })
-                                })
-                            {
+                                    })
+                                    .and_then(|call| call.pointer("/function/arguments"))
+                                    .and_then(serde_json::Value::as_str);
+                                let Some(arguments) = arguments else {
+                                    continue;
+                                };
+                                let request = if let Some(request) = job.request {
+                                    Some(request)
+                                } else {
+                                    if !proof_cache.contains_key(&job.id) {
+                                        let budget = proof_budget.min(256 * 1024);
+                                        if budget == 0 {
+                                            steps_truncated = true;
+                                            continue;
+                                        }
+                                        let proof = self
+                                            .inner
+                                            .store
+                                            .read_job_projection_request(
+                                                &job.context_id,
+                                                &job.session_id,
+                                                &job.thread_id,
+                                                &job.id,
+                                                budget,
+                                            )
+                                            .await?;
+                                        proof_budget =
+                                            proof_budget.saturating_sub(proof.bytes_read);
+                                        proof_cache.insert(job.id.clone(), proof);
+                                    }
+                                    let proof = &proof_cache[&job.id];
+                                    steps_truncated |= proof.truncated || proof.request.is_none();
+                                    proof.request.as_ref()
+                                };
+                                if request.is_some_and(|request| {
+                                    intent_arguments_match(arguments, request, &job.target_id)
+                                }) {
+                                    matched = Some(job);
+                                    break;
+                                }
+                            }
+                            if let Some(job) = matched {
                                 steps
                                     .entry(job.id.clone())
                                     .or_insert_with(|| ThreadStepAnnotation {
@@ -414,7 +518,7 @@ impl MorphzRuntime {
                                         && text(receipt, "activation_id")
                                             == Some(job.activation_id.as_str())
                                         && text(receipt, "tool_call_id")
-                                            == Some(job.tool_call_id.as_str())
+                                            == job.tool_call_id.as_deref()
                                 }) {
                                     steps
                                         .entry(job.id.clone())
@@ -438,18 +542,11 @@ impl MorphzRuntime {
                     records.push(record);
                 }
             }
-            let outcome = snapshot.outcome.as_ref().filter(|outcome| {
-                outcome.thread_id == thread.id
-                    && outcome.thread_generation == thread.generation
-                    && outcome.session_id == thread.session_id
-                    && outcome.root_turn_id == thread.root_turn_id
-                    && outcome.terminal_kind == thread.lifecycle
-            });
             let fact = ExecutionFact {
                 scope: scope.clone(),
                 status: thread.lifecycle.as_str().into(),
                 terminal: thread.lifecycle.is_terminal(),
-                terminal_sequence: outcome.and_then(|outcome| outcome.terminal_event_sequence),
+                terminal_sequence,
             };
             let projection = project_execution(&fact, &records);
             snapshot.response_annotations = Some(ThreadResponseAnnotations {
@@ -457,9 +554,7 @@ impl MorphzRuntime {
                 scope,
                 title: (!truncated).then_some(projection.title).flatten(),
                 progress: projection.progress,
-                result: if outcome
-                    .and_then(|outcome| outcome.terminal_event_sequence)
-                    .is_some()
+                result: if terminal_sequence.is_some()
                     && thread.lifecycle != ThreadLifecycle::Cancelled
                 {
                     projection.result
@@ -469,6 +564,7 @@ impl MorphzRuntime {
                 steps: steps.into_values().collect(),
                 source_count,
                 truncated,
+                steps_truncated,
             });
         }
         // A cancellation/supersede racing the read cannot expose metadata

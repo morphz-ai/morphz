@@ -935,6 +935,16 @@ test(
       );
       assert.equal(
         terminal[0]!.outcome?.summary,
+        undefined,
+        "Activity metadata does not open the committed body",
+      );
+      const original = (await f.runtime
+        .inputEvidenceReader()
+        .readThread(terminal[0]!.sessionId, threadId)) as {
+        snapshot: { outcome?: { summary?: string } };
+      };
+      assert.equal(
+        original.snapshot.outcome?.summary,
         finalBody,
         "The original committed body is retained",
       );

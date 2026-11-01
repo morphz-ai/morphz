@@ -664,6 +664,25 @@ impl ExecutionJobStore for PostgresStore {
             .transpose()
     }
 
+    async fn read_job_projection_request(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        job_id: &str,
+        max_bytes: usize,
+    ) -> Result<
+        crate::memory::job_header::ProjectionRequest,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if !(1..=256 * 1024).contains(&max_bytes) {
+            return Err("invalid annotation proof byte budget".into());
+        }
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT substring(convert_to(request_json::text,'UTF8') FROM 1 FOR $1) FROM execution_jobs WHERE id=$2 AND context_id=$3 AND session_id=$4 AND thread_id=$5")
+            .bind((max_bytes+1) as i32).bind(job_id).bind(context_id).bind(session_id).bind(thread_id).fetch_optional(&self.pool).await?;
+        crate::memory::job_header::projection_request(bytes, max_bytes)
+    }
+
     async fn read_job_header_page(
         &self,
         mut filter: ExecutionJobFilter,

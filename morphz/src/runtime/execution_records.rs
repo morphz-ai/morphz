@@ -371,7 +371,7 @@ impl MorphzRuntime {
         self.attach_user_input_requests(context_id, &mut snapshots)
             .await?;
         if !query.metadata_only {
-            self.attach_response_annotations(context_id, &mut snapshots)
+            self.attach_response_annotations_with_headers(context_id, &mut snapshots, &job_headers)
                 .await?;
         }
         // Job revisions may change during the read. Immutable scope and

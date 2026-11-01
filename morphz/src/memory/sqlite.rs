@@ -15894,6 +15894,19 @@ impl ThreadGroupStore for SqliteStore {
         row.as_ref().map(thread_outcome_from_row).transpose()
     }
 
+    async fn thread_terminal_sequence(
+        &self,
+        thread: &ThreadRecord,
+    ) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        let sequence: Option<Option<i64>> = sqlx::query_scalar("SELECT o.terminal_event_sequence FROM thread_outcomes o JOIN threads t ON t.id=o.thread_id WHERE o.thread_id=? AND o.thread_generation=? AND o.root_turn_id=? AND o.session_id=? AND o.terminal_kind=? AND t.context_id=? AND t.agent_id=?")
+            .bind(&thread.id).bind(i64::try_from(thread.generation)?).bind(&thread.root_turn_id).bind(&thread.session_id).bind(thread.lifecycle.as_str()).bind(&thread.context_id).bind(&thread.agent_id).fetch_optional(&self.pool).await?;
+        sequence
+            .flatten()
+            .map(u64::try_from)
+            .transpose()
+            .map_err(Into::into)
+    }
+
     async fn list_thread_outcomes(
         &self,
         thread_ids: &[String],
@@ -25330,6 +25343,25 @@ impl ExecutionJobStore for SqliteStore {
             .as_ref()
             .map(execution_job_from_row)
             .transpose()
+    }
+
+    async fn read_job_projection_request(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        job_id: &str,
+        max_bytes: usize,
+    ) -> Result<
+        crate::memory::job_header::ProjectionRequest,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if !(1..=256 * 1024).contains(&max_bytes) {
+            return Err("invalid annotation proof byte budget".into());
+        }
+        let bytes: Option<Vec<u8>> = sqlx::query_scalar("SELECT substr(CAST(request_json AS BLOB),1,?) FROM execution_jobs WHERE id=? AND context_id=? AND session_id=? AND thread_id=?")
+            .bind((max_bytes+1) as i64).bind(job_id).bind(context_id).bind(session_id).bind(thread_id).fetch_optional(&self.pool).await?;
+        crate::memory::job_header::projection_request(bytes, max_bytes)
     }
 
     async fn read_job_header_page(
@@ -46365,7 +46397,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_control_commit_wakes_the_bounded_tail_after_commit_without_polling() {
-        use crate::memory::{EventStore, ThreadControlAction, ThreadStore};
+        use crate::memory::{EventStore, ThreadControlAction, ThreadGroupStore, ThreadStore};
         use crate::scheduler::SchedulerKernel;
         use std::time::Duration;
         let store = Arc::new(
@@ -46389,7 +46421,9 @@ mod tests {
         let command = crate::controllers::DialogueController::control_thread(
             &thread,
             "tail-context",
-            ThreadControlAction::Pause,
+            // Cancellation commits both a control mutation and a durable Event.
+            // Pause only updates the native row, so it cannot supply a tail row.
+            ThreadControlAction::Cancel,
             "TEST",
             "TEST",
         );
@@ -46402,14 +46436,25 @@ mod tests {
         let page = store.read_event_tail_page(&checkpoint, 7).await.unwrap();
         assert_eq!(page.records.len(), 1);
         assert!(!page.has_more);
+        let cancelled = store.get_thread("tail-thread").await.unwrap().unwrap();
+        assert_eq!(
+            store.thread_terminal_sequence(&cancelled).await.unwrap(),
+            Some(page.records[0].sequence)
+        );
+        let mut foreign = cancelled.clone();
+        foreign.context_id = "foreign".into();
+        assert_eq!(
+            store.thread_terminal_sequence(&foreign).await.unwrap(),
+            None
+        );
         assert_eq!(
             store
                 .get_thread("tail-thread")
                 .await
                 .unwrap()
                 .unwrap()
-                .control_state,
-            crate::memory::ThreadControlState::Paused
+                .lifecycle,
+            crate::memory::ThreadLifecycle::Cancelled
         );
         changes.borrow_and_update();
         assert!(!changes.has_changed().unwrap());

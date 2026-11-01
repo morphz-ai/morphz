@@ -268,7 +268,20 @@ test(
           undefined,
           "No separately generated final annotation",
         );
-        assert.equal(thread.outcome?.summary, titles.get(thread.id) + "已完成");
+        assert.equal(
+          thread.outcome?.summary,
+          undefined,
+          "Activity metadata does not open the final body",
+        );
+        const original = (await f.runtime
+          .inputEvidenceReader()
+          .readThread(thread.sessionId, thread.id)) as {
+          snapshot: { outcome?: { summary?: string } };
+        };
+        assert.equal(
+          original.snapshot.outcome?.summary,
+          titles.get(thread.id) + "已完成",
+        );
         assert.equal(thread.annotationProtocol, "on");
         assert.ok(own[0]!.result_event_id);
       }

@@ -6353,6 +6353,19 @@ pub trait ExecutionJobStore: Send + Sync {
     {
         Err("bounded Job headers are not implemented".into())
     }
+    async fn read_job_projection_request(
+        &self,
+        _context_id: &str,
+        _session_id: &str,
+        _thread_id: &str,
+        _job_id: &str,
+        _max_bytes: usize,
+    ) -> Result<
+        crate::memory::job_header::ProjectionRequest,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        Err("bounded annotation request proofs are not implemented".into())
+    }
     async fn list_execution_jobs(
         &self,
         filter: ExecutionJobFilter,
@@ -7620,6 +7633,12 @@ pub trait ThreadGroupStore: Send + Sync {
         &self,
         thread_id: &str,
     ) -> Result<Option<ThreadOutcomeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn thread_terminal_sequence(
+        &self,
+        _thread: &ThreadRecord,
+    ) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("scalar Thread terminal proofs are not implemented".into())
+    }
     /// Outcomes for a bounded Thread aggregate. Production stores override
     /// this with one indexed query.
     async fn list_thread_outcomes(

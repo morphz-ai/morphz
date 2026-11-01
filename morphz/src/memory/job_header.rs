@@ -7,11 +7,13 @@ pub struct JobHeader {
     pub revision: u64,
     pub activation_id: String,
     pub thread_id: String,
+    pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
     pub initiating_principal_id: Option<String>,
     pub target_id: String,
     pub tool_name: String,
+    pub tool_call_id: Option<String>,
     pub status: ExecutionJobStatus,
     pub created_at: String,
     pub updated_at: String,
@@ -21,6 +23,34 @@ pub struct JobHeader {
     pub result_event_id: Option<String>,
     pub approval_ref: Option<String>,
     pub request_loaded: bool,
+}
+
+/// Internal annotation proof, never a replacement physical request. Oversized
+/// arguments stay unavailable rather than turning a prefix into valid JSON.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectionRequest {
+    pub request: Option<serde_json::Value>,
+    pub bytes_read: usize,
+    pub truncated: bool,
+}
+pub(crate) fn projection_request(
+    bytes: Option<Vec<u8>>,
+    budget: usize,
+) -> Result<ProjectionRequest, Box<dyn std::error::Error + Send + Sync>> {
+    let Some(bytes) = bytes else {
+        return Ok(ProjectionRequest::default());
+    };
+    let bytes_read = bytes.len();
+    let truncated = bytes_read > budget;
+    Ok(ProjectionRequest {
+        request: if truncated {
+            None
+        } else {
+            Some(serde_json::from_slice(&bytes)?)
+        },
+        bytes_read,
+        truncated,
+    })
 }
 #[derive(Debug, Clone, Default)]
 pub struct JobHeaderPage {
@@ -128,11 +158,13 @@ macro_rules! header_from_row {
             revision: u64::try_from(r.get::<i64, _>("revision"))?,
             activation_id: r.get("activation_id"),
             thread_id: r.get("thread_id"),
+            agent_id: r.get("agent_id"),
             context_id: r.get("context_id"),
             session_id: r.get("session_id"),
             initiating_principal_id: r.get("initiating_principal_id"),
             target_id: r.get("target_id"),
             tool_name: r.get("tool_name"),
+            tool_call_id: r.get("tool_call_id"),
             status: serde_json::from_value(serde_json::Value::String(r.get("status")))?,
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
@@ -234,8 +266,8 @@ macro_rules! header_query {($db:ty,$filter:expr,$before:expr)=>{{
  let original=$filter;let before=$before;
  let mut query=sqlx::QueryBuilder::<$db>::new("SELECT ");
  // Column names are static, never supplied by a client.
- for (index,column) in ["id","revision","activation_id","thread_id","context_id","session_id","initiating_principal_id","target_id","tool_name","status","created_at","updated_at","cancel_requested_at","error","exit_code","result_event_id","approval_ref"].iter().enumerate(){
-  if index>0{query.push(",");}if *column=="error"{query.push("SUBSTR(source.error,1,1024) AS error");}else{query.push("source.").push(*column);}
+ for (index,column) in ["id","revision","activation_id","thread_id","agent_id","context_id","session_id","initiating_principal_id","target_id","tool_name","tool_call_id","status","created_at","updated_at","cancel_requested_at","error","exit_code","result_event_id","approval_ref"].iter().enumerate(){
+  if index>0{query.push(",");}if *column=="error"{query.push("SUBSTR(source.error,1,1024) AS error");}else if *column=="tool_call_id"{query.push("CASE WHEN LENGTH(source.tool_call_id)<=512 THEN source.tool_call_id ELSE NULL END AS tool_call_id");}else{query.push("source.").push(*column);}
  }
  query.push(" FROM (");
  let thread_scopes=if original.thread_ids.is_empty(){vec![original.thread_id.clone()]}else{original.thread_ids.iter().map(|id|Some(id.clone())).collect::<Vec<_>>()};

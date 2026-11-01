@@ -2,7 +2,7 @@ use super::{parse_time, PostgresStore, StoreError};
 use crate::memory::{
     ThreadGroupFilter, ThreadGroupMemberRecord, ThreadGroupMemberStatus, ThreadGroupPolicy,
     ThreadGroupRecord, ThreadGroupStatus, ThreadGroupStore, ThreadLifecycle, ThreadOutcomeRecord,
-    ThreadSupervisorKind,
+    ThreadRecord, ThreadSupervisorKind,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{PgPool, Postgres, QueryBuilder, Row};
@@ -439,6 +439,19 @@ impl ThreadGroupStore for PostgresStore {
             .fetch_optional(&self.pool)
             .await?;
         row.as_ref().map(outcome_from_row).transpose()
+    }
+
+    async fn thread_terminal_sequence(
+        &self,
+        thread: &ThreadRecord,
+    ) -> Result<Option<u64>, StoreError> {
+        let sequence: Option<Option<i64>> = sqlx::query_scalar("SELECT o.terminal_event_sequence FROM thread_outcomes o JOIN threads t ON t.id=o.thread_id WHERE o.thread_id=$1 AND o.thread_generation=$2 AND o.root_turn_id=$3 AND o.session_id=$4 AND o.terminal_kind=$5 AND t.context_id=$6 AND t.agent_id=$7")
+            .bind(&thread.id).bind(i64::try_from(thread.generation)?).bind(&thread.root_turn_id).bind(&thread.session_id).bind(thread.lifecycle.as_str()).bind(&thread.context_id).bind(&thread.agent_id).fetch_optional(&self.pool).await?;
+        sequence
+            .flatten()
+            .map(u64::try_from)
+            .transpose()
+            .map_err(Into::into)
     }
 
     async fn list_thread_outcomes(

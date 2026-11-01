@@ -445,6 +445,13 @@ macro_rules! job_header_pages {
     assert!(store.thread_wait_heads("dir-b",&[(thread.id.clone(),thread.generation,thread.revision)]).await.unwrap().is_empty());
     assert!(store.thread_wait_heads("dir-a",&[(thread.id.clone(),thread.generation+1,thread.revision)]).await.unwrap().is_empty());
     assert_eq!(seen.len(),55);
+    let proof=store.read_job_projection_request("dir-a","s-0004","approval-page-thread","approval-page-job-0000",4096).await.unwrap();
+    assert!(proof.truncated);assert!(proof.request.is_none());assert_eq!(proof.bytes_read,4097,"annotation verification must not materialize the 2MiB request");
+    let small=store.read_job_projection_request("dir-a","s-0004","approval-page-thread","approval-page-job-0001",4096).await.unwrap();
+    assert!(!small.truncated);assert!(small.request.is_some());assert!(small.bytes_read<=4096);
+    let foreign=store.read_job_projection_request("dir-b","s-0004","approval-page-thread","approval-page-job-0001",4096).await.unwrap();
+    assert!(foreign.request.is_none());assert_eq!(foreign.bytes_read,0);
+    assert!(store.read_job_projection_request("dir-a","s-0004","approval-page-thread","approval-page-job-0001",256*1024+1).await.is_err());
     assert_eq!(store.get_execution_job("approval-page-job-0000").await.unwrap().unwrap().request["large"].as_str().unwrap().len(),2*1024*1024,"physical request remains intact for explicit detail/control reads");
  }};
 }

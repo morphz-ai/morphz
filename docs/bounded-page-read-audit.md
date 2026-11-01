@@ -225,11 +225,38 @@ run is claimed.
   annotation argument matching and the scheduler's independent background
   ownership remain in force. Control receipts do not await list reconciliation.
 
-### Current validation and application acceptance
+### Validation checkpoint, 2026-11-01
 
-The final code is under frozen-source validation. Dashboard build/lint and all
-298 tests passed. The Application production build passed; the focused page,
-request, approval, inspection and permission regressions passed. Complete Node
-inventory, final SQLite/PostgreSQL pressure repeats, Rust library/lint and
-original-profile deployment/inspection are recorded below when complete.
-No original task has been cancelled, paused, re-sent or answered by this audit.
+At the implementation checkpoint, Dashboard build/lint and all 298 tests
+passed. The Application production build and focused page, request, approval,
+inspection and permission regressions passed. This checkpoint is not final
+application acceptance; later commits require their own matching validation.
+
+Actual integration subsequently exposed a SQLite tail query using PostgreSQL's
+`sequence` column. SQLite now seeks its native `rowid`; a file-backed regression
+covers an empty checkpoint, 10000 retained rows, nonlexical append order, large
+bodies, exact page advancement and reopening from the accepted cursor. The
+in-memory commit test uses cancellation, which actually persists a terminal
+Event; pause changes a native row and must not fabricate an Event locator.
+
+PostgreSQL concurrent ingress also exposed a Session/binding lock inversion.
+Materialized Session-lock stages now precede binding checks in both fast
+admission paths and the referenced/fallback path. The mandatory dedicated-PG
+regression observes the real Session lock wait, then proves that the claimant
+does not already hold the principal binding. The independent experiment's lock
+is synchronized without changing dependency-audit exceptions.
+
+Job headers retain the scalar identities needed for annotation provenance.
+Only a matching visible intent requests an exact scoped argument proof: at
+most 256 KiB for one Job and 1 MiB across a page, with each Job read once.
+An oversized prefix is never a valid request and never passes argument
+matching. The response carries no physical request; separate step-proof
+incompleteness does not suppress an independently verified task title.
+Terminal annotation fences read only the exact outcome sequence. Original
+body assertions use an explicit authorized Thread read rather than restoring
+full bodies to Activity lists.
+
+The final operator report and CI runs must identify their exact source commits
+and distinguish complete inventories, explicit optional omissions, pressure
+repeats and original-profile acceptance. No original task has been cancelled,
+paused, re-sent or answered by this audit.
