@@ -341,3 +341,5 @@ native reporter destinations now write an independent coverage log while keeping
 the original live reporters. This manager-owned destination is removed from the
 test-worker environment, so nested managed tests cannot overwrite the parent
 receipt. Both the final capture and cross-shard verification remain mandatory.
+The other macOS Node capture, the five-pass mounted-resource job, uses the same
+native destination so it cannot retain the same BSD pipe failure boundary.

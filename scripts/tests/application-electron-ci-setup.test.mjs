@@ -260,6 +260,8 @@ test("Intel mounted resource and view regression keeps five complete passes and 
     assert.match(step, /for round in 1 2 3 4 5; do/);
     assert.match(step, /MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres/);
     assert.match(step, /MORPHZ_TEST_POSTGRES_BIN_DIR="\$\(brew --prefix postgresql@16\)\/bin" npm test -- --test-concurrency=1/);
+    assert.ok(step.includes('MORPHZ_TEST_COVERAGE_LOG="$RUNNER_TEMP/mounted-resource-pass-$round.log"'));
+    assert.doesNotMatch(step, /\|\s*tee/);
     for (const file of files) assert.ok(step.includes(`tests/${file}.test.ts \\\n`));
     for (const prerequisite of ["npm ci --prefix ../dashboard", "node node_modules/electron/install.js", "brew install postgresql@16", "npx playwright install chromium"])
       assert.ok(job.indexOf(prerequisite) >= 0 && job.indexOf(prerequisite) < job.indexOf("npm test"));
@@ -277,5 +279,7 @@ test("Intel mounted resource and view regression keeps five complete passes and 
     job.replace("npm ci --prefix ../dashboard", "echo missing-dashboard"),
     job.replace("npx playwright install chromium", "echo missing-browser"),
     job.replace("MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres", "MORPHZ_TEST_REQUIRED_CAPABILITIES: none"),
+    job.replace("MORPHZ_TEST_COVERAGE_LOG=", "OMITTED_LOG="),
+    job.replace("              2>&1\n", "              | tee ignored.log\n"),
   ]) assert.throws(() => verify(source.replace(job, changed)));
 });

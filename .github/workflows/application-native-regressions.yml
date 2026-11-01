@@ -257,12 +257,13 @@ jobs:
           set -euo pipefail
           for round in 1 2 3 4 5; do
             printf 'Intel mounted resource and view pass %s/5\n' "$round"
+            MORPHZ_TEST_COVERAGE_LOG="$RUNNER_TEMP/mounted-resource-pass-$round.log" \
             MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 \
               tests/cognitive-document-view-mounted.test.ts \
               tests/create-dialog-mounted.test.ts \
               tests/exchange-reference-preparation-mounted.test.ts \
               tests/object-annotations-mounted.test.ts \
-              | tee "$RUNNER_TEMP/mounted-resource-pass-$round.log"
+              2>&1
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
