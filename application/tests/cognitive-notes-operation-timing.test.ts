@@ -106,6 +106,44 @@ test(
 );
 
 test(
+  "real held original read after 13s completes once within the unchanged SDK deadline",
+  { timeout: 90_000 },
+  async () => {
+    const f = await openNotesGuiTransports("sqlite", packed);
+    let release: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const m = await f.mount("Web");
+      const title = "TEST real held original " + randomUUID();
+      await draft(m, title);
+      await m.guest.locator("#save").click();
+      await waitForNotesOperationStatus(m.guest, "作者已确认保存");
+      const original = await m.guest.locator("#original").textContent();
+      const hold = f.hold("/objects/read");
+      const before = f.authorCalls.filter(
+        (call) => call.path === "/objects/read",
+      ).length;
+      await m.guest.locator("#read").click();
+      await deadline(hold.reached, cognitiveBrowserLimits.deadlineMs);
+      const start = Date.now();
+      release = setTimeout(() => hold.release(), 13_000);
+      await waitForNotesOperationStatus(m.guest, "已读取所选精确版本");
+      assert.ok(Date.now() - start >= 13_000);
+      assert.equal(await m.guest.locator("#original").textContent(), original);
+      assert.equal(
+        f.authorCalls.filter((call) => call.path === "/objects/read").length,
+        before + 1,
+        "one exact read, without another click or retry",
+      );
+      assert.equal(f.authorRows("note_versions").length, 1);
+      assert.equal(f.authorRows("author_commands").length, 1);
+    } finally {
+      clearTimeout(release);
+      await f.close();
+    }
+  },
+);
+
+test(
   "real SDK request deadline still rejects an unreleased committed response without resending",
   { timeout: 90_000 },
   async () => {

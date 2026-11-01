@@ -9,648 +9,665 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 
 | Package | Declared license | Included texts |
 |---|---|---|
-| `Inflector 0.11.4` | `BSD-2-Clause` | L306 |
-| `adler2 2.0.1` | `0BSD OR MIT OR Apache-2.0` | L036, L065, L225 |
-| `aes 0.8.4` | `MIT OR Apache-2.0` | L070, L320 |
-| `aho-corasick 1.1.4` | `Unlicense OR MIT` | L024, L134 |
-| `allocative 0.3.6` | `Apache-2.0` | L292 |
-| `allocative_derive 0.3.6` | `Apache-2.0` | L292 |
-| `allocator-api2 0.2.21` | `MIT OR Apache-2.0` | L065, L185 |
-| `android_system_properties 0.1.5` | `MIT/Apache-2.0` | L243, L308 |
-| `annotate-snippets 0.9.2` | `Apache-2.0/MIT` | L054, L080 |
-| `anstream 1.0.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `anstyle 1.0.14` | `MIT OR Apache-2.0` | L095, L147 |
-| `anstyle-parse 1.0.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `anstyle-query 1.1.5` | `MIT OR Apache-2.0` | L095, L147 |
-| `anstyle-wincon 3.0.11` | `MIT OR Apache-2.0` | L095, L147 |
-| `anyhow 1.0.104` | `MIT OR Apache-2.0` | L065, L185 |
-| `apple-native-keyring-store 1.0.1` | `MIT OR Apache-2.0` | L129, L252 |
-| `approx 0.5.1` | `Apache-2.0` | L054 |
+| `Inflector 0.11.4` | `BSD-2-Clause` | L311 |
+| `adler2 2.0.1` | `0BSD OR MIT OR Apache-2.0` | L036, L066, L230 |
+| `aes 0.8.4` | `MIT OR Apache-2.0` | L071, L325 |
+| `aho-corasick 1.1.4` | `Unlicense OR MIT` | L024, L137 |
+| `allocative 0.3.6` | `Apache-2.0` | L297 |
+| `allocative_derive 0.3.6` | `Apache-2.0` | L297 |
+| `allocator-api2 0.2.21` | `MIT OR Apache-2.0` | L066, L189 |
+| `android_system_properties 0.1.5` | `MIT/Apache-2.0` | L248, L313 |
+| `annotate-snippets 0.9.2` | `Apache-2.0/MIT` | L055, L081 |
+| `anstream 1.0.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `anstyle 1.0.14` | `MIT OR Apache-2.0` | L097, L150 |
+| `anstyle-parse 1.0.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `anstyle-query 1.1.5` | `MIT OR Apache-2.0` | L097, L150 |
+| `anstyle-wincon 3.0.11` | `MIT OR Apache-2.0` | L097, L150 |
+| `anyhow 1.0.104` | `MIT OR Apache-2.0` | L066, L189 |
+| `apple-native-keyring-store 1.0.1` | `MIT OR Apache-2.0` | L132, L257 |
+| `approx 0.5.1` | `Apache-2.0` | L055 |
 | `arrayref 0.3.9` | `BSD-2-Clause` | L018 |
-| `arrayvec 0.7.8` | `MIT OR Apache-2.0` | L200, L206 |
-| `async-broadcast 0.7.2` | `MIT OR Apache-2.0` | L102, L233 |
-| `async-channel 2.5.0` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-compression 0.4.42` | `MIT OR Apache-2.0` | L049, L206 |
-| `async-executor 1.14.0` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-io 2.6.0` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-lock 3.4.2` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-process 2.5.0` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-recursion 1.1.1` | `MIT OR Apache-2.0` | L065, L206 |
-| `async-signal 0.2.14` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-task 4.7.1` | `Apache-2.0 OR MIT` | L065, L206 |
-| `async-trait 0.1.89` | `MIT OR Apache-2.0` | L065, L185 |
+| `arrayvec 0.7.8` | `MIT OR Apache-2.0` | L204, L210 |
+| `async-broadcast 0.7.2` | `MIT OR Apache-2.0` | L104, L238 |
+| `async-channel 2.5.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-compression 0.4.42` | `MIT OR Apache-2.0` | L050, L210 |
+| `async-executor 1.14.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-io 2.6.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-lock 3.4.2` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-process 2.5.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-recursion 1.1.1` | `MIT OR Apache-2.0` | L066, L210 |
+| `async-signal 0.2.14` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-task 4.7.1` | `Apache-2.0 OR MIT` | L066, L210 |
+| `async-trait 0.1.89` | `MIT OR Apache-2.0` | L066, L189 |
 | `atoi 2.0.0` | `MIT` | L041 |
-| `atomic 0.5.3` | `Apache-2.0/MIT` | L193, L206 |
-| `atomic-polyfill 1.0.3` | `MIT OR Apache-2.0` | L206, L321 |
-| `atomic-waker 1.1.2` | `Apache-2.0 OR MIT` | L042, L065, L206 |
-| `autocfg 1.5.1` | `Apache-2.0 OR MIT` | L206, L211 |
-| `axum 0.7.9` | `MIT` | L209 |
-| `axum-core 0.4.5` | `MIT` | L289 |
-| `base64 0.22.1` | `MIT OR Apache-2.0` | L141, L206 |
-| `base64ct 1.8.3` | `Apache-2.0 OR MIT` | L165, L320 |
-| `beef 0.5.2` | `MIT OR Apache-2.0` | L078, L234 |
-| `bit-set 0.8.0` | `Apache-2.0 OR MIT` | L109, L172 |
-| `bit-vec 0.8.0` | `Apache-2.0 OR MIT` | L109, L172 |
-| `bitflags 1.3.2` | `MIT/Apache-2.0` | L023, L206 |
-| `bitflags 2.13.0` | `MIT OR Apache-2.0` | L023, L206 |
-| `blake3 1.8.2` | `CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception` | L146, L157, L341 |
-| `block-buffer 0.10.4` | `MIT OR Apache-2.0` | L126, L320 |
-| `block-padding 0.3.3` | `MIT OR Apache-2.0` | L126, L320 |
-| `blocking 1.6.2` | `Apache-2.0 OR MIT` | L065, L206 |
-| `borsh 1.8.1` | `MIT OR Apache-2.0` | L065, L131 |
-| `bs58 0.5.1` | `MIT/Apache-2.0` | L138, L206 |
-| `bstr 1.13.1` | `MIT OR Apache-2.0` | L186, L206, L349 |
-| `bumpalo 3.20.3` | `MIT OR Apache-2.0` | L116, L206 |
-| `by_address 1.2.1` | `MIT OR Apache-2.0` | L094, L206 |
-| `bytemuck 1.25.0` | `Zlib OR Apache-2.0 OR MIT` | L014, L203, L310 |
-| `bytemuck_derive 1.10.2` | `Zlib OR Apache-2.0 OR MIT` | L014, L203, L310 |
-| `byteorder 1.5.0` | `Unlicense OR MIT` | L024, L134 |
+| `atomic 0.5.3` | `Apache-2.0/MIT` | L197, L210 |
+| `atomic-polyfill 1.0.3` | `MIT OR Apache-2.0` | L210, L326 |
+| `atomic-waker 1.1.2` | `Apache-2.0 OR MIT` | L042, L066, L210 |
+| `autocfg 1.5.1` | `Apache-2.0 OR MIT` | L210, L216 |
+| `axum 0.7.9` | `MIT` | L214 |
+| `axum-core 0.4.5` | `MIT` | L294 |
+| `base64 0.22.1` | `MIT OR Apache-2.0` | L144, L210 |
+| `base64ct 1.8.3` | `Apache-2.0 OR MIT` | L169, L325 |
+| `beef 0.5.2` | `MIT OR Apache-2.0` | L079, L239 |
+| `bit-set 0.8.0` | `Apache-2.0 OR MIT` | L112, L176 |
+| `bit-vec 0.8.0` | `Apache-2.0 OR MIT` | L112, L176 |
+| `bitflags 1.3.2` | `MIT/Apache-2.0` | L023, L210 |
+| `bitflags 2.13.0` | `MIT OR Apache-2.0` | L023, L210 |
+| `blake3 1.8.2` | `CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception` | L149, L161, L347 |
+| `block-buffer 0.10.4` | `MIT OR Apache-2.0` | L129, L325 |
+| `block-padding 0.3.3` | `MIT OR Apache-2.0` | L129, L325 |
+| `blocking 1.6.2` | `Apache-2.0 OR MIT` | L066, L210 |
+| `borsh 1.8.1` | `MIT OR Apache-2.0` | L066, L134 |
+| `bs58 0.5.1` | `MIT/Apache-2.0` | L141, L210 |
+| `bstr 1.13.1` | `MIT OR Apache-2.0` | L190, L210, L355 |
+| `bumpalo 3.20.3` | `MIT OR Apache-2.0` | L119, L210 |
+| `by_address 1.2.1` | `MIT OR Apache-2.0` | L096, L210 |
+| `bytemuck 1.25.0` | `Zlib OR Apache-2.0 OR MIT` | L014, L207, L315 |
+| `bytemuck_derive 1.10.2` | `Zlib OR Apache-2.0 OR MIT` | L014, L207, L315 |
+| `byteorder 1.5.0` | `Unlicense OR MIT` | L024, L137 |
 | `byteorder-lite 0.1.0` | `Unlicense OR MIT` | L024 |
-| `bytes 1.12.0` | `MIT` | L112 |
-| `castaway 0.2.4` | `MIT` | L202 |
-| `cbc 0.1.2` | `MIT OR Apache-2.0` | L320, L336 |
-| `cc 1.2.65` | `MIT OR Apache-2.0` | L183, L206 |
-| `cfg-if 1.0.4` | `MIT OR Apache-2.0` | L183, L206 |
-| `cfg_aliases 0.1.1` | `MIT` | L101, L257 |
-| `cfg_aliases 0.2.1` | `MIT` | L101, L257 |
-| `chacha20 0.10.2` | `MIT OR Apache-2.0` | L016, L320 |
-| `chardetng 0.1.17` | `Apache-2.0 OR MIT` | L054, L088, L171 |
-| `chrono 0.4.45` | `MIT OR Apache-2.0` | L291 |
-| `cipher 0.4.4` | `MIT OR Apache-2.0` | L201, L320 |
-| `clap 4.6.2` | `MIT OR Apache-2.0` | L095, L147 |
-| `clap_builder 4.6.2` | `MIT OR Apache-2.0` | L095, L147 |
-| `clap_complete 4.6.7` | `MIT OR Apache-2.0` | L095, L147 |
-| `clap_derive 4.6.1` | `MIT OR Apache-2.0` | L095, L147 |
-| `clap_lex 1.1.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `clipboard-win 5.4.1` | `BSL-1.0` | L194 |
-| `cmp_any 0.8.1` | `MIT OR Apache-2.0` | L054, L295 |
-| `cobs 0.3.0` | `MIT OR Apache-2.0` | L147, L253 |
-| `codex-async-utils 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-execpolicy 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-extension-items 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-protocol 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-utils-cache 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-utils-image 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-utils-path-uri 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-utils-redacted-string 0.0.0` | `Apache-2.0` | L277, L313 |
-| `codex-utils-string 0.0.0` | `Apache-2.0` | L277, L313 |
-| `color_quant 1.1.0` | `MIT` | L226 |
-| `colorchoice 1.0.5` | `MIT OR Apache-2.0` | L095, L147 |
-| `compact_str 0.9.1` | `MIT` | L136 |
-| `compression-codecs 0.4.38` | `MIT OR Apache-2.0` | L049, L206 |
-| `compression-core 0.4.32` | `MIT OR Apache-2.0` | L049, L206 |
-| `concurrent-queue 2.5.0` | `Apache-2.0 OR MIT` | L065, L206 |
-| `const-oid 0.9.6` | `Apache-2.0 OR MIT` | L004, L320 |
-| `const_format 0.2.36` | `Zlib` | L266 |
-| `const_format_proc_macros 0.2.34` | `Zlib` | L266 |
-| `constant_time_eq 0.3.1` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | L146, L185, L329 |
-| `convert_case 0.10.0` | `MIT` | L241 |
-| `convert_case 0.6.0` | `MIT` | L199 |
-| `cookie 0.18.2` | `MIT OR Apache-2.0` | L100, L278 |
-| `cookie_store 0.22.1` | `MIT OR Apache-2.0` | L041, L147 |
-| `core-foundation 0.10.1` | `MIT OR Apache-2.0` | L083, L206 |
-| `core-foundation 0.9.4` | `MIT OR Apache-2.0` | L083, L206 |
-| `core-foundation-sys 0.8.7` | `MIT OR Apache-2.0` | L083, L206 |
-| `core_maths 0.1.1` | `MIT` | L220 |
-| `cpufeatures 0.2.17` | `MIT OR Apache-2.0` | L133, L320 |
-| `cpufeatures 0.3.1` | `MIT OR Apache-2.0` | L320, L323 |
-| `crc 3.4.0` | `MIT OR Apache-2.0` | L260, L307 |
-| `crc-catalog 2.5.0` | `MIT OR Apache-2.0` | L292 |
-| `crc32fast 1.5.0` | `MIT OR Apache-2.0` | L147, L207 |
-| `critical-section 1.2.0` | `MIT OR Apache-2.0` | L074, L206 |
-| `crossbeam-channel 0.5.16` | `MIT OR Apache-2.0` | L119, L206, L296 |
-| `crossbeam-deque 0.8.6` | `MIT OR Apache-2.0` | L119, L206 |
-| `crossbeam-epoch 0.9.20` | `MIT OR Apache-2.0` | L119, L206 |
-| `crossbeam-queue 0.3.12` | `MIT OR Apache-2.0` | L119, L206 |
-| `crossbeam-utils 0.8.21` | `MIT OR Apache-2.0` | L119, L206 |
-| `crossterm 0.29.0` | `MIT` | L150 |
-| `crossterm_winapi 0.9.1` | `MIT` | L150 |
-| `crypto-common 0.1.7` | `MIT OR Apache-2.0` | L140, L320 |
-| `ctor 1.0.13` | `Apache-2.0 OR MIT` | L147, L258 |
-| `darling 0.23.0` | `MIT` | L287 |
-| `darling_core 0.23.0` | `MIT` | L287 |
-| `darling_macro 0.23.0` | `MIT` | L287 |
-| `dashmap 5.5.3` | `MIT` | L084 |
-| `dashmap 6.2.1` | `MIT` | L084 |
-| `data-encoding 2.11.0` | `MIT` | L217 |
-| `debugserver-types 0.5.0` | `MIT` | L312 |
-| `defmt 1.1.1` | `MIT OR Apache-2.0` | L052, L172 |
-| `defmt-macros 1.1.1` | `MIT OR Apache-2.0` | L052, L172 |
-| `defmt-parser 1.0.0` | `MIT OR Apache-2.0` | L292 |
-| `der 0.7.10` | `Apache-2.0 OR MIT` | L143, L320 |
-| `deranged 0.5.8` | `MIT OR Apache-2.0` | L033, L249 |
-| `derivative 2.2.0` | `MIT/Apache-2.0` | L206, L212 |
-| `derive_more 1.0.0` | `MIT` | L103 |
-| `derive_more 2.1.1` | `MIT` | L103 |
-| `derive_more-impl 1.0.0` | `MIT` | L103 |
-| `derive_more-impl 2.1.1` | `MIT` | L103 |
-| `digest 0.10.7` | `MIT OR Apache-2.0` | L215, L320 |
-| `display_container 0.9.0` | `MIT OR Apache-2.0` | L292 |
-| `displaydoc 0.2.6` | `MIT OR Apache-2.0` | L065, L206 |
-| `document-features 0.2.12` | `MIT OR Apache-2.0` | L091, L268 |
-| `dotenvy 0.15.7` | `MIT` | L076 |
-| `downcast-rs 1.2.1` | `MIT/Apache-2.0` | L068, L172 |
-| `dunce 1.0.5` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | L146 |
-| `dupe 0.9.1` | `MIT OR Apache-2.0` | L054, L295 |
-| `dupe_derive 0.9.1` | `MIT OR Apache-2.0` | L054, L295 |
-| `dyn-clone 1.0.20` | `MIT OR Apache-2.0` | L065, L185 |
-| `either 1.16.0` | `MIT OR Apache-2.0` | L206, L342 |
-| `embedded-io 0.4.0` | `MIT OR Apache-2.0` | L106, L206 |
-| `embedded-io 0.6.1` | `MIT OR Apache-2.0` | L206, L288 |
-| `encoding_rs 0.8.35` | `(Apache-2.0 OR MIT) AND BSD-3-Clause` | L027, L054, L171, L246 |
-| `endi 1.1.1` | `MIT` | L065 |
-| `endian-type 0.1.2` | `MIT` | L263 |
-| `enumflags2 0.7.12` | `MIT OR Apache-2.0` | L132, L309 |
-| `enumflags2_derive 0.7.12` | `MIT OR Apache-2.0` | L020, L315 |
-| `env_filter 2.0.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `env_logger 0.11.11` | `MIT OR Apache-2.0` | L095, L147 |
-| `equivalent 1.0.2` | `Apache-2.0 OR MIT` | L093, L206 |
-| `erased-serde 0.3.31` | `MIT OR Apache-2.0` | L065, L185 |
-| `erased-serde 0.4.10` | `MIT OR Apache-2.0` | L065, L185 |
-| `errno 0.3.14` | `MIT OR Apache-2.0` | L175, L206 |
-| `error-code 3.4.0` | `BSL-1.0` | L194 |
-| `etcetera 0.8.0` | `MIT OR Apache-2.0` | L065, L185 |
-| `event-listener 5.4.2` | `Apache-2.0 OR MIT` | L065, L206 |
-| `event-listener-strategy 0.5.4` | `Apache-2.0 OR MIT` | L065, L206 |
-| `fancy-regex 0.16.2` | `MIT` | L348 |
-| `fast-srgb8 1.0.0` | `MIT OR Apache-2.0 OR CC0-1.0` | L012, L055, L146 |
-| `fastrand 2.4.1` | `Apache-2.0 OR MIT` | L065, L206 |
-| `fd-lock 4.0.4` | `MIT OR Apache-2.0` | L085, L182 |
-| `fdeflate 0.3.7` | `MIT OR Apache-2.0` | L108, L160 |
+| `bytes 1.12.0` | `MIT` | L115 |
+| `castaway 0.2.4` | `MIT` | L206 |
+| `cbc 0.1.2` | `MIT OR Apache-2.0` | L325, L341 |
+| `cc 1.2.65` | `MIT OR Apache-2.0` | L187, L210 |
+| `cfg-if 1.0.4` | `MIT OR Apache-2.0` | L187, L210 |
+| `cfg_aliases 0.1.1` | `MIT` | L103, L262 |
+| `cfg_aliases 0.2.1` | `MIT` | L103, L262 |
+| `chacha20 0.10.2` | `MIT OR Apache-2.0` | L016, L325 |
+| `chardetng 0.1.17` | `Apache-2.0 OR MIT` | L055, L090, L175 |
+| `chrono 0.4.45` | `MIT OR Apache-2.0` | L296 |
+| `cipher 0.4.4` | `MIT OR Apache-2.0` | L205, L325 |
+| `clap 4.6.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `clap_builder 4.6.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `clap_complete 4.6.7` | `MIT OR Apache-2.0` | L097, L150 |
+| `clap_derive 4.6.1` | `MIT OR Apache-2.0` | L097, L150 |
+| `clap_lex 1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `clipboard-win 5.4.1` | `BSL-1.0` | L198 |
+| `cmp_any 0.8.1` | `MIT OR Apache-2.0` | L055, L300 |
+| `cobs 0.3.0` | `MIT OR Apache-2.0` | L150, L258 |
+| `codex-async-utils 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-execpolicy 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-extension-items 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-protocol 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-utils-cache 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-utils-image 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-utils-path-uri 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-utils-redacted-string 0.0.0` | `Apache-2.0` | L282, L318 |
+| `codex-utils-string 0.0.0` | `Apache-2.0` | L282, L318 |
+| `color_quant 1.1.0` | `MIT` | L231 |
+| `colorchoice 1.0.5` | `MIT OR Apache-2.0` | L097, L150 |
+| `compact_str 0.9.1` | `MIT` | L139 |
+| `compression-codecs 0.4.38` | `MIT OR Apache-2.0` | L050, L210 |
+| `compression-core 0.4.32` | `MIT OR Apache-2.0` | L050, L210 |
+| `concurrent-queue 2.5.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `const-oid 0.9.6` | `Apache-2.0 OR MIT` | L004, L325 |
+| `const_format 0.2.36` | `Zlib` | L271 |
+| `const_format_proc_macros 0.2.34` | `Zlib` | L271 |
+| `constant_time_eq 0.3.1` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | L149, L189, L334 |
+| `convert_case 0.10.0` | `MIT` | L246 |
+| `convert_case 0.6.0` | `MIT` | L203 |
+| `cookie 0.18.2` | `MIT OR Apache-2.0` | L102, L283 |
+| `cookie_store 0.22.1` | `MIT OR Apache-2.0` | L041, L150 |
+| `core-foundation 0.10.1` | `MIT OR Apache-2.0` | L085, L210 |
+| `core-foundation 0.9.4` | `MIT OR Apache-2.0` | L085, L210 |
+| `core-foundation-sys 0.8.7` | `MIT OR Apache-2.0` | L085, L210 |
+| `core_maths 0.1.1` | `MIT` | L225 |
+| `cpufeatures 0.2.17` | `MIT OR Apache-2.0` | L136, L325 |
+| `cpufeatures 0.3.1` | `MIT OR Apache-2.0` | L325, L328 |
+| `crc 3.4.0` | `MIT OR Apache-2.0` | L265, L312 |
+| `crc-catalog 2.5.0` | `MIT OR Apache-2.0` | L297 |
+| `crc32fast 1.5.0` | `MIT OR Apache-2.0` | L150, L211 |
+| `critical-section 1.2.0` | `MIT OR Apache-2.0` | L075, L210 |
+| `crossbeam-channel 0.5.16` | `MIT OR Apache-2.0` | L122, L210, L301 |
+| `crossbeam-deque 0.8.6` | `MIT OR Apache-2.0` | L122, L210 |
+| `crossbeam-epoch 0.9.20` | `MIT OR Apache-2.0` | L122, L210 |
+| `crossbeam-queue 0.3.12` | `MIT OR Apache-2.0` | L122, L210 |
+| `crossbeam-utils 0.8.21` | `MIT OR Apache-2.0` | L122, L210 |
+| `crossterm 0.29.0` | `MIT` | L154 |
+| `crossterm_winapi 0.9.1` | `MIT` | L154 |
+| `crypto-common 0.1.7` | `MIT OR Apache-2.0` | L143, L325 |
+| `ctor 1.0.13` | `Apache-2.0 OR MIT` | L150, L263 |
+| `darling 0.23.0` | `MIT` | L292 |
+| `darling_core 0.23.0` | `MIT` | L292 |
+| `darling_macro 0.23.0` | `MIT` | L292 |
+| `dashmap 5.5.3` | `MIT` | L086 |
+| `dashmap 6.2.1` | `MIT` | L086 |
+| `data-encoding 2.11.0` | `MIT` | L222 |
+| `debugserver-types 0.5.0` | `MIT` | L317 |
+| `defmt 1.1.1` | `MIT OR Apache-2.0` | L053, L176 |
+| `defmt-macros 1.1.1` | `MIT OR Apache-2.0` | L053, L176 |
+| `defmt-parser 1.0.0` | `MIT OR Apache-2.0` | L297 |
+| `der 0.7.10` | `Apache-2.0 OR MIT` | L146, L325 |
+| `deranged 0.5.8` | `MIT OR Apache-2.0` | L033, L254 |
+| `derivative 2.2.0` | `MIT/Apache-2.0` | L210, L217 |
+| `derive_more 1.0.0` | `MIT` | L105 |
+| `derive_more 2.1.1` | `MIT` | L105 |
+| `derive_more-impl 1.0.0` | `MIT` | L105 |
+| `derive_more-impl 2.1.1` | `MIT` | L105 |
+| `digest 0.10.7` | `MIT OR Apache-2.0` | L220, L325 |
+| `display_container 0.9.0` | `MIT OR Apache-2.0` | L297 |
+| `displaydoc 0.2.6` | `MIT OR Apache-2.0` | L066, L210 |
+| `document-features 0.2.12` | `MIT OR Apache-2.0` | L093, L273 |
+| `dotenvy 0.15.7` | `MIT` | L077 |
+| `downcast-rs 1.2.1` | `MIT/Apache-2.0` | L069, L176 |
+| `dunce 1.0.5` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | L149 |
+| `dupe 0.9.1` | `MIT OR Apache-2.0` | L055, L300 |
+| `dupe_derive 0.9.1` | `MIT OR Apache-2.0` | L055, L300 |
+| `dyn-clone 1.0.20` | `MIT OR Apache-2.0` | L066, L189 |
+| `either 1.16.0` | `MIT OR Apache-2.0` | L210, L348 |
+| `embedded-io 0.4.0` | `MIT OR Apache-2.0` | L108, L210 |
+| `embedded-io 0.6.1` | `MIT OR Apache-2.0` | L210, L293 |
+| `encoding_rs 0.8.35` | `(Apache-2.0 OR MIT) AND BSD-3-Clause` | L027, L055, L175, L251 |
+| `endi 1.1.1` | `MIT` | L066 |
+| `endian-type 0.1.2` | `MIT` | L268 |
+| `enumflags2 0.7.12` | `MIT OR Apache-2.0` | L135, L314 |
+| `enumflags2_derive 0.7.12` | `MIT OR Apache-2.0` | L020, L320 |
+| `env_filter 2.0.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `env_logger 0.11.11` | `MIT OR Apache-2.0` | L097, L150 |
+| `equivalent 1.0.2` | `Apache-2.0 OR MIT` | L095, L210 |
+| `erased-serde 0.3.31` | `MIT OR Apache-2.0` | L066, L189 |
+| `erased-serde 0.4.10` | `MIT OR Apache-2.0` | L066, L189 |
+| `errno 0.3.14` | `MIT OR Apache-2.0` | L179, L210 |
+| `error-code 3.4.0` | `BSL-1.0` | L198 |
+| `etcetera 0.8.0` | `MIT OR Apache-2.0` | L066, L189 |
+| `event-listener 5.4.2` | `Apache-2.0 OR MIT` | L066, L210 |
+| `event-listener-strategy 0.5.4` | `Apache-2.0 OR MIT` | L066, L210 |
+| `fancy-regex 0.16.2` | `MIT` | L354 |
+| `fast-srgb8 1.0.0` | `MIT OR Apache-2.0 OR CC0-1.0` | L012, L056, L149 |
+| `fastrand 2.4.1` | `Apache-2.0 OR MIT` | L066, L210 |
+| `fd-lock 4.0.4` | `MIT OR Apache-2.0` | L087, L186 |
+| `fdeflate 0.3.7` | `MIT OR Apache-2.0` | L111, L164 |
 | `filedescriptor 0.8.3` | `MIT` | L015 |
-| `filetime 0.2.29` | `MIT/Apache-2.0` | L183, L206 |
-| `find-msvc-tools 0.1.9` | `MIT OR Apache-2.0` | L183, L206 |
-| `fixed_decimal 0.7.2` | `Unicode-3.0` | L290 |
-| `flate2 1.1.9` | `MIT OR Apache-2.0` | L035, L206 |
+| `filetime 0.2.29` | `MIT/Apache-2.0` | L187, L210 |
+| `find-msvc-tools 0.1.9` | `MIT OR Apache-2.0` | L187, L210 |
+| `fixed_decimal 0.7.2` | `Unicode-3.0` | L295 |
+| `flate2 1.1.9` | `MIT OR Apache-2.0` | L035, L210 |
 | `fluent-uri 0.1.4` | `MIT` | L038 |
-| `flume 0.11.1` | `Apache-2.0/MIT` | L054, L065 |
-| `fnv 1.0.7` | `Apache-2.0 / MIT` | L206, L272 |
-| `foldhash 0.1.5` | `Zlib` | L245 |
-| `foldhash 0.2.0` | `Zlib` | L245 |
-| `foreign-types 0.3.2` | `MIT/Apache-2.0` | L147, L281 |
-| `foreign-types-shared 0.1.1` | `MIT/Apache-2.0` | L147, L281 |
-| `form_urlencoded 1.2.2` | `MIT OR Apache-2.0` | L071, L206 |
-| `futures-channel 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-core 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-executor 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-intrusive 0.5.0` | `MIT OR Apache-2.0` | L047, L114 |
-| `futures-io 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-lite 2.6.1` | `Apache-2.0 OR MIT` | L042, L065, L206 |
-| `futures-macro 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-sink 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-task 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `futures-util 0.3.32` | `MIT OR Apache-2.0` | L053, L248 |
-| `fxhash 0.2.1` | `Apache-2.0/MIT` | L292 |
-| `generic-array 0.14.7` | `MIT` | L238 |
-| `getrandom 0.2.17` | `MIT OR Apache-2.0` | L099, L317 |
-| `getrandom 0.3.4` | `MIT OR Apache-2.0` | L153, L317 |
-| `getrandom 0.4.3` | `MIT OR Apache-2.0` | L205, L317 |
-| `gif 0.14.2` | `MIT OR Apache-2.0` | L034, L206 |
-| `gix-path 0.11.3` | `MIT OR Apache-2.0` | L044, L108 |
-| `gix-trace 0.1.21` | `MIT OR Apache-2.0` | L044, L108 |
-| `gix-url 0.35.3` | `MIT OR Apache-2.0` | L044, L108 |
-| `gix-validate 0.11.4` | `MIT OR Apache-2.0` | L044, L108 |
-| `glob 0.3.3` | `MIT OR Apache-2.0` | L023, L206 |
-| `globset 0.4.19` | `Unlicense OR MIT` | L024, L134 |
-| `h2 0.4.19` | `MIT` | L338 |
-| `hash32 0.2.1` | `MIT OR Apache-2.0` | L089, L206 |
-| `hashbrown 0.12.3` | `MIT OR Apache-2.0` | L206, L240 |
-| `hashbrown 0.14.5` | `MIT OR Apache-2.0` | L206, L240 |
-| `hashbrown 0.15.5` | `MIT OR Apache-2.0` | L206, L240 |
-| `hashbrown 0.16.1` | `MIT OR Apache-2.0` | L206, L240 |
-| `hashbrown 0.17.1` | `MIT OR Apache-2.0` | L206, L240 |
-| `hashlink 0.10.0` | `MIT OR Apache-2.0` | L172, L322 |
-| `heapless 0.7.17` | `MIT OR Apache-2.0` | L191, L206 |
-| `heck 0.5.0` | `MIT OR Apache-2.0` | L002, L206 |
-| `hermit-abi 0.5.2` | `MIT OR Apache-2.0` | L065, L206 |
-| `hex 0.4.3` | `MIT OR Apache-2.0` | L147, L218 |
-| `hkdf 0.12.4` | `MIT OR Apache-2.0` | L059, L320 |
-| `hmac 0.12.1` | `MIT OR Apache-2.0` | L215, L320 |
-| `home 0.5.12` | `MIT OR Apache-2.0` | L036, L065 |
-| `http 1.4.2` | `MIT OR Apache-2.0` | L189, L337 |
-| `http-body 1.0.1` | `MIT` | L239 |
-| `http-body-util 0.1.3` | `MIT` | L107 |
-| `httparse 1.10.1` | `MIT OR Apache-2.0` | L184, L206 |
-| `httpdate 1.0.3` | `MIT OR Apache-2.0` | L164, L196 |
+| `flume 0.11.1` | `Apache-2.0/MIT` | L055, L066 |
+| `fnv 1.0.7` | `Apache-2.0 / MIT` | L210, L277 |
+| `foldhash 0.1.5` | `Zlib` | L250 |
+| `foldhash 0.2.0` | `Zlib` | L250 |
+| `foreign-types 0.3.2` | `MIT/Apache-2.0` | L150, L286 |
+| `foreign-types-shared 0.1.1` | `MIT/Apache-2.0` | L150, L286 |
+| `form_urlencoded 1.2.2` | `MIT OR Apache-2.0` | L072, L210 |
+| `fsevent-sys 4.1.0` | `MIT` | L213 |
+| `futures-channel 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-core 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-executor 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-intrusive 0.5.0` | `MIT OR Apache-2.0` | L048, L117 |
+| `futures-io 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-lite 2.6.1` | `Apache-2.0 OR MIT` | L042, L066, L210 |
+| `futures-macro 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-sink 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-task 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-util 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `fxhash 0.2.1` | `Apache-2.0/MIT` | L297 |
+| `generic-array 0.14.7` | `MIT` | L243 |
+| `getrandom 0.2.17` | `MIT OR Apache-2.0` | L101, L322 |
+| `getrandom 0.3.4` | `MIT OR Apache-2.0` | L157, L322 |
+| `getrandom 0.4.3` | `MIT OR Apache-2.0` | L209, L322 |
+| `gif 0.14.2` | `MIT OR Apache-2.0` | L034, L210 |
+| `gix-path 0.11.3` | `MIT OR Apache-2.0` | L045, L111 |
+| `gix-trace 0.1.21` | `MIT OR Apache-2.0` | L045, L111 |
+| `gix-url 0.35.3` | `MIT OR Apache-2.0` | L045, L111 |
+| `gix-validate 0.11.4` | `MIT OR Apache-2.0` | L045, L111 |
+| `glob 0.3.3` | `MIT OR Apache-2.0` | L023, L210 |
+| `globset 0.4.19` | `Unlicense OR MIT` | L024, L137 |
+| `h2 0.4.19` | `MIT` | L343 |
+| `hash32 0.2.1` | `MIT OR Apache-2.0` | L091, L210 |
+| `hashbrown 0.12.3` | `MIT OR Apache-2.0` | L210, L245 |
+| `hashbrown 0.14.5` | `MIT OR Apache-2.0` | L210, L245 |
+| `hashbrown 0.15.5` | `MIT OR Apache-2.0` | L210, L245 |
+| `hashbrown 0.16.1` | `MIT OR Apache-2.0` | L210, L245 |
+| `hashbrown 0.17.1` | `MIT OR Apache-2.0` | L210, L245 |
+| `hashlink 0.10.0` | `MIT OR Apache-2.0` | L176, L327 |
+| `heapless 0.7.17` | `MIT OR Apache-2.0` | L195, L210 |
+| `heck 0.5.0` | `MIT OR Apache-2.0` | L002, L210 |
+| `hermit-abi 0.5.2` | `MIT OR Apache-2.0` | L066, L210 |
+| `hex 0.4.3` | `MIT OR Apache-2.0` | L150, L223 |
+| `hkdf 0.12.4` | `MIT OR Apache-2.0` | L060, L325 |
+| `hmac 0.12.1` | `MIT OR Apache-2.0` | L220, L325 |
+| `home 0.5.12` | `MIT OR Apache-2.0` | L036, L066 |
+| `http 1.4.2` | `MIT OR Apache-2.0` | L193, L342 |
+| `http-body 1.0.1` | `MIT` | L244 |
+| `http-body-util 0.1.3` | `MIT` | L110 |
+| `httparse 1.10.1` | `MIT OR Apache-2.0` | L188, L210 |
+| `httpdate 1.0.3` | `MIT OR Apache-2.0` | L168, L200 |
 | `hyper 1.10.1` | `MIT` | L006 |
-| `hyper-rustls 0.27.9` | `Apache-2.0 OR ISC OR MIT` | L206, L229, L242 |
-| `hyper-tls 0.6.0` | `MIT/Apache-2.0` | L206, L331 |
-| `hyper-util 0.1.20` | `MIT` | L319 |
-| `iana-time-zone 0.1.65` | `MIT OR Apache-2.0` | L072, L163 |
-| `iana-time-zone-haiku 0.1.2` | `MIT OR Apache-2.0` | L072, L163 |
-| `icu_collections 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_decimal 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_decimal_data 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_locale 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_locale_core 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_locale_data 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_normalizer 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_normalizer_data 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_plurals 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_plurals_data 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_properties 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_properties_data 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_provider 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_segmenter 2.2.0` | `Unicode-3.0` | L290 |
-| `icu_segmenter_data 2.2.0` | `Unicode-3.0` | L290 |
+| `hyper-rustls 0.27.9` | `Apache-2.0 OR ISC OR MIT` | L210, L234, L247 |
+| `hyper-tls 0.6.0` | `MIT/Apache-2.0` | L210, L336 |
+| `hyper-util 0.1.20` | `MIT` | L324 |
+| `iana-time-zone 0.1.65` | `MIT OR Apache-2.0` | L073, L167 |
+| `iana-time-zone-haiku 0.1.2` | `MIT OR Apache-2.0` | L073, L167 |
+| `icu_collections 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_decimal 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_decimal_data 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_locale 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_locale_core 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_locale_data 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_normalizer 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_normalizer_data 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_plurals 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_plurals_data 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_properties 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_properties_data 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_provider 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_segmenter 2.2.0` | `Unicode-3.0` | L295 |
+| `icu_segmenter_data 2.2.0` | `Unicode-3.0` | L295 |
 | `ident_case 1.0.1` | `MIT/Apache-2.0` | L026 |
-| `idna 1.1.0` | `MIT OR Apache-2.0` | L166, L206 |
-| `idna_adapter 1.2.2` | `Apache-2.0 OR MIT` | L013, L206 |
-| `image 0.25.10` | `MIT OR Apache-2.0` | L108, L160 |
-| `image-webp 0.2.4` | `MIT OR Apache-2.0` | L108, L160 |
-| `indenter 0.3.4` | `MIT OR Apache-2.0` | L065, L185 |
-| `indexmap 1.9.3` | `Apache-2.0 OR MIT` | L111, L206 |
-| `indexmap 2.14.0` | `Apache-2.0 OR MIT` | L111, L206 |
-| `indoc 2.0.7` | `MIT OR Apache-2.0` | L065, L185 |
-| `inout 0.1.4` | `MIT OR Apache-2.0` | L151, L320 |
-| `instability 0.3.12` | `MIT` | L198 |
-| `inventory 0.3.24` | `MIT OR Apache-2.0` | L065, L185 |
-| `ipnet 2.12.0` | `MIT OR Apache-2.0` | L216, L282 |
-| `is_terminal_polyfill 1.70.2` | `MIT OR Apache-2.0` | L095, L147 |
-| `itertools 0.14.0` | `MIT OR Apache-2.0` | L206, L342 |
-| `itoa 1.0.18` | `MIT OR Apache-2.0` | L065, L185 |
-| `jiff 0.2.35` | `Unlicense OR MIT` | L024, L134 |
-| `jiff-core 0.1.0` | `Unlicense OR MIT` | L024, L134 |
-| `jiff-static 0.2.35` | `Unlicense OR MIT` | L024, L134 |
-| `jiff-tzdb 0.1.8` | `Unlicense OR MIT` | L024, L134 |
-| `jiff-tzdb-platform 0.1.3` | `Unlicense OR MIT` | L024, L134 |
-| `js-sys 0.3.102` | `MIT OR Apache-2.0` | L183, L206 |
-| `kasuari 0.4.12` | `MIT OR Apache-2.0` | L122, L311 |
-| `keyring 4.1.4` | `MIT OR Apache-2.0` | L129, L252 |
-| `keyring-core 1.0.0` | `MIT OR Apache-2.0` | L129, L252 |
-| `konst 0.2.20` | `Zlib` | L117 |
-| `konst_macro_rules 0.2.19` | `Zlib` | L117 |
-| `landlock 0.4.7` | `MIT OR Apache-2.0` | L030, L082, L156 |
-| `lazy_static 1.5.0` | `MIT OR Apache-2.0` | L206, L219 |
-| `libc 0.2.186` | `MIT OR Apache-2.0` | L185, L283 |
-| `libm 0.2.16` | `MIT` | L125 |
-| `libredox 0.1.17` | `MIT` | L170 |
+| `idna 1.1.0` | `MIT OR Apache-2.0` | L170, L210 |
+| `idna_adapter 1.2.2` | `Apache-2.0 OR MIT` | L013, L210 |
+| `image 0.25.10` | `MIT OR Apache-2.0` | L111, L164 |
+| `image-webp 0.2.4` | `MIT OR Apache-2.0` | L111, L164 |
+| `indenter 0.3.4` | `MIT OR Apache-2.0` | L066, L189 |
+| `indexmap 1.9.3` | `Apache-2.0 OR MIT` | L114, L210 |
+| `indexmap 2.14.0` | `Apache-2.0 OR MIT` | L114, L210 |
+| `indoc 2.0.7` | `MIT OR Apache-2.0` | L066, L189 |
+| `inotify 0.11.5` | `ISC` | L344 |
+| `inotify-sys 0.1.8` | `ISC` | L344 |
+| `inout 0.1.4` | `MIT OR Apache-2.0` | L155, L325 |
+| `instability 0.3.12` | `MIT` | L202 |
+| `inventory 0.3.24` | `MIT OR Apache-2.0` | L066, L189 |
+| `ipnet 2.12.0` | `MIT OR Apache-2.0` | L221, L287 |
+| `is_terminal_polyfill 1.70.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `itertools 0.14.0` | `MIT OR Apache-2.0` | L210, L348 |
+| `itoa 1.0.18` | `MIT OR Apache-2.0` | L066, L189 |
+| `jiff 0.2.35` | `Unlicense OR MIT` | L024, L137 |
+| `jiff-core 0.1.0` | `Unlicense OR MIT` | L024, L137 |
+| `jiff-static 0.2.35` | `Unlicense OR MIT` | L024, L137 |
+| `jiff-tzdb 0.1.8` | `Unlicense OR MIT` | L024, L137 |
+| `jiff-tzdb-platform 0.1.3` | `Unlicense OR MIT` | L024, L137 |
+| `js-sys 0.3.102` | `MIT OR Apache-2.0` | L187, L210 |
+| `kasuari 0.4.12` | `MIT OR Apache-2.0` | L125, L316 |
+| `keyring 4.1.4` | `MIT OR Apache-2.0` | L132, L257 |
+| `keyring-core 1.0.0` | `MIT OR Apache-2.0` | L132, L257 |
+| `konst 0.2.20` | `Zlib` | L120 |
+| `konst_macro_rules 0.2.19` | `Zlib` | L120 |
+| `kqueue 1.2.1` | `MIT` | L043 |
+| `kqueue-sys 1.1.2` | `MIT` | L043 |
+| `landlock 0.4.7` | `MIT OR Apache-2.0` | L030, L084, L160 |
+| `lazy_static 1.5.0` | `MIT OR Apache-2.0` | L210, L224 |
+| `libc 0.2.186` | `MIT OR Apache-2.0` | L189, L288 |
+| `libm 0.2.16` | `MIT` | L128 |
+| `libredox 0.1.17` | `MIT` | L174 |
 | `libsqlite3-hotbundle 1.530300.0` | `MIT` | L032 |
 | `libsqlite3-sys 0.30.1` | `MIT` | L032 |
-| `line-clipping 0.3.7` | `MIT OR Apache-2.0` | L001, L318 |
-| `link-section 0.19.3` | `Apache-2.0 OR MIT` | L147, L258 |
-| `linktime-proc-macro 0.2.3` | `Apache-2.0 OR MIT` | L147, L258 |
-| `linux-raw-sys 0.12.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L161, L206 |
-| `litemap 0.8.2` | `Unicode-3.0` | L290 |
-| `litrs 1.0.0` | `MIT OR Apache-2.0` | L185, L302 |
-| `lock_api 0.4.14` | `MIT OR Apache-2.0` | L193, L206 |
-| `lock_free_hashtable 0.1.4` | `MIT OR Apache-2.0` | L292 |
-| `log 0.4.33` | `MIT OR Apache-2.0` | L023, L206 |
-| `logos 0.15.1` | `MIT OR Apache-2.0` | L098, L158 |
-| `logos-codegen 0.15.1` | `MIT OR Apache-2.0` | L098, L158 |
-| `logos-derive 0.15.1` | `MIT OR Apache-2.0` | L098, L158 |
+| `line-clipping 0.3.7` | `MIT OR Apache-2.0` | L001, L323 |
+| `link-section 0.19.3` | `Apache-2.0 OR MIT` | L150, L263 |
+| `linktime-proc-macro 0.2.3` | `Apache-2.0 OR MIT` | L150, L263 |
+| `linux-raw-sys 0.12.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L165, L210 |
+| `litemap 0.8.2` | `Unicode-3.0` | L295 |
+| `litrs 1.0.0` | `MIT OR Apache-2.0` | L189, L307 |
+| `lock_api 0.4.14` | `MIT OR Apache-2.0` | L197, L210 |
+| `lock_free_hashtable 0.1.4` | `MIT OR Apache-2.0` | L297 |
+| `log 0.4.33` | `MIT OR Apache-2.0` | L023, L210 |
+| `logos 0.15.1` | `MIT OR Apache-2.0` | L100, L162 |
+| `logos-codegen 0.15.1` | `MIT OR Apache-2.0` | L100, L162 |
+| `logos-derive 0.15.1` | `MIT OR Apache-2.0` | L100, L162 |
 | `lru 0.18.3` | `MIT` | L008 |
-| `lru-slab 0.1.2` | `MIT OR Apache-2.0 OR Zlib` | L054, L284, L293 |
-| `lsp-types 0.97.0` | `MIT` | L335 |
-| `maplit 1.0.2` | `MIT/Apache-2.0` | L206, L342 |
-| `matchers 0.2.0` | `MIT` | L060 |
-| `matchit 0.7.3` | `MIT AND BSD-3-Clause` | L064, L178 |
-| `md-5 0.10.6` | `MIT OR Apache-2.0` | L087, L320 |
-| `memchr 2.8.2` | `Unlicense OR MIT` | L024, L134 |
-| `memoffset 0.9.1` | `MIT` | L066 |
-| `mime 0.3.17` | `MIT OR Apache-2.0` | L206, L227 |
-| `mime_guess 2.0.5` | `MIT` | L314 |
-| `miniz_oxide 0.8.9` | `MIT OR Zlib OR Apache-2.0` | L108, L154, L236, L325 |
-| `mio 1.2.1` | `MIT` | L276 |
-| `moxcms 0.8.1` | `BSD-3-Clause OR Apache-2.0` | L058, L180 |
-| `multimap 0.10.1` | `MIT OR Apache-2.0` | L144, L206 |
-| `native-tls 0.2.18` | `MIT OR Apache-2.0` | L147, L299 |
+| `lru-slab 0.1.2` | `MIT OR Apache-2.0 OR Zlib` | L055, L289, L298 |
+| `lsp-types 0.97.0` | `MIT` | L340 |
+| `maplit 1.0.2` | `MIT/Apache-2.0` | L210, L348 |
+| `matchers 0.2.0` | `MIT` | L061 |
+| `matchit 0.7.3` | `MIT AND BSD-3-Clause` | L065, L182 |
+| `md-5 0.10.6` | `MIT OR Apache-2.0` | L089, L325 |
+| `memchr 2.8.2` | `Unlicense OR MIT` | L024, L137 |
+| `memoffset 0.9.1` | `MIT` | L067 |
+| `mime 0.3.17` | `MIT OR Apache-2.0` | L210, L232 |
+| `mime_guess 2.0.5` | `MIT` | L319 |
+| `miniz_oxide 0.8.9` | `MIT OR Zlib OR Apache-2.0` | L111, L158, L241, L330 |
+| `mio 1.2.1` | `MIT` | L281 |
+| `moxcms 0.8.1` | `BSD-3-Clause OR Apache-2.0` | L059, L184 |
+| `multimap 0.10.1` | `MIT OR Apache-2.0` | L147, L210 |
+| `native-tls 0.2.18` | `MIT OR Apache-2.0` | L150, L304 |
 | `nibble_vec 0.1.0` | `MIT` | L003 |
-| `nix 0.28.0` | `MIT` | L256 |
-| `nix 0.31.3` | `MIT` | L256 |
-| `nu-ansi-term 0.50.3` | `MIT` | L244 |
-| `num 0.4.3` | `MIT OR Apache-2.0` | L023, L206 |
-| `num-bigint 0.4.8` | `MIT OR Apache-2.0` | L023, L206 |
-| `num-bigint-dig 0.8.6` | `MIT/Apache-2.0` | L023, L206 |
-| `num-complex 0.4.6` | `MIT OR Apache-2.0` | L023, L206 |
-| `num-conv 0.2.2` | `MIT OR Apache-2.0` | L108, L110 |
-| `num-integer 0.1.46` | `MIT OR Apache-2.0` | L023, L206 |
-| `num-iter 0.1.45` | `MIT OR Apache-2.0` | L023, L206 |
-| `num-rational 0.4.2` | `MIT OR Apache-2.0` | L023, L206 |
-| `num-traits 0.2.19` | `MIT OR Apache-2.0` | L023, L206 |
-| `num_threads 0.1.7` | `MIT OR Apache-2.0` | L259, L269 |
-| `once_cell 1.21.4` | `MIT OR Apache-2.0` | L065, L206 |
-| `once_cell_polyfill 1.70.2` | `MIT OR Apache-2.0` | L095, L147 |
-| `openssl 0.10.81` | `Apache-2.0` | L147, L324 |
-| `openssl-macros 0.1.1` | `MIT/Apache-2.0` | L147, L339 |
-| `openssl-probe 0.2.1` | `MIT OR Apache-2.0` | L183, L206 |
-| `openssl-sys 0.9.117` | `MIT` | L183 |
-| `ordered-stream 0.2.0` | `MIT OR Apache-2.0` | L065, L206 |
-| `pagable 0.4.2` | `Apache-2.0` | L292 |
-| `pagable_derive 0.4.2` | `Apache-2.0` | L292 |
-| `palette 0.7.6` | `MIT OR Apache-2.0` | L174, L206 |
-| `palette_derive 0.7.6` | `MIT OR Apache-2.0` | L174, L206 |
-| `parking 2.2.1` | `Apache-2.0 OR MIT` | L065, L206, L271 |
-| `parking_lot 0.12.5` | `MIT OR Apache-2.0` | L193, L206 |
-| `parking_lot_core 0.9.12` | `MIT OR Apache-2.0` | L193, L206 |
-| `paste 1.0.15` | `MIT OR Apache-2.0` | L065, L185 |
-| `pem-rfc7468 0.7.0` | `Apache-2.0 OR MIT` | L005, L320 |
-| `percent-encoding 2.3.2` | `MIT OR Apache-2.0` | L166, L206 |
-| `pin-project-lite 0.2.17` | `Apache-2.0 OR MIT` | L065, L108 |
-| `piper 0.2.5` | `MIT OR Apache-2.0` | L065, L206 |
-| `pkcs1 0.7.5` | `Apache-2.0 OR MIT` | L011, L320 |
-| `pkcs8 0.10.2` | `Apache-2.0 OR MIT` | L143, L320 |
-| `pkg-config 0.3.33` | `MIT OR Apache-2.0` | L183, L206 |
-| `plain 0.2.3` | `MIT/Apache-2.0` | L010, L206 |
-| `png 0.18.1` | `MIT OR Apache-2.0` | L179, L206 |
-| `polling 3.11.0` | `Apache-2.0 OR MIT` | L065, L206 |
-| `portable-atomic 1.13.1` | `Apache-2.0 OR MIT` | L065, L108 |
-| `portable-atomic-util 0.2.7` | `Apache-2.0 OR MIT` | L065, L108 |
+| `nix 0.28.0` | `MIT` | L261 |
+| `nix 0.31.3` | `MIT` | L261 |
+| `notify 8.2.0` | `CC0-1.0` | L083 |
+| `notify-types 2.2.0` | `MIT OR Apache-2.0` | L109, L152 |
+| `nu-ansi-term 0.50.3` | `MIT` | L249 |
+| `num 0.4.3` | `MIT OR Apache-2.0` | L023, L210 |
+| `num-bigint 0.4.8` | `MIT OR Apache-2.0` | L023, L210 |
+| `num-bigint-dig 0.8.6` | `MIT/Apache-2.0` | L023, L210 |
+| `num-complex 0.4.6` | `MIT OR Apache-2.0` | L023, L210 |
+| `num-conv 0.2.2` | `MIT OR Apache-2.0` | L111, L113 |
+| `num-integer 0.1.46` | `MIT OR Apache-2.0` | L023, L210 |
+| `num-iter 0.1.45` | `MIT OR Apache-2.0` | L023, L210 |
+| `num-rational 0.4.2` | `MIT OR Apache-2.0` | L023, L210 |
+| `num-traits 0.2.19` | `MIT OR Apache-2.0` | L023, L210 |
+| `num_threads 0.1.7` | `MIT OR Apache-2.0` | L264, L274 |
+| `once_cell 1.21.4` | `MIT OR Apache-2.0` | L066, L210 |
+| `once_cell_polyfill 1.70.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `openssl 0.10.81` | `Apache-2.0` | L150, L329 |
+| `openssl-macros 0.1.1` | `MIT/Apache-2.0` | L150, L345 |
+| `openssl-probe 0.2.1` | `MIT OR Apache-2.0` | L187, L210 |
+| `openssl-sys 0.9.117` | `MIT` | L187 |
+| `ordered-stream 0.2.0` | `MIT OR Apache-2.0` | L066, L210 |
+| `pagable 0.4.2` | `Apache-2.0` | L297 |
+| `pagable_derive 0.4.2` | `Apache-2.0` | L297 |
+| `palette 0.7.6` | `MIT OR Apache-2.0` | L178, L210 |
+| `palette_derive 0.7.6` | `MIT OR Apache-2.0` | L178, L210 |
+| `parking 2.2.1` | `Apache-2.0 OR MIT` | L066, L210, L276 |
+| `parking_lot 0.12.5` | `MIT OR Apache-2.0` | L197, L210 |
+| `parking_lot_core 0.9.12` | `MIT OR Apache-2.0` | L197, L210 |
+| `paste 1.0.15` | `MIT OR Apache-2.0` | L066, L189 |
+| `pem-rfc7468 0.7.0` | `Apache-2.0 OR MIT` | L005, L325 |
+| `percent-encoding 2.3.2` | `MIT OR Apache-2.0` | L170, L210 |
+| `pin-project-lite 0.2.17` | `Apache-2.0 OR MIT` | L066, L111 |
+| `piper 0.2.5` | `MIT OR Apache-2.0` | L066, L210 |
+| `pkcs1 0.7.5` | `Apache-2.0 OR MIT` | L011, L325 |
+| `pkcs8 0.10.2` | `Apache-2.0 OR MIT` | L146, L325 |
+| `pkg-config 0.3.33` | `MIT OR Apache-2.0` | L187, L210 |
+| `plain 0.2.3` | `MIT/Apache-2.0` | L010, L210 |
+| `png 0.18.1` | `MIT OR Apache-2.0` | L183, L210 |
+| `polling 3.11.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `portable-atomic 1.13.1` | `Apache-2.0 OR MIT` | L066, L111 |
+| `portable-atomic-util 0.2.7` | `Apache-2.0 OR MIT` | L066, L111 |
 | `portable-pty 0.9.0` | `MIT` | L015 |
-| `postcard 1.1.3` | `MIT OR Apache-2.0` | L062, L206 |
-| `potential_utf 0.1.5` | `Unicode-3.0` | L290 |
-| `powerfmt 0.2.0` | `MIT OR Apache-2.0` | L105, L148 |
-| `ppv-lite86 0.2.21` | `MIT OR Apache-2.0` | L247, L332 |
-| `proc-macro-crate 3.5.0` | `MIT OR Apache-2.0` | L036, L065 |
-| `proc-macro2 1.0.106` | `MIT OR Apache-2.0` | L065, L185 |
-| `psl-types 2.0.11` | `MIT/Apache-2.0` | L067, L206 |
-| `publicsuffix 2.3.0` | `MIT/Apache-2.0` | L206, L274 |
-| `pulldown-cmark 0.13.6` | `MIT` | L261 |
-| `pxfm 0.1.30` | `BSD-3-Clause OR Apache-2.0` | L058, L180 |
-| `quick-error 2.0.1` | `MIT/Apache-2.0` | L147, L294 |
+| `postcard 1.1.3` | `MIT OR Apache-2.0` | L063, L210 |
+| `potential_utf 0.1.5` | `Unicode-3.0` | L295 |
+| `powerfmt 0.2.0` | `MIT OR Apache-2.0` | L107, L151 |
+| `ppv-lite86 0.2.21` | `MIT OR Apache-2.0` | L252, L337 |
+| `proc-macro-crate 3.5.0` | `MIT OR Apache-2.0` | L036, L066 |
+| `proc-macro2 1.0.106` | `MIT OR Apache-2.0` | L066, L189 |
+| `psl-types 2.0.11` | `MIT/Apache-2.0` | L068, L210 |
+| `publicsuffix 2.3.0` | `MIT/Apache-2.0` | L210, L279 |
+| `pulldown-cmark 0.13.6` | `MIT` | L266 |
+| `pxfm 0.1.30` | `BSD-3-Clause OR Apache-2.0` | L059, L184 |
+| `quick-error 2.0.1` | `MIT/Apache-2.0` | L150, L299 |
 | `quick-xml 0.41.0` | `MIT` | L021 |
-| `quickcheck 1.1.0` | `Unlicense OR MIT` | L024, L134 |
-| `quinn 0.11.11` | `MIT OR Apache-2.0` | L007, L054 |
-| `quinn-proto 0.11.18` | `MIT OR Apache-2.0` | L007, L054 |
-| `quinn-udp 0.5.15` | `MIT OR Apache-2.0` | L007, L054 |
-| `quote 1.0.46` | `MIT OR Apache-2.0` | L065, L185 |
-| `r-efi 5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L292 |
-| `r-efi 6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L292 |
+| `quickcheck 1.1.0` | `Unlicense OR MIT` | L024, L137 |
+| `quinn 0.11.11` | `MIT OR Apache-2.0` | L007, L055 |
+| `quinn-proto 0.11.18` | `MIT OR Apache-2.0` | L007, L055 |
+| `quinn-udp 0.5.15` | `MIT OR Apache-2.0` | L007, L055 |
+| `quote 1.0.46` | `MIT OR Apache-2.0` | L066, L189 |
+| `r-efi 5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
+| `r-efi 6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
 | `radix_trie 0.2.1` | `MIT` | L003 |
-| `rama-error 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L292 |
-| `rama-macros 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L292 |
-| `rama-utils 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L292 |
-| `rand 0.10.2` | `MIT OR Apache-2.0` | L046, L285, L346 |
-| `rand 0.8.6` | `MIT OR Apache-2.0` | L046, L285, L346 |
-| `rand_chacha 0.3.1` | `MIT OR Apache-2.0` | L046, L285, L317 |
-| `rand_core 0.10.1` | `MIT OR Apache-2.0` | L025, L149, L280 |
-| `rand_core 0.6.4` | `MIT OR Apache-2.0` | L025, L046, L285 |
-| `rand_pcg 0.10.2` | `MIT OR Apache-2.0` | L025, L046, L270 |
-| `ratatui 0.30.2` | `MIT` | L118 |
-| `ratatui-core 0.1.2` | `MIT` | L118 |
-| `ratatui-crossterm 0.1.2` | `MIT` | L118 |
-| `ratatui-macros 0.7.2` | `MIT` | L333 |
-| `ratatui-widgets 0.3.2` | `MIT` | L118 |
-| `rayon 1.12.0` | `MIT OR Apache-2.0` | L206, L219 |
-| `rayon-core 1.13.0` | `MIT OR Apache-2.0` | L206, L219 |
-| `redox_syscall 0.5.18` | `MIT` | L344 |
-| `redox_syscall 0.8.1` | `MIT` | L344 |
-| `ref-cast 1.0.27` | `MIT OR Apache-2.0` | L065, L185 |
-| `ref-cast-impl 1.0.27` | `MIT OR Apache-2.0` | L065, L185 |
-| `regex 1.12.4` | `MIT OR Apache-2.0` | L023, L206 |
-| `regex-automata 0.4.14` | `MIT OR Apache-2.0` | L023, L206 |
-| `regex-lite 0.1.9` | `MIT OR Apache-2.0` | L023, L206 |
-| `regex-syntax 0.8.11` | `MIT OR Apache-2.0` | L023, L206 |
-| `reqwest 0.12.28` | `MIT OR Apache-2.0` | L115, L121 |
-| `ring 0.17.14` | `Apache-2.0 AND ISC` | L009, L097, L327 |
-| `rsa 0.9.10` | `MIT OR Apache-2.0` | L065, L206 |
-| `rustc-hash 2.1.3` | `Apache-2.0 OR MIT` | L065, L185 |
-| `rustc_version 0.4.1` | `MIT OR Apache-2.0` | L193, L206 |
-| `rustix 1.1.4` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L206, L343 |
-| `rustls 0.23.46` | `Apache-2.0 OR ISC OR MIT` | L206, L229, L242 |
-| `rustls-native-certs 0.8.4` | `Apache-2.0 OR ISC OR MIT` | L057, L206, L229, L242 |
-| `rustls-pki-types 1.14.1` | `MIT OR Apache-2.0` | L090, L273 |
-| `rustls-webpki 0.103.16` | `ISC` | L081 |
-| `rustversion 1.0.22` | `MIT OR Apache-2.0` | L065, L185 |
-| `rustyline 14.0.0` | `MIT` | L230 |
-| `ryu 1.0.23` | `Apache-2.0 OR BSL-1.0` | L185, L194 |
-| `same-file 1.0.6` | `Unlicense/MIT` | L134, L152 |
+| `rama-error 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L297 |
+| `rama-macros 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L297 |
+| `rama-utils 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L297 |
+| `rand 0.10.2` | `MIT OR Apache-2.0` | L047, L290, L352 |
+| `rand 0.8.6` | `MIT OR Apache-2.0` | L047, L290, L352 |
+| `rand_chacha 0.3.1` | `MIT OR Apache-2.0` | L047, L290, L322 |
+| `rand_core 0.10.1` | `MIT OR Apache-2.0` | L025, L153, L285 |
+| `rand_core 0.6.4` | `MIT OR Apache-2.0` | L025, L047, L290 |
+| `rand_pcg 0.10.2` | `MIT OR Apache-2.0` | L025, L047, L275 |
+| `ratatui 0.30.2` | `MIT` | L121 |
+| `ratatui-core 0.1.2` | `MIT` | L121 |
+| `ratatui-crossterm 0.1.2` | `MIT` | L121 |
+| `ratatui-macros 0.7.2` | `MIT` | L338 |
+| `ratatui-widgets 0.3.2` | `MIT` | L121 |
+| `rayon 1.12.0` | `MIT OR Apache-2.0` | L210, L224 |
+| `rayon-core 1.13.0` | `MIT OR Apache-2.0` | L210, L224 |
+| `redox_syscall 0.5.18` | `MIT` | L350 |
+| `redox_syscall 0.8.1` | `MIT` | L350 |
+| `ref-cast 1.0.27` | `MIT OR Apache-2.0` | L066, L189 |
+| `ref-cast-impl 1.0.27` | `MIT OR Apache-2.0` | L066, L189 |
+| `regex 1.12.4` | `MIT OR Apache-2.0` | L023, L210 |
+| `regex-automata 0.4.14` | `MIT OR Apache-2.0` | L023, L210 |
+| `regex-lite 0.1.9` | `MIT OR Apache-2.0` | L023, L210 |
+| `regex-syntax 0.8.11` | `MIT OR Apache-2.0` | L023, L210 |
+| `reqwest 0.12.28` | `MIT OR Apache-2.0` | L118, L124 |
+| `ring 0.17.14` | `Apache-2.0 AND ISC` | L009, L099, L332 |
+| `rsa 0.9.10` | `MIT OR Apache-2.0` | L066, L210 |
+| `rustc-hash 2.1.3` | `Apache-2.0 OR MIT` | L066, L189 |
+| `rustc_version 0.4.1` | `MIT OR Apache-2.0` | L197, L210 |
+| `rustix 1.1.4` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210, L349 |
+| `rustls 0.23.46` | `Apache-2.0 OR ISC OR MIT` | L210, L234, L247 |
+| `rustls-native-certs 0.8.4` | `Apache-2.0 OR ISC OR MIT` | L058, L210, L234, L247 |
+| `rustls-pki-types 1.14.1` | `MIT OR Apache-2.0` | L092, L278 |
+| `rustls-webpki 0.103.16` | `ISC` | L082 |
+| `rustversion 1.0.22` | `MIT OR Apache-2.0` | L066, L189 |
+| `rustyline 14.0.0` | `MIT` | L235 |
+| `ryu 1.0.23` | `Apache-2.0 OR BSL-1.0` | L189, L198 |
+| `same-file 1.0.6` | `Unlicense/MIT` | L137, L156 |
 | `schannel 0.1.29` | `MIT` | L040 |
-| `schemafy 0.5.2` | `MIT` | L335 |
-| `schemafy_core 0.5.2` | `MIT` | L312 |
-| `schemafy_lib 0.5.2` | `MIT` | L312 |
+| `schemafy 0.5.2` | `MIT` | L340 |
+| `schemafy_core 0.5.2` | `MIT` | L317 |
+| `schemafy_lib 0.5.2` | `MIT` | L317 |
 | `schemars 0.8.22` | `MIT` | L039 |
 | `schemars 0.9.0` | `MIT` | L039 |
 | `schemars 1.2.2` | `MIT` | L039 |
 | `schemars_derive 0.8.22` | `MIT` | L039 |
-| `scopeguard 1.2.0` | `MIT OR Apache-2.0` | L029, L206 |
-| `seccompiler 0.5.0` | `Apache-2.0 OR BSD-3-Clause` | L054, L214 |
-| `secret-service 5.1.0` | `MIT OR Apache-2.0` | L206, L298 |
-| `security-framework 3.7.0` | `MIT OR Apache-2.0` | L075, L206 |
-| `security-framework-sys 2.17.0` | `MIT OR Apache-2.0` | L075, L206 |
-| `semver 1.0.28` | `MIT OR Apache-2.0` | L065, L185 |
-| `sequence_trie 0.3.6` | `MIT/Apache-2.0` | L145, L155 |
-| `serde 1.0.228` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_core 1.0.228` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_derive 1.0.228` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_derive_internals 0.29.1` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_json 1.0.150` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_path_to_error 0.1.20` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_repr 0.1.20` | `MIT OR Apache-2.0` | L065, L185 |
-| `serde_spanned 0.6.9` | `MIT OR Apache-2.0` | L095, L147 |
-| `serde_urlencoded 0.7.1` | `MIT/Apache-2.0` | L185, L251 |
-| `serde_with 3.22.0` | `MIT OR Apache-2.0` | L206, L342 |
-| `serde_with_macros 3.22.0` | `MIT OR Apache-2.0` | L206, L342 |
-| `serial2 0.2.37` | `BSD-2-Clause OR Apache-2.0` | L192, L204 |
-| `sha1 0.10.6` | `MIT OR Apache-2.0` | L087, L320 |
-| `sha2 0.10.9` | `MIT OR Apache-2.0` | L087, L320 |
-| `sharded-slab 0.1.7` | `MIT` | L045 |
-| `shared_library 0.1.9` | `Apache-2.0/MIT` | L037, L172 |
-| `shell-words 1.1.1` | `MIT/Apache-2.0` | L017, L275 |
-| `shlex 1.3.0` | `MIT OR Apache-2.0` | L232, L286 |
-| `shlex 2.0.1` | `MIT OR Apache-2.0` | L232, L286 |
-| `signal-hook 0.3.18` | `Apache-2.0/MIT` | L206, L235 |
-| `signal-hook-mio 0.2.5` | `MIT OR Apache-2.0` | L206, L235 |
-| `signal-hook-registry 1.4.8` | `MIT OR Apache-2.0` | L206, L235 |
-| `signature 2.2.0` | `Apache-2.0 OR MIT` | L169, L320 |
-| `simd-adler32 0.3.9` | `MIT` | L130 |
+| `scopeguard 1.2.0` | `MIT OR Apache-2.0` | L029, L210 |
+| `seccompiler 0.5.0` | `Apache-2.0 OR BSD-3-Clause` | L055, L219 |
+| `secret-service 5.1.0` | `MIT OR Apache-2.0` | L210, L303 |
+| `security-framework 3.7.0` | `MIT OR Apache-2.0` | L076, L210 |
+| `security-framework-sys 2.17.0` | `MIT OR Apache-2.0` | L076, L210 |
+| `semver 1.0.28` | `MIT OR Apache-2.0` | L066, L189 |
+| `sequence_trie 0.3.6` | `MIT/Apache-2.0` | L148, L159 |
+| `serde 1.0.228` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_core 1.0.228` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_derive 1.0.228` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_derive_internals 0.29.1` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_json 1.0.150` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_path_to_error 0.1.20` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_repr 0.1.20` | `MIT OR Apache-2.0` | L066, L189 |
+| `serde_spanned 0.6.9` | `MIT OR Apache-2.0` | L097, L150 |
+| `serde_urlencoded 0.7.1` | `MIT/Apache-2.0` | L189, L256 |
+| `serde_with 3.22.0` | `MIT OR Apache-2.0` | L210, L348 |
+| `serde_with_macros 3.22.0` | `MIT OR Apache-2.0` | L210, L348 |
+| `serial2 0.2.37` | `BSD-2-Clause OR Apache-2.0` | L196, L208 |
+| `sha1 0.10.6` | `MIT OR Apache-2.0` | L089, L325 |
+| `sha2 0.10.9` | `MIT OR Apache-2.0` | L089, L325 |
+| `sharded-slab 0.1.7` | `MIT` | L046 |
+| `shared_library 0.1.9` | `Apache-2.0/MIT` | L037, L176 |
+| `shell-words 1.1.1` | `MIT/Apache-2.0` | L017, L280 |
+| `shlex 1.3.0` | `MIT OR Apache-2.0` | L237, L291 |
+| `shlex 2.0.1` | `MIT OR Apache-2.0` | L237, L291 |
+| `signal-hook 0.3.18` | `Apache-2.0/MIT` | L210, L240 |
+| `signal-hook-mio 0.2.5` | `MIT OR Apache-2.0` | L210, L240 |
+| `signal-hook-registry 1.4.8` | `MIT OR Apache-2.0` | L210, L240 |
+| `signature 2.2.0` | `Apache-2.0 OR MIT` | L173, L325 |
+| `simd-adler32 0.3.9` | `MIT` | L133 |
 | `slab 0.4.12` | `MIT` | L022 |
-| `smallvec 1.15.2` | `MIT OR Apache-2.0` | L173, L206 |
-| `smol_str 0.3.6` | `MIT OR Apache-2.0` | L065, L206 |
-| `socket2 0.6.4` | `MIT OR Apache-2.0` | L183, L206 |
-| `sorted_vector_map 0.2.1` | `MIT OR Apache-2.0` | L292 |
-| `spin 0.9.8` | `MIT` | L142 |
-| `spki 0.7.3` | `Apache-2.0 OR MIT` | L011, L320 |
-| `sqlx 0.8.6` | `MIT OR Apache-2.0` | L213, L250 |
-| `sqlx-macros 0.8.6` | `MIT OR Apache-2.0` | L213, L250 |
-| `sqlx-macros-core 0.8.6` | `MIT OR Apache-2.0` | L213, L250 |
-| `sqlx-mysql 0.8.6` | `MIT OR Apache-2.0` | L213, L250 |
-| `sqlx-postgres 0.8.6` | `MIT OR Apache-2.0` | L213, L250 |
-| `sqlx-sqlite 0.8.6` | `MIT OR Apache-2.0` | L213, L250 |
-| `stable_deref_trait 1.2.1` | `MIT OR Apache-2.0` | L124, L206 |
-| `starlark 0.14.2` | `Apache-2.0` | L292 |
-| `starlark_derive 0.14.2` | `Apache-2.0` | L292 |
-| `starlark_map 0.14.2` | `Apache-2.0` | L292 |
-| `starlark_syntax 0.14.2` | `Apache-2.0` | L292 |
-| `static_assertions 1.1.0` | `MIT OR Apache-2.0` | L054, L208 |
-| `static_interner 0.1.3` | `MIT OR Apache-2.0` | L292 |
-| `streaming-iterator 0.1.9` | `MIT OR Apache-2.0` | L147, L221 |
-| `stringprep 0.1.5` | `MIT/Apache-2.0` | L147, L279 |
-| `strong_hash 0.1.0` | `MIT OR Apache-2.0` | L292 |
-| `strong_hash_derive 0.1.0` | `MIT OR Apache-2.0` | L292 |
-| `strsim 0.10.0` | `MIT` | L197 |
-| `strsim 0.11.1` | `MIT` | L197 |
-| `strum 0.27.2` | `MIT` | L051 |
-| `strum 0.28.0` | `MIT` | L051 |
-| `strum_macros 0.28.0` | `MIT` | L051 |
-| `subtle 2.6.1` | `BSD-3-Clause` | L048 |
-| `symlink 0.1.0` | `MIT/Apache-2.0` | L113, L206, L228 |
-| `syn 1.0.109` | `MIT OR Apache-2.0` | L065, L206 |
-| `syn 2.0.118` | `MIT OR Apache-2.0` | L065, L185 |
-| `syn 3.0.4` | `MIT OR Apache-2.0` | L065, L185 |
-| `sync_wrapper 1.0.2` | `Apache-2.0` | L108 |
-| `synstructure 0.13.2` | `MIT` | L079 |
-| `sys-locale 0.3.2` | `MIT OR Apache-2.0` | L054, L056 |
-| `system-configuration 0.7.0` | `MIT OR Apache-2.0` | L206, L330 |
-| `system-configuration-sys 0.6.0` | `MIT OR Apache-2.0` | L206, L330 |
+| `smallvec 1.15.2` | `MIT OR Apache-2.0` | L177, L210 |
+| `smol_str 0.3.6` | `MIT OR Apache-2.0` | L066, L210 |
+| `socket2 0.6.4` | `MIT OR Apache-2.0` | L187, L210 |
+| `sorted_vector_map 0.2.1` | `MIT OR Apache-2.0` | L297 |
+| `spin 0.9.8` | `MIT` | L145 |
+| `spki 0.7.3` | `Apache-2.0 OR MIT` | L011, L325 |
+| `sqlx 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
+| `sqlx-macros 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
+| `sqlx-macros-core 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
+| `sqlx-mysql 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
+| `sqlx-postgres 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
+| `sqlx-sqlite 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
+| `stable_deref_trait 1.2.1` | `MIT OR Apache-2.0` | L127, L210 |
+| `starlark 0.14.2` | `Apache-2.0` | L297 |
+| `starlark_derive 0.14.2` | `Apache-2.0` | L297 |
+| `starlark_map 0.14.2` | `Apache-2.0` | L297 |
+| `starlark_syntax 0.14.2` | `Apache-2.0` | L297 |
+| `static_assertions 1.1.0` | `MIT OR Apache-2.0` | L055, L212 |
+| `static_interner 0.1.3` | `MIT OR Apache-2.0` | L297 |
+| `streaming-iterator 0.1.9` | `MIT OR Apache-2.0` | L150, L226 |
+| `stringprep 0.1.5` | `MIT/Apache-2.0` | L150, L284 |
+| `strong_hash 0.1.0` | `MIT OR Apache-2.0` | L297 |
+| `strong_hash_derive 0.1.0` | `MIT OR Apache-2.0` | L297 |
+| `strsim 0.10.0` | `MIT` | L201 |
+| `strsim 0.11.1` | `MIT` | L201 |
+| `strum 0.27.2` | `MIT` | L052 |
+| `strum 0.28.0` | `MIT` | L052 |
+| `strum_macros 0.28.0` | `MIT` | L052 |
+| `subtle 2.6.1` | `BSD-3-Clause` | L049 |
+| `symlink 0.1.0` | `MIT/Apache-2.0` | L116, L210, L233 |
+| `syn 1.0.109` | `MIT OR Apache-2.0` | L066, L210 |
+| `syn 2.0.118` | `MIT OR Apache-2.0` | L066, L189 |
+| `syn 3.0.4` | `MIT OR Apache-2.0` | L066, L189 |
+| `sync_wrapper 1.0.2` | `Apache-2.0` | L111 |
+| `synstructure 0.13.2` | `MIT` | L080 |
+| `sys-locale 0.3.2` | `MIT OR Apache-2.0` | L055, L057 |
+| `system-configuration 0.7.0` | `MIT OR Apache-2.0` | L210, L335 |
+| `system-configuration-sys 0.6.0` | `MIT OR Apache-2.0` | L210, L335 |
 | `take_mut 0.2.2` | `MIT` | L028 |
-| `tar 0.4.46` | `MIT OR Apache-2.0` | L206, L316 |
-| `tempfile 3.27.0` | `MIT OR Apache-2.0` | L167, L206 |
-| `termcolor 1.4.1` | `Unlicense OR MIT` | L024, L134 |
-| `textwrap 0.11.0` | `MIT` | L092 |
-| `thiserror 1.0.69` | `MIT OR Apache-2.0` | L065, L185 |
-| `thiserror 2.0.18` | `MIT OR Apache-2.0` | L065, L185 |
-| `thiserror-impl 1.0.69` | `MIT OR Apache-2.0` | L065, L185 |
-| `thiserror-impl 2.0.18` | `MIT OR Apache-2.0` | L065, L185 |
-| `thread_local 1.1.9` | `MIT OR Apache-2.0` | L193, L206 |
-| `time 0.3.51` | `MIT OR Apache-2.0` | L108, L176 |
-| `time-core 0.1.9` | `MIT OR Apache-2.0` | L108, L176 |
-| `time-macros 0.2.30` | `MIT OR Apache-2.0` | L108, L176 |
-| `tinystr 0.8.3` | `Unicode-3.0` | L290 |
-| `tinyvec 1.11.0` | `Zlib OR Apache-2.0 OR MIT` | L054, L203, L258 |
-| `tinyvec_macros 0.1.1` | `MIT OR Apache-2.0 OR Zlib` | L050, L301, L345 |
-| `tokio 1.52.3` | `MIT` | L086 |
-| `tokio-macros 2.7.0` | `MIT` | L264 |
-| `tokio-native-tls 0.3.1` | `MIT` | L267 |
-| `tokio-rustls 0.26.4` | `MIT OR Apache-2.0` | L031, L237 |
-| `tokio-stream 0.1.18` | `MIT` | L086 |
-| `tokio-tungstenite 0.24.0` | `MIT` | L120 |
-| `tokio-util 0.7.18` | `MIT` | L086 |
-| `toml 0.8.23` | `MIT OR Apache-2.0` | L095, L147 |
-| `toml_datetime 0.6.11` | `MIT OR Apache-2.0` | L095, L147 |
-| `toml_datetime 1.1.1+spec-1.1.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `toml_edit 0.22.27` | `MIT OR Apache-2.0` | L095, L147 |
-| `toml_edit 0.25.13+spec-1.1.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `toml_parser 1.1.2+spec-1.1.0` | `MIT OR Apache-2.0` | L095, L147 |
-| `toml_write 0.1.2` | `MIT OR Apache-2.0` | L095, L147 |
-| `tower 0.5.3` | `MIT` | L303 |
-| `tower-http 0.5.2` | `MIT` | L328 |
-| `tower-http 0.6.11` | `MIT` | L328 |
-| `tower-layer 0.3.3` | `MIT` | L303 |
-| `tower-service 0.3.3` | `MIT` | L303 |
-| `tracing 0.1.44` | `MIT` | L267 |
-| `tracing-appender 0.2.5` | `MIT` | L267 |
-| `tracing-attributes 0.1.31` | `MIT` | L267 |
-| `tracing-core 0.1.36` | `MIT` | L267 |
-| `tracing-log 0.2.0` | `MIT` | L267 |
-| `tracing-serde 0.2.0` | `MIT` | L267 |
-| `tracing-subscriber 0.3.23` | `MIT` | L267 |
-| `tree-sitter 0.25.10` | `MIT` | L312 |
-| `tree-sitter-bash 0.25.1` | `MIT` | L177 |
-| `tree-sitter-language 0.1.7` | `MIT` | L334 |
-| `triomphe 0.1.16` | `MIT OR Apache-2.0` | L137, L190 |
-| `try-lock 0.2.5` | `MIT` | L077 |
-| `ts-rs 11.1.0` | `MIT` | L312 |
-| `ts-rs-macros 11.1.0` | `MIT` | L312 |
-| `tungstenite 0.24.0` | `MIT OR Apache-2.0` | L206, L231 |
-| `typed-path 0.12.3` | `MIT OR Apache-2.0` | L065, L185 |
-| `typeid 1.0.3` | `MIT OR Apache-2.0` | L065, L185 |
-| `typenum 1.20.1` | `MIT OR Apache-2.0` | L135, L188, L304 |
-| `uds_windows 1.2.1` | `MIT` | L195 |
-| `unicase 2.9.0` | `MIT OR Apache-2.0` | L006, L206 |
-| `unicode-bidi 0.3.18` | `MIT OR Apache-2.0` | L002, L168, L206 |
-| `unicode-ident 1.0.24` | `(MIT OR Apache-2.0) AND Unicode-3.0` | L065, L073, L185 |
-| `unicode-normalization 0.1.25` | `MIT OR Apache-2.0` | L002, L043, L206 |
-| `unicode-properties 0.1.4` | `MIT/Apache-2.0` | L002, L043, L206 |
-| `unicode-segmentation 1.13.3` | `MIT OR Apache-2.0` | L002, L043, L206 |
-| `unicode-truncate 2.0.1` | `MIT OR Apache-2.0` | L043, L139, L206 |
-| `unicode-width 0.1.14` | `MIT OR Apache-2.0` | L002, L043, L206 |
-| `unicode-width 0.2.2` | `MIT OR Apache-2.0` | L002, L043, L206 |
-| `unicode-xid 0.2.6` | `MIT OR Apache-2.0` | L002, L043, L206 |
-| `untrusted 0.9.0` | `ISC` | L224 |
-| `url 2.5.8` | `MIT OR Apache-2.0` | L166, L206 |
-| `urlencoding 2.1.3` | `MIT` | L123 |
-| `utf-8 0.7.6` | `MIT OR Apache-2.0` | L065, L185 |
-| `utf8_iter 1.0.4` | `Apache-2.0 OR MIT` | L054, L159, L171 |
-| `utf8parse 0.2.2` | `Apache-2.0 OR MIT` | L185, L305 |
-| `uuid 1.23.5` | `Apache-2.0 OR MIT` | L019, L206 |
-| `valuable 0.1.1` | `MIT` | L312 |
-| `vcpkg 0.2.15` | `MIT/Apache-2.0` | L128, L206 |
-| `version_check 0.9.5` | `MIT/Apache-2.0` | L206, L326 |
-| `vt100 0.16.2` | `MIT` | L262 |
-| `vte 0.15.0` | `Apache-2.0 OR MIT` | L185, L305 |
-| `walkdir 2.5.0` | `Unlicense/MIT` | L024, L134 |
-| `want 0.3.1` | `MIT` | L340 |
-| `wasi 0.11.1+wasi-snapshot-preview1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L206 |
-| `wasip2 1.0.4+wasi-0.2.12` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L206 |
-| `wasite 0.1.0` | `Apache-2.0 OR BSL-1.0 OR MIT` | L292 |
-| `wasm-bindgen 0.2.125` | `MIT OR Apache-2.0` | L183, L206 |
-| `wasm-bindgen-futures 0.4.75` | `MIT OR Apache-2.0` | L183, L206 |
-| `wasm-bindgen-macro 0.2.125` | `MIT OR Apache-2.0` | L183, L206 |
-| `wasm-bindgen-macro-support 0.2.125` | `MIT OR Apache-2.0` | L183, L206 |
-| `wasm-bindgen-shared 0.2.125` | `MIT OR Apache-2.0` | L183, L206 |
-| `wasm-streams 0.4.2` | `MIT OR Apache-2.0` | L065, L185 |
-| `web-sys 0.3.102` | `MIT OR Apache-2.0` | L183, L206 |
-| `web-time 1.1.0` | `MIT OR Apache-2.0` | L069, L254 |
-| `webpki-roots 1.0.10` | `CDLA-Permissive-2.0` | L297 |
-| `weezl 0.1.12` | `MIT OR Apache-2.0` | L127, L206 |
-| `whoami 1.6.1` | `Apache-2.0 OR BSL-1.0 OR MIT` | L026, L185, L194 |
-| `wildcard 0.3.0` | `Apache-2.0` | L054 |
-| `wildmatch 2.6.1` | `MIT` | L265 |
-| `winapi 0.3.9` | `MIT/Apache-2.0` | L061, L147 |
-| `winapi-i686-pc-windows-gnu 0.4.0` | `MIT/Apache-2.0` | L292 |
-| `winapi-util 0.1.11` | `Unlicense OR MIT` | L134, L152 |
-| `winapi-x86_64-pc-windows-gnu 0.4.0` | `MIT/Apache-2.0` | L292 |
-| `windows 0.58.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-core 0.58.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-core 0.62.2` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-implement 0.58.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-implement 0.60.2` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-interface 0.58.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-interface 0.59.3` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-link 0.2.1` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-native-keyring-store 1.1.0` | `MIT OR Apache-2.0` | L129, L252 |
-| `windows-registry 0.6.1` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-result 0.2.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-result 0.4.1` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-strings 0.1.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-strings 0.5.1` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-sys 0.48.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-sys 0.52.0` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-sys 0.61.2` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-targets 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows-targets 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_aarch64_gnullvm 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_aarch64_gnullvm 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_aarch64_msvc 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_aarch64_msvc 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_i686_gnu 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_i686_gnu 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_i686_gnullvm 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_i686_msvc 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_i686_msvc 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_x86_64_gnu 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_x86_64_gnu 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_x86_64_gnullvm 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_x86_64_gnullvm 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_x86_64_msvc 0.48.5` | `MIT OR Apache-2.0` | L162, L347 |
-| `windows_x86_64_msvc 0.52.6` | `MIT OR Apache-2.0` | L162, L347 |
-| `winnow 0.7.15` | `MIT` | L187 |
-| `winnow 1.0.4` | `MIT` | L187 |
-| `winreg 0.10.1` | `MIT` | L300 |
-| `wit-bindgen 0.57.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L206 |
-| `writeable 0.6.3` | `Unicode-3.0` | L290 |
-| `xattr 1.6.1` | `MIT OR Apache-2.0` | L167, L206 |
-| `yoke 0.8.3` | `Unicode-3.0` | L290 |
-| `yoke-derive 0.8.2` | `Unicode-3.0` | L290 |
-| `zbus 5.17.0` | `MIT` | L223 |
-| `zbus-secret-service-keyring-store 1.0.0` | `MIT OR Apache-2.0` | L129, L252 |
-| `zbus_macros 5.17.0` | `MIT` | L223 |
-| `zbus_names 4.3.3` | `MIT` | L223 |
-| `zerocopy 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L096, L210, L222 |
-| `zerocopy-derive 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L096, L210, L222 |
-| `zerofrom 0.1.8` | `Unicode-3.0` | L290 |
-| `zerofrom-derive 0.1.7` | `Unicode-3.0` | L290 |
-| `zeroize 1.9.0` | `Apache-2.0 OR MIT` | L054, L181 |
-| `zerotrie 0.2.4` | `Unicode-3.0` | L290 |
-| `zerovec 0.11.6` | `Unicode-3.0` | L290 |
-| `zerovec-derive 0.11.3` | `Unicode-3.0` | L290 |
-| `zmij 1.0.21` | `MIT` | L065 |
-| `zune-core 0.5.3` | `MIT OR Apache-2.0 OR Zlib` | L054, L104, L255 |
-| `zune-jpeg 0.5.15` | `MIT OR Apache-2.0 OR Zlib` | L054, L104, L255 |
-| `zvariant 5.13.0` | `MIT` | L223 |
-| `zvariant_derive 5.13.0` | `MIT` | L223 |
-| `zvariant_utils 3.5.0` | `MIT` | L065 |
+| `tar 0.4.46` | `MIT OR Apache-2.0` | L210, L321 |
+| `tempfile 3.27.0` | `MIT OR Apache-2.0` | L171, L210 |
+| `termcolor 1.4.1` | `Unlicense OR MIT` | L024, L137 |
+| `textwrap 0.11.0` | `MIT` | L094 |
+| `thiserror 1.0.69` | `MIT OR Apache-2.0` | L066, L189 |
+| `thiserror 2.0.18` | `MIT OR Apache-2.0` | L066, L189 |
+| `thiserror-impl 1.0.69` | `MIT OR Apache-2.0` | L066, L189 |
+| `thiserror-impl 2.0.18` | `MIT OR Apache-2.0` | L066, L189 |
+| `thread_local 1.1.9` | `MIT OR Apache-2.0` | L197, L210 |
+| `time 0.3.51` | `MIT OR Apache-2.0` | L111, L180 |
+| `time-core 0.1.9` | `MIT OR Apache-2.0` | L111, L180 |
+| `time-macros 0.2.30` | `MIT OR Apache-2.0` | L111, L180 |
+| `tinystr 0.8.3` | `Unicode-3.0` | L295 |
+| `tinyvec 1.11.0` | `Zlib OR Apache-2.0 OR MIT` | L055, L207, L263 |
+| `tinyvec_macros 0.1.1` | `MIT OR Apache-2.0 OR Zlib` | L051, L306, L351 |
+| `tokio 1.52.3` | `MIT` | L088 |
+| `tokio-macros 2.7.0` | `MIT` | L269 |
+| `tokio-native-tls 0.3.1` | `MIT` | L272 |
+| `tokio-rustls 0.26.4` | `MIT OR Apache-2.0` | L031, L242 |
+| `tokio-stream 0.1.18` | `MIT` | L088 |
+| `tokio-tungstenite 0.24.0` | `MIT` | L123 |
+| `tokio-util 0.7.18` | `MIT` | L088 |
+| `toml 0.8.23` | `MIT OR Apache-2.0` | L097, L150 |
+| `toml_datetime 0.6.11` | `MIT OR Apache-2.0` | L097, L150 |
+| `toml_datetime 1.1.1+spec-1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `toml_edit 0.22.27` | `MIT OR Apache-2.0` | L097, L150 |
+| `toml_edit 0.25.13+spec-1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `toml_parser 1.1.2+spec-1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `toml_write 0.1.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `tower 0.5.3` | `MIT` | L308 |
+| `tower-http 0.5.2` | `MIT` | L333 |
+| `tower-http 0.6.11` | `MIT` | L333 |
+| `tower-layer 0.3.3` | `MIT` | L308 |
+| `tower-service 0.3.3` | `MIT` | L308 |
+| `tracing 0.1.44` | `MIT` | L272 |
+| `tracing-appender 0.2.5` | `MIT` | L272 |
+| `tracing-attributes 0.1.31` | `MIT` | L272 |
+| `tracing-core 0.1.36` | `MIT` | L272 |
+| `tracing-log 0.2.0` | `MIT` | L272 |
+| `tracing-serde 0.2.0` | `MIT` | L272 |
+| `tracing-subscriber 0.3.23` | `MIT` | L272 |
+| `tree-sitter 0.25.10` | `MIT` | L317 |
+| `tree-sitter-bash 0.25.1` | `MIT` | L181 |
+| `tree-sitter-language 0.1.7` | `MIT` | L339 |
+| `triomphe 0.1.16` | `MIT OR Apache-2.0` | L140, L194 |
+| `try-lock 0.2.5` | `MIT` | L078 |
+| `ts-rs 11.1.0` | `MIT` | L317 |
+| `ts-rs-macros 11.1.0` | `MIT` | L317 |
+| `tungstenite 0.24.0` | `MIT OR Apache-2.0` | L210, L236 |
+| `typed-path 0.12.3` | `MIT OR Apache-2.0` | L066, L189 |
+| `typeid 1.0.3` | `MIT OR Apache-2.0` | L066, L189 |
+| `typenum 1.20.1` | `MIT OR Apache-2.0` | L138, L192, L309 |
+| `uds_windows 1.2.1` | `MIT` | L199 |
+| `unicase 2.9.0` | `MIT OR Apache-2.0` | L006, L210 |
+| `unicode-bidi 0.3.18` | `MIT OR Apache-2.0` | L002, L172, L210 |
+| `unicode-ident 1.0.24` | `(MIT OR Apache-2.0) AND Unicode-3.0` | L066, L074, L189 |
+| `unicode-normalization 0.1.25` | `MIT OR Apache-2.0` | L002, L044, L210 |
+| `unicode-properties 0.1.4` | `MIT/Apache-2.0` | L002, L044, L210 |
+| `unicode-segmentation 1.13.3` | `MIT OR Apache-2.0` | L002, L044, L210 |
+| `unicode-truncate 2.0.1` | `MIT OR Apache-2.0` | L044, L142, L210 |
+| `unicode-width 0.1.14` | `MIT OR Apache-2.0` | L002, L044, L210 |
+| `unicode-width 0.2.2` | `MIT OR Apache-2.0` | L002, L044, L210 |
+| `unicode-xid 0.2.6` | `MIT OR Apache-2.0` | L002, L044, L210 |
+| `untrusted 0.9.0` | `ISC` | L229 |
+| `url 2.5.8` | `MIT OR Apache-2.0` | L170, L210 |
+| `urlencoding 2.1.3` | `MIT` | L126 |
+| `utf-8 0.7.6` | `MIT OR Apache-2.0` | L066, L189 |
+| `utf8_iter 1.0.4` | `Apache-2.0 OR MIT` | L055, L163, L175 |
+| `utf8parse 0.2.2` | `Apache-2.0 OR MIT` | L189, L310 |
+| `uuid 1.23.5` | `Apache-2.0 OR MIT` | L019, L210 |
+| `valuable 0.1.1` | `MIT` | L317 |
+| `vcpkg 0.2.15` | `MIT/Apache-2.0` | L131, L210 |
+| `version_check 0.9.5` | `MIT/Apache-2.0` | L210, L331 |
+| `vt100 0.16.2` | `MIT` | L267 |
+| `vte 0.15.0` | `Apache-2.0 OR MIT` | L189, L310 |
+| `walkdir 2.5.0` | `Unlicense/MIT` | L024, L137 |
+| `want 0.3.1` | `MIT` | L346 |
+| `wasi 0.11.1+wasi-snapshot-preview1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210 |
+| `wasip2 1.0.4+wasi-0.2.12` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210 |
+| `wasite 0.1.0` | `Apache-2.0 OR BSL-1.0 OR MIT` | L297 |
+| `wasm-bindgen 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
+| `wasm-bindgen-futures 0.4.75` | `MIT OR Apache-2.0` | L187, L210 |
+| `wasm-bindgen-macro 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
+| `wasm-bindgen-macro-support 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
+| `wasm-bindgen-shared 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
+| `wasm-streams 0.4.2` | `MIT OR Apache-2.0` | L066, L189 |
+| `web-sys 0.3.102` | `MIT OR Apache-2.0` | L187, L210 |
+| `web-time 1.1.0` | `MIT OR Apache-2.0` | L070, L259 |
+| `webpki-roots 1.0.10` | `CDLA-Permissive-2.0` | L302 |
+| `weezl 0.1.12` | `MIT OR Apache-2.0` | L130, L210 |
+| `whoami 1.6.1` | `Apache-2.0 OR BSL-1.0 OR MIT` | L026, L189, L198 |
+| `wildcard 0.3.0` | `Apache-2.0` | L055 |
+| `wildmatch 2.6.1` | `MIT` | L270 |
+| `winapi 0.3.9` | `MIT/Apache-2.0` | L062, L150 |
+| `winapi-i686-pc-windows-gnu 0.4.0` | `MIT/Apache-2.0` | L297 |
+| `winapi-util 0.1.11` | `Unlicense OR MIT` | L137, L156 |
+| `winapi-x86_64-pc-windows-gnu 0.4.0` | `MIT/Apache-2.0` | L297 |
+| `windows 0.58.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-core 0.58.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-core 0.62.2` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-implement 0.58.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-implement 0.60.2` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-interface 0.58.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-interface 0.59.3` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-link 0.2.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-native-keyring-store 1.1.0` | `MIT OR Apache-2.0` | L132, L257 |
+| `windows-registry 0.6.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-result 0.2.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-result 0.4.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-strings 0.1.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-strings 0.5.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-sys 0.48.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-sys 0.52.0` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-sys 0.60.2` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-sys 0.61.2` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-targets 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-targets 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows-targets 0.53.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_aarch64_gnullvm 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_aarch64_gnullvm 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_aarch64_gnullvm 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_aarch64_msvc 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_aarch64_msvc 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_aarch64_msvc 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_gnu 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_gnu 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_gnu 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_gnullvm 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_gnullvm 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_msvc 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_msvc 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_i686_msvc 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_gnu 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_gnu 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_gnu 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_gnullvm 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_gnullvm 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_gnullvm 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_msvc 0.48.5` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_msvc 0.52.6` | `MIT OR Apache-2.0` | L166, L353 |
+| `windows_x86_64_msvc 0.53.1` | `MIT OR Apache-2.0` | L166, L353 |
+| `winnow 0.7.15` | `MIT` | L191 |
+| `winnow 1.0.4` | `MIT` | L191 |
+| `winreg 0.10.1` | `MIT` | L305 |
+| `wit-bindgen 0.57.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210 |
+| `writeable 0.6.3` | `Unicode-3.0` | L295 |
+| `xattr 1.6.1` | `MIT OR Apache-2.0` | L171, L210 |
+| `yoke 0.8.3` | `Unicode-3.0` | L295 |
+| `yoke-derive 0.8.2` | `Unicode-3.0` | L295 |
+| `zbus 5.17.0` | `MIT` | L228 |
+| `zbus-secret-service-keyring-store 1.0.0` | `MIT OR Apache-2.0` | L132, L257 |
+| `zbus_macros 5.17.0` | `MIT` | L228 |
+| `zbus_names 4.3.3` | `MIT` | L228 |
+| `zerocopy 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L098, L215, L227 |
+| `zerocopy-derive 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L098, L215, L227 |
+| `zerofrom 0.1.8` | `Unicode-3.0` | L295 |
+| `zerofrom-derive 0.1.7` | `Unicode-3.0` | L295 |
+| `zeroize 1.9.0` | `Apache-2.0 OR MIT` | L055, L185 |
+| `zerotrie 0.2.4` | `Unicode-3.0` | L295 |
+| `zerovec 0.11.6` | `Unicode-3.0` | L295 |
+| `zerovec-derive 0.11.3` | `Unicode-3.0` | L295 |
+| `zmij 1.0.21` | `MIT` | L066 |
+| `zune-core 0.5.3` | `MIT OR Apache-2.0 OR Zlib` | L055, L106, L260 |
+| `zune-jpeg 0.5.15` | `MIT OR Apache-2.0 OR Zlib` | L055, L106, L260 |
+| `zvariant 5.13.0` | `MIT` | L228 |
+| `zvariant_derive 5.13.0` | `MIT` | L228 |
+| `zvariant_utils 3.5.0` | `MIT` | L066 |
 
 ## License texts
 
@@ -2436,6 +2453,32 @@ DEALINGS IN THE SOFTWARE.
 
 ### L043
 
+Applies to: `kqueue 1.2.1`, `kqueue-sys 1.1.2`
+
+~~~~text
+Copyright (c) 2016 William Orr <will@worrbase.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+### L044
+
 Applies to: `unicode-normalization 0.1.25`, `unicode-properties 0.1.4`, `unicode-segmentation 1.13.3`, `unicode-truncate 2.0.1`, `unicode-width 0.1.14`, `unicode-width 0.2.2`, `unicode-xid 0.2.6`
 
 ~~~~text
@@ -2448,7 +2491,7 @@ notice may not be copied, modified, or distributed except
 according to those terms.
 ~~~~
 
-### L044
+### L045
 
 Applies to: `gix-path 0.11.3`, `gix-trace 0.1.21`, `gix-url 0.35.3`, `gix-validate 0.11.4`
 
@@ -2472,7 +2515,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L045
+### L046
 
 Applies to: `sharded-slab 0.1.7`
 
@@ -2498,7 +2541,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L046
+### L047
 
 Applies to: `rand 0.10.2`, `rand 0.8.6`, `rand_chacha 0.3.1`, `rand_core 0.6.4`, `rand_pcg 0.10.2`
 
@@ -2517,7 +2560,7 @@ The Rand project includes code from the Rust project
 published under these same licenses.
 ~~~~
 
-### L047
+### L048
 
 Applies to: `futures-intrusive 0.5.0`
 
@@ -2725,7 +2768,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L048
+### L049
 
 Applies to: `subtle 2.6.1`
 
@@ -2761,7 +2804,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L049
+### L050
 
 Applies to: `async-compression 0.4.42`, `compression-codecs 0.4.38`, `compression-core 0.4.32`
 
@@ -2789,7 +2832,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L050
+### L051
 
 Applies to: `tinyvec_macros 0.1.1`
 
@@ -2815,7 +2858,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L051
+### L052
 
 Applies to: `strum 0.27.2`, `strum 0.28.0`, `strum_macros 0.28.0`
 
@@ -2843,7 +2886,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L052
+### L053
 
 Applies to: `defmt 1.1.1`, `defmt-macros 1.1.1`
 
@@ -2875,7 +2918,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L053
+### L054
 
 Applies to: `futures-channel 0.3.32`, `futures-core 0.3.32`, `futures-executor 0.3.32`, `futures-io 0.3.32`, `futures-macro 0.3.32`, `futures-sink 0.3.32`, `futures-task 0.3.32`, `futures-util 0.3.32`
 
@@ -3084,7 +3127,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L054
+### L055
 
 Applies to: `annotate-snippets 0.9.2`, `approx 0.5.1`, `chardetng 0.1.17`, `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`, `encoding_rs 0.8.35`, `flume 0.11.1`, `lru-slab 0.1.2`, `quinn 0.11.11`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`, `seccompiler 0.5.0`, `static_assertions 1.1.0`, `sys-locale 0.3.2`, `tinyvec 1.11.0`, `utf8_iter 1.0.4`, `wildcard 0.3.0`, `zeroize 1.9.0`, `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
@@ -3292,7 +3335,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L055
+### L056
 
 Applies to: `fast-srgb8 1.0.0`
 
@@ -3500,7 +3543,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L056
+### L057
 
 Applies to: `sys-locale 0.3.2`
 
@@ -3528,7 +3571,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L057
+### L058
 
 Applies to: `rustls-native-certs 0.8.4`
 
@@ -3544,7 +3587,7 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ~~~~
 
-### L058
+### L059
 
 Applies to: `moxcms 0.8.1`, `pxfm 0.1.30`
 
@@ -3577,7 +3620,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L059
+### L060
 
 Applies to: `hkdf 0.12.4`
 
@@ -3610,7 +3653,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L060
+### L061
 
 Applies to: `matchers 0.2.0`
 
@@ -3636,7 +3679,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L061
+### L062
 
 Applies to: `winapi 0.3.9`
 
@@ -3662,7 +3705,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L062
+### L063
 
 Applies to: `postcard 1.1.3`
 
@@ -3694,7 +3737,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L063
+### L064
 
 Applies to: `linux-raw-sys 0.12.1`, `rustix 1.1.4`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wit-bindgen 0.57.1`
 
@@ -3919,7 +3962,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ~~~~
 
-### L064
+### L065
 
 Applies to: `matchit 0.7.3`
 
@@ -3955,7 +3998,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L065
+### L066
 
 Applies to: `adler2 2.0.1`, `allocator-api2 0.2.21`, `anyhow 1.0.104`, `async-channel 2.5.0`, `async-executor 1.14.0`, `async-io 2.6.0`, `async-lock 3.4.2`, `async-process 2.5.0`, `async-recursion 1.1.1`, `async-signal 0.2.14`, `async-task 4.7.1`, `async-trait 0.1.89`, `atomic-waker 1.1.2`, `blocking 1.6.2`, `borsh 1.8.1`, `concurrent-queue 2.5.0`, `displaydoc 0.2.6`, `dyn-clone 1.0.20`, `endi 1.1.1`, `erased-serde 0.3.31`, `erased-serde 0.4.10`, `etcetera 0.8.0`, `event-listener 5.4.2`, `event-listener-strategy 0.5.4`, `fastrand 2.4.1`, `flume 0.11.1`, `futures-lite 2.6.1`, `hermit-abi 0.5.2`, `home 0.5.12`, `indenter 0.3.4`, `indoc 2.0.7`, `inventory 0.3.24`, `itoa 1.0.18`, `linux-raw-sys 0.12.1`, `once_cell 1.21.4`, `ordered-stream 0.2.0`, `parking 2.2.1`, `paste 1.0.15`, `pin-project-lite 0.2.17`, `piper 0.2.5`, `polling 3.11.0`, `portable-atomic 1.13.1`, `portable-atomic-util 0.2.7`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.46`, `ref-cast 1.0.27`, `ref-cast-impl 1.0.27`, `rsa 0.9.10`, `rustc-hash 2.1.3`, `rustix 1.1.4`, `rustversion 1.0.22`, `semver 1.0.28`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_derive_internals 0.29.1`, `serde_json 1.0.150`, `serde_path_to_error 0.1.20`, `serde_repr 0.1.20`, `smol_str 0.3.6`, `syn 1.0.109`, `syn 2.0.118`, `syn 3.0.4`, `thiserror 1.0.69`, `thiserror 2.0.18`, `thiserror-impl 1.0.69`, `thiserror-impl 2.0.18`, `typed-path 0.12.3`, `typeid 1.0.3`, `unicode-ident 1.0.24`, `utf-8 0.7.6`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wasm-streams 0.4.2`, `wit-bindgen 0.57.1`, `zmij 1.0.21`, `zvariant_utils 3.5.0`
 
@@ -3985,7 +4028,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L066
+### L067
 
 Applies to: `memoffset 0.9.1`
 
@@ -4011,7 +4054,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L067
+### L068
 
 Applies to: `psl-types 2.0.11`
 
@@ -4039,7 +4082,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L068
+### L069
 
 Applies to: `downcast-rs 1.2.1`
 
@@ -4071,7 +4114,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L069
+### L070
 
 Applies to: `web-time 1.1.0`
 
@@ -4099,7 +4142,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L070
+### L071
 
 Applies to: `aes 0.8.4`
 
@@ -4131,7 +4174,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L071
+### L072
 
 Applies to: `form_urlencoded 1.2.2`
 
@@ -4163,7 +4206,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L072
+### L073
 
 Applies to: `iana-time-zone 0.1.65`, `iana-time-zone-haiku 0.1.2`
 
@@ -4195,7 +4238,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L073
+### L074
 
 Applies to: `unicode-ident 1.0.24`
 
@@ -4241,7 +4284,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ~~~~
 
-### L074
+### L075
 
 Applies to: `critical-section 1.2.0`
 
@@ -4273,7 +4316,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L075
+### L076
 
 Applies to: `security-framework 3.7.0`, `security-framework-sys 2.17.0`
 
@@ -4300,7 +4343,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L076
+### L077
 
 Applies to: `dotenvy 0.15.7`
 
@@ -4328,7 +4371,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L077
+### L078
 
 Applies to: `try-lock 0.2.5`
 
@@ -4355,7 +4398,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L078
+### L079
 
 Applies to: `beef 0.5.2`
 
@@ -4563,7 +4606,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L079
+### L080
 
 Applies to: `synstructure 0.13.2`
 
@@ -4577,7 +4620,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L080
+### L081
 
 Applies to: `annotate-snippets 0.9.2`
 
@@ -4603,7 +4646,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L081
+### L082
 
 Applies to: `rustls-webpki 0.103.16`
 
@@ -4629,7 +4672,55 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ~~~~
 
-### L082
+### L083
+
+Applies to: `notify 8.2.0`
+
+~~~~text
+Creative Commons CC0 1.0 Universal
+
+<<beginOptional;name=ccOptionalIntro>> CREATIVE COMMONS CORPORATION IS NOT A LAW FIRM AND DOES NOT PROVIDE LEGAL SERVICES. DISTRIBUTION OF THIS DOCUMENT DOES NOT CREATE AN ATTORNEY-CLIENT RELATIONSHIP. CREATIVE COMMONS PROVIDES THIS INFORMATION ON AN "AS-IS" BASIS. CREATIVE COMMONS MAKES NO WARRANTIES REGARDING THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED HEREUNDER, AND DISCLAIMS LIABILITY FOR DAMAGES RESULTING FROM THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED HEREUNDER.  <<endOptional>>
+
+Statement of Purpose
+
+The laws of most jurisdictions throughout the world automatically confer exclusive Copyright and Related Rights (defined below) upon the creator and subsequent owner(s) (each and all, an "owner") of an original work of authorship and/or a database (each, a "Work").
+
+Certain owners wish to permanently relinquish those rights to a Work for the purpose of contributing to a commons of creative, cultural and scientific works ("Commons") that the public can reliably and without fear of later claims of infringement build upon, modify, incorporate in other works, reuse and redistribute as freely as possible in any form whatsoever and for any purposes, including without limitation commercial purposes. These owners may contribute to the Commons to promote the ideal of a free culture and the further production of creative, cultural and scientific works, or to gain reputation or greater distribution for their Work in part through the use and efforts of others.
+
+For these and/or other purposes and motivations, and without any expectation of additional consideration or compensation, the person associating CC0 with a Work (the "Affirmer"), to the extent that he or she is an owner of Copyright and Related Rights in the Work, voluntarily elects to apply CC0 to the Work and publicly distribute the Work under its terms, with knowledge of his or her Copyright and Related Rights in the Work and the meaning and intended legal effect of CC0 on those rights.
+
+1. Copyright and Related Rights. A Work made available under CC0 may be protected by copyright and related or neighboring rights ("Copyright and Related Rights"). Copyright and Related Rights include, but are not limited to, the following:
+
+     i. the right to reproduce, adapt, distribute, perform, display, communicate, and translate a Work;
+
+     ii. moral rights retained by the original author(s) and/or performer(s);
+
+     iii. publicity and privacy rights pertaining to a person's image or likeness depicted in a Work;
+
+     iv. rights protecting against unfair competition in regards to a Work, subject to the limitations in paragraph 4(a), below;
+
+     v. rights protecting the extraction, dissemination, use and reuse of data in a Work;
+
+     vi. database rights (such as those arising under Directive 96/9/EC of the European Parliament and of the Council of 11 March 1996 on the legal protection of databases, and under any national implementation thereof, including any amended or successor version of such directive); and
+
+     vii. other similar, equivalent or corresponding rights throughout the world based on applicable law or treaty, and any national implementations thereof.
+
+2. Waiver. To the greatest extent permitted by, but not in contravention of, applicable law, Affirmer hereby overtly, fully, permanently, irrevocably and unconditionally waives, abandons, and surrenders all of Affirmer's Copyright and Related Rights and associated claims and causes of action, whether now known or unknown (including existing as well as future claims and causes of action), in the Work (i) in all territories worldwide, (ii) for the maximum duration provided by applicable law or treaty (including future time extensions), (iii) in any current or future medium and for any number of copies, and (iv) for any purpose whatsoever, including without limitation commercial, advertising or promotional purposes (the "Waiver"). Affirmer makes the Waiver for the benefit of each member of the public at large and to the detriment of Affirmer's heirs and successors, fully intending that such Waiver shall not be subject to revocation, rescission, cancellation, termination, or any other legal or equitable action to disrupt the quiet enjoyment of the Work by the public as contemplated by Affirmer's express Statement of Purpose.
+
+3. Public License Fallback. Should any part of the Waiver for any reason be judged legally invalid or ineffective under applicable law, then the Waiver shall be preserved to the maximum extent permitted taking into account Affirmer's express Statement of Purpose. In addition, to the extent the Waiver is so judged Affirmer hereby grants to each affected person a royalty-free, non transferable, non sublicensable, non exclusive, irrevocable and unconditional license to exercise Affirmer's Copyright and Related Rights in the Work (i) in all territories worldwide, (ii) for the maximum duration provided by applicable law or treaty (including future time extensions), (iii) in any current or future medium and for any number of copies, and (iv) for any purpose whatsoever, including without limitation commercial, advertising or promotional purposes (the "License"). The License shall be deemed effective as of the date CC0 was applied by Affirmer to the Work. Should any part of the License for any reason be judged legally invalid or ineffective under applicable law, such partial invalidity or ineffectiveness shall not invalidate the remainder of the License, and in such case Affirmer hereby affirms that he or she will not (i) exercise any of his or her remaining Copyright and Related Rights in the Work or (ii) assert any associated claims and causes of action with respect to the Work, in either case contrary to Affirmer's express Statement of Purpose.
+
+4. Limitations and Disclaimers.
+
+     a. No trademark or patent rights held by Affirmer are waived, abandoned, surrendered, licensed or otherwise affected by this document.
+
+     b. Affirmer offers the Work as-is and makes no representations or warranties of any kind concerning the Work, express, implied, statutory or otherwise, including without limitation warranties of title, merchantability, fitness for a particular purpose, non infringement, or the absence of latent or other defects, accuracy, or the present or absence of errors, whether or not discoverable, all to the greatest extent permissible under applicable law.
+
+     c. Affirmer disclaims responsibility for clearing rights of other persons that may apply to the Work or any use thereof, including without limitation any person's Copyright and Related Rights in the Work. Further, Affirmer disclaims responsibility for obtaining any necessary consents, permissions or other rights required for any use of the Work.
+
+     d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
+~~~~
+
+### L084
 
 Applies to: `landlock 0.4.7`
 
@@ -4837,7 +4928,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L083
+### L085
 
 Applies to: `core-foundation 0.10.1`, `core-foundation 0.9.4`, `core-foundation-sys 0.8.7`
 
@@ -4869,7 +4960,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L084
+### L086
 
 Applies to: `dashmap 5.5.3`, `dashmap 6.2.1`
 
@@ -4897,7 +4988,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L085
+### L087
 
 Applies to: `fd-lock 4.0.4`
 
@@ -5094,7 +5185,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L086
+### L088
 
 Applies to: `tokio 1.52.3`, `tokio-stream 0.1.18`, `tokio-util 0.7.18`
 
@@ -5122,7 +5213,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L087
+### L089
 
 Applies to: `md-5 0.10.6`, `sha1 0.10.6`, `sha2 0.10.9`
 
@@ -5156,7 +5247,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L088
+### L090
 
 Applies to: `chardetng 0.1.17`
 
@@ -5172,7 +5263,7 @@ notice may not be copied, modified, or distributed except
 according to those terms.
 ~~~~
 
-### L089
+### L091
 
 Applies to: `hash32 0.2.1`
 
@@ -5204,7 +5295,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L090
+### L092
 
 Applies to: `rustls-pki-types 1.14.1`
 
@@ -5412,7 +5503,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L091
+### L093
 
 Applies to: `document-features 0.2.12`
 
@@ -5438,7 +5529,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L092
+### L094
 
 Applies to: `textwrap 0.11.0`
 
@@ -5466,7 +5557,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L093
+### L095
 
 Applies to: `equivalent 1.0.2`
 
@@ -5498,7 +5589,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L094
+### L096
 
 Applies to: `by_address 1.2.1`
 
@@ -5530,7 +5621,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L095
+### L097
 
 Applies to: `anstream 1.0.0`, `anstyle 1.0.14`, `anstyle-parse 1.0.0`, `anstyle-query 1.1.5`, `anstyle-wincon 3.0.11`, `clap 4.6.2`, `clap_builder 4.6.2`, `clap_complete 4.6.7`, `clap_derive 4.6.1`, `clap_lex 1.1.0`, `colorchoice 1.0.5`, `env_filter 2.0.0`, `env_logger 0.11.11`, `is_terminal_polyfill 1.70.2`, `once_cell_polyfill 1.70.2`, `serde_spanned 0.6.9`, `toml 0.8.23`, `toml_datetime 0.6.11`, `toml_datetime 1.1.1+spec-1.1.0`, `toml_edit 0.22.27`, `toml_edit 0.25.13+spec-1.1.0`, `toml_parser 1.1.2+spec-1.1.0`, `toml_write 0.1.2`
 
@@ -5556,7 +5647,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L096
+### L098
 
 Applies to: `zerocopy 0.8.52`, `zerocopy-derive 0.8.52`
 
@@ -5587,7 +5678,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L097
+### L099
 
 Applies to: `ring 0.17.14`
 
@@ -5865,7 +5956,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L098
+### L100
 
 Applies to: `logos 0.15.1`, `logos-codegen 0.15.1`, `logos-derive 0.15.1`
 
@@ -5893,7 +5984,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L099
+### L101
 
 Applies to: `getrandom 0.2.17`
 
@@ -5926,7 +6017,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L100
+### L102
 
 Applies to: `cookie 0.18.2`
 
@@ -5959,7 +6050,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L101
+### L103
 
 Applies to: `cfg_aliases 0.1.1`, `cfg_aliases 0.2.1`
 
@@ -5975,7 +6066,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L102
+### L104
 
 Applies to: `async-broadcast 0.7.2`
 
@@ -6003,7 +6094,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L103
+### L105
 
 Applies to: `derive_more 1.0.0`, `derive_more 2.1.1`, `derive_more-impl 1.0.0`, `derive_more-impl 2.1.1`
 
@@ -6031,7 +6122,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L104
+### L106
 
 Applies to: `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
@@ -6059,7 +6150,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L105
+### L107
 
 Applies to: `powerfmt 0.2.0`
 
@@ -6267,7 +6358,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L106
+### L108
 
 Applies to: `embedded-io 0.4.0`
 
@@ -6299,7 +6390,39 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L107
+### L109
+
+Applies to: `notify-types 2.2.0`
+
+~~~~text
+Copyright (c) 2023 Notify Contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+~~~~
+
+### L110
 
 Applies to: `http-body-util 0.1.3`
 
@@ -6331,7 +6454,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L108
+### L111
 
 Applies to: `fdeflate 0.3.7`, `gix-path 0.11.3`, `gix-trace 0.1.21`, `gix-url 0.35.3`, `gix-validate 0.11.4`, `image 0.25.10`, `image-webp 0.2.4`, `miniz_oxide 0.8.9`, `num-conv 0.2.2`, `pin-project-lite 0.2.17`, `portable-atomic 1.13.1`, `portable-atomic-util 0.2.7`, `sync_wrapper 1.0.2`, `time 0.3.51`, `time-core 0.1.9`, `time-macros 0.2.30`
 
@@ -6514,7 +6637,7 @@ Apache License
    END OF TERMS AND CONDITIONS
 ~~~~
 
-### L109
+### L112
 
 Applies to: `bit-set 0.8.0`, `bit-vec 0.8.0`
 
@@ -6546,7 +6669,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L110
+### L113
 
 Applies to: `num-conv 0.2.2`
 
@@ -6572,7 +6695,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L111
+### L114
 
 Applies to: `indexmap 1.9.3`, `indexmap 2.14.0`
 
@@ -6604,7 +6727,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L112
+### L115
 
 Applies to: `bytes 1.12.0`
 
@@ -6636,7 +6759,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L113
+### L116
 
 Applies to: `symlink 0.1.0`
 
@@ -6668,7 +6791,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L114
+### L117
 
 Applies to: `futures-intrusive 0.5.0`
 
@@ -6700,7 +6823,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L115
+### L118
 
 Applies to: `reqwest 0.12.28`
 
@@ -6726,7 +6849,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L116
+### L119
 
 Applies to: `bumpalo 3.20.3`
 
@@ -6758,7 +6881,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L117
+### L120
 
 Applies to: `konst 0.2.20`, `konst_macro_rules 0.2.19`
 
@@ -6782,7 +6905,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L118
+### L121
 
 Applies to: `ratatui 0.30.2`, `ratatui-core 0.1.2`, `ratatui-crossterm 0.1.2`, `ratatui-widgets 0.3.2`
 
@@ -6811,7 +6934,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L119
+### L122
 
 Applies to: `crossbeam-channel 0.5.16`, `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.20`, `crossbeam-queue 0.3.12`, `crossbeam-utils 0.8.21`
 
@@ -6845,7 +6968,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L120
+### L123
 
 Applies to: `tokio-tungstenite 0.24.0`
 
@@ -6872,7 +6995,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L121
+### L124
 
 Applies to: `reqwest 0.12.28`
 
@@ -7080,7 +7203,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L122
+### L125
 
 Applies to: `kasuari 0.4.12`
 
@@ -7109,7 +7232,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L123
+### L126
 
 Applies to: `urlencoding 2.1.3`
 
@@ -7136,7 +7259,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L124
+### L127
 
 Applies to: `stable_deref_trait 1.2.1`
 
@@ -7168,7 +7291,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L125
+### L128
 
 Applies to: `libm 0.2.16`
 
@@ -7433,7 +7556,7 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ~~~~
 
-### L126
+### L129
 
 Applies to: `block-buffer 0.10.4`, `block-padding 0.3.3`
 
@@ -7465,7 +7588,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L127
+### L130
 
 Applies to: `weezl 0.1.12`
 
@@ -7493,7 +7616,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L128
+### L131
 
 Applies to: `vcpkg 0.2.15`
 
@@ -7525,7 +7648,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L129
+### L132
 
 Applies to: `apple-native-keyring-store 1.0.1`, `keyring 4.1.4`, `keyring-core 1.0.0`, `windows-native-keyring-store 1.1.0`, `zbus-secret-service-keyring-store 1.0.0`
 
@@ -7733,7 +7856,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L130
+### L133
 
 Applies to: `simd-adler32 0.3.9`
 
@@ -7761,7 +7884,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L131
+### L134
 
 Applies to: `borsh 1.8.1`
 
@@ -7969,7 +8092,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L132
+### L135
 
 Applies to: `enumflags2 0.7.12`
 
@@ -8044,7 +8167,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L133
+### L136
 
 Applies to: `cpufeatures 0.2.17`
 
@@ -8076,7 +8199,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L134
+### L137
 
 Applies to: `aho-corasick 1.1.4`, `byteorder 1.5.0`, `globset 0.4.19`, `jiff 0.2.35`, `jiff-core 0.1.0`, `jiff-static 0.2.35`, `jiff-tzdb 0.1.8`, `jiff-tzdb-platform 0.1.3`, `memchr 2.8.2`, `quickcheck 1.1.0`, `same-file 1.0.6`, `termcolor 1.4.1`, `walkdir 2.5.0`, `winapi-util 0.1.11`
 
@@ -8086,7 +8209,7 @@ This project is dual-licensed under the Unlicense and MIT licenses.
 You may use this code under the terms of either license.
 ~~~~
 
-### L135
+### L138
 
 Applies to: `typenum 1.20.1`
 
@@ -8294,7 +8417,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L136
+### L139
 
 Applies to: `compact_str 0.9.1`
 
@@ -8322,7 +8445,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L137
+### L140
 
 Applies to: `triomphe 0.1.16`
 
@@ -8356,7 +8479,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L138
+### L141
 
 Applies to: `bs58 0.5.1`
 
@@ -8383,7 +8506,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L139
+### L142
 
 Applies to: `unicode-truncate 2.0.1`
 
@@ -8415,7 +8538,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L140
+### L143
 
 Applies to: `crypto-common 0.1.7`
 
@@ -8447,7 +8570,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L141
+### L144
 
 Applies to: `base64 0.22.1`
 
@@ -8475,7 +8598,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L142
+### L145
 
 Applies to: `spin 0.9.8`
 
@@ -8503,7 +8626,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L143
+### L146
 
 Applies to: `der 0.7.10`, `pkcs8 0.10.2`
 
@@ -8535,7 +8658,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L144
+### L147
 
 Applies to: `multimap 0.10.1`
 
@@ -8567,7 +8690,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L145
+### L148
 
 Applies to: `sequence_trie 0.3.6`
 
@@ -8587,7 +8710,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L146
+### L149
 
 Applies to: `blake3 1.8.2`, `constant_time_eq 0.3.1`, `dunce 1.0.5`, `fast-srgb8 1.0.0`
 
@@ -8715,7 +8838,7 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 ~~~~
 
-### L147
+### L150
 
 Applies to: `anstream 1.0.0`, `anstyle 1.0.14`, `anstyle-parse 1.0.0`, `anstyle-query 1.1.5`, `anstyle-wincon 3.0.11`, `clap 4.6.2`, `clap_builder 4.6.2`, `clap_complete 4.6.7`, `clap_derive 4.6.1`, `clap_lex 1.1.0`, `cobs 0.3.0`, `colorchoice 1.0.5`, `cookie_store 0.22.1`, `crc32fast 1.5.0`, `ctor 1.0.13`, `env_filter 2.0.0`, `env_logger 0.11.11`, `foreign-types 0.3.2`, `foreign-types-shared 0.1.1`, `hex 0.4.3`, `is_terminal_polyfill 1.70.2`, `link-section 0.19.3`, `linktime-proc-macro 0.2.3`, `native-tls 0.2.18`, `once_cell_polyfill 1.70.2`, `openssl 0.10.81`, `openssl-macros 0.1.1`, `quick-error 2.0.1`, `serde_spanned 0.6.9`, `streaming-iterator 0.1.9`, `stringprep 0.1.5`, `toml 0.8.23`, `toml_datetime 0.6.11`, `toml_datetime 1.1.1+spec-1.1.0`, `toml_edit 0.22.27`, `toml_edit 0.25.13+spec-1.1.0`, `toml_parser 1.1.2+spec-1.1.0`, `toml_write 0.1.2`, `winapi 0.3.9`
 
@@ -8923,7 +9046,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L148
+### L151
 
 Applies to: `powerfmt 0.2.0`
 
@@ -8949,7 +9072,215 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L149
+### L152
+
+Applies to: `notify-types 2.2.0`
+
+~~~~text
+Apache License
+                        Version 2.0, January 2004
+                     http://www.apache.org/licenses/
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   "Licensor" shall mean the copyright owner or entity authorized by
+   the copyright owner that is granting the License.
+
+   "Legal Entity" shall mean the union of the acting entity and all
+   other entities that control, are controlled by, or are under common
+   control with that entity. For the purposes of this definition,
+   "control" means (i) the power, direct or indirect, to cause the
+   direction or management of such entity, whether by contract or
+   otherwise, or (ii) ownership of fifty percent (50%) or more of the
+   outstanding shares, or (iii) beneficial ownership of such entity.
+
+   "You" (or "Your") shall mean an individual or Legal Entity
+   exercising permissions granted by this License.
+
+   "Source" form shall mean the preferred form for making modifications,
+   including but not limited to software source code, documentation
+   source, and configuration files.
+
+   "Object" form shall mean any form resulting from mechanical
+   transformation or translation of a Source form, including but
+   not limited to compiled object code, generated documentation,
+   and conversions to other media types.
+
+   "Work" shall mean the work of authorship, whether in Source or
+   Object form, made available under the License, as indicated by a
+   copyright notice that is included in or attached to the work
+   (an example is provided in the Appendix below).
+
+   "Derivative Works" shall mean any work, whether in Source or Object
+   form, that is based on (or derived from) the Work and for which the
+   editorial revisions, annotations, elaborations, or other modifications
+   represent, as a whole, an original work of authorship. For the purposes
+   of this License, Derivative Works shall not include works that remain
+   separable from, or merely link (or bind by name) to the interfaces of,
+   the Work and Derivative Works thereof.
+
+   "Contribution" shall mean any work of authorship, including
+   the original version of the Work and any modifications or additions
+   to that Work or Derivative Works thereof, that is intentionally
+   submitted to Licensor for inclusion in the Work by the copyright owner
+   or by an individual or Legal Entity authorized to submit on behalf of
+   the copyright owner. For the purposes of this definition, "submitted"
+   means any form of electronic, verbal, or written communication sent
+   to the Licensor or its representatives, including but not limited to
+   communication on electronic mailing lists, source code control systems,
+   and issue tracking systems that are managed by, or on behalf of, the
+   Licensor for the purpose of discussing and improving the Work, but
+   excluding communication that is conspicuously marked or otherwise
+   designated in writing by the copyright owner as "Not a Contribution."
+
+   "Contributor" shall mean Licensor and any individual or Legal Entity
+   on behalf of whom a Contribution has been received by Licensor and
+   subsequently incorporated within the Work.
+
+2. Grant of Copyright License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   copyright license to reproduce, prepare Derivative Works of,
+   publicly display, publicly perform, sublicense, and distribute the
+   Work and such Derivative Works in Source or Object form.
+
+3. Grant of Patent License. Subject to the terms and conditions of
+   this License, each Contributor hereby grants to You a perpetual,
+   worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+   (except as stated in this section) patent license to make, have made,
+   use, offer to sell, sell, import, and otherwise transfer the Work,
+   where such license applies only to those patent claims licensable
+   by such Contributor that are necessarily infringed by their
+   Contribution(s) alone or by combination of their Contribution(s)
+   with the Work to which such Contribution(s) was submitted. If You
+   institute patent litigation against any entity (including a
+   cross-claim or counterclaim in a lawsuit) alleging that the Work
+   or a Contribution incorporated within the Work constitutes direct
+   or contributory patent infringement, then any patent licenses
+   granted to You under this License for that Work shall terminate
+   as of the date such litigation is filed.
+
+4. Redistribution. You may reproduce and distribute copies of the
+   Work or Derivative Works thereof in any medium, with or without
+   modifications, and in Source or Object form, provided that You
+   meet the following conditions:
+
+   (a) You must give any other recipients of the Work or
+       Derivative Works a copy of this License; and
+
+   (b) You must cause any modified files to carry prominent notices
+       stating that You changed the files; and
+
+   (c) You must retain, in the Source form of any Derivative Works
+       that You distribute, all copyright, patent, trademark, and
+       attribution notices from the Source form of the Work,
+       excluding those notices that do not pertain to any part of
+       the Derivative Works; and
+
+   (d) If the Work includes a "NOTICE" text file as part of its
+       distribution, then any Derivative Works that You distribute must
+       include a readable copy of the attribution notices contained
+       within such NOTICE file, excluding those notices that do not
+       pertain to any part of the Derivative Works, in at least one
+       of the following places: within a NOTICE text file distributed
+       as part of the Derivative Works; within the Source form or
+       documentation, if provided along with the Derivative Works; or,
+       within a display generated by the Derivative Works, if and
+       wherever such third-party notices normally appear. The contents
+       of the NOTICE file are for informational purposes only and
+       do not modify the License. You may add Your own attribution
+       notices within Derivative Works that You distribute, alongside
+       or as an addendum to the NOTICE text from the Work, provided
+       that such additional attribution notices cannot be construed
+       as modifying the License.
+
+   You may add Your own copyright statement to Your modifications and
+   may provide additional or different license terms and conditions
+   for use, reproduction, or distribution of Your modifications, or
+   for any such Derivative Works as a whole, provided Your use,
+   reproduction, and distribution of the Work otherwise complies with
+   the conditions stated in this License.
+
+5. Submission of Contributions. Unless You explicitly state otherwise,
+   any Contribution intentionally submitted for inclusion in the Work
+   by You to the Licensor shall be under the terms and conditions of
+   this License, without any additional terms or conditions.
+   Notwithstanding the above, nothing herein shall supersede or modify
+   the terms of any separate license agreement you may have executed
+   with Licensor regarding such Contributions.
+
+6. Trademarks. This License does not grant permission to use the trade
+   names, trademarks, service marks, or product names of the Licensor,
+   except as required for reasonable and customary use in describing the
+   origin of the Work and reproducing the content of the NOTICE file.
+
+7. Disclaimer of Warranty. Unless required by applicable law or
+   agreed to in writing, Licensor provides the Work (and each
+   Contributor provides its Contributions) on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+   implied, including, without limitation, any warranties or conditions
+   of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+   PARTICULAR PURPOSE. You are solely responsible for determining the
+   appropriateness of using or redistributing the Work and assume any
+   risks associated with Your exercise of permissions under this License.
+
+8. Limitation of Liability. In no event and under no legal theory,
+   whether in tort (including negligence), contract, or otherwise,
+   unless required by applicable law (such as deliberate and grossly
+   negligent acts) or agreed to in writing, shall any Contributor be
+   liable to You for damages, including any direct, indirect, special,
+   incidental, or consequential damages of any character arising as a
+   result of this License or out of the use or inability to use the
+   Work (including but not limited to damages for loss of goodwill,
+   work stoppage, computer failure or malfunction, or any and all
+   other commercial damages or losses), even if such Contributor
+   has been advised of the possibility of such damages.
+
+9. Accepting Warranty or Additional Liability. While redistributing
+   the Work or Derivative Works thereof, You may choose to offer,
+   and charge a fee for, acceptance of support, warranty, indemnity,
+   or other liability obligations and/or rights consistent with this
+   License. However, in accepting such obligations, You may act only
+   on Your own behalf and on Your sole responsibility, not on behalf
+   of any other Contributor, and only if You agree to indemnify,
+   defend, and hold each Contributor harmless for any liability
+   incurred by, or claims asserted against, such Contributor by reason
+   of your accepting any such warranty or additional liability.
+
+END OF TERMS AND CONDITIONS
+
+APPENDIX: How to apply the Apache License to your work.
+
+   To apply the Apache License to your work, attach the following
+   boilerplate notice, with the fields enclosed by brackets "[]"
+   replaced with your own identifying information. (Don't include
+   the brackets!)  The text should be enclosed in the appropriate
+   comment syntax for the file format. We also recommend that a
+   file or class name and description of purpose be included on the
+   same "printed page" as the copyright notice for easier
+   identification within third-party archives.
+
+Copyright 2023 Notify Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L153
 
 Applies to: `rand_core 0.10.1`
 
@@ -8981,7 +9312,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L150
+### L154
 
 Applies to: `crossterm 0.29.0`, `crossterm_winapi 0.9.1`
 
@@ -9009,7 +9340,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L151
+### L155
 
 Applies to: `inout 0.1.4`
 
@@ -9042,7 +9373,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L152
+### L156
 
 Applies to: `same-file 1.0.6`, `winapi-util 0.1.11`
 
@@ -9070,7 +9401,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L153
+### L157
 
 Applies to: `getrandom 0.3.4`
 
@@ -9103,7 +9434,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L154
+### L158
 
 Applies to: `miniz_oxide 0.8.9`
 
@@ -9135,7 +9466,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L155
+### L159
 
 Applies to: `sequence_trie 0.3.6`
 
@@ -9163,7 +9494,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L156
+### L160
 
 Applies to: `landlock 0.4.7`
 
@@ -9197,7 +9528,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L157
+### L161
 
 Applies to: `blake3 1.8.2`
 
@@ -9422,7 +9753,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ~~~~
 
-### L158
+### L162
 
 Applies to: `logos 0.15.1`, `logos-codegen 0.15.1`, `logos-derive 0.15.1`
 
@@ -9630,7 +9961,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L159
+### L163
 
 Applies to: `utf8_iter 1.0.4`
 
@@ -9679,7 +10010,7 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 ~~~~
 
-### L160
+### L164
 
 Applies to: `fdeflate 0.3.7`, `image 0.25.10`, `image-webp 0.2.4`
 
@@ -9711,7 +10042,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L161
+### L165
 
 Applies to: `linux-raw-sys 0.12.1`
 
@@ -9747,9 +10078,9 @@ is licensed under:
 at your option.
 ~~~~
 
-### L162
+### L166
 
-Applies to: `windows 0.58.0`, `windows-core 0.58.0`, `windows-core 0.62.2`, `windows-implement 0.58.0`, `windows-implement 0.60.2`, `windows-interface 0.58.0`, `windows-interface 0.59.3`, `windows-link 0.2.1`, `windows-registry 0.6.1`, `windows-result 0.2.0`, `windows-result 0.4.1`, `windows-strings 0.1.0`, `windows-strings 0.5.1`, `windows-sys 0.48.0`, `windows-sys 0.52.0`, `windows-sys 0.61.2`, `windows-targets 0.48.5`, `windows-targets 0.52.6`, `windows_aarch64_gnullvm 0.48.5`, `windows_aarch64_gnullvm 0.52.6`, `windows_aarch64_msvc 0.48.5`, `windows_aarch64_msvc 0.52.6`, `windows_i686_gnu 0.48.5`, `windows_i686_gnu 0.52.6`, `windows_i686_gnullvm 0.52.6`, `windows_i686_msvc 0.48.5`, `windows_i686_msvc 0.52.6`, `windows_x86_64_gnu 0.48.5`, `windows_x86_64_gnu 0.52.6`, `windows_x86_64_gnullvm 0.48.5`, `windows_x86_64_gnullvm 0.52.6`, `windows_x86_64_msvc 0.48.5`, `windows_x86_64_msvc 0.52.6`
+Applies to: `windows 0.58.0`, `windows-core 0.58.0`, `windows-core 0.62.2`, `windows-implement 0.58.0`, `windows-implement 0.60.2`, `windows-interface 0.58.0`, `windows-interface 0.59.3`, `windows-link 0.2.1`, `windows-registry 0.6.1`, `windows-result 0.2.0`, `windows-result 0.4.1`, `windows-strings 0.1.0`, `windows-strings 0.5.1`, `windows-sys 0.48.0`, `windows-sys 0.52.0`, `windows-sys 0.60.2`, `windows-sys 0.61.2`, `windows-targets 0.48.5`, `windows-targets 0.52.6`, `windows-targets 0.53.5`, `windows_aarch64_gnullvm 0.48.5`, `windows_aarch64_gnullvm 0.52.6`, `windows_aarch64_gnullvm 0.53.1`, `windows_aarch64_msvc 0.48.5`, `windows_aarch64_msvc 0.52.6`, `windows_aarch64_msvc 0.53.1`, `windows_i686_gnu 0.48.5`, `windows_i686_gnu 0.52.6`, `windows_i686_gnu 0.53.1`, `windows_i686_gnullvm 0.52.6`, `windows_i686_gnullvm 0.53.1`, `windows_i686_msvc 0.48.5`, `windows_i686_msvc 0.52.6`, `windows_i686_msvc 0.53.1`, `windows_x86_64_gnu 0.48.5`, `windows_x86_64_gnu 0.52.6`, `windows_x86_64_gnu 0.53.1`, `windows_x86_64_gnullvm 0.48.5`, `windows_x86_64_gnullvm 0.52.6`, `windows_x86_64_gnullvm 0.53.1`, `windows_x86_64_msvc 0.48.5`, `windows_x86_64_msvc 0.52.6`, `windows_x86_64_msvc 0.53.1`
 
 ~~~~text
 Apache License
@@ -9955,7 +10286,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L163
+### L167
 
 Applies to: `iana-time-zone 0.1.65`, `iana-time-zone-haiku 0.1.2`
 
@@ -10163,7 +10494,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L164
+### L168
 
 Applies to: `httpdate 1.0.3`
 
@@ -10371,7 +10702,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L165
+### L169
 
 Applies to: `base64ct 1.8.3`
 
@@ -10404,7 +10735,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L166
+### L170
 
 Applies to: `idna 1.1.0`, `percent-encoding 2.3.2`, `url 2.5.8`
 
@@ -10436,7 +10767,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L167
+### L171
 
 Applies to: `tempfile 3.27.0`, `xattr 1.6.1`
 
@@ -10468,7 +10799,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L168
+### L172
 
 Applies to: `unicode-bidi 0.3.18`
 
@@ -10483,7 +10814,7 @@ carrying such notice may not be copied, modified, or distributed except
 according to those terms.
 ~~~~
 
-### L169
+### L173
 
 Applies to: `signature 2.2.0`
 
@@ -10515,7 +10846,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L170
+### L174
 
 Applies to: `libredox 0.1.17`
 
@@ -10543,7 +10874,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L171
+### L175
 
 Applies to: `chardetng 0.1.17`, `encoding_rs 0.8.35`, `utf8_iter 1.0.4`
 
@@ -10575,7 +10906,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L172
+### L176
 
 Applies to: `bit-set 0.8.0`, `bit-vec 0.8.0`, `defmt 1.1.1`, `defmt-macros 1.1.1`, `downcast-rs 1.2.1`, `hashlink 0.10.0`, `shared_library 0.1.9`
 
@@ -10783,7 +11114,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L173
+### L177
 
 Applies to: `smallvec 1.15.2`
 
@@ -10815,7 +11146,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L174
+### L178
 
 Applies to: `palette 0.7.6`, `palette_derive 0.7.6`
 
@@ -10843,7 +11174,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L175
+### L179
 
 Applies to: `errno 0.3.14`
 
@@ -10875,7 +11206,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L176
+### L180
 
 Applies to: `time 0.3.51`, `time-core 0.1.9`, `time-macros 0.2.30`
 
@@ -10901,7 +11232,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L177
+### L181
 
 Applies to: `tree-sitter-bash 0.25.1`
 
@@ -10929,7 +11260,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L178
+### L182
 
 Applies to: `matchit 0.7.3`
 
@@ -10957,7 +11288,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L179
+### L183
 
 Applies to: `png 0.18.1`
 
@@ -10989,7 +11320,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L180
+### L184
 
 Applies to: `moxcms 0.8.1`, `pxfm 0.1.30`
 
@@ -11197,7 +11528,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L181
+### L185
 
 Applies to: `zeroize 1.9.0`
 
@@ -11229,7 +11560,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L182
+### L186
 
 Applies to: `fd-lock 4.0.4`
 
@@ -11257,7 +11588,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L183
+### L187
 
 Applies to: `cc 1.2.65`, `cfg-if 1.0.4`, `filetime 0.2.29`, `find-msvc-tools 0.1.9`, `js-sys 0.3.102`, `openssl-probe 0.2.1`, `openssl-sys 0.9.117`, `pkg-config 0.3.33`, `socket2 0.6.4`, `wasm-bindgen 0.2.125`, `wasm-bindgen-futures 0.4.75`, `wasm-bindgen-macro 0.2.125`, `wasm-bindgen-macro-support 0.2.125`, `wasm-bindgen-shared 0.2.125`, `web-sys 0.3.102`
 
@@ -11289,7 +11620,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L184
+### L188
 
 Applies to: `httparse 1.10.1`
 
@@ -11315,7 +11646,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L185
+### L189
 
 Applies to: `allocator-api2 0.2.21`, `anyhow 1.0.104`, `async-trait 0.1.89`, `constant_time_eq 0.3.1`, `dyn-clone 1.0.20`, `erased-serde 0.3.31`, `erased-serde 0.4.10`, `etcetera 0.8.0`, `indenter 0.3.4`, `indoc 2.0.7`, `inventory 0.3.24`, `itoa 1.0.18`, `libc 0.2.186`, `litrs 1.0.0`, `paste 1.0.15`, `proc-macro2 1.0.106`, `quote 1.0.46`, `ref-cast 1.0.27`, `ref-cast-impl 1.0.27`, `rustc-hash 2.1.3`, `rustversion 1.0.22`, `ryu 1.0.23`, `semver 1.0.28`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_derive_internals 0.29.1`, `serde_json 1.0.150`, `serde_path_to_error 0.1.20`, `serde_repr 0.1.20`, `serde_urlencoded 0.7.1`, `syn 2.0.118`, `syn 3.0.4`, `thiserror 1.0.69`, `thiserror 2.0.18`, `thiserror-impl 1.0.69`, `thiserror-impl 2.0.18`, `typed-path 0.12.3`, `typeid 1.0.3`, `unicode-ident 1.0.24`, `utf-8 0.7.6`, `utf8parse 0.2.2`, `vte 0.15.0`, `wasm-streams 0.4.2`, `whoami 1.6.1`
 
@@ -11498,7 +11829,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ~~~~
 
-### L186
+### L190
 
 Applies to: `bstr 1.13.1`
 
@@ -11513,7 +11844,7 @@ This project is licensed under either of
 at your option.
 ~~~~
 
-### L187
+### L191
 
 Applies to: `winnow 0.7.15`, `winnow 1.0.4`
 
@@ -11538,7 +11869,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L188
+### L192
 
 Applies to: `typenum 1.20.1`
 
@@ -11566,7 +11897,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L189
+### L193
 
 Applies to: `http 1.4.2`
 
@@ -11774,7 +12105,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L190
+### L194
 
 Applies to: `triomphe 0.1.16`
 
@@ -11982,7 +12313,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L191
+### L195
 
 Applies to: `heapless 0.7.17`
 
@@ -12014,7 +12345,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L192
+### L196
 
 Applies to: `serial2 0.2.37`
 
@@ -12045,7 +12376,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L193
+### L197
 
 Applies to: `atomic 0.5.3`, `lock_api 0.4.14`, `parking_lot 0.12.5`, `parking_lot_core 0.9.12`, `rustc_version 0.4.1`, `thread_local 1.1.9`
 
@@ -12077,7 +12408,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L194
+### L198
 
 Applies to: `clipboard-win 5.4.1`, `error-code 3.4.0`, `ryu 1.0.23`, `whoami 1.6.1`
 
@@ -12107,7 +12438,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L195
+### L199
 
 Applies to: `uds_windows 1.2.1`
 
@@ -12135,7 +12466,7 @@ MIT License
     SOFTWARE
 ~~~~
 
-### L196
+### L200
 
 Applies to: `httpdate 1.0.3`
 
@@ -12161,7 +12492,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L197
+### L201
 
 Applies to: `strsim 0.10.0`, `strsim 0.11.1`
 
@@ -12191,7 +12522,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L198
+### L202
 
 Applies to: `instability 0.3.12`
 
@@ -12220,7 +12551,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L199
+### L203
 
 Applies to: `convert_case 0.6.0`
 
@@ -12248,7 +12579,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L200
+### L204
 
 Applies to: `arrayvec 0.7.8`
 
@@ -12280,7 +12611,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L201
+### L205
 
 Applies to: `cipher 0.4.4`
 
@@ -12312,7 +12643,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L202
+### L206
 
 Applies to: `castaway 0.2.4`
 
@@ -12340,7 +12671,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L203
+### L207
 
 Applies to: `bytemuck 1.25.0`, `bytemuck_derive 1.10.2`, `tinyvec 1.11.0`
 
@@ -12358,7 +12689,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L204
+### L208
 
 Applies to: `serial2 0.2.37`
 
@@ -12378,7 +12709,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L205
+### L209
 
 Applies to: `getrandom 0.4.3`
 
@@ -12411,7 +12742,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L206
+### L210
 
 Applies to: `arrayvec 0.7.8`, `async-channel 2.5.0`, `async-compression 0.4.42`, `async-executor 1.14.0`, `async-io 2.6.0`, `async-lock 3.4.2`, `async-process 2.5.0`, `async-recursion 1.1.1`, `async-signal 0.2.14`, `async-task 4.7.1`, `atomic 0.5.3`, `atomic-polyfill 1.0.3`, `atomic-waker 1.1.2`, `autocfg 1.5.1`, `base64 0.22.1`, `bitflags 1.3.2`, `bitflags 2.13.0`, `blocking 1.6.2`, `bs58 0.5.1`, `bstr 1.13.1`, `bumpalo 3.20.3`, `by_address 1.2.1`, `cc 1.2.65`, `cfg-if 1.0.4`, `compression-codecs 0.4.38`, `compression-core 0.4.32`, `concurrent-queue 2.5.0`, `core-foundation 0.10.1`, `core-foundation 0.9.4`, `core-foundation-sys 0.8.7`, `critical-section 1.2.0`, `crossbeam-channel 0.5.16`, `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.20`, `crossbeam-queue 0.3.12`, `crossbeam-utils 0.8.21`, `derivative 2.2.0`, `displaydoc 0.2.6`, `either 1.16.0`, `embedded-io 0.4.0`, `embedded-io 0.6.1`, `equivalent 1.0.2`, `errno 0.3.14`, `event-listener 5.4.2`, `event-listener-strategy 0.5.4`, `fastrand 2.4.1`, `filetime 0.2.29`, `find-msvc-tools 0.1.9`, `flate2 1.1.9`, `fnv 1.0.7`, `form_urlencoded 1.2.2`, `futures-lite 2.6.1`, `gif 0.14.2`, `glob 0.3.3`, `hash32 0.2.1`, `hashbrown 0.12.3`, `hashbrown 0.14.5`, `hashbrown 0.15.5`, `hashbrown 0.16.1`, `hashbrown 0.17.1`, `heapless 0.7.17`, `heck 0.5.0`, `hermit-abi 0.5.2`, `httparse 1.10.1`, `hyper-rustls 0.27.9`, `hyper-tls 0.6.0`, `idna 1.1.0`, `idna_adapter 1.2.2`, `indexmap 1.9.3`, `indexmap 2.14.0`, `itertools 0.14.0`, `js-sys 0.3.102`, `lazy_static 1.5.0`, `linux-raw-sys 0.12.1`, `lock_api 0.4.14`, `log 0.4.33`, `maplit 1.0.2`, `mime 0.3.17`, `multimap 0.10.1`, `num 0.4.3`, `num-bigint 0.4.8`, `num-bigint-dig 0.8.6`, `num-complex 0.4.6`, `num-integer 0.1.46`, `num-iter 0.1.45`, `num-rational 0.4.2`, `num-traits 0.2.19`, `once_cell 1.21.4`, `openssl-probe 0.2.1`, `ordered-stream 0.2.0`, `palette 0.7.6`, `palette_derive 0.7.6`, `parking 2.2.1`, `parking_lot 0.12.5`, `parking_lot_core 0.9.12`, `percent-encoding 2.3.2`, `piper 0.2.5`, `pkg-config 0.3.33`, `plain 0.2.3`, `png 0.18.1`, `polling 3.11.0`, `postcard 1.1.3`, `psl-types 2.0.11`, `publicsuffix 2.3.0`, `rayon 1.12.0`, `rayon-core 1.13.0`, `regex 1.12.4`, `regex-automata 0.4.14`, `regex-lite 0.1.9`, `regex-syntax 0.8.11`, `rsa 0.9.10`, `rustc_version 0.4.1`, `rustix 1.1.4`, `rustls 0.23.46`, `rustls-native-certs 0.8.4`, `scopeguard 1.2.0`, `secret-service 5.1.0`, `security-framework 3.7.0`, `security-framework-sys 2.17.0`, `serde_with 3.22.0`, `serde_with_macros 3.22.0`, `signal-hook 0.3.18`, `signal-hook-mio 0.2.5`, `signal-hook-registry 1.4.8`, `smallvec 1.15.2`, `smol_str 0.3.6`, `socket2 0.6.4`, `stable_deref_trait 1.2.1`, `symlink 0.1.0`, `syn 1.0.109`, `system-configuration 0.7.0`, `system-configuration-sys 0.6.0`, `tar 0.4.46`, `tempfile 3.27.0`, `thread_local 1.1.9`, `tungstenite 0.24.0`, `unicase 2.9.0`, `unicode-bidi 0.3.18`, `unicode-normalization 0.1.25`, `unicode-properties 0.1.4`, `unicode-segmentation 1.13.3`, `unicode-truncate 2.0.1`, `unicode-width 0.1.14`, `unicode-width 0.2.2`, `unicode-xid 0.2.6`, `url 2.5.8`, `uuid 1.23.5`, `vcpkg 0.2.15`, `version_check 0.9.5`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wasm-bindgen 0.2.125`, `wasm-bindgen-futures 0.4.75`, `wasm-bindgen-macro 0.2.125`, `wasm-bindgen-macro-support 0.2.125`, `wasm-bindgen-shared 0.2.125`, `web-sys 0.3.102`, `weezl 0.1.12`, `wit-bindgen 0.57.1`, `xattr 1.6.1`
 
@@ -12619,7 +12950,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L207
+### L211
 
 Applies to: `crc32fast 1.5.0`
 
@@ -12647,7 +12978,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L208
+### L212
 
 Applies to: `static_assertions 1.1.0`
 
@@ -12675,7 +13006,35 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L209
+### L213
+
+Applies to: `fsevent-sys 4.1.0`
+
+~~~~text
+The MIT License (MIT)
+
+Copyright (c) 2015 Pierre Baillet
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+### L214
 
 Applies to: `axum 0.7.9`
 
@@ -12707,7 +13066,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L210
+### L215
 
 Applies to: `zerocopy 0.8.52`, `zerocopy-derive 0.8.52`
 
@@ -12915,7 +13274,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L211
+### L216
 
 Applies to: `autocfg 1.5.1`
 
@@ -12947,7 +13306,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L212
+### L217
 
 Applies to: `derivative 2.2.0`
 
@@ -12973,7 +13332,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L213
+### L218
 
 Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
 
@@ -13181,7 +13540,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L214
+### L219
 
 Applies to: `seccompiler 0.5.0`
 
@@ -13214,7 +13573,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L215
+### L220
 
 Applies to: `digest 0.10.7`, `hmac 0.12.1`
 
@@ -13246,7 +13605,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L216
+### L221
 
 Applies to: `ipnet 2.12.0`
 
@@ -13454,7 +13813,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L217
+### L222
 
 Applies to: `data-encoding 2.11.0`
 
@@ -13483,7 +13842,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L218
+### L223
 
 Applies to: `hex 0.4.3`
 
@@ -13510,7 +13869,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L219
+### L224
 
 Applies to: `lazy_static 1.5.0`, `rayon 1.12.0`, `rayon-core 1.13.0`
 
@@ -13542,7 +13901,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L220
+### L225
 
 Applies to: `core_maths 0.1.1`
 
@@ -13570,7 +13929,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L221
+### L226
 
 Applies to: `streaming-iterator 0.1.9`
 
@@ -13596,7 +13955,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L222
+### L227
 
 Applies to: `zerocopy 0.8.52`, `zerocopy-derive 0.8.52`
 
@@ -13628,7 +13987,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L223
+### L228
 
 Applies to: `zbus 5.17.0`, `zbus_macros 5.17.0`, `zbus_names 4.3.3`, `zvariant 5.13.0`, `zvariant_derive 5.13.0`
 
@@ -13660,7 +14019,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L224
+### L229
 
 Applies to: `untrusted 0.9.0`
 
@@ -13680,7 +14039,7 @@ Applies to: `untrusted 0.9.0`
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L225
+### L230
 
 Applies to: `adler2 2.0.1`
 
@@ -13699,7 +14058,7 @@ AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L226
+### L231
 
 Applies to: `color_quant 1.1.0`
 
@@ -13727,7 +14086,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L227
+### L232
 
 Applies to: `mime 0.3.17`
 
@@ -13753,7 +14112,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L228
+### L233
 
 Applies to: `symlink 0.1.0`
 
@@ -13763,7 +14122,7 @@ This project is dual-licensed under the terms of the MIT and Apache (version 2.0
 Copyright (c) 2014 Chris Morgan and the Teepee project developers
 ~~~~
 
-### L229
+### L234
 
 Applies to: `hyper-rustls 0.27.9`, `rustls 0.23.46`, `rustls-native-certs 0.8.4`
 
@@ -13795,7 +14154,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L230
+### L235
 
 Applies to: `rustyline 14.0.0`
 
@@ -13823,7 +14182,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L231
+### L236
 
 Applies to: `tungstenite 0.24.0`
 
@@ -13850,7 +14209,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L232
+### L237
 
 Applies to: `shlex 1.3.0`, `shlex 2.0.1`
 
@@ -13870,7 +14229,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L233
+### L238
 
 Applies to: `async-broadcast 0.7.2`
 
@@ -14067,7 +14426,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L234
+### L239
 
 Applies to: `beef 0.5.2`
 
@@ -14095,7 +14454,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L235
+### L240
 
 Applies to: `signal-hook 0.3.18`, `signal-hook-mio 0.2.5`, `signal-hook-registry 1.4.8`
 
@@ -14127,7 +14486,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L236
+### L241
 
 Applies to: `miniz_oxide 0.8.9`
 
@@ -14158,7 +14517,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L237
+### L242
 
 Applies to: `tokio-rustls 0.26.4`
 
@@ -14366,7 +14725,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L238
+### L243
 
 Applies to: `generic-array 0.14.7`
 
@@ -14394,7 +14753,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L239
+### L244
 
 Applies to: `http-body 1.0.1`
 
@@ -14426,7 +14785,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L240
+### L245
 
 Applies to: `hashbrown 0.12.3`, `hashbrown 0.14.5`, `hashbrown 0.15.5`, `hashbrown 0.16.1`, `hashbrown 0.17.1`
 
@@ -14458,7 +14817,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L241
+### L246
 
 Applies to: `convert_case 0.10.0`
 
@@ -14486,7 +14845,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L242
+### L247
 
 Applies to: `hyper-rustls 0.27.9`, `rustls 0.23.46`, `rustls-native-certs 0.8.4`
 
@@ -14508,7 +14867,7 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ~~~~
 
-### L243
+### L248
 
 Applies to: `android_system_properties 0.1.5`
 
@@ -14535,7 +14894,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L244
+### L249
 
 Applies to: `nu-ansi-term 0.50.3`
 
@@ -14564,7 +14923,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L245
+### L250
 
 Applies to: `foldhash 0.1.5`, `foldhash 0.2.0`
 
@@ -14590,7 +14949,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L246
+### L251
 
 Applies to: `encoding_rs 0.8.35`
 
@@ -14623,7 +14982,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L247
+### L252
 
 Applies to: `ppv-lite86 0.2.21`
 
@@ -14655,7 +15014,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L248
+### L253
 
 Applies to: `futures-channel 0.3.32`, `futures-core 0.3.32`, `futures-executor 0.3.32`, `futures-io 0.3.32`, `futures-macro 0.3.32`, `futures-sink 0.3.32`, `futures-task 0.3.32`, `futures-util 0.3.32`
 
@@ -14688,7 +15047,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L249
+### L254
 
 Applies to: `deranged 0.5.8`
 
@@ -14896,7 +15255,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L250
+### L255
 
 Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
 
@@ -14928,7 +15287,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L251
+### L256
 
 Applies to: `serde_urlencoded 0.7.1`
 
@@ -14960,7 +15319,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L252
+### L257
 
 Applies to: `apple-native-keyring-store 1.0.1`, `keyring 4.1.4`, `keyring-core 1.0.0`, `windows-native-keyring-store 1.1.0`, `zbus-secret-service-keyring-store 1.0.0`
 
@@ -14992,7 +15351,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L253
+### L258
 
 Applies to: `cobs 0.3.0`
 
@@ -15018,7 +15377,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L254
+### L259
 
 Applies to: `web-time 1.1.0`
 
@@ -15226,7 +15585,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L255
+### L260
 
 Applies to: `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
@@ -15252,7 +15611,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L256
+### L261
 
 Applies to: `nix 0.28.0`, `nix 0.31.3`
 
@@ -15280,7 +15639,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L257
+### L262
 
 Applies to: `cfg_aliases 0.1.1`, `cfg_aliases 0.2.1`
 
@@ -15313,7 +15672,7 @@ The `cfg_aliases!` macro uses a lot of the code from [`tectonic_cfg_support::tar
 ---
 ~~~~
 
-### L258
+### L263
 
 Applies to: `ctor 1.0.13`, `link-section 0.19.3`, `linktime-proc-macro 0.2.3`, `tinyvec 1.11.0`
 
@@ -15325,7 +15684,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L259
+### L264
 
 Applies to: `num_threads 0.1.7`
 
@@ -15533,7 +15892,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L260
+### L265
 
 Applies to: `crc 3.4.0`
 
@@ -15561,7 +15920,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L261
+### L266
 
 Applies to: `pulldown-cmark 0.13.6`
 
@@ -15589,7 +15948,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L262
+### L267
 
 Applies to: `vt100 0.16.2`
 
@@ -15617,7 +15976,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L263
+### L268
 
 Applies to: `endian-type 0.1.2`
 
@@ -15645,7 +16004,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L264
+### L269
 
 Applies to: `tokio-macros 2.7.0`
 
@@ -15674,7 +16033,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L265
+### L270
 
 Applies to: `wildmatch 2.6.1`
 
@@ -15702,7 +16061,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L266
+### L271
 
 Applies to: `const_format 0.2.36`, `const_format_proc_macros 0.2.34`
 
@@ -15726,7 +16085,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L267
+### L272
 
 Applies to: `tokio-native-tls 0.3.1`, `tracing 0.1.44`, `tracing-appender 0.2.5`, `tracing-attributes 0.1.31`, `tracing-core 0.1.36`, `tracing-log 0.2.0`, `tracing-serde 0.2.0`, `tracing-subscriber 0.3.23`
 
@@ -15758,7 +16117,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L268
+### L273
 
 Applies to: `document-features 0.2.12`
 
@@ -15838,7 +16197,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L269
+### L274
 
 Applies to: `num_threads 0.1.7`
 
@@ -15864,7 +16223,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L270
+### L275
 
 Applies to: `rand_pcg 0.10.2`
 
@@ -15897,7 +16256,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L271
+### L276
 
 Applies to: `parking 2.2.1`
 
@@ -15913,7 +16272,7 @@ option. All files in the project carrying such notice may not be
 copied, modified, or distributed except according to those terms.
 ~~~~
 
-### L272
+### L277
 
 Applies to: `fnv 1.0.7`
 
@@ -15945,7 +16304,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L273
+### L278
 
 Applies to: `rustls-pki-types 1.14.1`
 
@@ -15977,7 +16336,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L274
+### L279
 
 Applies to: `publicsuffix 2.3.0`
 
@@ -16005,7 +16364,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L275
+### L280
 
 Applies to: `shell-words 1.1.1`
 
@@ -16213,7 +16572,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L276
+### L281
 
 Applies to: `mio 1.2.1`
 
@@ -16239,7 +16598,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L277
+### L282
 
 Applies to: `codex-async-utils 0.0.0`, `codex-execpolicy 0.0.0`, `codex-extension-items 0.0.0`, `codex-protocol 0.0.0`, `codex-utils-cache 0.0.0`, `codex-utils-image 0.0.0`, `codex-utils-path-uri 0.0.0`, `codex-utils-redacted-string 0.0.0`, `codex-utils-string 0.0.0`
 
@@ -16447,7 +16806,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L278
+### L283
 
 Applies to: `cookie 0.18.2`
 
@@ -16656,7 +17015,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L279
+### L284
 
 Applies to: `stringprep 0.1.5`
 
@@ -16682,7 +17041,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L280
+### L285
 
 Applies to: `rand_core 0.10.1`
 
@@ -16698,7 +17057,7 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 ~~~~
 
-### L281
+### L286
 
 Applies to: `foreign-types 0.3.2`, `foreign-types-shared 0.1.1`
 
@@ -16724,7 +17083,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L282
+### L287
 
 Applies to: `ipnet 2.12.0`
 
@@ -16738,7 +17097,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L283
+### L288
 
 Applies to: `libc 0.2.186`
 
@@ -16770,7 +17129,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L284
+### L289
 
 Applies to: `lru-slab 0.1.2`
 
@@ -16784,7 +17143,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L285
+### L290
 
 Applies to: `rand 0.10.2`, `rand 0.8.6`, `rand_chacha 0.3.1`, `rand_core 0.6.4`
 
@@ -16817,7 +17176,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L286
+### L291
 
 Applies to: `shlex 1.3.0`, `shlex 2.0.1`
 
@@ -16845,7 +17204,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L287
+### L292
 
 Applies to: `darling 0.23.0`, `darling_core 0.23.0`, `darling_macro 0.23.0`
 
@@ -16873,7 +17232,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L288
+### L293
 
 Applies to: `embedded-io 0.6.1`
 
@@ -16905,7 +17264,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L289
+### L294
 
 Applies to: `axum-core 0.4.5`
 
@@ -16919,7 +17278,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L290
+### L295
 
 Applies to: `fixed_decimal 0.7.2`, `icu_collections 2.2.0`, `icu_decimal 2.2.0`, `icu_decimal_data 2.2.0`, `icu_locale 2.2.0`, `icu_locale_core 2.2.0`, `icu_locale_data 2.2.0`, `icu_normalizer 2.2.0`, `icu_normalizer_data 2.2.0`, `icu_plurals 2.2.0`, `icu_plurals_data 2.2.0`, `icu_properties 2.2.0`, `icu_properties_data 2.2.0`, `icu_provider 2.2.0`, `icu_segmenter 2.2.0`, `icu_segmenter_data 2.2.0`, `litemap 0.8.2`, `potential_utf 0.1.5`, `tinystr 0.8.3`, `writeable 0.6.3`, `yoke 0.8.3`, `yoke-derive 0.8.2`, `zerofrom 0.1.8`, `zerofrom-derive 0.1.7`, `zerotrie 0.2.4`, `zerovec 0.11.6`, `zerovec-derive 0.11.3`
 
@@ -16972,7 +17331,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ~~~~
 
-### L291
+### L296
 
 Applies to: `chrono 0.4.45`
 
@@ -17218,7 +17577,7 @@ limitations under the License.
 ~~~~
 ~~~~
 
-### L292
+### L297
 
 Applies to: `allocative 0.3.6`, `allocative_derive 0.3.6`, `crc-catalog 2.5.0`, `defmt-parser 1.0.0`, `display_container 0.9.0`, `fxhash 0.2.1`, `lock_free_hashtable 0.1.4`, `pagable 0.4.2`, `pagable_derive 0.4.2`, `r-efi 5.3.0`, `r-efi 6.0.0`, `rama-error 0.3.0-alpha.4`, `rama-macros 0.3.0-alpha.4`, `rama-utils 0.3.0-alpha.4`, `sorted_vector_map 0.2.1`, `starlark 0.14.2`, `starlark_derive 0.14.2`, `starlark_map 0.14.2`, `starlark_syntax 0.14.2`, `static_interner 0.1.3`, `strong_hash 0.1.0`, `strong_hash_derive 0.1.0`, `wasite 0.1.0`, `winapi-i686-pc-windows-gnu 0.4.0`, `winapi-x86_64-pc-windows-gnu 0.4.0`
 
@@ -17426,7 +17785,7 @@ APPENDIX: How to apply the Apache License to your work.
    limitations under the License.
 ~~~~
 
-### L293
+### L298
 
 Applies to: `lru-slab 0.1.2`
 
@@ -17452,7 +17811,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L294
+### L299
 
 Applies to: `quick-error 2.0.1`
 
@@ -17478,7 +17837,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L295
+### L300
 
 Applies to: `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`
 
@@ -17506,7 +17865,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L296
+### L301
 
 Applies to: `crossbeam-channel 0.5.16`
 
@@ -18106,7 +18465,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L297
+### L302
 
 Applies to: `webpki-roots 1.0.10`
 
@@ -18174,7 +18533,7 @@ of Data, including for example machine learning models and models'
 insights.
 ~~~~
 
-### L298
+### L303
 
 Applies to: `secret-service 5.1.0`
 
@@ -18206,7 +18565,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L299
+### L304
 
 Applies to: `native-tls 0.2.18`
 
@@ -18232,7 +18591,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L300
+### L305
 
 Applies to: `winreg 0.10.1`
 
@@ -18258,7 +18617,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L301
+### L306
 
 Applies to: `tinyvec_macros 0.1.1`
 
@@ -18286,7 +18645,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L302
+### L307
 
 Applies to: `litrs 1.0.0`
 
@@ -18318,7 +18677,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L303
+### L308
 
 Applies to: `tower 0.5.3`, `tower-layer 0.3.3`, `tower-service 0.3.3`
 
@@ -18350,7 +18709,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L304
+### L309
 
 Applies to: `typenum 1.20.1`
 
@@ -18358,7 +18717,7 @@ Applies to: `typenum 1.20.1`
 MIT OR Apache-2.0
 ~~~~
 
-### L305
+### L310
 
 Applies to: `utf8parse 0.2.2`, `vte 0.15.0`
 
@@ -18390,7 +18749,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L306
+### L311
 
 Applies to: `Inflector 0.11.4`
 
@@ -18422,7 +18781,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L307
+### L312
 
 Applies to: `crc 3.4.0`
 
@@ -18630,7 +18989,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L308
+### L313
 
 Applies to: `android_system_properties 0.1.5`
 
@@ -18650,7 +19009,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L309
+### L314
 
 Applies to: `enumflags2 0.7.12`
 
@@ -18682,7 +19041,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L310
+### L315
 
 Applies to: `bytemuck 1.25.0`, `bytemuck_derive 1.10.2`
 
@@ -18698,7 +19057,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L311
+### L316
 
 Applies to: `kasuari 0.4.12`
 
@@ -18906,7 +19265,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L312
+### L317
 
 Applies to: `debugserver-types 0.5.0`, `schemafy_core 0.5.2`, `schemafy_lib 0.5.2`, `tree-sitter 0.25.10`, `ts-rs 11.1.0`, `ts-rs-macros 11.1.0`, `valuable 0.1.1`
 
@@ -18934,7 +19293,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L313
+### L318
 
 Applies to: `codex-async-utils 0.0.0`, `codex-execpolicy 0.0.0`, `codex-extension-items 0.0.0`, `codex-protocol 0.0.0`, `codex-utils-cache 0.0.0`, `codex-utils-image 0.0.0`, `codex-utils-path-uri 0.0.0`, `codex-utils-redacted-string 0.0.0`, `codex-utils-string 0.0.0`
 
@@ -18947,7 +19306,7 @@ Copyright (c) 2016-2022 Florian Dehau
 Copyright (c) 2023-2025 The Ratatui Developers
 ~~~~
 
-### L314
+### L319
 
 Applies to: `mime_guess 2.0.5`
 
@@ -18975,7 +19334,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L315
+### L320
 
 Applies to: `enumflags2_derive 0.7.12`
 
@@ -19050,7 +19409,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L316
+### L321
 
 Applies to: `tar 0.4.46`
 
@@ -19082,7 +19441,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L317
+### L322
 
 Applies to: `getrandom 0.2.17`, `getrandom 0.3.4`, `getrandom 0.4.3`, `rand_chacha 0.3.1`
 
@@ -19290,7 +19649,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L318
+### L323
 
 Applies to: `line-clipping 0.3.7`
 
@@ -19318,7 +19677,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L319
+### L324
 
 Applies to: `hyper-util 0.1.20`
 
@@ -19344,7 +19703,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L320
+### L325
 
 Applies to: `aes 0.8.4`, `base64ct 1.8.3`, `block-buffer 0.10.4`, `block-padding 0.3.3`, `cbc 0.1.2`, `chacha20 0.10.2`, `cipher 0.4.4`, `const-oid 0.9.6`, `cpufeatures 0.2.17`, `cpufeatures 0.3.1`, `crypto-common 0.1.7`, `der 0.7.10`, `digest 0.10.7`, `hkdf 0.12.4`, `hmac 0.12.1`, `inout 0.1.4`, `md-5 0.10.6`, `pem-rfc7468 0.7.0`, `pkcs1 0.7.5`, `pkcs8 0.10.2`, `sha1 0.10.6`, `sha2 0.10.9`, `signature 2.2.0`, `spki 0.7.3`
 
@@ -19552,7 +19911,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L321
+### L326
 
 Applies to: `atomic-polyfill 1.0.3`
 
@@ -19584,7 +19943,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L322
+### L327
 
 Applies to: `hashlink 0.10.0`
 
@@ -19617,7 +19976,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L323
+### L328
 
 Applies to: `cpufeatures 0.3.1`
 
@@ -19649,7 +20008,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L324
+### L329
 
 Applies to: `openssl 0.10.81`
 
@@ -19671,7 +20030,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L325
+### L330
 
 Applies to: `miniz_oxide 0.8.9`
 
@@ -19692,7 +20051,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L326
+### L331
 
 Applies to: `version_check 0.9.5`
 
@@ -19718,7 +20077,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L327
+### L332
 
 Applies to: `ring 0.17.14`
 
@@ -19734,7 +20093,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ~~~~
 
-### L328
+### L333
 
 Applies to: `tower-http 0.5.2`, `tower-http 0.6.11`
 
@@ -19766,7 +20125,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L329
+### L334
 
 Applies to: `constant_time_eq 0.3.1`
 
@@ -19787,7 +20146,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L330
+### L335
 
 Applies to: `system-configuration 0.7.0`, `system-configuration-sys 0.6.0`
 
@@ -19819,7 +20178,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L331
+### L336
 
 Applies to: `hyper-tls 0.6.0`
 
@@ -19845,7 +20204,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L332
+### L337
 
 Applies to: `ppv-lite86 0.2.21`
 
@@ -20053,7 +20412,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L333
+### L338
 
 Applies to: `ratatui-macros 0.7.2`
 
@@ -20080,7 +20439,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L334
+### L339
 
 Applies to: `tree-sitter-language 0.1.7`
 
@@ -20108,7 +20467,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L335
+### L340
 
 Applies to: `lsp-types 0.97.0`, `schemafy 0.5.2`
 
@@ -20136,7 +20495,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L336
+### L341
 
 Applies to: `cbc 0.1.2`
 
@@ -20169,7 +20528,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L337
+### L342
 
 Applies to: `http 1.4.2`
 
@@ -20201,7 +20560,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L338
+### L343
 
 Applies to: `h2 0.4.19`
 
@@ -20233,7 +20592,27 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L339
+### L344
+
+Applies to: `inotify 0.11.5`, `inotify-sys 0.1.8`
+
+~~~~text
+Copyright (c) Hanno Braun and contributors
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+~~~~
+
+### L345
 
 Applies to: `openssl-macros 0.1.1`
 
@@ -20259,7 +20638,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L340
+### L346
 
 Applies to: `want 0.3.1`
 
@@ -20285,7 +20664,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L341
+### L347
 
 Applies to: `blake3 1.8.2`
 
@@ -20493,7 +20872,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L342
+### L348
 
 Applies to: `either 1.16.0`, `itertools 0.14.0`, `maplit 1.0.2`, `serde_with 3.22.0`, `serde_with_macros 3.22.0`
 
@@ -20525,7 +20904,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L343
+### L349
 
 Applies to: `rustix 1.1.4`
 
@@ -20561,7 +20940,7 @@ is licensed under:
 at your option.
 ~~~~
 
-### L344
+### L350
 
 Applies to: `redox_syscall 0.5.18`, `redox_syscall 0.8.1`
 
@@ -20590,7 +20969,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L345
+### L351
 
 Applies to: `tinyvec_macros 0.1.1`
 
@@ -20798,7 +21177,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L346
+### L352
 
 Applies to: `rand 0.10.2`, `rand 0.8.6`
 
@@ -20981,9 +21360,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ~~~~
 
-### L347
+### L353
 
-Applies to: `windows 0.58.0`, `windows-core 0.58.0`, `windows-core 0.62.2`, `windows-implement 0.58.0`, `windows-implement 0.60.2`, `windows-interface 0.58.0`, `windows-interface 0.59.3`, `windows-link 0.2.1`, `windows-registry 0.6.1`, `windows-result 0.2.0`, `windows-result 0.4.1`, `windows-strings 0.1.0`, `windows-strings 0.5.1`, `windows-sys 0.48.0`, `windows-sys 0.52.0`, `windows-sys 0.61.2`, `windows-targets 0.48.5`, `windows-targets 0.52.6`, `windows_aarch64_gnullvm 0.48.5`, `windows_aarch64_gnullvm 0.52.6`, `windows_aarch64_msvc 0.48.5`, `windows_aarch64_msvc 0.52.6`, `windows_i686_gnu 0.48.5`, `windows_i686_gnu 0.52.6`, `windows_i686_gnullvm 0.52.6`, `windows_i686_msvc 0.48.5`, `windows_i686_msvc 0.52.6`, `windows_x86_64_gnu 0.48.5`, `windows_x86_64_gnu 0.52.6`, `windows_x86_64_gnullvm 0.48.5`, `windows_x86_64_gnullvm 0.52.6`, `windows_x86_64_msvc 0.48.5`, `windows_x86_64_msvc 0.52.6`
+Applies to: `windows 0.58.0`, `windows-core 0.58.0`, `windows-core 0.62.2`, `windows-implement 0.58.0`, `windows-implement 0.60.2`, `windows-interface 0.58.0`, `windows-interface 0.59.3`, `windows-link 0.2.1`, `windows-registry 0.6.1`, `windows-result 0.2.0`, `windows-result 0.4.1`, `windows-strings 0.1.0`, `windows-strings 0.5.1`, `windows-sys 0.48.0`, `windows-sys 0.52.0`, `windows-sys 0.60.2`, `windows-sys 0.61.2`, `windows-targets 0.48.5`, `windows-targets 0.52.6`, `windows-targets 0.53.5`, `windows_aarch64_gnullvm 0.48.5`, `windows_aarch64_gnullvm 0.52.6`, `windows_aarch64_gnullvm 0.53.1`, `windows_aarch64_msvc 0.48.5`, `windows_aarch64_msvc 0.52.6`, `windows_aarch64_msvc 0.53.1`, `windows_i686_gnu 0.48.5`, `windows_i686_gnu 0.52.6`, `windows_i686_gnu 0.53.1`, `windows_i686_gnullvm 0.52.6`, `windows_i686_gnullvm 0.53.1`, `windows_i686_msvc 0.48.5`, `windows_i686_msvc 0.52.6`, `windows_i686_msvc 0.53.1`, `windows_x86_64_gnu 0.48.5`, `windows_x86_64_gnu 0.52.6`, `windows_x86_64_gnu 0.53.1`, `windows_x86_64_gnullvm 0.48.5`, `windows_x86_64_gnullvm 0.52.6`, `windows_x86_64_gnullvm 0.53.1`, `windows_x86_64_msvc 0.48.5`, `windows_x86_64_msvc 0.52.6`, `windows_x86_64_msvc 0.53.1`
 
 ~~~~text
 MIT License
@@ -21009,7 +21388,7 @@ MIT License
     SOFTWARE
 ~~~~
 
-### L348
+### L354
 
 Applies to: `fancy-regex 0.16.2`
 
@@ -21037,7 +21416,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L349
+### L355
 
 Applies to: `bstr 1.13.1`
 

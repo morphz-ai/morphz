@@ -938,13 +938,20 @@ test(
         undefined,
         "Activity metadata does not open the committed body",
       );
+      const terminalEvent = f.sql<{ event_id: string }>(
+        "SELECT event_id FROM thread_outcomes WHERE thread_id = ?",
+        threadId,
+      )[0];
+      assert.ok(terminalEvent);
       const original = (await f.runtime
         .inputEvidenceReader()
-        .readThread(terminal[0]!.sessionId, threadId)) as {
-        snapshot: { outcome?: { summary?: string } };
+        .readSessionEvent(terminal[0]!.sessionId, terminalEvent.event_id)) as {
+        id: string;
+        payload: { text?: string };
       };
+      assert.equal(original.id, terminalEvent.event_id);
       assert.equal(
-        original.snapshot.outcome?.summary,
+        original.payload.text,
         finalBody,
         "The original committed body is retained",
       );
@@ -975,8 +982,15 @@ test(
         assert.equal(job.thread_id, threadId);
         assert.equal(job.status, "succeeded");
         assert.ok(job.result_event_id);
+        assert.equal(job.request, undefined, "Job pages expose metadata only");
+        const stored = f.sql<{ request: string }>(
+          "SELECT request_json AS request FROM execution_jobs WHERE id = ? AND thread_id = ?",
+          job.id,
+          threadId,
+        )[0];
+        assert.ok(stored, "The exact physical Job remains durable");
         assert.ok(
-          !JSON.stringify(job.request).includes('"_morphz":'),
+          !JSON.stringify(JSON.parse(stored.request)).includes('"_morphz":'),
           "Annotations must never enter the Host business request",
         );
         const receipt = f.sql<{ id: string }>(

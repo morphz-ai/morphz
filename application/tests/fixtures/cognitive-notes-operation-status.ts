@@ -4,6 +4,7 @@ import { cognitiveBrowserLimits } from "../../packages/cognitive-app-sdk/src/bro
 
 const success = [
   "作者已确认保存",
+  "已读取所选精确版本",
   "原文引用已准备到输入框",
   "已记住阅读位置",
 ] as const;
@@ -17,7 +18,7 @@ export function isNotesOperationSuccess(
 /** One explicit SDK operation, not the pointer/readiness phase. Never repeats
  * a click/request and never counts an old error while an explicit recovery is
  * still busy. Business identity/receipt/draft assertions remain at each caller.
- * invoke/compose/saveState each has one outer SDK deadline: the router's several
+ * invoke/readObject/compose/saveState each has one outer SDK deadline: the router's several
  * readUi/author/save/post-authorize awaits are inside that same request, not
  * independent deadlines to add together. Actual SDK failure/retirement remains
  * authoritative and is never rescued by a later Host receipt. */

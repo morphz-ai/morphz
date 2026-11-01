@@ -242,8 +242,15 @@ test(
           ),
         );
         assert.ok(selected.jobs.some((job) => job.thread_id === thread.id));
+        const selectedThread = selected.threads?.find(
+          (value) => value.id === thread.id,
+        );
+        assert.ok(
+          selectedThread,
+          "The selected child must be present in its authorized family page",
+        );
         assert.equal(
-          selected.threads?.[0]?.rootId,
+          selectedThread.rootId,
           thread.rootId,
           "Selected child uses its real distinct root",
         );
@@ -273,15 +280,19 @@ test(
           undefined,
           "Activity metadata does not open the final body",
         );
+        const terminalEvent = f.sql<{ event_id: string }>(
+          "SELECT event_id FROM thread_outcomes WHERE thread_id = ?",
+          thread.id,
+        )[0];
+        assert.ok(terminalEvent);
         const original = (await f.runtime
           .inputEvidenceReader()
-          .readThread(thread.sessionId, thread.id)) as {
-          snapshot: { outcome?: { summary?: string } };
+          .readSessionEvent(thread.sessionId, terminalEvent.event_id)) as {
+          id: string;
+          payload: { text?: string };
         };
-        assert.equal(
-          original.snapshot.outcome?.summary,
-          titles.get(thread.id) + "已完成",
-        );
+        assert.equal(original.id, terminalEvent.event_id);
+        assert.equal(original.payload.text, titles.get(thread.id) + "已完成");
         assert.equal(thread.annotationProtocol, "on");
         assert.ok(own[0]!.result_event_id);
       }
