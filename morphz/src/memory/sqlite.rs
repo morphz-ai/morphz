@@ -27983,7 +27983,7 @@ impl EventStore for SqliteStore {
         &self,
     ) -> Result<crate::memory::event_tail::EventTailCursor, Box<dyn std::error::Error + Send + Sync>>
     {
-        let sequence: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM events")
+        let sequence: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(rowid),0) FROM events")
             .fetch_one(&self.pool)
             .await?;
         Ok(crate::memory::event_tail::EventTailCursor {
@@ -28003,7 +28003,7 @@ impl EventStore for SqliteStore {
             return Err("Event cursor backend changed".into());
         }
         let mut rows = sqlx::query(
-            "SELECT id,sequence FROM events WHERE sequence>? ORDER BY sequence LIMIT ?",
+            "SELECT id,rowid AS sequence FROM events WHERE rowid>? ORDER BY rowid LIMIT ?",
         )
         .bind(i64::try_from(cursor.sequence)?)
         .bind((limit + 1) as i64)
@@ -46287,6 +46287,83 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn file_event_tail_uses_sqlite_rowids_and_reopens_from_bounded_cursor() {
+        use crate::memory::EventStore;
+        let file = TempSqliteDb::new().unwrap();
+        let path = file.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+        assert_eq!(store.event_tail_checkpoint().await.unwrap().sequence, 0);
+        sqlx::query(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10000) \
+             INSERT INTO events(id,timestamp,actor,type,topic,payload) \
+             SELECT printf('old-%05d',x),'2026-11-01T00:00:00Z','TEST','fixture','test/tail','{}' FROM n",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let checkpoint = store.event_tail_checkpoint().await.unwrap();
+        assert_eq!(checkpoint.sequence, 10000);
+        // IDs and wall clocks deliberately disagree with append order. The tail
+        // must use the existing SQLite rowid, without opening Event bodies.
+        for (id, timestamp) in [
+            ("z-new", "2026-11-01T00:00:03Z"),
+            ("a-new", "2026-11-01T00:00:02Z"),
+            ("m-new", "2026-11-01T00:00:01Z"),
+        ] {
+            sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES (?,?,'TEST','fixture','test/tail',?)")
+                .bind(id)
+                .bind(timestamp)
+                .bind(serde_json::json!({"text":"x".repeat(1024*1024)}).to_string())
+                .execute(&store.pool).await.unwrap();
+        }
+        let first = store.read_event_tail_page(&checkpoint, 2).await.unwrap();
+        assert_eq!(
+            first
+                .records
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["z-new", "a-new"]
+        );
+        assert!(first.has_more);
+        assert_eq!(first.next.sequence, 10002);
+        let plan = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT id,rowid AS sequence FROM events WHERE rowid>? ORDER BY rowid LIMIT ?",
+        )
+        .bind(10000i64)
+        .bind(3i64)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>();
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("INTEGER PRIMARY KEY (rowid>?)")),
+            "{plan:?}"
+        );
+        assert!(
+            plan.iter()
+                .all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        store.pool.close().await;
+        let reopened = SqliteStore::new(path).await.unwrap();
+        let second = reopened.read_event_tail_page(&first.next, 2).await.unwrap();
+        assert_eq!(second.records.len(), 1);
+        assert_eq!(second.records[0].id, "m-new");
+        assert_eq!(second.next.sequence, 10003);
+        assert!(!second.has_more);
+        let empty = reopened
+            .read_event_tail_page(&second.next, 2)
+            .await
+            .unwrap();
+        assert!(empty.records.is_empty());
+        assert_eq!(empty.next.sequence, second.next.sequence);
+    }
+
+    #[tokio::test]
     async fn in_memory_control_commit_wakes_the_bounded_tail_after_commit_without_polling() {
         use crate::memory::{EventStore, ThreadControlAction, ThreadStore};
         use crate::scheduler::SchedulerKernel;
@@ -46303,7 +46380,7 @@ mod tests {
             .unwrap(),
         );
         sqlx::query("INSERT INTO agents(id,title,status,root_context_id,created_at,updated_at) VALUES ('tail-agent','TEST','active','tail-context','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')").execute(&store.pool).await.unwrap();
-        sqlx::query("INSERT INTO cognitive_contexts(id,agent_id,title,created_at,updated_at) VALUES ('tail-context','tail-agent','TEST','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO cognitive_contexts(id,agent_id,title,status,created_at,updated_at) VALUES ('tail-context','tail-agent','TEST','active','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')").execute(&store.pool).await.unwrap();
         sqlx::query("INSERT INTO sessions(id,agent_id,context_id,title,status,created_at,updated_at,last_activity_at) VALUES ('tail-session','tail-agent','tail-context','TEST','active','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')").execute(&store.pool).await.unwrap();
         sqlx::query("INSERT INTO threads(id,agent_id,context_id,session_id,root_turn_id,kind,status,executor_kind,created_at,updated_at) VALUES ('tail-thread','tail-agent','tail-context','tail-session','tail-root','execution','open','TEST','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')").execute(&store.pool).await.unwrap();
         let mut changes = store.subscribe_event_changes().unwrap();
