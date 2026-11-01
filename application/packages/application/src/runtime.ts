@@ -7071,16 +7071,11 @@ export class RuntimeBridge {
       access.principalId,
       access.actantId,
       projectIds ? [...projectIds].sort() : null,
-      permitted()
-        .map((session) => [
-          session.id,
-          session.projectId,
-          session.conversationId ?? null,
-          this.contextId(session.projectId),
-          session.runtimePrincipalId,
-        ])
-        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
     ];
+    // A newly admitted Session or its first principal proof changes the read
+    // domain, not the Human/connection identity. refreshActivityNow fences that
+    // domain before publishing and reports an explicit retry when it changes.
+    // The continuation still checks current project grants and Context scope.
     return this.activityReadPages.read({
       owner,
       contexts,

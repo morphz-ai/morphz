@@ -233,7 +233,7 @@ impl Tool for RecallTool {
             + usize::from(search_selected);
         if selected != 1 {
             return Err(
-                "recall must select one mode: {\"event_id\":\"@e27\"}, {\"event_id\":\"@e27\",\"query\":\"关键词\"}, {\"frame_id\":\"frame-id\"}, or Context search {\"query\":\"关键词\"} with optional start_time/end_time/cursor".into(),
+                "recall must select one mode: {\"event_id\":\"@e27\"}, {\"event_id\":\"@e27\",\"query\":\"keyword\"}, {\"frame_id\":\"frame-id\"}, or Context search {\"query\":\"keyword\"} with optional start_time/end_time/cursor".into(),
             );
         }
         let frame_options = args.depth.is_some()
@@ -247,10 +247,10 @@ impl Tool for RecallTool {
                 || args.cursor.is_some()
                 || frame_options)
         {
-            return Err("recall event_id mode does not accept time filters, cursor or Frame options; use {\"event_id\":\"@e27\",\"query\":\"关键词\",\"offset\":0,\"limit\":1000} for within-event search, or omit event_id for Context query/time search".into());
+            return Err("recall event_id mode does not accept time filters, cursor or Frame options; use {\"event_id\":\"@e27\",\"query\":\"keyword\",\"offset\":0,\"limit\":1000} for within-event search, or omit event_id for Context query/time search".into());
         }
         if args.event_id.is_some() && args.query.is_some() && args.json_pointer.is_some() {
-            return Err("recall query searches the Event text, not a typed subtree; use {\"event_id\":\"@e27\",\"query\":\"关键词\"} or {\"event_id\":\"@e27\",\"json_pointer\":\"/path\"}, separately".into());
+            return Err("recall query searches the Event text, not a typed subtree; use {\"event_id\":\"@e27\",\"query\":\"keyword\"} or {\"event_id\":\"@e27\",\"json_pointer\":\"/path\"}, separately".into());
         }
         if args.frame_id.is_some()
             && (args.json_pointer.is_some() || args.offset.is_some() || args.limit.is_some())
@@ -260,7 +260,7 @@ impl Tool for RecallTool {
         if search_selected
             && (args.json_pointer.is_some() || args.offset.is_some() || frame_options)
         {
-            return Err("recall Context search uses query/time range/limit/cursor, not json_pointer/offset or Frame options; use {\"query\":\"关键词\",\"limit\":10}".into());
+            return Err("recall Context search uses query/time range/limit/cursor, not json_pointer/offset or Frame options; use {\"query\":\"keyword\",\"limit\":10}".into());
         }
 
         if let Some(frame_id) = args.frame_id {

@@ -1115,6 +1115,55 @@ test("navigation and conversation history disclose freshness only inside each Pr
   }
 });
 
+for (const change of ["principal-proof", "session-admission"] as const)
+  test(`an Activity read overlapping ${change} retains its owner and retries only the changed domain`, async () => {
+    const x = await fixture();
+    try {
+      const calls: string[] = [];
+      let changed = false;
+      x.internal.request = async (path: string) => {
+        calls.push(path);
+        if (path.startsWith("/api/delegations?"))
+          return { delegations: [], has_more: false };
+        if (!changed) {
+          changed = true;
+          const binding = x.internal.state.sessions[x.delivery.sessionId];
+          if (change === "principal-proof")
+            binding.runtimePrincipalId = "TEST-verified-runtime-principal";
+          else {
+            const id = "TEST-new-session";
+            x.internal.state.sessions[id] = { ...binding, id };
+          }
+        }
+        return x.view([x.thread("verified-current")]);
+      };
+      const first = await x.f.runtime.refreshPlatformActivity();
+      assert.equal(first.retry, true);
+      assert.equal(first.hasMore, true);
+      assert.ok(first.nextCursor);
+      assert.equal(x.read().openWorkComplete, false);
+      assert.equal(x.read().threads.length, 0, "No stale domain is published");
+      const next = await x.f.runtime.refreshPlatformActivity(
+        undefined,
+        undefined,
+        first.nextCursor!,
+      );
+      assert.equal(next.hasMore, false);
+      assert.equal(next.retry, undefined);
+      assert.deepEqual(
+        x.read().threads.map((value) => value.id),
+        ["verified-current"],
+      );
+      assert.equal(
+        calls.filter((path) => path.includes("/scheduler?")).length,
+        4,
+      );
+      assert.ok(calls.every((path) => !path.includes("limit=200")));
+    } finally {
+      await x.f.close();
+    }
+  });
+
 test("the public Activity head reads one Context and its explicit continuation retains independently accepted facts", async () => {
   const x = await fixture();
   try {
