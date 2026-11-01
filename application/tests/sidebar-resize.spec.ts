@@ -524,24 +524,30 @@ test("真实 Electron 图标栏隐藏再恢复与刷新保持80，Mac系统按�
   }
 });
 
-test("左右伸缩边缘共用一像素中性细线，悬停、键盘焦点与拖动不变成粗色框", async ({
-  page,
-}) => {
-  await dialogue(page);
-  await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
-  const left = resizer(page);
-  const right = page.locator(".workspace-inspector").getByRole("separator");
-  await expect(right).toBeVisible();
-  for (const [mode, modeName] of [
-    ["light", "亮色"],
-    ["dark", "暗色"],
+// Each appearance is an independent visual/interaction contract. Sharing one
+// default test deadline across eight complete preference/drag journeys made a
+// healthy final state race the accumulated fixture and automation overhead.
+// Keep every assertion and the unchanged default deadline for each case.
+for (const [mode, modeName] of [
+  ["light", "亮色"],
+  ["dark", "暗色"],
+] as const) {
+  for (const [accent, accentName] of [
+    ["cyan", "电光青"],
+    ["iris", "鸢尾紫"],
+    ["coral", "暖珊瑚"],
+    ["mono", "纯单色"],
   ] as const) {
-    for (const [accent, accentName] of [
-      ["cyan", "电光青"],
-      ["iris", "鸢尾紫"],
-      ["coral", "暖珊瑚"],
-      ["mono", "纯单色"],
-    ] as const) {
+    test(`左右伸缩边缘共用一像素中性细线，悬停、键盘焦点与拖动不变成粗色框：${modeName} · ${accentName}`, async ({
+      page,
+    }) => {
+      await dialogue(page);
+      await page
+        .getByRole("button", { name: "显示右侧栏", exact: true })
+        .click();
+      const left = resizer(page);
+      const right = page.locator(".workspace-inspector").getByRole("separator");
+      await expect(right).toBeVisible();
       // Persist through the real preferences UI so resizing cannot replace a
       // test-only DOM attribute with the previous saved appearance mid-drag.
       const settings = await openSettings(page, "外观");
@@ -579,9 +585,9 @@ test("左右伸缩边缘共用一像素中性细线，悬停、键盘焦点与�
         expect((await separatorPaint(handle)).color).toBe(hovered.color);
         await page.mouse.up();
       }
-    }
+    });
   }
-});
+}
 
 test("小窗临时收窄不覆盖首选宽度，手机沿用顶部导航并保留草稿与设置", async ({
   page,

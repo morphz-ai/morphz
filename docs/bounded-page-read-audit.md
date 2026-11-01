@@ -369,3 +369,16 @@ unchanged. The release-native PostgreSQL 16 fixture passed three fresh-schema
 rounds, all nine required PostgreSQL library contracts passed, and the unchanged
 SQLite directory case and release Clippy passed. Exact-current complete CI
 remains a separate completion requirement.
+
+A later macOS Desktop job passed the embedded lifecycle, Platform restart,
+draft, capture and native-appearance checks, then exhausted one browser test's
+default 30-second deadline. Its trace shows eight complete appearance journeys
+packed into that one deadline; the final dark/monochrome preference check began
+at the deadline, with no earlier failing assertion or stalled individual action.
+Those eight appearances now have independent cases and fresh Host fixtures. All
+original left/right hover, keyboard-focus, drag, one-pixel/token and unchanged
+color assertions remain, with the same default test and expectation deadlines
+and no retries. On macOS, all eight cases passed five complete repeats (40 passed,
+no skips or retries), alongside typecheck and 21 CI coverage contracts. This is
+focused browser-test evidence, not a new product UI change or original-window
+acceptance; exact-current full native and browser CI remain mandatory.
