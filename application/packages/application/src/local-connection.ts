@@ -1,3 +1,7 @@
+import {
+  terminalChangeScopeSchema,
+  type TerminalChange,
+} from "../../core/src/terminal.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
 import { z } from "zod";
@@ -363,7 +367,9 @@ export class LocalApplicationConnection {
     id: unknown,
     scope: unknown,
     generation: unknown,
-    emit: (value: ConversationStream | WorkspaceChange) => void,
+    emit: (
+      value: ConversationStream | WorkspaceChange | TerminalChange,
+    ) => void,
     onClose: () => void,
   ) {
     const key = z.string().uuid().parse(id);
@@ -386,6 +392,17 @@ export class LocalApplicationConnection {
     });
     try {
       const session = this.session(expected).session;
+      const terminal = terminalChangeScopeSchema.safeParse(scope);
+      if (terminal.success) {
+        dispose = await session.observeTerminalChanges(
+          terminal.data,
+          emit,
+          close,
+          controller.signal,
+        );
+        if (disposed) dispose();
+        return;
+      }
       if (workspaceChangeScopeSchema.safeParse(scope).success) {
         dispose = await session.observeWorkspaceChanges(
           emit,

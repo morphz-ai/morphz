@@ -349,8 +349,29 @@ pub struct SchedulerInvariantInput<'a> {
 /// Pure, side-effect-free invariant audit. Recovery code may use these facts
 /// to quarantine or retry physical ownership, but it must not invent missing
 /// business outcomes from them.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct GroupMemberCounts {
+    pub group_id: String,
+    pub total: u64,
+    pub required: u64,
+    pub terminal: u64,
+    pub successful: u64,
+}
+
 pub fn audit_scheduler_invariants(
     input: SchedulerInvariantInput<'_>,
+) -> Vec<SchedulerInvariantViolation> {
+    audit_scheduler_invariants_counted(input, None)
+}
+pub fn audit_scheduler_invariants_with_group_counts(
+    input: SchedulerInvariantInput<'_>,
+    counts: &[GroupMemberCounts],
+) -> Vec<SchedulerInvariantViolation> {
+    audit_scheduler_invariants_counted(input, Some(counts))
+}
+fn audit_scheduler_invariants_counted(
+    input: SchedulerInvariantInput<'_>,
+    counts: Option<&[GroupMemberCounts]>,
 ) -> Vec<SchedulerInvariantViolation> {
     let outcomes_by_thread = input
         .outcomes
@@ -536,6 +557,15 @@ pub fn audit_scheduler_invariants(
             .iter()
             .filter(|member| member.required && member.status.is_success())
             .count() as u64;
+        let (required, terminal, successful) = if let Some(counts) = counts {
+            let exact = counts
+                .iter()
+                .find(|row| row.group_id == group.id)
+                .expect("every selected Group requires its exact indexed counters");
+            (exact.required, exact.terminal, exact.successful)
+        } else {
+            (required, terminal, successful)
+        };
         if (required, terminal, successful)
             != (
                 group.required_count,
@@ -551,11 +581,7 @@ pub fn audit_scheduler_invariants(
                 "ThreadGroup counters are inconsistent with authoritative member rows",
             ));
         }
-        if group.status.is_terminal()
-            && members
-                .iter()
-                .any(|member| member.required && !member.status.is_terminal())
-        {
+        if group.status.is_terminal() && required > terminal {
             violations.push(violation(
                 SchedulerInvariantSeverity::Quarantine,
                 SchedulerInvariantCode::TerminalGroupHasPendingMember,

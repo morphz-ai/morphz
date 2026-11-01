@@ -143,6 +143,7 @@ export const executionSnapshotSchema = z.object({
 });
 export const executionAttentionSchema = z.object({
   available: z.boolean(),
+  hasMore: z.boolean().optional(),
   approvals: z.array(
     z.object({
       scope: executionScopeSchema,

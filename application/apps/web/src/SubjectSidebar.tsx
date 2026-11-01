@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   List,
   ShieldCheck,
@@ -80,12 +80,26 @@ export function SubjectSidebar({
   allowMotion?: boolean;
   presence?: SubjectLogoState;
 }) {
+  const [approvalPageLoading, setApprovalPageLoading] = useState(false);
+  const [approvalPageError, setApprovalPageError] = useState("");
   const bar = useRef<HTMLDivElement>(null),
     boot = client.boot!,
     runtime = boot.runtime;
   const subject = boot.workspace.actants.find(
     (actor) => actor.kind === "agent",
   );
+  // Only the mounted Activity surface owns retained-history reads. Keep this
+  // read owner through ordinary renders and do not fetch for a hidden tab.
+  const visibleReader = useRef(client); visibleReader.current = client;
+  const historyOwner = useRef("");
+  const historyKey = `${boot.centerId}:${boot.principalId}:${runtime.activity?.historyVersion ?? 0}`;
+  useEffect(() => {
+    if (view !== "activity" || detail || !client.online || !runtime.connected || historyOwner.current === historyKey) return;
+    historyOwner.current = historyKey;
+    void visibleReader.current.refresh({refreshActivity:true}).catch(() => {
+      if (historyOwner.current === historyKey) historyOwner.current = "";
+    });
+  },[view,detail,client.online,runtime.connected,historyKey]);
   const attention = runtime.attention;
   const pendingApprovals = attention?.approvals.length ?? 0;
   const approvalHint = pendingApprovals
@@ -224,9 +238,23 @@ export function SubjectSidebar({
                   onInspect={() => onInspect(entry.scope)}
                 />
               ))
-            ) : client.online && runtime.connected && attention?.available ? (
+            ) : client.online && runtime.connected && attention?.available && !attention.hasMore ? (
               <p className="muted">没有待审批请求</p>
             ) : null}
+            {attention?.hasMore && (
+              <button type="button" className="outline" data-size="sm"
+                disabled={approvalPageLoading || !client.online || !runtime.connected}
+                aria-busy={approvalPageLoading}
+                onClick={() => {
+                  setApprovalPageLoading(true); setApprovalPageError("");
+                  void client.refresh({loadMoreApprovals:true})
+                    .catch(() => setApprovalPageError("未能载入更多审批，请重试。"))
+                    .finally(() => setApprovalPageLoading(false));
+                }}>
+                {approvalPageLoading ? "载入中…" : "载入更多审批"}
+              </button>
+            )}
+            {approvalPageError && <p role="alert" className="muted">{approvalPageError}</p>}
             {directoryAvailable && (
               <div className="subject-permissions">
                 <h4>

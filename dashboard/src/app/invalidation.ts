@@ -1,4 +1,4 @@
-export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'events' | 'thread' | 'mind-transactions' | 'execution-jobs'
+export type AuthoritativeQuery = 'catalog' | 'session' | 'overview' | 'scheduler' | 'events' | 'thread' | 'mind-transactions' | 'execution-jobs' | 'model-usage' | 'delegations'
 
 /**
  * App currently obtains Scheduler detail as part of the authoritative Session
@@ -14,7 +14,14 @@ const ephemeralTopics = new Set([
   'runtime/model_stream',
   'runtime/model_attempt_snapshot',
   'runtime/model_request_snapshot',
+  'runtime/terminal_changed',
 ])
+
+/** These observer frames are explicitly ephemeral. Durable model usage
+ * and reasoning summaries still invalidate an opened Event-history head. */
+export function eventHistoryInvalidatedByTopic(topic: string): boolean {
+  return !ephemeralTopics.has(topic)
+}
 
 const sessionProjectionTopics = new Set([
   'runtime/user_input_requested',
@@ -43,6 +50,8 @@ const catalogTopics = new Set([
 export function invalidatedQueriesForTopic(topic: string): AuthoritativeQuery[] {
   if (ephemeralTopics.has(topic)) return []
   const queries: AuthoritativeQuery[] = []
+  if (topic === 'runtime/model_usage') queries.push('model-usage')
+  if (topic === 'chat/delegate' || topic.startsWith('runtime/delegation_')) queries.push('delegations')
   if (sessionProjectionTopics.has(topic) || topic === 'chat/context_tx_committed') {
     queries.push('session', 'overview', 'scheduler')
   }

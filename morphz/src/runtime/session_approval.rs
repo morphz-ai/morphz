@@ -78,8 +78,10 @@ pub struct SessionApprovalView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionApprovalPage {
     pub approvals: Vec<SessionApprovalView>,
-    /// The next oldest requests become visible as displayed requests are resolved.
+    /// Compatibility field; `next_cursor` allows older requests without deciding the head.
     pub truncated: bool,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
 }
 
 fn unavailable(error: impl std::fmt::Display) -> SessionApprovalError {
@@ -93,22 +95,34 @@ impl MorphzRuntime {
         &self,
         authority: &ApprovalDecisionAuthority,
     ) -> Result<SessionApprovalPage, SessionApprovalError> {
-        const LIMIT: usize = 100;
-        let mut records = self
+        self.session_pending_approvals_page(authority, &Default::default())
+            .await
+    }
+    pub async fn session_pending_approvals_page(
+        &self,
+        authority: &ApprovalDecisionAuthority,
+        query: &crate::memory::ApprovalPageRequest,
+    ) -> Result<SessionApprovalPage, SessionApprovalError> {
+        query.validate().map_err(unavailable)?;
+        let page = self
             .inner
             .store
-            .list_principal_pending_approvals(authority, LIMIT + 1)
+            .read_principal_pending_approval_page(
+                authority,
+                query.cursor.as_deref(),
+                query.page_limit(),
+            )
             .await
             .map_err(unavailable)?;
-        let truncated = records.len() > LIMIT;
-        records.truncate(LIMIT);
-        let mut approvals = Vec::with_capacity(records.len());
-        for record in records {
+        let mut approvals = Vec::with_capacity(page.records.len());
+        for record in page.records {
             approvals.push(self.session_approval_view(record).await?);
         }
         Ok(SessionApprovalPage {
             approvals,
-            truncated,
+            truncated: page.has_more,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
         })
     }
 

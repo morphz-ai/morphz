@@ -541,6 +541,13 @@ pub struct PendingHumanApproval {
     pub requested_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingHumanApprovalPage {
+    pub approvals: Vec<PendingHumanApproval>,
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
+}
+
 struct PendingHumanApprovalEntry {
     waiter_id: u64,
     view: PendingHumanApproval,

@@ -816,6 +816,7 @@ export function useWorkspace() {
     epoch = useRef(0),
     snapshotText = useRef(""),
     activityRefreshRequested = useRef(false),
+    approvalPageRequested = useRef(false),
     refreshing = useRef<Promise<boolean> | null>(null),
     refreshDrain = useRef<ReturnType<typeof createRefreshDrain> | null>(null);
   history.current ??= createConversationHistory({
@@ -975,8 +976,12 @@ export function useWorkspace() {
     pending: applicationViewWrites.current,
     execute: operationDelivery.execute,
   });
-  function refresh(options?: { refreshActivity?: boolean }) {
+  function refresh(options?: {
+    refreshActivity?: boolean;
+    loadMoreApprovals?: boolean;
+  }) {
     if (options?.refreshActivity) activityRefreshRequested.current = true;
+    if (options?.loadMoreApprovals) approvalPageRequested.current = true;
     refreshDrain.current ??= createRefreshDrain(refreshOnce);
     const pending = refreshDrain.current.request();
     refreshing.current = pending;
@@ -996,6 +1001,8 @@ export function useWorkspace() {
     if (!projectionMounted.current) return false;
     const refreshActivity = activityRefreshRequested.current;
     activityRefreshRequested.current = false;
+    const loadMoreApprovals = approvalPageRequested.current;
+    approvalPageRequested.current = false;
     const version = epoch.current;
     const accessGeneration = protectedReadGeneration.current;
     const controller = new AbortController();
@@ -1064,7 +1071,7 @@ export function useWorkspace() {
         const navigation = await source.navigationRuntime(
           signal,
           requestedScope,
-          { refreshActivity },
+          { refreshActivity, loadMoreApprovals },
         );
         if (
           catalogCache.current &&

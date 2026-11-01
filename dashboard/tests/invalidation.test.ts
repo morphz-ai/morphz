@@ -1,3 +1,4 @@
+import {eventHistoryInvalidatedByTopic} from '../src/app/invalidation.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
@@ -29,7 +30,7 @@ test('durable events invalidate shared projections by semantic scope', () => {
     'scheduler', 'thread',
   ])
   assert.deepEqual(invalidatedQueriesForTopic('runtime/delegation_result'), [
-    'catalog',
+    'delegations', 'catalog',
   ])
 })
 
@@ -42,4 +43,15 @@ test('scheduler invalidation refreshes the Session projection that carries appro
   assert.equal(invalidationsRequireSessionRefresh(['scheduler', 'thread']), true)
   assert.equal(invalidationsRequireSessionRefresh(['session']), true)
   assert.equal(invalidationsRequireSessionRefresh(['thread']), false)
+})
+
+
+test('visible Event history follows durable model facts, while observer-only snapshots stay silent',()=>{
+  for(const topic of ['runtime/model_usage','runtime/model_reasoning_summary','runtime/model_attempt_state','chat/reply']) assert.equal(eventHistoryInvalidatedByTopic(topic),true)
+  for(const topic of ['runtime/model_stream','runtime/model_attempt_snapshot','runtime/model_request_snapshot','runtime/terminal_changed']) assert.equal(eventHistoryInvalidatedByTopic(topic),false)
+})
+
+test('terminal output has no owner in Dashboard work or durable Event history',()=>{
+ assert.deepEqual(invalidatedQueriesForTopic('runtime/terminal_changed'),[])
+ assert.equal(eventHistoryInvalidatedByTopic('runtime/terminal_changed'),false)
 })

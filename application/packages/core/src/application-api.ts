@@ -86,6 +86,8 @@ export const runtimeNavigationRequestSchema = z
     conversationId: z.string().min(1).optional(),
     /** Explicit read-only refresh only; routine navigation polling omits it. */
     refreshActivity: z.boolean().optional(),
+    /** Explicit one-page demand; never a background navigation flag. */
+    loadMoreApprovals: z.boolean().optional(),
   })
   .strict()
   .refine(

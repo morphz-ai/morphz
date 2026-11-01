@@ -13,10 +13,13 @@ use crate::memory::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchedulerQuery {
     #[serde(default)]
     pub include_terminal: bool,
+    #[serde(default)]
+    pub history_only: bool,
+    pub history_cursor: Option<String>,
     #[serde(default = "default_scheduler_limit")]
     pub limit: usize,
 }
@@ -29,6 +32,8 @@ impl Default for SchedulerQuery {
     fn default() -> Self {
         Self {
             include_terminal: false,
+            history_only: false,
+            history_cursor: None,
             limit: default_scheduler_limit(),
         }
     }
@@ -92,6 +97,8 @@ pub struct SchedulerThreadSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadGroupSnapshot {
+    #[serde(default)]
+    pub members_loaded: bool,
     pub group: ThreadGroupRecord,
     pub members: Vec<ThreadGroupMemberRecord>,
     pub outcomes: Vec<ThreadOutcomeRecord>,
@@ -180,6 +187,9 @@ pub struct SchedulerDetailBounds {
     pub has_more_sessions: bool,
     pub has_more_objectives: bool,
     pub has_more_threads: bool,
+    #[serde(default)]
+    pub has_more_history: bool,
+    pub next_history_cursor: Option<String>,
     pub has_more_activations: bool,
     pub has_more_signals: bool,
     pub has_more_jobs: bool,

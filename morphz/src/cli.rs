@@ -36,6 +36,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "id",
     "title",
     "limit",
+    "cursor",
     "reason",
     "token-budget",
     "harness",
@@ -1527,6 +1528,8 @@ fn context_command(locale: Locale) -> Command {
                 locale,
                 Command::new("list")
                     .about(locale.text("List Cognitive Contexts", "列出认知上下文"))
+                    .arg(local_value_arg("cursor", "cursor", "CURSOR", locale.text("Continue the preceding page", "继续读取上一页")))
+                    .arg(local_value_arg("limit", "limit", "N", locale.text("Page size (1..200)", "每页条数（1..200）")))
                     .arg(local_switch_arg(
                         "include-archived",
                         "include-archived",
@@ -1878,6 +1881,8 @@ fn session_command(locale: Locale) -> Command {
                 locale,
                 Command::new("list")
                     .about(locale.text("List Sessions", "列出会话"))
+                    .arg(local_value_arg("cursor", "cursor", "CURSOR", locale.text("Continue the preceding page", "继续读取上一页")))
+                    .arg(local_value_arg("limit", "limit", "N", locale.text("Page size (1..200)", "每页条数（1..200）")))
                     .arg(local_switch_arg(
                         "include-archived",
                         "include-archived",

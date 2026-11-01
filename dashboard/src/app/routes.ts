@@ -18,6 +18,12 @@ export function observesExactModelRequests(
   return view === 'cognition' && cognitionView === 'encoding'
 }
 
+/** Message bodies are needed by the conversation and the explicitly opened
+ * exact-input inspector. Other pages consume bounded invalidation metadata. */
+export function sessionStreamNeedsBodies(view: DashboardView, cognitionView: CognitionView): boolean {
+  return view === 'dialogue' || observesExactModelRequests(view,cognitionView)
+}
+
 const cognitionViews = new Set<CognitionView>(['mind', 'attention', 'encoding', 'prompt', 'recall'])
 
 function decoded(value: string | undefined): string | undefined {

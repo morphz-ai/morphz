@@ -59,6 +59,7 @@ pub(crate) const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
 const COGNITIVE_STORE_SWITCH_LOCK: i64 = 0x4D4F_5250_485A_0002_i64;
 const THREAD_SIGNAL_NOTIFY_CHANNEL: &str = "morphz_thread_signal_change";
 const EDGE_COMMAND_NOTIFY_CHANNEL: &str = "morphz_edge_command_change";
+const EVENT_NOTIFY_CHANNEL: &str = "morphz_durable_event_change";
 
 mod action_group;
 mod activation;
@@ -87,6 +88,7 @@ pub struct PostgresStore {
     observability: Arc<Observability>,
     edge_command_notify: Arc<Notify>,
     thread_signal_notify: Arc<Notify>,
+    event_change_notify: Arc<tokio::sync::watch::Sender<u64>>,
     #[cfg(feature = "context-db")]
     context_db: Option<crate::context_db_postgres_runtime::PostgresContextDbRuntimeAdapter>,
 }
@@ -343,6 +345,7 @@ impl PostgresStore {
             observability,
             edge_command_notify: Arc::new(Notify::new()),
             thread_signal_notify: Arc::new(Notify::new()),
+            event_change_notify: Arc::new(tokio::sync::watch::channel(0).0),
             #[cfg(feature = "context-db")]
             context_db: None,
         };
@@ -747,10 +750,28 @@ impl PostgresStore {
                     Ok(())
                 })
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20261101_01_navigation_directory_index",
+                    crate::memory::directory::index::postgres(&store.pool),
+                )
+                .await?;
+            store.run_versioned_migration(
+                "20261101_03_session_priority_index",
+                crate::memory::directory::priority::postgres(&store.pool),
+            ).await?;
+            store.run_versioned_migration("20261101_04_schedule_directory_index",crate::memory::directory::schedule_index::postgres(&store.pool)).await?;
+            store.run_versioned_migration("20261101_05_approval_directory_index",crate::memory::directory::approval_index::postgres(&store.pool)).await?;
+            store.run_versioned_migration("20261101_06_binding_agent_index",crate::memory::directory::binding_agent::postgres(&store.pool)).await?;
             // Index creation is retried outside the versioned migration so a
             // deployment that failed to build it once recovers on a later
             // start without editing migration history.
             store.ensure_recall_search_acceleration().await?;
+            store.run_versioned_migration("20261101_02_event_change_notifications", async {
+                sqlx::query("CREATE OR REPLACE FUNCTION morphz_notify_durable_event_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_notify('morphz_durable_event_change', TG_TABLE_SCHEMA); RETURN NEW; END $$").execute(&store.pool).await?;
+                sqlx::query("DO $morphz_trigger$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='events'::regclass AND tgname='morphz_durable_event_change') THEN CREATE TRIGGER morphz_durable_event_change AFTER INSERT ON events FOR EACH ROW EXECUTE FUNCTION morphz_notify_durable_event_change(); END IF; END $morphz_trigger$").execute(&store.pool).await?;
+                Ok(())
+            }).await?;
             Ok::<(), StoreError>(())
         }
         .await;
@@ -1263,18 +1284,29 @@ impl PostgresStore {
         let mut listener = PgListener::connect(database_url).await?;
         listener.listen(THREAD_SIGNAL_NOTIFY_CHANNEL).await?;
         listener.listen(EDGE_COMMAND_NOTIFY_CHANNEL).await?;
+        listener.listen(EVENT_NOTIFY_CHANNEL).await?;
+        sqlx::query("SELECT set_config('application_name',$1,false)")
+            .bind(format!("morphz-store-{schema}"))
+            .execute(&mut listener)
+            .await?;
+        let event_change_notify = Arc::downgrade(&self.event_change_notify);
         let thread_signal_notify = Arc::downgrade(&self.thread_signal_notify);
         let edge_command_notify = Arc::downgrade(&self.edge_command_notify);
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    notification = listener.recv() => match notification {
-                        Ok(notification) => {
+                    notification = listener.try_recv() => match notification {
+                        Ok(Some(notification)) => {
                             // PostgreSQL channels are database-scoped. The
                             // payload keeps independent Morphz schemas from
                             // waking and querying each other's queues.
                             if notification.payload() != schema {
                                 continue;
+                            }
+                            if notification.channel() == EVENT_NOTIFY_CHANNEL {
+                                if let Some(notify) = event_change_notify.upgrade() {
+                                    super::event_changes::wake(&notify);
+                                }
                             }
                             let notify = match notification.channel() {
                                 THREAD_SIGNAL_NOTIFY_CHANNEL => thread_signal_notify.upgrade(),
@@ -1292,7 +1324,15 @@ impl PostgresStore {
                                 break;
                             }
                         }
+                        Ok(None) => {
+                            // try_recv exposes the reconnect gap; recv hides it.
+                            // LISTEN is active again before the recovery hint.
+                            if let Some(notify) = event_change_notify.upgrade() { super::event_changes::wake(&notify); }
+                            if let Some(notify) = thread_signal_notify.upgrade() { notify.notify_one(); }
+                            if let Some(notify) = edge_command_notify.upgrade() { notify.notify_one(); }
+                        }
                         Err(error) => {
+                            if let Some(notify) = event_change_notify.upgrade() { super::event_changes::wake(&notify); }
                             tracing::warn!(
                                 %error,
                                 event_code = "memory.postgres.scheduler_listener.receive_failed",
@@ -3714,7 +3754,7 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
         // aggregate therefore describes one real directory state without a
         // client-driven BEGIN + seven sequential protocol round trips.
         let directory_sql_prefix = r#"WITH
-               scoped_sessions AS MATERIALIZED (
+               scoped_sessions AS NOT MATERIALIZED (
                  SELECT s.*
                  FROM sessions s
                  WHERE s.context_id = $1
@@ -3734,10 +3774,10 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                    bool_or(context_sharing = 'isolated') FILTER (WHERE id = $2),
                    FALSE
                  ) AS current_is_isolated
-                 FROM scoped_sessions
+                 FROM scoped_sessions WHERE id = $2
                ),
-               classified_sessions AS MATERIALIZED (
-                 SELECT s.*,
+               classified_sessions AS NOT MATERIALIZED (
+                 SELECT s.id,s.status,s.context_sharing,s.last_activity_at,s.directory_priority,
                    CASE
                      WHEN s.id = $2 THEN NULL
                      WHEN policy.current_is_isolated OR s.context_sharing = 'isolated'
@@ -3750,19 +3790,23 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                  FROM scoped_sessions s
                  CROSS JOIN active_policy policy
                ),
-               full_session_ids AS MATERIALIZED (
-                 SELECT id
-                 FROM classified_sessions
-                 WHERE exclusion_reason IS NULL
-                 ORDER BY CASE WHEN id = $2 THEN 0 ELSE 1 END,
-                          last_activity_at DESC, id
-                 LIMIT $4
+               full_other_ids AS MATERIALIZED (
+                 SELECT id,last_activity_at FROM classified_sessions
+                 WHERE exclusion_reason IS NULL AND id <> $2
+                 ORDER BY last_activity_at DESC,id LIMIT $4
                ),
-               metadata_candidate_ids AS MATERIALIZED (
-                 SELECT s.id, s.last_activity_at
+               full_session_ids AS MATERIALIZED (
+                 SELECT id FROM (
+                   SELECT id,last_activity_at,0 AS selection_order FROM classified_sessions WHERE id=$2 AND exclusion_reason IS NULL
+                   UNION ALL
+                   SELECT id,last_activity_at,1 AS selection_order FROM full_other_ids
+                 ) full_page ORDER BY selection_order,last_activity_at DESC,id LIMIT $4
+               ),
+               metadata_candidate_ids AS NOT MATERIALIZED (
+                 SELECT s.id, s.last_activity_at,s.directory_priority
                  FROM classified_sessions s
                  CROSS JOIN active_policy policy
-                 WHERE NOT EXISTS (
+                 WHERE s.directory_priority < 4 AND NOT EXISTS (
                          SELECT 1 FROM full_session_ids selected_full
                          WHERE selected_full.id = s.id
                        )
@@ -3785,10 +3829,15 @@ impl ContextRuntimeSnapshotStore for PostgresStore {
                    )
                ),
                metadata_session_ids AS MATERIALIZED (
-                 SELECT id
-                 FROM metadata_candidate_ids
-                 ORDER BY last_activity_at DESC, id
-                 LIMIT $5
+                 SELECT id FROM (
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=0 ORDER BY last_activity_at DESC,id LIMIT $5) metadata_rank_0
+                 UNION ALL
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=1 ORDER BY last_activity_at DESC,id LIMIT $5) metadata_rank_1
+                 UNION ALL
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=2 ORDER BY last_activity_at DESC,id LIMIT $5) metadata_rank_2
+                 UNION ALL
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=3 ORDER BY last_activity_at DESC,id LIMIT $5) metadata_rank_3
+                 ) metadata_heads ORDER BY last_activity_at DESC,id LIMIT $5
                ),
                selected_session_ids AS MATERIALIZED (
                  SELECT id, 0::smallint AS projection_order FROM full_session_ids
@@ -5537,6 +5586,9 @@ fn requires_snapshot(event: &Event, revision: u64) -> bool {
 
 #[async_trait::async_trait]
 impl EventStore for PostgresStore {
+    fn subscribe_event_changes(&self) -> Result<tokio::sync::watch::Receiver<u64>, StoreError> {
+        Ok(self.event_change_notify.subscribe())
+    }
     async fn append(&self, event: Event) -> Result<(), StoreError> {
         self.append_batch(vec![EventAppend { event }]).await
     }
@@ -5559,6 +5611,34 @@ impl EventStore for PostgresStore {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    async fn event_session_points(
+        &self,
+        context_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if event_ids.len() > 500 {
+            return Err("Event candidate budget exceeded".into());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT DISTINCT COALESCE(session_id,payload->>'session_id') AS session_id FROM events WHERE COALESCE(context_id,payload->>'context_id')=",
+        );
+        query
+            .push_bind(context_id)
+            .push(" AND COALESCE(session_id,payload->>'session_id') IS NOT NULL AND id IN (");
+        {
+            let mut ids = query.separated(",");
+            for id in event_ids {
+                ids.push_bind(id);
+            }
+        }
+        query.push(") LIMIT 500");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|row| row.get("session_id")).collect())
     }
 
     async fn query(&self, filter: QueryFilter) -> Result<Vec<Event>, StoreError> {
@@ -6989,6 +7069,36 @@ async fn cancel_objective_wait_dependencies_in_tx(
 
 #[async_trait::async_trait]
 impl ObjectiveStore for PostgresStore {
+    async fn count_context_objectives_by_status(
+        &self,
+        context_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT status,COUNT(*) AS count FROM objectives WHERE context_id=",
+        );
+        query.push_bind(context_id).push(" GROUP BY status LIMIT 7");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        if rows.len() > 6
+            || rows.iter().any(|row| {
+                !matches!(
+                    row.get::<String, _>("status").as_str(),
+                    "active" | "paused" | "blocked" | "completed" | "cancelled" | "failed"
+                )
+            })
+        {
+            return Err("Objective status aggregate contains an invalid status".into());
+        }
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.get::<String, _>("status"),
+                    u64::try_from(row.get::<i64, _>("count"))?,
+                ))
+            })
+            .collect()
+    }
+
     async fn create_objective(
         &self,
         objective: NewObjective,
@@ -9713,5 +9823,432 @@ mod tests {
         let canonical = parse_time("2026-07-22T01:01:28.080050Z").unwrap();
 
         assert_eq!(legacy, canonical);
+    }
+    #[tokio::test]
+    #[ignore = "requires dedicated PostgreSQL test database"]
+    async fn runtime_directory_keyset_pages_postgres() {
+        use super::PostgresStore;
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL required");
+        let schema = format!(
+            "morphz_directory_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        let admin = sqlx::PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let sep = if url.contains('?') { '&' } else { '?' };
+        let scoped = format!("{url}{sep}options=-csearch_path%3D{schema}%2Cpublic");
+        let store = PostgresStore::new(&scoped, 4).await.unwrap();
+        {
+            use crate::memory::EventStore;
+            let mut changes = store.subscribe_event_changes().unwrap();
+            let peer = sqlx::PgPool::connect(&scoped).await.unwrap();
+            let mut transaction = peer.begin().await.unwrap();
+            sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('notification-commit','2026-11-01T00:00:00Z','fixture','test','test/change','{}')").execute(&mut *transaction).await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), changes.changed())
+                    .await
+                    .is_err(),
+                "an uncommitted write is not a change receipt"
+            );
+            transaction.commit().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(3), changes.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            changes.borrow_and_update();
+            let mut rollback = peer.begin().await.unwrap();
+            sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('notification-rollback','2026-11-01T00:00:00Z','fixture','test','test/change','{}')").execute(&mut *rollback).await.unwrap();
+            rollback.rollback().await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), changes.changed())
+                    .await
+                    .is_err(),
+                "rolled back Event must not wake a committed tail"
+            );
+            let pid: i32 =
+                sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE application_name=$1")
+                    .bind(format!("morphz-store-{schema}"))
+                    .fetch_one(&peer)
+                    .await
+                    .unwrap();
+            sqlx::query("SELECT pg_terminate_backend($1)")
+                .bind(pid)
+                .execute(&peer)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('notification-gap','2026-11-01T00:00:00Z','fixture','test','test/change','{}')").execute(&peer).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), changes.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            let recovered = store
+                .query(crate::memory::QueryFilter {
+                    event_id: Some("notification-gap".into()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                recovered.len(),
+                1,
+                "reconnect must wake a bounded durable gap read even if a notification was missed"
+            );
+            peer.close().await;
+        }
+
+        use crate::memory::{RuntimeDirectoryKind, RuntimeDirectoryQuery, SessionDirectoryStore};
+        store
+            .ensure_agent(crate::memory::NewAgent {
+                id: "dir-agent".into(),
+                title: "TEST directory".into(),
+                root_context_id: "dir-a".into(),
+            })
+            .await
+            .unwrap();
+        for id in ["dir-a", "dir-b"] {
+            store
+                .ensure_context(crate::memory::NewCognitiveContext {
+                    id: id.into(),
+                    agent_id: "dir-agent".into(),
+                    title: id.into(),
+                })
+                .await
+                .unwrap();
+        }
+        for id in ["dir-human-a", "dir-human-b"] {
+            store
+                .ensure_principal(crate::memory::NewPrincipal {
+                    id: id.into(),
+                    provider_id: "test".into(),
+                    assurance: "test".into(),
+                    display_name: None,
+                })
+                .await
+                .unwrap();
+        }
+        let mut expected = Vec::new();
+        for i in 0..105 {
+            let id = format!("s-{i:04}");
+            let context = if i % 3 == 0 { "dir-b" } else { "dir-a" };
+            let principal = if i % 2 == 0 {
+                "dir-human-a"
+            } else {
+                "dir-human-b"
+            };
+            store
+                .create_session_for_principal(
+                    crate::memory::NewSession {
+                        id: id.clone(),
+                        agent_id: "dir-agent".into(),
+                        context_id: context.into(),
+                        parent_session_id: None,
+                        title: id.clone(),
+                        mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                    },
+                    principal,
+                )
+                .await
+                .unwrap();
+            if i % 7 == 0 {
+                let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                    "UPDATE sessions SET status='archived' WHERE id=",
+                );
+                query
+                    .push_bind(&id)
+                    .build()
+                    .execute(&store.pool)
+                    .await
+                    .unwrap();
+            } else if principal == "dir-human-a" && context == "dir-a" {
+                expected.push(id);
+            }
+        }
+        sqlx::query("WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000) INSERT INTO sessions(id,agent_id,context_id,title,status,context_sharing,created_at,updated_at,last_activity_at,mount_kind) SELECT 'a-noise-'||n,'dir-agent','dir-a','noise','archived','shared','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z','existing_context' FROM counter").execute(&store.pool).await.unwrap();
+
+        sqlx::query("INSERT INTO session_principal_bindings(session_id,principal_id,bound_at) SELECT id,'dir-human-b','2026-11-01T00:00:00Z' FROM sessions WHERE id LIKE 'a-noise-%'").execute(&store.pool).await.unwrap();
+        sqlx::query(
+            "UPDATE sessions SET last_activity_at='2026-11-01T01:02:03.100Z' WHERE id LIKE 's-%'",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE cognitive_contexts SET updated_at='2026-11-01T01:02:03.100Z' WHERE id LIKE 'dir-%'").execute(&store.pool).await.unwrap();
+        let seed = "x".repeat(1024 * 1024);
+        let mut update = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "UPDATE cognitive_contexts SET seed_projection=",
+        );
+        update
+            .push_bind(&seed)
+            .push(" WHERE id='dir-a'")
+            .build()
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut request = RuntimeDirectoryQuery {
+            kind: RuntimeDirectoryKind::Sessions,
+            include_archived: false,
+            identity_order: false,
+            cursor: None,
+            limit: 7,
+            principal_id: Some("dir-human-a".into()),
+            context_id: Some("dir-a".into()),
+            agent_id: None,
+            ids: None,
+        };
+        let mut seen = Vec::new();
+        loop {
+            let page = store
+                .read_runtime_directory_page(request.clone())
+                .await
+                .unwrap();
+            assert!(page.sessions.len() <= 7);
+            assert!(page.sessions.iter().all(|row| row.context_id == "dir-a"
+                && row.status == crate::memory::SessionStatus::Active));
+            seen.extend(page.sessions.iter().map(|row| row.id.clone()));
+            if !page.has_more {
+                assert!(page.next_cursor.is_none());
+                break;
+            }
+            let cursor = page.next_cursor.unwrap();
+            assert!(request
+                .cursor
+                .as_ref()
+                .is_none_or(|previous| previous != &cursor));
+            request.cursor = Some(cursor);
+        }
+        assert_eq!(seen,expected,"complete authorized continuation, no duplicates, archived/foreign rows never consume the page");
+        let first = store
+            .read_runtime_directory_page(RuntimeDirectoryQuery {
+                kind: RuntimeDirectoryKind::Contexts,
+                include_archived: true,
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.contexts.len(), 1);
+        assert!(first.has_more);
+        assert!(
+            first.contexts[0].seed_projection.is_none(),
+            "directory does not transfer large seed bodies"
+        );
+        let second = store
+            .read_runtime_directory_page(RuntimeDirectoryQuery {
+                kind: RuntimeDirectoryKind::Contexts,
+                include_archived: true,
+                limit: 1,
+                cursor: first.next_cursor,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.contexts[0].id, "dir-b");
+        assert!(!second.has_more);
+        assert_eq!(
+            store
+                .get_context("dir-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .seed_projection
+                .as_deref(),
+            Some(seed.as_str()),
+            "full exact object retained"
+        );
+        let forbidden = RuntimeDirectoryQuery {
+            kind: RuntimeDirectoryKind::Contexts,
+            principal_id: Some("dir-human-a".into()),
+            limit: 5,
+            ..Default::default()
+        };
+        assert!(store.read_runtime_directory_page(forbidden).await.is_err());
+        request.cursor = Some(String::new());
+        assert!(store
+            .read_runtime_directory_page(request.clone())
+            .await
+            .is_err());
+        request.cursor = Some(
+            crate::memory::directory::DirectoryCursor {
+                sort_at: "1900-01-01T00:00:00Z".into(),
+                id: "zzzz".into(),
+            }
+            .encode(),
+        );
+        let empty = store
+            .read_runtime_directory_page(request.clone())
+            .await
+            .unwrap();
+        assert!(empty.sessions.is_empty() && !empty.has_more);
+        request.cursor = Some(
+            crate::memory::directory::DirectoryCursor {
+                sort_at: "2026-11-01T01:02:03.100Z".into(),
+                id: "s-0020".into(),
+            }
+            .encode(),
+        );
+
+        sqlx::query("ANALYZE sessions")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("ANALYZE session_principal_bindings")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        use sqlx::Execute;
+        let mut query =
+            crate::memory::directory::directory_query!(sqlx::Postgres, &request, true).unwrap();
+        let plan_sql = format!("EXPLAIN (FORMAT JSON) {}", query.sql());
+        let args = query.build().take_arguments().unwrap().unwrap();
+        let plan: serde_json::Value = sqlx::query_scalar_with(&plan_sql, args)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let plan = plan.to_string();
+        assert!(!plan.contains("Seq Scan"), "{plan}");
+
+        crate::memory::directory::tests::lifecycle!(&store);
+        crate::memory::directory::tests::related_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::approval_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::scoped_pending_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::session_priority!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::inspection_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::schedule_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::identity_recovery!(sqlx::Postgres, &store, true);
+        crate::memory::directory::tests::transfer_recovery!(sqlx::Postgres, &store, true);
+        for (name, mut query) in crate::memory::directory::tests::plan_cases!(sqlx::Postgres) {
+            use sqlx::{Execute, Row};
+            let mut built = query.build();
+            let args = built.take_arguments().unwrap().unwrap();
+            let row = sqlx::query_with(
+                &format!("EXPLAIN(ANALYZE,FORMAT JSON) {}", built.sql()),
+                args,
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            let plan: serde_json::Value = row.get(0);
+            fn check(node: &serde_json::Value, name: &str) {
+                if node["Node Type"] == "Sort" {
+                    let inputs = node["Plans"][0]["Actual Rows"].as_u64().unwrap();
+                    assert!(inputs <= 16, "{name} sorted an unbounded input: {node}");
+                }
+                if matches!(
+                    node["Relation Name"].as_str(),
+                    Some("approval_requests" | "schedules" | "threads" | "sessions")
+                ) {
+                    assert_ne!(node["Node Type"], "Seq Scan", "{name}: {node}");
+                }
+                if let Some(children) = node["Plans"].as_array() {
+                    for child in children {
+                        check(child, name);
+                    }
+                }
+            }
+            check(&plan[0]["Plan"], name);
+            assert!(
+                plan[0]["Plan"]["Actual Rows"].as_u64().unwrap() <= 8,
+                "{name}: {plan}"
+            );
+        }
+        {
+            use sqlx::{Execute, Row};
+            let key = crate::memory::directory::DirectoryCursor {
+                sort_at: "2026-11-01T01:02:03.100Z".into(),
+                id: "approval-zz".into(),
+            }
+            .encode();
+            let mut query = crate::memory::approval_page::pending_query!(
+                sqlx::Postgres,
+                Some(key.as_str()),
+                7usize
+            )
+            .unwrap();
+            let mut built = query.build();
+            let arguments = built.take_arguments().unwrap().unwrap();
+            sqlx::query("ANALYZE approval_requests")
+                .execute(&store.pool)
+                .await
+                .unwrap();
+            let explain = format!("EXPLAIN (ANALYZE, FORMAT JSON) {}", built.sql());
+            let row = sqlx::query_with(&explain, arguments)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+            let plan = row.get::<serde_json::Value, _>(0).to_string();
+            fn bounded_rows(node: &serde_json::Value) -> Option<u64> {
+                match node["Node Type"].as_str()? {
+                    "Limit" => node["Plan Rows"].as_u64(),
+                    "Sort" | "Subquery Scan" => bounded_rows(&node["Plans"][0]),
+                    "Append" | "Merge Append" => node["Plans"]
+                        .as_array()?
+                        .iter()
+                        .try_fold(0u64, |sum, child| Some(sum + bounded_rows(child)?)),
+                    _ => None,
+                }
+            }
+            fn check_sorts(node: &serde_json::Value) {
+                if node["Node Type"] == "Sort" {
+                    assert!(bounded_rows(&node["Plans"][0]).is_some_and(|rows|rows<=16),"a pending sort may merge only the two independently limited branches: {node}");
+                }
+                if let Some(children) = node["Plans"].as_array() {
+                    for child in children {
+                        check_sorts(child);
+                    }
+                }
+            }
+            let parsed: serde_json::Value = serde_json::from_str(&plan).unwrap();
+            check_sorts(&parsed[0]["Plan"]);
+            // PostgreSQL may select the pre-existing full index instead of
+            // its pending-only equivalent. Check the physical seek and the
+            // executed row budget, not one particular index name.
+            fn check_seeks(node: &serde_json::Value) -> usize {
+                assert_ne!(node["Node Type"], "Seq Scan", "{node}");
+                let mut found = 0;
+                if node["Relation Name"] == "approval_requests" {
+                    assert_eq!(node["Node Type"], "Index Scan", "{node}");
+                    assert_eq!(node["Scan Direction"], "Forward", "{node}");
+                    let condition = node["Index Cond"].as_str().unwrap();
+                    assert!(
+                        condition.contains("status =")
+                            && condition.contains("ROW(created_at, id) >"),
+                        "{node}"
+                    );
+                    assert!(node["Actual Rows"].as_u64().unwrap() <= 8, "{node}");
+                    assert_eq!(
+                        node["Rows Removed by Filter"].as_u64().unwrap_or(0),
+                        0,
+                        "{node}"
+                    );
+                    found += 1;
+                }
+                if let Some(children) = node["Plans"].as_array() {
+                    for child in children {
+                        found += check_seeks(child);
+                    }
+                }
+                found
+            }
+            assert_eq!(
+                check_seeks(&parsed[0]["Plan"]),
+                2,
+                "both pending statuses must seek independently"
+            );
+        }
+
+        store.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
     }
 }

@@ -9,7 +9,7 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import type { DashboardApiClient } from '../api/client'
@@ -61,6 +61,8 @@ interface SecretCatalogResponse {
 }
 
 interface SecretScopeOptions {
+  has_more: boolean
+  next_cursor: string | null
   contexts: Array<{ id: string; title: string; status: string }>
   sessions: Array<{ id: string; context_id: string; title: string; status: string }>
   objectives: Array<{ id: string; context_id: string; stated_objective: string; status: string }>
@@ -69,6 +71,8 @@ interface SecretScopeOptions {
 
 interface CredentialsPageProps {
   api: DashboardApiClient
+  contextId: string
+  principalId: string
 }
 
 const EMPTY_CATALOG: SecretCatalogResponse = {
@@ -80,13 +84,14 @@ const EMPTY_CATALOG: SecretCatalogResponse = {
 }
 
 const EMPTY_SCOPES: SecretScopeOptions = {
+  has_more: false, next_cursor: null,
   contexts: [],
   sessions: [],
   objectives: [],
   execution_targets: [],
 }
 
-export function CredentialsPage({ api }: CredentialsPageProps) {
+export function CredentialsPage({ api, contextId, principalId }: CredentialsPageProps) {
   const { t } = useTranslation()
   const [catalog, setCatalog] = useState<SecretCatalogResponse>(EMPTY_CATALOG)
   const [scopeOptions, setScopeOptions] = useState<SecretScopeOptions>(EMPTY_SCOPES)
@@ -99,16 +104,14 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [scopeBusy, setScopeBusy] = useState(false)
+  const scopeSequence = useRef(0)
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [nextCatalog, nextScopes] = await Promise.all([
-        api.get<SecretCatalogResponse>('/api/runtime/secrets'),
-        api.get<SecretScopeOptions>('/api/runtime/secrets/scope-options'),
-      ])
+      const nextCatalog = await api.get<SecretCatalogResponse>('/api/runtime/secrets')
       setCatalog(nextCatalog)
-      setScopeOptions(nextScopes)
       setBackend(current => (
         nextCatalog.backends.some(item => item.id === current)
           ? current
@@ -128,6 +131,32 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
     }, 0)
     return () => window.clearTimeout(timer)
   }, [refresh])
+
+  const loadScopePage = useCallback(async (cursor = '') => {
+    if (scopeKind === 'runtime') return
+    const sequence = ++scopeSequence.current
+    const params = new URLSearchParams({scope_kind: scopeKind, limit: '50', principal_id: principalId})
+    if (scopeKind === 'session' || scopeKind === 'objective') params.set('context_id', contextId)
+    if (cursor) params.set('cursor', cursor)
+    setScopeBusy(true)
+    try {
+      const page = await api.get<SecretScopeOptions>(`/api/runtime/secrets/scope-options?${params}`)
+      if (sequence !== scopeSequence.current) return
+      if (page.has_more && (!page.next_cursor || page.next_cursor === cursor)) throw new Error('Scope continuation did not advance')
+      const merge = <T extends {id: string}>(before: T[], rows: T[]) => [...new Map([...before, ...rows].map(row => [row.id, row])).values()]
+      setScopeOptions(before => !cursor ? page : {...page,
+        contexts: merge(before.contexts, page.contexts), sessions: merge(before.sessions, page.sessions),
+        objectives: merge(before.objectives, page.objectives), execution_targets: merge(before.execution_targets, page.execution_targets)})
+    } catch (reason) {
+      if (sequence === scopeSequence.current) setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {if (sequence === scopeSequence.current) setScopeBusy(false)}
+  }, [api, contextId, principalId, scopeKind])
+
+  const invalidateScopeReads = useCallback(() => {scopeSequence.current++}, [])
+  useEffect(() => {
+    const timer = window.setTimeout(() => {setScopeOptions(EMPTY_SCOPES); void loadScopePage()}, 0)
+    return () => {window.clearTimeout(timer); invalidateScopeReads()}
+  }, [loadScopePage, invalidateScopeReads])
 
   const availableImportCandidates = useMemo(
     () => catalog.import_candidates.filter(candidate => !backend || candidate.value_backend === backend),
@@ -167,7 +196,7 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
         setScopeId('')
         return
       }
-      if (!selectedScopeOptions.some(item => item.id === scopeId)) {
+      if (!scopeId) {
         setScopeId(selectedScopeOptions[0]?.id ?? '')
       }
     }, 0)
@@ -340,7 +369,7 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
           )}
           <label>
             <span>{t('credentials.scope')}</span>
-            <select value={scopeKind} onChange={event => setScopeKind(event.target.value as SecretScopeKind)}>
+            <select value={scopeKind} onChange={event => {setScopeId(''); setScopeKind(event.target.value as SecretScopeKind)}}>
               {(['runtime', 'context', 'session', 'objective', 'execution_target'] as SecretScopeKind[]).map(scope => (
                 <option key={scope} value={scope}>{t(`runtime.secretScopes.${scope}`)}</option>
               ))}
@@ -350,8 +379,10 @@ export function CredentialsPage({ api }: CredentialsPageProps) {
             <label className="credential-scope-entity">
               <span>{t('credentials.scopeEntity')}</span>
               <select title={selectedScopeOptions.find(item => item.id === scopeId)?.label} value={scopeId} onChange={event => setScopeId(event.target.value)}>
+                {scopeId && !selectedScopeOptions.some(item => item.id === scopeId) && <option value={scopeId}>{scopeId}</option>}
                 {selectedScopeOptions.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
               </select>
+              {scopeOptions.has_more && <button className="history-more" type="button" disabled={scopeBusy} onClick={() => void loadScopePage(scopeOptions.next_cursor ?? '')}>{t('header.loadMorePrincipals')}</button>}
               {scopeId && <code title={scopeId}>{scopeId}</code>}
             </label>
           )}

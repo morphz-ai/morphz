@@ -294,16 +294,23 @@ impl ToolExecutionResult {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 enum PrincipalArgs {
-    VerifyIdentity { claimed_principal_id: String },
-    ListSessions,
-    VerifySession { session_id: String },
+    VerifyIdentity {
+        claimed_principal_id: String,
+    },
+    ListSessions {
+        cursor: Option<String>,
+        limit: Option<usize>,
+    },
+    VerifySession {
+        session_id: String,
+    },
 }
 
 impl PrincipalArgs {
     fn action(&self) -> &'static str {
         match self {
             Self::VerifyIdentity { .. } => "verify_identity",
-            Self::ListSessions => "list_sessions",
+            Self::ListSessions { .. } => "list_sessions",
             Self::VerifySession { .. } => "verify_session",
         }
     }
@@ -368,6 +375,8 @@ impl Tool for PrincipalTool {
                         "minLength": 1,
                         "description": "Required only for verify_identity. Stable Principal ID to verify, not a display name or Session ID"
                     },
+                    "cursor": {"type":"string","maxLength":2048,"description":"list_sessions only: next_cursor from the preceding page"},
+                    "limit": {"type":"integer","minimum":1,"maximum":200,"description":"list_sessions only: page size, default 50"},
                     "session_id": {
                         "type": "string",
                         "minLength": 1,
@@ -416,21 +425,24 @@ impl Tool for PrincipalTool {
                     "authority": "runtime"
                 })
             }
-            PrincipalArgs::ListSessions => {
-                let session_ids = self
+            PrincipalArgs::ListSessions { cursor, limit } => {
+                let page = self
                     .sessions
-                    .list_principal_sessions(&active_principal_id, false)
-                    .await?
-                    .into_iter()
-                    .filter(|candidate| candidate.agent_id == active_session.agent_id)
-                    .map(|candidate| candidate.id)
-                    .collect::<Vec<_>>();
+                    .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                        kind: crate::memory::RuntimeDirectoryKind::Sessions,
+                        principal_id: Some(active_principal_id.clone()),
+                        agent_id: Some(active_session.agent_id.clone()),
+                        cursor,
+                        limit: limit.unwrap_or(50),
+                        ..Default::default()
+                    })
+                    .await?;
                 serde_json::json!({
-                    "action": "list_sessions",
-                    "principal_id": active_principal_id,
-                    "agent_id": active_session.agent_id,
-                    "session_ids": session_ids,
-                    "authority": "runtime"
+                    "action":"list_sessions","principal_id":active_principal_id,
+                    "agent_id":active_session.agent_id,
+                    "session_ids":page.sessions.into_iter().map(|session|session.id).collect::<Vec<_>>(),
+                    "has_more":page.has_more,"next_cursor":page.next_cursor,
+                    "authority":"runtime"
                 })
             }
             PrincipalArgs::VerifySession {

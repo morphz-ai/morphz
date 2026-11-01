@@ -171,14 +171,14 @@ async function hostFixture() {
     held: () => held,
     async settled() {
       await until(
-        () => peer.opens.length >= ids.length,
+        () => peer.opens.length === 1,
         "shared Runtime subscriptions missing",
       );
-      await until(
-        () =>
-          peer.requests.filter((request) => request.path.includes("/events?"))
-            .length >= ids.length,
-        "initial Runtime catchup incomplete",
+      assert.equal(
+        peer.requests.filter((request) => request.path.includes("/events?"))
+          .length,
+        0,
+        "an observer does not own a historical Session catchup",
       );
       await pause(100);
     },
@@ -193,7 +193,7 @@ async function hostFixture() {
   };
 }
 
-test("Runtime Bridge shares one real WS per confirmed platform Session across Host listeners; committed job/approval/schedule events invalidate without chat history", async () => {
+test("Runtime Bridge shares one metadata WS across Host listeners and all registered Sessions; committed job/approval/schedule events invalidate without chat history", async () => {
   const x = await hostFixture();
   const framesA: WorkspaceChange[] = [],
     framesB: WorkspaceChange[] = [];
@@ -213,14 +213,14 @@ test("Runtime Bridge shares one real WS per confirmed platform Session across Ho
     await x.settled();
     assert.equal(
       x.peer.opens.length,
-      5,
+      1,
       "two Host listeners must not duplicate Runtime sockets",
     );
     assert.deepEqual(
-      x.peer.opens.map((open) => open.sessionId).sort(),
-      x.ids.toSorted(),
+      x.peer.opens.map((open) => open.sessionId),
+      ["*"],
     );
-    assert.equal(x.peer.active(), 5);
+    assert.equal(x.peer.active(), 1);
     assert.equal(
       x.peer.opens.some(
         (open) => open.sessionId === "historical-unbound-session",
@@ -229,6 +229,17 @@ test("Runtime Bridge shares one real WS per confirmed platform Session across Ho
     );
     assert.ok(framesA[0]?.reason === "resync");
     assert.ok(framesB[0]?.reason === "resync");
+    const beforeUnregistered = framesA.length,
+      beforeProof = x.reads();
+    x.peer.append("historical-unbound-session", "runtime/approval_requested");
+    await pause(80);
+    assert.equal(framesA.length, beforeUnregistered);
+    assert.equal(
+      x.reads(),
+      beforeProof,
+      "unregistered Session hints own no authorization/database read",
+    );
+
     const navigationBefore = x.runtime.platformNavigationSnapshot(localAccess, [
       "visible",
     ]);
@@ -301,7 +312,7 @@ test("Runtime Bridge shares one real WS per confirmed platform Session across Ho
     await pause(40);
     assert.equal(
       x.peer.active(),
-      5,
+      1,
       "one listener remains => retain shared subscriptions",
     );
     const a = framesA.length,
@@ -316,7 +327,7 @@ test("Runtime Bridge shares one real WS per confirmed platform Session across Ho
       a,
       "disposed Host listener publishes no frame",
     );
-    assert.equal(x.peer.opens.length, 5);
+    assert.equal(x.peer.opens.length, 1);
 
     disposeB();
     assert.equal(closeB, 1);
@@ -334,17 +345,16 @@ test("Runtime Bridge shares one real WS per confirmed platform Session across Ho
     const reopened: WorkspaceChange[] = [];
     disposeAgain = await observe(reopened, () => {});
     await until(
-      () => x.peer.opens.length === 10,
-      "new Host listener did not establish exactly one replacement per Session",
+      () => x.peer.opens.length === 2,
+      "new Host listener did not establish exactly one replacement metadata stream",
     );
     await until(
       () => reopened.length > 0,
       "new listener lacks initial authoritative resync",
     );
-    assert.equal(x.peer.active(), 5);
+    assert.equal(x.peer.active(), 1);
     assert.equal(
-      x.peer.opens.filter((open) => open.sessionId === "task-isolated-session")
-        .length,
+      x.peer.opens.filter((open) => open.sessionId === "*").length,
       2,
     );
   } finally {
@@ -514,7 +524,7 @@ test("Local connection identity invalidation closes shared Runtime resources and
       /身份已切换/,
       "old identity generation cannot open another subscription",
     );
-    assert.equal(x.peer.opens.length, 5);
+    assert.equal(x.peer.opens.length, 1);
   } finally {
     gate.resolve();
     connection.close();

@@ -241,9 +241,12 @@ test("a blocked first page cannot starve later persisted task requests", async (
     );
     await dispatcher.drain();
     assert.equal(failures.length, 50);
-    assert.deepEqual(delivered, []);
+    // A full queue page now owns the next bounded worker round; the last
+    // request progresses without waiting for an unrelated timer or UI read.
+    assert.deepEqual(delivered, [tail.eventId]);
     await dispatcher.drain();
     assert.deepEqual(delivered, [tail.eventId]);
+    assert.equal(failures.length, 50, "failed head requests remain in backoff");
     assert.equal((await platform.pendingTaskRuns(tenantId, 100)).length, 50);
     assert.equal(
       (await platform.listTaskRunLinks(human, tail.taskId)).length,
@@ -392,5 +395,115 @@ test("Desktop Host retries the same persisted Runtime Schedule after a lost ackn
     workspace.close();
     await new Promise<void>((resolve) => runtimeServer.close(() => resolve()));
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("committed queue hints retain a busy wake and healthy idle performs no periodic reads", async () => {
+  const platform = await PlatformStore.sqlite(":memory:", verifier);
+  let dispatcher: PlatformTaskRunDispatcher | undefined;
+  try {
+    await platform.provisionTenant(tenantId);
+    await platform.createProject(human, {
+      commandId: "idle-project",
+      projectId: "project-one",
+      title: "工作",
+    });
+    const read = platform.pendingTaskRuns.bind(platform);
+    let reads = 0,
+      hold = false,
+      entered!: () => void,
+      release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    platform.pendingTaskRuns = async (...args) => {
+      reads++;
+      const snapshot = await read(...args);
+      if (hold) {
+        hold = false;
+        entered();
+        await gate;
+      }
+      return snapshot;
+    };
+    const delivered: string[] = [],
+      errors: unknown[] = [];
+    dispatcher = new PlatformTaskRunDispatcher(
+      platform,
+      tenantId,
+      {
+        async deliverTaskRun(admission) {
+          delivered.push(admission.eventId);
+          return {
+            schedule: {
+              id: admission.request.id,
+              thread_id: "idle-thread",
+              revision: 1,
+              status: "queued",
+              not_before: admission.request.not_before,
+              interval_seconds: null,
+            },
+            thread: {
+              thread_id: "idle-thread",
+              session_id: admission.sessionId,
+              root_turn_id: `client-schedule-${admission.request.id}`,
+              lifecycle: "open",
+            },
+          };
+        },
+        async stopPlatformTaskRun() {
+          throw Error("no stop was requested");
+        },
+        async controlPlatformTaskRunSchedule() {
+          throw Error("no control was requested");
+        },
+      },
+      async () => ({ principalId: "alice", actantId: "alice" }),
+      (a) =>
+        platform.prepareTaskRun(human, a.eventId, async () => {
+          throw Error("no dependency was requested");
+        }),
+      (error) => errors.push(error),
+    );
+    dispatcher.start();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await dispatcher.whenIdle();
+    const baseline = reads;
+    await new Promise((resolve) => setTimeout(resolve, 1750));
+    assert.equal(
+      reads,
+      baseline,
+      "healthy queues must not wake on the former 1500 ms interval",
+    );
+    hold = true;
+    const admission = createAdmission(platform, "busy-wake");
+    await started;
+    await admission; // the second commit arrives after the held read snapshot
+    release();
+    await dispatcher.whenIdle();
+    assert.equal(delivered.length, 1);
+    assert.deepEqual(await platform.pendingTaskRuns(tenantId), []);
+    assert.deepEqual(errors, []);
+    await dispatcher.stop();
+    const stopped = reads;
+    await platform.createTask(human, {
+      commandId: "after-stop",
+      taskId: "after-stop",
+      projectId: "project-one",
+      title: "不会调度",
+      assigneeId: "agent-one",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      reads,
+      stopped,
+      "closed dispatcher must release its subscriptions",
+    );
+  } finally {
+    await dispatcher?.stop();
+    await platform.close();
   }
 });

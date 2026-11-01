@@ -1584,6 +1584,7 @@ async fn enabled_uses_native_work_original_handshake_and_durable_annotations() {
             morphz::runtime::SchedulerQuery {
                 include_terminal: true,
                 limit: 200,
+                ..Default::default()
             },
         )
         .await

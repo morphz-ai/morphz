@@ -178,7 +178,11 @@ import type { IdentityCenter } from "./identity.js";
 import type { MessageAttachmentService } from "./message-attachment-service.js";
 import { providerRecoveryFromEvent } from "../../core/src/provider-recovery.js";
 import { ConversationFeed } from "./conversation-feed.js";
-import { RuntimeChangeObserver } from "./runtime-change-observer.js";
+import { runtimeHintReadPlan } from "./runtime-hint-read-plan.js";
+import {
+  type RuntimeChangeHint,
+  SharedRuntimeChangeObserver,
+} from "./shared-runtime-change-observer.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { inspectRuntimeConnection } from "./runtime-connection.js";
 import { RuntimeModelSettings } from "./model-settings.js";
@@ -2682,6 +2686,11 @@ export class RuntimeBridge {
   private dirtyDeliveries = new Map<string, StoredDelivery>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
   private attention: ExecutionAttention = { available: false, approvals: [] };
+  private attentionNextCursor: string | null = null;
+  private attentionPageScope = "";
+  private attentionRefresh: Promise<void> | null = null;
+  private attentionHeadRequested = false;
+  private attentionPageRequested = false;
   // Disposable provenance only. Runtime roots remain authoritative; current
   // Platform grants are checked when exposing a view, never cached here.
   private activitySources = new Map<string, PlatformInputSource>();
@@ -2692,6 +2701,10 @@ export class RuntimeBridge {
     { active?: unknown; history?: unknown }
   >();
   private activityHistoryDirty = new Map<string, number>();
+  private activityHistoryVersion = 0;
+  private activityHintSessions = new Set<string>();
+  private attentionHintPending = true;
+  private delegatedHistoryCache = new Map<string, unknown>();
   private lastReadFailure?: ConnectionReadFailure;
   private activityRootRoutes = new Map<
     string,
@@ -2707,7 +2720,10 @@ export class RuntimeBridge {
   private busy = false;
   private workspaceChangeListeners = new Set<() => void>();
   private workspaceChangeFingerprint = "";
-  private executionObserver?: RuntimeChangeObserver;
+  private executionObserver?: SharedRuntimeChangeObserver;
+  private terminalChangeListeners = new Set<
+    (hint?: RuntimeChangeHint) => void
+  >();
   private executionObserverSessions = "";
   private executionChangeVersions = new Map<string, number>();
   private started = false;
@@ -2729,7 +2745,11 @@ export class RuntimeBridge {
     this.ensureExecutionObserver();
     return () => {
       this.workspaceChangeListeners.delete(listener);
-      if (!this.workspaceChangeListeners.size && !this.started) {
+      if (
+        !this.workspaceChangeListeners.size &&
+        !this.started &&
+        !this.terminalChangeListeners.size
+      ) {
         this.executionObserver?.close();
         this.executionObserver = undefined;
         this.executionObserverSessions = "";
@@ -2741,12 +2761,12 @@ export class RuntimeBridge {
       const access = this.teamIdentity
         ? { principalId: "morphz-service", actantId: "morphz-agent" }
         : localAccess;
-      this.executionObserver = new RuntimeChangeObserver({
+      this.executionObserver = new SharedRuntimeChangeObserver({
         url: this.config.url,
         sessions: () =>
           this.activeSessions().map((session) => ({
             id: session.id,
-            cursor: session.cursor,
+            contextId: this.contextId(session.projectId),
           })),
         headers: () => ({
           Authorization: "Bearer " + this.config.token,
@@ -2754,15 +2774,22 @@ export class RuntimeBridge {
             ? { "X-Morphz-Principal": this.principalId(access.principalId) }
             : {}),
         }),
-        request: (path) =>
-          this.request(path, "GET", undefined, access, undefined),
-        startAtHead: true,
-        changed: (sessionId) => {
-          this.executionChangeVersions.set(
-            sessionId,
-            (this.executionChangeVersions.get(sessionId) ?? 0) + 1,
-          );
-          this.changedSessions.add(sessionId);
+        changed: (sessionIds, topic, hint) => {
+          if (topic === "runtime/terminal_changed" || topic === undefined) {
+            for (const listener of this.terminalChangeListeners) listener(hint);
+            if (topic === "runtime/terminal_changed") return;
+          }
+          const plan = runtimeHintReadPlan(topic);
+          if (plan.history) this.activityHistoryVersion++;
+          if (plan.attention) this.attentionHintPending = true;
+          for (const sessionId of sessionIds) {
+            this.executionChangeVersions.set(
+              sessionId,
+              (this.executionChangeVersions.get(sessionId) ?? 0) + 1,
+            );
+            this.changedSessions.add(sessionId);
+            if (plan.activity) this.activityHintSessions.add(sessionId);
+          }
           this.scheduleChangedSessions();
           this.publishWorkspaceChange();
         },
@@ -3074,6 +3101,80 @@ export class RuntimeBridge {
       }
     };
     return {
+      observe: async (
+        terminalId: string | null,
+        wake: (catalog: boolean, screen: boolean, resync: boolean) => void,
+      ) => {
+        await verify();
+        const selected = terminalId
+          ? ((await metadata(terminalId)) ??
+            (
+              await (
+                await this.platformExecutionControls(scope, access)
+              ).terminal(terminalId, 0)
+            ).terminal)
+          : null;
+        await verify();
+        const listener = (hint?: RuntimeChangeHint) => {
+          if (!hint || hint.kind === "resync") {
+            wake(true, !!terminalId, true);
+            return;
+          }
+          const sameSelected =
+            !!selected &&
+            hint.terminal_id === selected.id &&
+            hint.session_id === selected.session_id &&
+            hint.context_id === selected.context_id &&
+            hint.principal_id === selected.principal_id;
+          // Human resources have a canonical Host scope. Agent resources use
+          // the immutable accepted input association, never a model label.
+          const humanScope =
+            hint.session_id === sessionId &&
+            hint.context_id === contextId &&
+            hint.scope_ref === scopeRef &&
+            hint.principal_id === this.principalId(access.principalId);
+          const sourceScope =
+            !!hint.root_turn_id &&
+            this.state.deliveries.some(
+              (delivery) =>
+                delivery.rootId === hint.root_turn_id &&
+                delivery.sessionId === hint.session_id &&
+                delivery.platformSource?.projectId === conversation.projectId &&
+                delivery.platformSource?.conversationId ===
+                  conversation.conversationId &&
+                (!!this.teamIdentity ||
+                  delivery.platformSource.author.principalId ===
+                    access.principalId),
+            );
+          const catalog =
+            hint.kind !== "output" &&
+            (humanScope || sourceScope || sameSelected);
+          if (catalog || sameSelected) wake(catalog, sameSelected, false);
+        };
+        this.terminalChangeListeners.add(listener);
+        this.ensureExecutionObserver();
+        await this.executionObserver?.sync();
+        // Subscribe first, then close the initial gap through the reader's
+        // bounded authorized catalog/screen operations.
+        try {
+          wake(true, !!terminalId, true);
+        } catch (error) {
+          this.terminalChangeListeners.delete(listener);
+          throw error;
+        }
+        return () => {
+          this.terminalChangeListeners.delete(listener);
+          if (
+            !this.started &&
+            !this.terminalChangeListeners.size &&
+            !this.workspaceChangeListeners.size
+          ) {
+            this.executionObserver?.close();
+            this.executionObserver = undefined;
+            this.executionObserverSessions = "";
+          }
+        };
+      },
       open: async (commandId: string) => {
         await verify();
         this.objectSession(
@@ -3774,6 +3875,7 @@ export class RuntimeBridge {
           "委派停止回执不匹配，请核对最新状态。",
         );
       await verify(false);
+      this.activityControlVersion++;
       return { accepted: true, status: record.status };
     } catch (error) {
       if (error instanceof UpstreamError)
@@ -3783,8 +3885,7 @@ export class RuntimeBridge {
         );
       throw error;
     } finally {
-      await this.refreshActivity();
-      this.publishWorkspaceChange();
+      this.refreshActivityAfterControl();
     }
   }
 
@@ -4072,7 +4173,7 @@ export class RuntimeBridge {
       return value;
     };
     try {
-      return await new RuntimeScheduleControls(request, {
+      const result = await new RuntimeScheduleControls(request, {
         sessionId: row.sessionId,
         contextId: row.contextId,
         threadId: row.threadId,
@@ -4083,6 +4184,25 @@ export class RuntimeBridge {
           : (this.state.sessions[row.sessionId]?.runtimePrincipalId ??
             access.principalId),
       }).control(control);
+      this.activityControlVersion++;
+      if (this.state.activity?.available)
+        this.state.activity.schedules = this.state.activity.schedules?.map(
+          (schedule) =>
+            schedule.scheduleId === result.scheduleId
+              ? {
+                  ...schedule,
+                  revision: result.revision,
+                  status: result.status,
+                  ...(control.action === "reschedule"
+                    ? {
+                        notBefore: control.notBefore,
+                        intervalSeconds: control.intervalSeconds,
+                      }
+                    : {}),
+                }
+              : schedule,
+        );
+      return result;
     } catch (error) {
       if (error instanceof UpstreamError)
         throw new DomainError(
@@ -4093,8 +4213,7 @@ export class RuntimeBridge {
         );
       throw error;
     } finally {
-      await this.refreshActivity();
-      this.publishWorkspaceChange();
+      this.refreshActivityAfterControl();
     }
   }
 
@@ -4299,13 +4418,11 @@ export class RuntimeBridge {
               `/api/execution-jobs/${encodeURIComponent(target.jobId)}`,
             ),
           )
-        : z
-            .object({ approvals: z.array(approvalSchema) })
-            .parse(await request("/api/approvals"))
-            .approvals.filter(
-              (approval) => approval.request.approval_id === target.approvalId,
-            )
-            .map((approval) => approval.request)[0];
+        : approvalSchema.parse(
+            await request(
+              `/api/approvals/${encodeURIComponent(target.approvalId!)}`,
+            ),
+          ).request;
       if (!owner)
         throw new DomainError("not_found", "执行不属于当前工作对话。");
       const matches = controls.filter(
@@ -6184,6 +6301,7 @@ export class RuntimeBridge {
       runtime: {
         attention: {
           available: this.state.connected && this.attention.available,
+          ...(this.attention.hasMore ? { hasMore: true } : {}),
           approvals: this.attention.approvals.filter(
             (approval) =>
               readableProjects.has(approval.scope.projectId) &&
@@ -6513,6 +6631,7 @@ export class RuntimeBridge {
         ...this.platformStatus(),
         attention: {
           available: this.state.connected && this.attention.available,
+          ...(this.attention.hasMore ? { hasMore: true } : {}),
           approvals: this.attention.approvals.filter(
             (approval) =>
               readable.has(approval.scope.projectId) &&
@@ -6682,7 +6801,10 @@ export class RuntimeBridge {
       // Diagnostic failure is secondary, never a new business/read outcome.
     }
   }
-  private refreshActivity(includeHistory = true): Promise<void> {
+  private refreshActivity(
+    includeHistory = true,
+    changedSessions?: ReadonlySet<string>,
+  ): Promise<void> {
     if (
       this.activityRefresh &&
       includeHistory &&
@@ -6691,11 +6813,12 @@ export class RuntimeBridge {
       return this.activityRefresh.then(() => this.refreshActivity(true));
     if (!this.activityRefresh) {
       this.activityRefreshIncludesHistory = includeHistory;
-      this.activityRefresh = this.refreshActivityNow(includeHistory).finally(
-        () => {
-          this.activityRefresh = null;
-        },
-      );
+      this.activityRefresh = this.refreshActivityNow(
+        includeHistory,
+        changedSessions,
+      ).finally(() => {
+        this.activityRefresh = null;
+      });
     }
     return this.activityRefresh;
   }
@@ -6708,10 +6831,14 @@ export class RuntimeBridge {
       () => this.refreshActivity(),
     );
   }
-  private async refreshActivityNow(includeHistory = true) {
+  private async refreshActivityNow(
+    includeHistory = true,
+    changedSessions?: ReadonlySet<string>,
+  ) {
     const controlVersion = this.activityControlVersion;
     const activity: z.infer<typeof activitySchema> = {
       available: true,
+      historyVersion: this.activityHistoryVersion,
       truncated: false,
       openWorkComplete: false,
       limit: 200,
@@ -6753,6 +6880,9 @@ export class RuntimeBridge {
         )
         .digest("hex");
     const initialKeys = new Map(contextIds.map((id) => [id, readScopeKey(id)]));
+    const delegatedHistoryDemand = new Set(
+      contextIds.filter(() => includeHistory),
+    );
     const currentKeys = new Set(initialKeys.values());
     for (const key of this.activitySnapshotCache.keys())
       if (!currentKeys.has(key)) this.activitySnapshotCache.delete(key);
@@ -7121,14 +7251,17 @@ export class RuntimeBridge {
         const key = initialKeys.get(contextId)!;
         const cached = this.activitySnapshotCache.get(key);
         const historyVersion = this.activityHistoryDirty.get(contextId);
-        // Current work is independent of the terminal-history page. The
-        // background tick rereads history only on startup or a committed
-        // terminal/Objective change; explicit Human refresh still reads it.
-        // A retained page is disclosed as retained, never fresh read evidence.
-        const readHistory =
-          includeHistory ||
-          !cached?.history ||
-          this.activityHistoryDirty.has(contextId);
+        // Background execution never opens a history page. A mounted visible
+        // reader explicitly asks after a relevant generation changes.
+        const readHistory = includeHistory;
+        const readCurrent =
+          !changedSessions ||
+          !cached?.active ||
+          sessions.some(
+            (session) =>
+              changedSessions.has(session.id) &&
+              this.contextId(session.projectId) === contextId,
+          );
         const read = async (terminal: boolean) => {
           try {
             const value = schema.parse(
@@ -7165,7 +7298,9 @@ export class RuntimeBridge {
         };
         // Prioritize the small current inventory; a large terminal aggregate
         // must not monopolize the same SQLite-backed service beside it.
-        const currentRead = await read(false);
+        const currentRead = readCurrent
+          ? await read(false)
+          : { value: undefined, denied: false };
         const historyRead =
           readHistory && !currentRead.denied
             ? await read(true)
@@ -7178,7 +7313,9 @@ export class RuntimeBridge {
             "current",
             new DomainError("forbidden", "Activity read scope changed."),
           );
-        const currentAvailable = !denied && !!currentRead.value;
+        const currentAvailable =
+          !denied &&
+          (!!currentRead.value || (!readCurrent && !!cached?.active));
         const historyAvailable = !denied && !!historyRead.value;
         if (denied) this.activitySnapshotCache.delete(key);
         else {
@@ -7710,7 +7847,12 @@ export class RuntimeBridge {
           });
         }
       }
-      await this.appendDelegatedActivity(activity, sources);
+      await this.appendDelegatedActivity(
+        activity,
+        sources,
+        initialKeys,
+        delegatedHistoryDemand,
+      );
       activity.schedulesAvailable = snapshots.every(
         ({ active, currentAvailable }) =>
           currentAvailable && active.schedules !== undefined,
@@ -7822,6 +7964,8 @@ export class RuntimeBridge {
   private async appendDelegatedActivity(
     activity: z.infer<typeof activitySchema>,
     sources: Map<string, PlatformInputSource>,
+    scopeKeys: ReadonlyMap<string, string>,
+    historyDemand: ReadonlySet<string>,
   ) {
     activity.delegationsAvailable = true;
     activity.delegationsTruncated = false;
@@ -7863,26 +8007,48 @@ export class RuntimeBridge {
       this.activeSessions().map((s) => this.contextId(s.projectId)),
     )) {
       try {
+        const scopeKey = scopeKeys.get(contextId);
+        if (!scopeKey) continue;
+        const readRetained = async (
+          path: string,
+          refresh = historyDemand.has(contextId),
+        ) => {
+          const key = `${scopeKey}:${path}`;
+          if (!refresh && this.delegatedHistoryCache.has(key))
+            return this.delegatedHistoryCache.get(key);
+          const value = await this.request(path);
+          this.delegatedHistoryCache.delete(key);
+          this.delegatedHistoryCache.set(key, value);
+          while (this.delegatedHistoryCache.size > 64)
+            this.delegatedHistoryCache.delete(
+              this.delegatedHistoryCache.keys().next().value!,
+            );
+          return value;
+        };
         const records = new Map<string, DelegationRecord>();
         for (const terminal of [true, false]) {
+          const path = `/api/delegations?${new URLSearchParams({ context_id: contextId, include_terminal: String(terminal), limit: "64" })}`;
+          if (
+            terminal &&
+            !historyDemand.has(contextId) &&
+            !this.delegatedHistoryCache.has(`${scopeKey}:${path}`)
+          ) {
+            activity.delegationsTruncated = true;
+            continue;
+          }
           const page = z
             .object({
               delegations: z.array(delegationRecordSchema).max(64),
               has_more: z.boolean(),
             })
             .parse(
-              await this.request(
-                `/api/delegations?${new URLSearchParams({
-                  context_id: contextId,
-                  include_terminal: String(terminal),
-                  limit: "64",
-                })}`,
-              ),
+              await (terminal ? readRetained : this.request.bind(this))(path),
             );
           activity.delegationsTruncated ||= page.has_more;
           for (const record of page.delegations)
             if (
               record.parent_context_id === contextId &&
+              (!terminal || !["queued", "running"].includes(record.status)) &&
               this.state.sessions[record.parent_session_id]?.platform
             )
               records.set(record.id, record);
@@ -7911,6 +8077,10 @@ export class RuntimeBridge {
             activity.delegationsTruncated = true;
             continue;
           }
+          this.delegatedHistoryCache.set(
+            `${scopeKey}:request:${record.id}`,
+            event.id,
+          );
           const link = delegationRequestLink(record, event)!;
           const parent = activity.threads.find(
             (t) =>
@@ -7948,7 +8118,7 @@ export class RuntimeBridge {
           const views = await Promise.all(
             [true, false].map(async (terminal) =>
               childView.parse(
-                await this.request(
+                await (terminal ? readRetained : this.request.bind(this))(
                   `/api/contexts/${encodeURIComponent(record.child_context_id)}/scheduler?include_terminal=${terminal}&limit=64`,
                 ),
               ),
@@ -7958,7 +8128,13 @@ export class RuntimeBridge {
             (v) => v.detail_bounds?.has_more_threads ?? v.threads.length >= 64,
           );
           const children = new Map(
-            views.flatMap((v) => v.threads).map((v) => [v.thread.id, v]),
+            views
+              .flatMap((v, index) =>
+                index === 0
+                  ? v.threads.filter((t) => t.thread.lifecycle !== "open")
+                  : v.threads,
+              )
+              .map((v) => [v.thread.id, v]),
           );
           for (const value of children.values()) {
             const t = value.thread;
@@ -8009,7 +8185,38 @@ export class RuntimeBridge {
     // distinct bounds. Never silently redefine openWorkComplete's existing
     // domain; clients use the explicit delegation availability/bounds above.
   }
-  private async refreshAttention() {
+  async loadMorePlatformApprovals() {
+    await this.as(
+      this.teamIdentity
+        ? { principalId: "morphz-service", actantId: "morphz-agent" }
+        : localAccess,
+      () => this.refreshAttention(true),
+    );
+  }
+  private refreshAttention(loadMore = false): Promise<void> {
+    if (loadMore) this.attentionPageRequested = true;
+    else this.attentionHeadRequested = true;
+    if (!this.attentionRefresh) {
+      this.attentionRefresh = Promise.resolve()
+        .then(async () => {
+          do {
+            if (this.attentionHeadRequested) {
+              this.attentionHeadRequested = false;
+              await this.refreshAttentionNow(false);
+            }
+            if (this.attentionPageRequested) {
+              this.attentionPageRequested = false;
+              await this.refreshAttentionNow(true);
+            }
+          } while (this.attentionHeadRequested || this.attentionPageRequested);
+        })
+        .finally(() => {
+          this.attentionRefresh = null;
+        });
+    }
+    return this.attentionRefresh;
+  }
+  private async refreshAttentionNow(loadMore: boolean) {
     try {
       const readKey = () =>
         JSON.stringify([
@@ -8024,9 +8231,29 @@ export class RuntimeBridge {
           ]),
         ]);
       const initialKey = readKey();
+      if (
+        loadMore &&
+        (!this.attentionNextCursor || this.attentionPageScope !== initialKey)
+      )
+        return;
+      const query = loadMore
+        ? `?${new URLSearchParams({ limit: "50", cursor: this.attentionNextCursor! })}`
+        : "";
       const data = z
-        .object({ approvals: z.array(approvalSchema) })
-        .parse(await this.request("/api/approvals"));
+        .object({
+          approvals: z.array(approvalSchema).max(200),
+          has_more: z.boolean().optional().default(false),
+          next_cursor: z
+            .string()
+            .min(1)
+            .max(2048)
+            .nullable()
+            .optional()
+            .default(null),
+        })
+        .parse(await this.request(`/api/approvals${query}`));
+      if (data.has_more && !data.next_cursor)
+        throw new DomainError("invalid", "审批续页凭据缺失。");
       const sessions = this.activeSessions();
       const sessionsById = new Map(
         sessions.map((session) => [session.id, session]),
@@ -8125,7 +8352,19 @@ export class RuntimeBridge {
       }
       if (readKey() !== initialKey)
         throw new DomainError("forbidden", "审批读取范围已变化。");
-      this.attention = { available: complete, approvals };
+      const retained = loadMore ? this.attention.approvals : [];
+      const merged = new Map(
+        retained.map((entry) => [entry.approval.request.approval_id, entry]),
+      );
+      for (const entry of approvals)
+        merged.set(entry.approval.request.approval_id, entry);
+      this.attention = {
+        available: complete,
+        approvals: [...merged.values()],
+        hasMore: data.has_more,
+      };
+      this.attentionNextCursor = data.next_cursor;
+      this.attentionPageScope = initialKey;
     } catch {
       this.attention = { ...this.attention, available: false };
     }
@@ -9652,6 +9891,10 @@ export class RuntimeBridge {
     // while its message is still queued.
     if (this.busy) return this.busyCompletion ?? undefined;
     this.busy = true;
+    const activityHintSessions = this.activityHintSessions;
+    this.activityHintSessions = new Set();
+    const attentionHintPending = this.attentionHintPending;
+    this.attentionHintPending = false;
     let complete!: () => void;
     this.busyCompletion = new Promise<void>((resolve) => {
       complete = resolve;
@@ -10075,6 +10318,7 @@ export class RuntimeBridge {
               ].includes(event.topic)
             ) {
               const contextId = this.contextId(session.projectId);
+              this.activityHistoryVersion++;
               this.activityHistoryDirty.set(
                 contextId,
                 (this.activityHistoryDirty.get(contextId) ?? 0) + 1,
@@ -10202,8 +10446,13 @@ export class RuntimeBridge {
         }
       }
       await this.processRootCancellationChecks();
-      await this.refreshActivity(false);
-      await this.refreshAttention();
+      if (!changedSessions || activityHintSessions.size)
+        await this.refreshActivity(
+          false,
+          changedSessions ? activityHintSessions : undefined,
+        );
+      if (!changedSessions || attentionHintPending)
+        await this.refreshAttention();
     } catch (error) {
       try {
         this.host.reportFailure?.("runtime.reconcile", error);

@@ -3247,20 +3247,12 @@ impl MorphzSdk {
     ) -> SdkResult<Vec<ExecutionTargetRecord>> {
         self.runtime
             .list_execution_targets(ExecutionTargetFilter {
-                limit: Some(1_000),
+                visible_to_principal_id: Some(principal_id.to_string()),
+                limit: Some(200),
                 ..Default::default()
             })
             .await
             .map_err(SdkError::internal)
-            .map(|targets| {
-                targets
-                    .into_iter()
-                    .filter(|target| {
-                        target.owner_principal_id.is_none()
-                            || target.owner_principal_id.as_deref() == Some(principal_id)
-                    })
-                    .collect()
-            })
     }
 
     pub async fn inspect_execution_target(
@@ -3502,15 +3494,9 @@ impl MorphzSdk {
     ) -> SdkResult<CapabilityLeaseRecord> {
         let current = self
             .runtime
-            .list_capability_leases(CapabilityLeaseFilter {
-                principal_id: Some(principal_id.to_string()),
-                limit: Some(1_000),
-                ..Default::default()
-            })
+            .get_owned_capability_lease(lease_id, principal_id)
             .await
             .map_err(SdkError::internal)?
-            .into_iter()
-            .find(|lease| lease.id == lease_id)
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
@@ -3562,15 +3548,9 @@ impl MorphzSdk {
     ) -> SdkResult<CapabilityLeaseRecord> {
         let current = self
             .runtime
-            .list_capability_leases(CapabilityLeaseFilter {
-                principal_id: Some(principal_id.to_string()),
-                limit: Some(1_000),
-                ..Default::default()
-            })
+            .get_owned_capability_lease(lease_id, principal_id)
             .await
             .map_err(SdkError::internal)?
-            .into_iter()
-            .find(|lease| lease.id == lease_id)
             .ok_or_else(|| {
                 SdkError::new(
                     SdkErrorCode::NotFound,
@@ -3911,11 +3891,9 @@ impl MorphzSdk {
     ) -> SdkResult<ExecutionNodeRecord> {
         let current = self
             .runtime
-            .list_execution_nodes(principal_id)
+            .get_owned_execution_node(node_id, principal_id)
             .await
             .map_err(SdkError::internal)?
-            .into_iter()
-            .find(|node| node.id == node_id)
             .ok_or_else(|| {
                 SdkError::new(SdkErrorCode::NotFound, "Execution Node does not exist")
             })?;
@@ -4880,6 +4858,21 @@ impl MorphzSdk {
             })
     }
 
+    /// Principal and all caller-supplied filters are applied in the native seek,
+    /// before the row budget. The cursor is not a grant.
+    pub async fn list_sessions_page(
+        &self,
+        principal_id: &str,
+        mut query: crate::memory::RuntimeDirectoryQuery,
+    ) -> SdkResult<crate::memory::RuntimeDirectoryPage> {
+        query.kind = crate::memory::RuntimeDirectoryKind::Sessions;
+        query.principal_id = Some(principal_id.into());
+        self.runtime
+            .read_runtime_directory_page(query)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn list_sessions(
         &self,
         principal_id: &str,
@@ -5114,12 +5107,27 @@ impl MorphzSdk {
         principal_id: &str,
         session_id: &str,
     ) -> SdkResult<crate::runtime::SessionApprovalPage> {
+        self.session_pending_approvals_page(principal_id, session_id, &Default::default())
+            .await
+    }
+    pub async fn session_pending_approvals_page(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        query: &crate::memory::ApprovalPageRequest,
+    ) -> SdkResult<crate::runtime::SessionApprovalPage> {
         self.authorize_session(principal_id, session_id).await?;
+        query
+            .validate()
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
         self.runtime
-            .session_pending_approvals(&crate::memory::ApprovalDecisionAuthority {
-                principal_id: principal_id.into(),
-                session_id: session_id.into(),
-            })
+            .session_pending_approvals_page(
+                &crate::memory::ApprovalDecisionAuthority {
+                    principal_id: principal_id.into(),
+                    session_id: session_id.into(),
+                },
+                query,
+            )
             .await
             .map_err(classify_session_approval_error)
     }

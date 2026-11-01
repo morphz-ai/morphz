@@ -84,7 +84,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn target_from_row(row: &PgRow) -> Result<ExecutionTargetRecord, StoreError> {
+pub(super) fn target_from_row(row: &PgRow) -> Result<ExecutionTargetRecord, StoreError> {
     Ok(ExecutionTargetRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,

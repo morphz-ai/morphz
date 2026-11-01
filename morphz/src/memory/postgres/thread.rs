@@ -231,6 +231,79 @@ pub(super) async fn ensure_thread_in_tx(
 
 #[async_trait::async_trait]
 impl ThreadStore for PostgresStore {
+    async fn read_thread_inspection_page(
+        &self,
+        thread: &ThreadRecord,
+        request: &crate::memory::inspection_page::ThreadInspectionQuery,
+    ) -> Result<crate::memory::inspection_page::ThreadInspectionPage, StoreError> {
+        use crate::memory::inspection_page::{ThreadInspectionKind as K, ThreadInspectionPage};
+        let mut query =
+            crate::memory::inspection_page::inspection_query!(sqlx::Postgres, thread, request)?;
+        let mut rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > request.page_limit();
+        rows.truncate(request.page_limit());
+        let next_cursor = if has_more {
+            rows.last().map(|row| {
+                request.cursor_for(&thread.id, row.get("inspection_clock"), row.get("id"))
+            })
+        } else {
+            None
+        };
+        let mut page = ThreadInspectionPage {
+            has_more,
+            next_cursor,
+            ..Default::default()
+        };
+        match request.kind {
+            K::ModelEvents => return Err("Model Events use the bounded Event store".into()),
+            K::Activations => {
+                page.activations = rows
+                    .iter()
+                    .map(super::activation::activation_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            K::Jobs => {
+                page.jobs = rows
+                    .iter()
+                    .map(super::execution::execution_job_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            K::PendingSignals | K::ActivationSignals => {
+                page.signals = rows
+                    .iter()
+                    .map(super::activation::signal_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            K::Schedules => {
+                page.schedules = rows
+                    .iter()
+                    .map(super::schedule::schedule_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        }
+        Ok(page)
+    }
+    async fn read_transfer_projection_recovery_page(
+        &self,
+        source: crate::memory::TransferProjectionSource,
+        after: &str,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::memory::TransferProjectionCandidate>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let mut query =
+            crate::memory::recovery::transfer_query!(Postgres, source, after, limit, true);
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::memory::TransferProjectionCandidate {
+                cursor_id: row.get("cursor_id"),
+                thread_id: row.get("thread_id"),
+                job_id: row.get("job_id"),
+            })
+            .collect())
+    }
     async fn thread_activity_flags(
         &self,
         context_id: &str,
@@ -601,6 +674,45 @@ impl ThreadStore for PostgresStore {
             .fetch_one(&self.pool)
             .await?,
         )?)
+    }
+
+    async fn read_terminal_thread_page(
+        &self,
+        context_id: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<crate::memory::directory::CursorPage<ThreadRecord>, StoreError> {
+        use crate::memory::directory::{CursorPage, DirectoryCursor};
+        let limit = limit.clamp(1, 200);
+        let mut query = crate::memory::directory::terminal_thread_query!(
+            sqlx::Postgres,
+            context_id,
+            cursor,
+            limit
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                DirectoryCursor {
+                    sort_at: row.get("updated_at"),
+                    id: row.get("id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(thread_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CursorPage {
+            items,
+            has_more,
+            next_cursor,
+        })
     }
 
     async fn list_recent_terminal_threads(

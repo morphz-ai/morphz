@@ -1,3 +1,8 @@
+import {
+  terminalChangeScopeSchema,
+  terminalChangeSchema,
+  type TerminalChange,
+} from "../../packages/core/src/terminal.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
@@ -774,7 +779,9 @@ export class RemoteApplicationConnection {
     rawId: unknown,
     rawScope: unknown,
     generation: unknown,
-    emit: (value: ConversationStream | WorkspaceChange) => void,
+    emit: (
+      value: ConversationStream | WorkspaceChange | TerminalChange,
+    ) => void,
     close: () => void,
   ) {
     this.assertOpen();
@@ -782,6 +789,7 @@ export class RemoteApplicationConnection {
       scope = z
         .union([
           workspaceChangeScopeSchema,
+          terminalChangeScopeSchema,
           z
             .object({
               kind: z.literal("platform"),
@@ -812,7 +820,9 @@ export class RemoteApplicationConnection {
       const streamPath =
         scope.kind === "workspace"
           ? "/api/platform/workspace/stream"
-          : `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream`;
+          : scope.kind === "terminal"
+            ? `/api/platform/terminal/stream?scope=${encodeURIComponent(JSON.stringify(scope))}`
+            : `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream`;
       const response = await this.request(this.origin + streamPath, {
         credentials: "include",
         redirect: "error",
@@ -833,7 +843,10 @@ export class RemoteApplicationConnection {
           if (done) break;
           if (epoch !== this.epoch || controller.signal.aborted) break;
           buffer += decoder.decode(value, { stream: true });
-          if (buffer.length > 4 * 1024 * 1024)
+          if (
+            buffer.length >
+            (scope.kind === "terminal" ? 16 * 1024 : 4 * 1024 * 1024)
+          )
             throw new Error("远端订阅超过大小限制。");
           let boundary: number;
           while ((boundary = buffer.indexOf("\n\n")) >= 0) {
@@ -845,6 +858,15 @@ export class RemoteApplicationConnection {
               .map((line) => line.slice(6))
               .join("\n");
             if (!data) continue;
+            if (scope.kind === "terminal") {
+              const value = terminalChangeSchema.parse(JSON.parse(data));
+              if (epoch !== this.epoch || controller.signal.aborted) break;
+              if (value.sequence <= workspaceSequence)
+                throw new Error("终端通知顺序无效。");
+              workspaceSequence = value.sequence;
+              emit(value);
+              continue;
+            }
             if (scope.kind === "workspace") {
               const parsed = workspaceChangeSchema.parse(JSON.parse(data));
               if (epoch !== this.epoch || controller.signal.aborted) break;

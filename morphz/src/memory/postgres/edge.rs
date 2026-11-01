@@ -145,7 +145,9 @@ fn parse_time(value: &str) -> DateTime<Utc> {
         .with_timezone(&Utc)
 }
 
-fn node_from_row(row: &sqlx::postgres::PgRow) -> Result<ExecutionNodeRecord, StoreError> {
+pub(super) fn node_from_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<ExecutionNodeRecord, StoreError> {
     Ok(ExecutionNodeRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
@@ -477,6 +479,20 @@ impl EdgeExecutionStore for PostgresStore {
         get_node(&self.pool, node_id).await
     }
 
+    async fn get_owned_execution_node(
+        &self,
+        node_id: &str,
+        principal_id: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM execution_nodes WHERE id=$1 AND owner_principal_id=$2")
+            .bind(node_id)
+            .bind(principal_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(node_from_row)
+            .transpose()
+    }
     async fn list_execution_nodes(
         &self,
         owner_principal_id: &str,

@@ -1,3 +1,14 @@
+pub(crate) mod recovery;
+pub use recovery::{TransferProjectionCandidate, TransferProjectionSource};
+pub(crate) mod approval_page;
+pub mod inspection_page;
+pub use approval_page::{ApprovalPageRequest, PendingApprovalRecordsPage};
+pub(crate) mod event_changes;
+pub(crate) mod group_page;
+pub(crate) mod inventory;
+pub use inventory::{RuntimeInventoryKind, RuntimeInventoryPage, RuntimeInventoryQuery};
+pub(crate) mod directory;
+pub use directory::{RuntimeDirectoryKind, RuntimeDirectoryPage, RuntimeDirectoryQuery};
 mod activation_approval_wait;
 mod objective_approval_wait;
 mod session_timeline;
@@ -2894,6 +2905,13 @@ pub trait EdgeExecutionStore: Send + Sync {
         capabilities: Vec<String>,
         metadata: serde_json::Value,
     ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_owned_execution_node(
+        &self,
+        _node_id: &str,
+        _principal_id: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("owned Execution Node points are not implemented".into())
+    }
     async fn list_execution_nodes(
         &self,
         owner_principal_id: &str,
@@ -5940,6 +5958,24 @@ pub struct EventAppend {
 
 #[async_trait::async_trait]
 pub trait EventStore: Send + Sync {
+    /// Subscribe before reading the initial tail. Hints are coalesced and
+    /// retained while a bounded reader is busy; durable rows remain authority.
+    fn subscribe_event_changes(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Store does not provide durable Event change notifications".into())
+    }
+
+    /// Metadata points for a bounded search candidate page, before opening
+    /// authorized Event bodies. Never enumerate an entire Session directory.
+    async fn event_session_points(
+        &self,
+        _context_id: &str,
+        _event_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Event Session metadata points are not implemented".into())
+    }
+
     async fn append(
         &self,
         ev: crate::event::Event,
@@ -6229,6 +6265,15 @@ pub(crate) fn execution_job_result_topic_matches(tool_name: &str, topic: &str) -
 /// token. This keeps process ownership separate from semantic Thread outcome.
 #[async_trait::async_trait]
 pub trait ExecutionJobStore: Send + Sync {
+    /// Exact metadata proof for selected Approval candidates outside a display
+    /// page. Absence from that page alone is never an orphan diagnostic.
+    async fn live_execution_job_routes(
+        &self,
+        _context_id: &str,
+        _job_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("indexed Job route proofs are not implemented by this store".into())
+    }
     /// Durably arms one background-task checkpoint as a composite Job+Timer
     /// transaction: validates the Job is nonterminal, increments
     /// `checkpoint_generation`, writes `checkpoint_due_at`, and upserts the
@@ -6277,79 +6322,31 @@ pub trait ExecutionJobStore: Send + Sync {
     /// Runtime monitor never scans or truncates against unrelated tenants.
     async fn list_active_execution_jobs_for_contexts(
         &self,
-        context_ids: &[String],
-        limit: usize,
+        _context_ids: &[String],
+        _limit: usize,
     ) -> Result<Vec<ExecutionJobMonitorRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if context_ids.is_empty() || limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut selected = std::collections::HashSet::new();
-        let mut jobs = Vec::new();
-        for context_id in context_ids {
-            if !selected.insert(context_id) {
-                continue;
-            }
-            jobs.extend(
-                self.list_execution_jobs(ExecutionJobFilter {
-                    context_id: Some(context_id.clone()),
-                    include_terminal: false,
-                    newest_first: true,
-                    limit: Some(limit),
-                    ..ExecutionJobFilter::default()
-                })
-                .await?
-                .into_iter()
-                .map(ExecutionJobMonitorRecord::from),
-            );
-        }
-        jobs.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        jobs.truncate(limit);
-        Ok(jobs)
+        Err("indexed bounded list_active_execution_jobs_for_contexts is not implemented by this store".into())
     }
     async fn count_context_active_execution_jobs(
         &self,
-        context_id: &str,
+        _context_id: &str,
     ) -> Result<ExecutionJobContextCounts, Box<dyn std::error::Error + Send + Sync>> {
-        let jobs = self
-            .list_execution_jobs(ExecutionJobFilter {
-                context_id: Some(context_id.to_string()),
-                include_terminal: false,
-                ..ExecutionJobFilter::default()
-            })
-            .await?;
-        Ok(ExecutionJobContextCounts {
-            active_jobs: jobs.len(),
-            waiting_approval_jobs: jobs
-                .iter()
-                .filter(|job| job.status == ExecutionJobStatus::WaitingApproval)
-                .count(),
-        })
+        Err(
+            "indexed bounded count_context_active_execution_jobs is not implemented by this store"
+                .into(),
+        )
     }
-    /// Exact Job projection for a bounded Activation aggregate. Production
-    /// stores override this with one indexed `IN` query.
+    /// Independently capped Job heads (32 per selected Activation). Product
+    /// inspectors disclose continuation; this is never complete Kernel state.
     async fn list_execution_jobs_for_activations(
         &self,
-        context_id: &str,
-        activation_ids: &[String],
+        _context_id: &str,
+        _activation_ids: &[String],
     ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if activation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .list_execution_jobs(ExecutionJobFilter {
-                context_id: Some(context_id.to_string()),
-                include_terminal: true,
-                ..ExecutionJobFilter::default()
-            })
-            .await?
-            .into_iter()
-            .filter(|job| activation_ids.contains(&job.activation_id))
-            .collect())
+        Err(
+            "indexed bounded list_execution_jobs_for_activations is not implemented by this store"
+                .into(),
+        )
     }
     /// Terminal result outboxes which still need their one deterministic
     /// directed Signal or Session fallback. Production stores use indexed
@@ -6520,11 +6517,26 @@ pub trait ApprovalStore: Send + Sync {
         authority: &ApprovalDecisionAuthority,
         limit: usize,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn read_principal_pending_approval_page(
+        &self,
+        _authority: &ApprovalDecisionAuthority,
+        _cursor: Option<&str>,
+        _limit: usize,
+    ) -> Result<PendingApprovalRecordsPage, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Principal-scoped Approval pages are not implemented".into())
+    }
     async fn get_principal_approval(
         &self,
         authority: &ApprovalDecisionAuthority,
         id: &str,
     ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn read_pending_approval_page(
+        &self,
+        _cursor: Option<&str>,
+        _limit: usize,
+    ) -> Result<PendingApprovalRecordsPage, Box<dyn std::error::Error + Send + Sync>> {
+        Err("bounded pending Approval pages are not implemented".into())
+    }
     async fn list_approvals(
         &self,
         filter: ApprovalFilter,
@@ -6541,45 +6553,33 @@ pub trait ApprovalStore: Send + Sync {
     /// longer owns a valid result route without scanning lifetime history.
     async fn list_context_pending_approvals(
         &self,
-        context_id: &str,
+        _context_id: &str,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self
-            .list_context_approvals(context_id)
-            .await?
-            .into_iter()
-            .filter(|approval| approval.status.is_pending())
-            .collect())
+        Err("Native Context pending Approval query is not implemented".into())
     }
     async fn list_context_pending_approvals_bounded(
         &self,
-        context_id: &str,
-        limit: usize,
+        _context_id: &str,
+        _limit: usize,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut records = self.list_context_pending_approvals(context_id).await?;
-        records.truncate(limit);
-        Ok(records)
+        Err("indexed bounded list_context_pending_approvals_bounded is not implemented by this store".into())
     }
     async fn count_context_pending_approvals(
         &self,
-        context_id: &str,
+        _context_id: &str,
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(self.list_context_pending_approvals(context_id).await?.len())
+        Err(
+            "indexed bounded count_context_pending_approvals is not implemented by this store"
+                .into(),
+        )
     }
     /// Approval authorities for an already selected Job aggregate.
     async fn list_job_approvals(
         &self,
-        context_id: &str,
-        job_ids: &[String],
+        _context_id: &str,
+        _job_ids: &[String],
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if job_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .list_context_approvals(context_id)
-            .await?
-            .into_iter()
-            .filter(|approval| job_ids.contains(&approval.job_id))
-            .collect())
+        Err("indexed bounded list_job_approvals is not implemented by this store".into())
     }
     /// Atomically hands an automatic-review request to the human authority
     /// after the reviewer explicitly asks for a person or cannot complete.
@@ -6641,6 +6641,13 @@ pub trait CapabilityLeaseStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_owned_capability_lease(
+        &self,
+        _lease_id: &str,
+        _principal_id: &str,
+    ) -> Result<Option<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("owned Capability Lease points are not implemented".into())
+    }
     async fn list_capability_leases(
         &self,
         filter: CapabilityLeaseFilter,
@@ -6700,6 +6707,22 @@ pub trait ExecutionApprovalStore: Send + Sync {
 /// lifecycle metadata only; Mind semantics remain in the Context event stream.
 #[async_trait::async_trait]
 pub trait SessionDirectoryStore: Send + Sync {
+    async fn read_operator_inventory_page(
+        &self,
+        _request: RuntimeInventoryQuery,
+    ) -> Result<RuntimeInventoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        Err("bounded operator inventory is not implemented".into())
+    }
+
+    /// Indexed keyset metadata only. Unsupported stores must fail, never fall
+    /// back to materializing an unbounded registry and slicing it afterward.
+    async fn read_runtime_directory_page(
+        &self,
+        _query: RuntimeDirectoryQuery,
+    ) -> Result<RuntimeDirectoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Runtime directory paging is unsupported by this store".into())
+    }
+
     async fn ensure_principal(
         &self,
         principal: NewPrincipal,
@@ -6966,13 +6989,14 @@ pub trait ActivationStore: Send + Sync {
     }
     async fn list_context_thread_signals_bounded(
         &self,
-        context_id: &str,
-        status: Option<ThreadSignalStatus>,
-        limit: usize,
+        _context_id: &str,
+        _status: Option<ThreadSignalStatus>,
+        _limit: usize,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut records = self.list_context_thread_signals(context_id, status).await?;
-        records.truncate(limit);
-        Ok(records)
+        Err(
+            "indexed bounded list_context_thread_signals_bounded is not implemented by this store"
+                .into(),
+        )
     }
     async fn count_context_activation_authority(
         &self,
@@ -7068,24 +7092,13 @@ pub trait ActivationStore: Send + Sync {
         &self,
         activation_id: &str,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    /// Reads every Activation -> Signal binding for a selected aggregate in a
-    /// single store round trip. The Activation ID is returned alongside the
-    /// Signal because one immutable mailbox item may participate in different
-    /// historical projections.
+    /// Bounded Signal heads (64 per selected Activation). Full causal history
+    /// is an independent reader-owned cursor page, never implied by a parent.
     async fn list_activation_signals_for_activations(
         &self,
-        activation_ids: &[String],
+        _activation_ids: &[String],
     ) -> Result<Vec<(String, ThreadSignalRecord)>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut records = Vec::new();
-        for activation_id in activation_ids {
-            records.extend(
-                self.list_activation_signals(activation_id)
-                    .await?
-                    .into_iter()
-                    .map(|signal| (activation_id.clone(), signal)),
-            );
-        }
-        Ok(records)
+        Err("indexed bounded list_activation_signals_for_activations is not implemented by this store".into())
     }
     /// Atomically transfers responsibility for the selected pending mailbox
     /// Signals to one running Activation. Event IDs without a Thread Signal
@@ -7162,26 +7175,10 @@ pub trait ActivationStore: Send + Sync {
     /// the Context's complete durable history and truncating it in memory.
     async fn list_recent_terminal_thread_activations(
         &self,
-        context_id: &str,
-        limit: usize,
+        _context_id: &str,
+        _limit: usize,
     ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        let mut records = self
-            .list_context_thread_activations(context_id, true)
-            .await?
-            .into_iter()
-            .filter(|activation| activation.status.is_terminal())
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        records.truncate(limit);
-        Ok(records)
+        Err("indexed bounded list_recent_terminal_thread_activations is not implemented by this store".into())
     }
     /// Exact indexed aggregate read used by Thread detail pages.
     async fn list_thread_activations_by_root(
@@ -7234,37 +7231,16 @@ pub trait ActivationStore: Send + Sync {
         }
         Ok(records)
     }
-    /// Bounded Scheduler-board aggregate: every live Activation plus the most
-    /// recent terminal history for each selected Thread root. Deep Thread
-    /// inspection continues to use the exact unbounded method above.
+    /// Indexed child windows for an explicitly selected, bounded root page.
+    /// Each root has at most 201 live candidates and 200 terminal candidates;
+    /// current board limits/exact counters disclose overflow independently.
     async fn list_scheduler_thread_activations_by_roots(
         &self,
-        context_id: &str,
-        root_turn_ids: &[String],
-        terminal_limit_per_root: usize,
+        _context_id: &str,
+        _root_turn_ids: &[String],
+        _terminal_limit_per_root: usize,
     ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut records = self
-            .list_thread_activations_by_roots(context_id, root_turn_ids)
-            .await?;
-        records.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| right.id.cmp(&left.id))
-        });
-        let mut terminal_counts = std::collections::HashMap::<String, usize>::new();
-        records.retain(|activation| {
-            if !activation.status.is_terminal() {
-                return true;
-            }
-            let count = terminal_counts
-                .entry(activation.root_turn_id.clone())
-                .or_default();
-            let retain = *count < terminal_limit_per_root;
-            *count = count.saturating_add(1);
-            retain
-        });
-        Ok(records)
+        Err("bounded Activation root pages are not implemented".into())
     }
     /// Bounded global scheduler projection used by Runtime-level operator
     /// surfaces. It never scans persisted Events.
@@ -7517,6 +7493,27 @@ pub trait PlanExecutionStore: Send + Sync {
 /// surfaces so none of them infer group state from Events independently.
 #[async_trait::async_trait]
 pub trait ThreadGroupStore: Send + Sync {
+    async fn count_group_members(
+        &self,
+        _ids: &[String],
+    ) -> Result<
+        Vec<crate::scheduler::domain::GroupMemberCounts>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        Err("bounded Group statistics are not implemented".into())
+    }
+    async fn read_group_member_page(
+        &self,
+        _id: &str,
+        _cursor: Option<String>,
+        _limit: usize,
+    ) -> Result<
+        crate::memory::directory::CursorPage<ThreadGroupMemberRecord>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        Err("Group member pages are not implemented".into())
+    }
+
     async fn get_thread_group(
         &self,
         id: &str,
@@ -7623,8 +7620,24 @@ pub struct ThreadFamilyRead {
 /// Stable Thread lifecycle and completion-delivery projection.
 #[async_trait::async_trait]
 pub trait ThreadStore: Send + Sync {
+    async fn read_thread_inspection_page(
+        &self,
+        _thread: &ThreadRecord,
+        _query: &inspection_page::ThreadInspectionQuery,
+    ) -> Result<inspection_page::ThreadInspectionPage, Box<dyn std::error::Error + Send + Sync>>
+    {
+        Err("bounded Thread inspection is not supported by this store".into())
+    }
     /// Small exact activity facts for a bounded selected Thread set. Never
     /// materializes Activation, Signal, Schedule or Job history payloads.
+    async fn read_transfer_projection_recovery_page(
+        &self,
+        _source: TransferProjectionSource,
+        _after: &str,
+        _limit: usize,
+    ) -> Result<Vec<TransferProjectionCandidate>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("bounded transfer recovery locators are not implemented".into())
+    }
     async fn thread_activity_flags(
         &self,
         _context_id: &str,
@@ -7751,6 +7764,17 @@ pub trait ThreadStore: Send + Sync {
         });
         records.truncate(limit);
         Ok(records)
+    }
+    async fn read_terminal_thread_page(
+        &self,
+        _context_id: &str,
+        _cursor: Option<String>,
+        _limit: usize,
+    ) -> Result<
+        crate::memory::directory::CursorPage<ThreadRecord>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        Err("bounded terminal Thread page is not implemented".into())
     }
     /// Bounded global Thread projection used by Runtime-level operator
     /// surfaces. Terminal history belongs to the Context detail page.
@@ -8242,6 +8266,14 @@ impl<T> SessionStore for T where
 /// optimistic concurrency; Objective semantics remain in the Context Mind and persisted Events.
 #[async_trait::async_trait]
 pub trait ObjectiveStore: Send + Sync {
+    async fn count_context_objectives_by_status(
+        &self,
+        _context_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        Err("indexed Objective status counts are not implemented".into())
+    }
+
     async fn create_objective(
         &self,
         objective: NewObjective,

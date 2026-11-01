@@ -23,7 +23,7 @@ function fixture(
     postReadFailure?: boolean
   } = {},
 ) {
-  let current: any = { ...original, revision: 8 },
+  let current: typeof original = { ...original, revision: 8 },
     writes = 0
   const reads: string[] = [],
     revisions: number[] = []
@@ -87,7 +87,7 @@ test('confirmation uses only the exact current Thread, retaining generation/sour
   const receipt = await submitThreadControl(
     f.api,
     original.context_id,
-    original as any,
+    original,
     'cancel',
     'TEST cancel',
     'changed target',
@@ -103,7 +103,7 @@ test('one explicit CAS conflict refreshes the same generation once, without rese
   const receipt = await submitThreadControl(
     f.api,
     original.context_id,
-    original as any,
+    original,
     'pause',
     'TEST pause',
     'changed target',
@@ -117,7 +117,7 @@ test('one explicit CAS conflict refreshes the same generation once, without rese
       submitThreadControl(
         failed.api,
         original.context_id,
-        original as any,
+        original,
         'cancel',
         'TEST',
         'changed target',
@@ -144,7 +144,7 @@ test('a new generation or changed source/control state never inherits a prior co
         submitThreadControl(
           f.api,
           original.context_id,
-          original as any,
+          original,
           'cancel',
           'TEST',
           'changed target',
@@ -162,7 +162,7 @@ test('conflict repair is bounded, and success returns the receipt without a post
     submitThreadControl(
       racing.api,
       original.context_id,
-      original as any,
+      original,
       'cancel',
       'TEST',
       'changed target',
@@ -174,7 +174,7 @@ test('conflict repair is bounded, and success returns the receipt without a post
   const receipt = await submitThreadControl(
     accepted.api,
     original.context_id,
-    original as any,
+    original,
     'cancel',
     'TEST',
     'changed target',

@@ -2,8 +2,8 @@ use super::*;
 use crate::approval_authority::stable_approval_identity;
 use crate::llm::{Message, Response, ToolDefinition};
 use crate::memory::{
-    ExecutionApprovalMutation, ExecutionRetrySafety, NewApprovalRequest, NewExecutionJob,
-    SessionMountKind,
+    ApprovalFilter, ExecutionApprovalMutation, ExecutionRetrySafety, NewApprovalRequest,
+    NewExecutionJob, SessionMountKind,
 };
 use crate::sdk::{MorphzSdk, SdkErrorCode};
 use serde_json::json;

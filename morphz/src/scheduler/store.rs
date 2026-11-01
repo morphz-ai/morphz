@@ -111,6 +111,16 @@ pub trait SchedulerDependencyStore: Send + Sync {
             .collect())
     }
 
+    /// Only current pending, required Objective barriers contribute to its
+    /// readiness/read projection. Lifetime dependency history is a separate
+    /// diagnostic read and must not be loaded by a parent list.
+    async fn list_objective_projection_dependencies(
+        &self,
+        _owners: &[(String, u64)],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("bounded Objective dependency projection is not implemented".into())
+    }
+
     /// Current pending question edges for an already authorized, bounded
     /// Thread selection. Production backends join current generations in SQL.
     async fn list_pending_user_input_dependencies(

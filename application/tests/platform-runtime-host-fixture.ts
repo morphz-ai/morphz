@@ -67,6 +67,7 @@ export async function platformRuntimeHostFixture(
     application = new Application(store, {
       runtime,
       platformWork: domains.work,
+      workspaceChanges: domains.workspaceChanges,
       platformDocuments: domains.content,
       platformScripts: domains.content,
       platformReader: domains.reader,

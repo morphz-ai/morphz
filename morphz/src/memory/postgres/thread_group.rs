@@ -309,6 +309,89 @@ impl ThreadGroupStore for PostgresStore {
         rows.iter().map(group_from_row).collect()
     }
 
+    async fn count_group_members(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<crate::scheduler::domain::GroupMemberCounts>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ids.len() > 200 {
+            return Err("Group statistics budget exceeded".into());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH selected(id) AS (VALUES ");
+        {
+            let mut values = query.separated(",");
+            for id in ids {
+                values
+                    .push("(")
+                    .push_bind_unseparated(id)
+                    .push_unseparated(")");
+            }
+        }
+        query.push(") SELECT s.id,COUNT(m.thread_id) AS total,COUNT(CASE WHEN m.required=TRUE THEN 1 END) AS required_count,COUNT(CASE WHEN m.required=TRUE AND m.status IN ('completed','failed','cancelled') THEN 1 END) AS terminal_count,COUNT(CASE WHEN m.required=TRUE AND m.status='completed' THEN 1 END) AS successful_count FROM selected s LEFT JOIN thread_group_members m ON m.group_id=s.id GROUP BY s.id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::scheduler::domain::GroupMemberCounts {
+                    group_id: row.get("id"),
+                    total: u64::try_from(row.get::<i64, _>("total"))?,
+                    required: u64::try_from(row.get::<i64, _>("required_count"))?,
+                    terminal: u64::try_from(row.get::<i64, _>("terminal_count"))?,
+                    successful: u64::try_from(row.get::<i64, _>("successful_count"))?,
+                })
+            })
+            .collect()
+    }
+    async fn read_group_member_page(
+        &self,
+        id: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<crate::memory::directory::CursorPage<ThreadGroupMemberRecord>, StoreError> {
+        use crate::memory::{directory::CursorPage, group_page::GroupMemberCursor};
+        let key = GroupMemberCursor::decode(cursor.as_deref())?;
+        let limit = limit.clamp(1, 64);
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT * FROM thread_group_members WHERE group_id=",
+        );
+        query.push_bind(id);
+        if let Some(key) = key {
+            query
+                .push(" AND (ordinal,thread_id) > (")
+                .push_bind(key.ordinal as i64)
+                .push(",")
+                .push_bind(key.thread_id)
+                .push(")");
+        }
+        query
+            .push(" ORDER BY ordinal,thread_id LIMIT ")
+            .push_bind((limit + 1) as i64);
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                GroupMemberCursor {
+                    ordinal: row.get::<i64, _>("ordinal") as u64,
+                    thread_id: row.get("thread_id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(member_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CursorPage {
+            items,
+            has_more,
+            next_cursor,
+        })
+    }
+
     async fn list_thread_group_members(
         &self,
         group_id: &str,

@@ -1,3 +1,21 @@
+export interface ObjectiveRecord {
+  id: string
+  generation: number
+  context_id: string
+  coordinator_session_id: string
+  delivery_session_id: string
+  stated_objective: string
+  revision: number
+  status: string
+  status_reason?: string
+  wait_condition?: { kind: string; [key: string]: unknown }
+  tokens_used: number
+  token_budget?: number
+  time_used_seconds: number
+  created_at: string
+  updated_at: string
+}
+
 export interface ThreadSignalRecord {
   id: string
   thread_id: string
@@ -224,12 +242,15 @@ export interface ThreadOutcomeRecord {
 }
 
 export interface SchedulerThreadGroupSnapshot {
+  members_loaded?: boolean
   group: ThreadGroupRecord
   members: ThreadGroupMemberRecord[]
   outcomes: ThreadOutcomeRecord[]
 }
 
 export interface ThreadDetailResponse {
+  collections_loaded?: boolean
+  continuations?: import('../app/inspectionPage').InspectionContinuation[]
   context_id: string
   generated_at: string
   snapshot: SchedulerThreadSnapshot
@@ -264,6 +285,8 @@ export interface SchedulerDetailBounds {
   has_more_sessions: boolean
   has_more_objectives: boolean
   has_more_threads: boolean
+  has_more_history?: boolean
+  next_history_cursor?: string | null
   has_more_activations: boolean
   has_more_signals: boolean
   has_more_jobs: boolean
@@ -322,7 +345,7 @@ export type SchedulerObjectiveReadiness =
   | { state: 'paused' | 'blocked' | 'terminal' }
 
 export interface SchedulerObjectiveSnapshot {
-  objective: Record<string, unknown> & { id: string; status: string; generation: number }
+  objective: ObjectiveRecord
   readiness: SchedulerObjectiveReadiness
   dependencies: SchedulerDependencyRecord[]
   active_evaluation?: ThreadActivationRecord

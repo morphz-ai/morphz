@@ -134,7 +134,7 @@ test("真实HTTP SSE与remote Desktop复用Host proof：初始/提交/取消后�
       { kind: "workspace" },
       boot.csrfToken,
       (frame) => {
-        assert.ok("kind" in frame);
+        assert.ok("kind" in frame && frame.kind === "workspace");
         frames.push(frame);
       },
       () => {},
@@ -167,7 +167,7 @@ test("真实HTTP SSE与remote Desktop复用Host proof：初始/提交/取消后�
       { kind: "workspace" },
       boot.csrfToken,
       (frame) => {
-        assert.ok("kind" in frame);
+        assert.ok("kind" in frame && frame.kind === "workspace");
         reconnected.push(frame);
       },
       () => {},

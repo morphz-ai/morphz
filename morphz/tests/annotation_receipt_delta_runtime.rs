@@ -333,6 +333,7 @@ async fn accepted_receipts_enter_actual_delta_sources_without_extra_business_req
                     SchedulerQuery {
                         include_terminal: true,
                         limit: 16,
+                        ..Default::default()
                     },
                 )
                 .await

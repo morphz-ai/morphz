@@ -69,7 +69,7 @@ const DASHBOARD_APP_JS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.
 const DASHBOARD_APP_CSS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.css");
 const DASHBOARD_FAVICON: &[u8] = include_bytes!("../../dashboard/dist/favicon.svg");
 const DASHBOARD_ICONS: &[u8] = include_bytes!("../../dashboard/dist/icons.svg");
-const DASHBOARD_DURABLE_EVENT_POLL_INTERVAL: std::time::Duration =
+const DASHBOARD_DURABLE_EVENT_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(500);
 const DASHBOARD_WEBSOCKET_HEARTBEAT_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(20);
@@ -216,6 +216,11 @@ struct SessionListQuery {
     #[serde(default)]
     include_archived: bool,
     token: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+    context_id: Option<String>,
+    agent_id: Option<String>,
+    ids: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -232,6 +237,11 @@ struct OperatorPrincipalSessionsQuery {
     token: Option<String>,
     #[serde(default)]
     include_archived: bool,
+    cursor: Option<String>,
+    limit: Option<usize>,
+    context_id: Option<String>,
+    agent_id: Option<String>,
+    ids: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -621,13 +631,17 @@ struct RevokeExecutionNodeRequest {
 }
 
 #[derive(Default, serde::Deserialize)]
-struct CapabilityLeaseQuery {
+struct InventoryHttpQuery {
     token: Option<String>,
     principal_id: Option<String>,
     thread_id: Option<String>,
     target_id: Option<String>,
+    context_id: Option<String>,
     #[serde(default)]
     active_only: bool,
+    limit: Option<usize>,
+    cursor: Option<String>,
+    scope_kind: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -764,6 +778,9 @@ struct SchedulerSnapshotHttpQuery {
     include_terminal: bool,
     #[serde(default)]
     limit: Option<usize>,
+    #[serde(default)]
+    history_only: bool,
+    history_cursor: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -949,6 +966,9 @@ impl Server {
         // Another Runtime can commit into the same Store without publishing on
         // this process's EventBus, so WebSocket invalidation cannot rely on the
         // in-memory stream alone.
+        // Install the Store subscription before the head read; a peer commit
+        // in either the bootstrap or a busy read window retains a wakeup.
+        let durable_changes = self.runtime.subscribe_event_changes()?;
         let durable_after_sequence = loop {
             match self
                 .runtime
@@ -965,7 +985,7 @@ impl Server {
                         %error,
                         "Could not initialize the durable Dashboard Event tail; retrying without advancing its cursor"
                     );
-                    tokio::time::sleep(DASHBOARD_DURABLE_EVENT_POLL_INTERVAL).await;
+                    tokio::time::sleep(DASHBOARD_DURABLE_EVENT_RETRY_DELAY).await;
                 }
             }
         };
@@ -1008,6 +1028,7 @@ impl Server {
                 durable_identity_mode,
                 recent_event_ids,
                 durable_after_sequence,
+                durable_changes,
             )
             .await;
         });
@@ -1446,6 +1467,10 @@ impl Server {
                 get(handle_list_attention_acknowledgements).post(handle_acknowledge_attention),
             )
             .route(
+                "/api/contexts/:context_id/threads/:thread_id/records",
+                get(handle_thread_inspection_page),
+            )
+            .route(
                 "/api/contexts/:context_id/threads/:thread_id",
                 get(handle_get_thread_detail).post(handle_control_thread),
             )
@@ -1629,6 +1654,10 @@ impl Server {
                 post(handle_cancel_session),
             )
             .route("/api/delegations", get(handle_list_delegations))
+            .route(
+                "/api/contexts/:context_id/thread-groups/:group_id/members",
+                get(handle_group_member_page),
+            )
             .route("/api/objectives", post(handle_create_objective))
             .route(
                 "/api/objectives/:objective_id/resume",
@@ -1651,7 +1680,10 @@ impl Server {
                 post(handle_cancel_delegation),
             )
             .route("/api/approvals", get(handle_list_approvals))
-            .route("/api/approvals/:approval_id", post(handle_decide_approval))
+            .route(
+                "/api/approvals/:approval_id",
+                get(handle_get_pending_approval).post(handle_decide_approval),
+            )
             .route("/api/schedules/:schedule_id", post(handle_mutate_schedule))
             .route("/ws", get(handle_ws_upgrade))
             .fallback(handle_dashboard_fallback)
@@ -2230,53 +2262,83 @@ async fn handle_import_managed_secret(
 async fn handle_secret_scope_options(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<InventoryHttpQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let contexts = match state.runtime.list_contexts(true).await {
-        Ok(contexts) => contexts,
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    };
-    let sessions = match state.runtime.list_sessions(true).await {
-        Ok(sessions) => sessions,
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    };
-    let targets = match state
-        .runtime
-        .list_execution_targets(crate::memory::ExecutionTargetFilter {
-            limit: Some(1_000),
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(targets) => targets,
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    };
-    let mut objectives = Vec::new();
-    for context in contexts
-        .iter()
-        .filter(|context| context.status == crate::memory::SessionStatus::Active)
-    {
-        match state
-            .runtime
-            .list_context_objectives(&context.id, false)
-            .await
-        {
-            Ok(mut records) => objectives.append(&mut records),
-            Err(error) => {
-                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            }
-        }
+    let kind = query.scope_kind.as_deref().unwrap_or("runtime");
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    if kind == "runtime" {
+        return Json(json!({"contexts":[],"sessions":[],"objectives":[],"execution_targets":[],"has_more":false,"next_cursor":null})).into_response();
     }
-    Json(json!({
-        "contexts": contexts,
-        "sessions": sessions,
-        "objectives": objectives,
-        "execution_targets": targets,
-    }))
-    .into_response()
+    if matches!(kind, "context" | "session") {
+        let request = crate::memory::RuntimeDirectoryQuery {
+            kind: if kind == "context" {
+                crate::memory::RuntimeDirectoryKind::Contexts
+            } else {
+                crate::memory::RuntimeDirectoryKind::Sessions
+            },
+            context_id: if kind == "session" {
+                query.context_id
+            } else {
+                None
+            },
+            principal_id: if kind == "session" {
+                query.principal_id
+            } else {
+                None
+            },
+            cursor: query.cursor,
+            limit,
+            ..Default::default()
+        };
+        if let Err(error) = request.validate() {
+            return error_response(StatusCode::BAD_REQUEST, error.to_string());
+        }
+        return match state.runtime.read_runtime_directory_page(request).await {
+            Ok(page)=>Json(json!({"contexts":page.contexts,"sessions":page.sessions,"objectives":[],"execution_targets":[],"has_more":page.has_more,"next_cursor":page.next_cursor})).into_response(),
+            Err(error)=>error_response(StatusCode::INTERNAL_SERVER_ERROR,error.to_string()),
+        };
+    }
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let inventory_kind = match kind {
+        "objective" if query.context_id.is_some() => {
+            crate::memory::RuntimeInventoryKind::Objectives
+        }
+        "execution_target" => crate::memory::RuntimeInventoryKind::Targets,
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Scope picker requires a supported kind and exact Context for Objectives",
+            )
+        }
+    };
+    let request = crate::memory::RuntimeInventoryQuery {
+        kind: inventory_kind,
+        principal_id: principal.principal_id,
+        context_id: query.context_id,
+        thread_id: None,
+        target_id: None,
+        active_only: true,
+        cursor: query.cursor,
+        limit,
+    };
+    if let Err(error) = request.validate() {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state.runtime.read_operator_inventory_page(request).await {
+        Ok(page)=>Json(json!({"contexts":[],"sessions":[],"objectives":page.objectives,"execution_targets":page.targets,"has_more":page.has_more,"next_cursor":page.next_cursor})).into_response(),
+        Err(error)=>error_response(StatusCode::INTERNAL_SERVER_ERROR,error.to_string()),
+    }
 }
 
 async fn handle_delete_managed_secret(
@@ -3400,32 +3462,32 @@ async fn handle_search_dialogue_history(
         return error_response(StatusCode::BAD_REQUEST, "query must not be empty");
     }
     let limit = query.limit.unwrap_or(30).clamp(1, 100);
-    let visible_sessions = if is_operator_authorized(&state, &headers, query.token.as_deref())
-        && query.principal_id.is_none()
-    {
-        state
-            .runtime
-            .list_context_sessions(&context_id, true)
-            .await
-            .map_err(|error| SdkError::new(SdkErrorCode::Internal, error.to_string()))
+    let unrestricted_operator = is_operator_authorized(&state, &headers, query.token.as_deref())
+        && query.principal_id.is_none();
+    let scope_principal = if unrestricted_operator {
+        None
     } else {
-        state.sdk.list_sessions(&principal.principal_id, true).await
+        Some(principal.principal_id.clone())
     };
-    let visible_session_ids = match visible_sessions {
-        Ok(sessions) => sessions
-            .into_iter()
-            .filter(|session| session.context_id == context_id)
-            .map(|session| session.id)
-            .collect::<HashSet<_>>(),
-        Err(error) => return sdk_error_response(error),
-    };
-    if visible_session_ids.is_empty() {
-        return Json(json!({
-            "context_id": context_id,
-            "query": query_text,
-            "matches": [],
-        }))
-        .into_response();
+    // A one-row scoped existence proof avoids searching a forbidden Context.
+    let scope = state
+        .runtime
+        .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+            kind: crate::memory::RuntimeDirectoryKind::Sessions,
+            principal_id: scope_principal.clone(),
+            context_id: Some(context_id.clone()),
+            include_archived: true,
+            limit: 1,
+            ..Default::default()
+        })
+        .await;
+    match scope {
+        Ok(page) if page.sessions.is_empty() => {
+            return Json(json!({"context_id":context_id,"query":query_text,"matches":[]}))
+                .into_response()
+        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        _ => {}
     }
 
     // Fetch more lexical candidates than the UI limit because Frame and
@@ -3464,6 +3526,41 @@ async fn handle_search_dialogue_history(
         .iter()
         .map(|hit| hit.document_id.clone())
         .collect::<Vec<_>>();
+    let candidate_sessions = match state
+        .runtime
+        .event_session_points(&context_id, &event_ids)
+        .await
+    {
+        Ok(ids) => ids,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let mut visible_session_ids = HashSet::new();
+    for ids in candidate_sessions.chunks(50) {
+        let page = state
+            .runtime
+            .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                kind: crate::memory::RuntimeDirectoryKind::Sessions,
+                principal_id: scope_principal.clone(),
+                context_id: Some(context_id.clone()),
+                ids: Some(ids.to_vec()),
+                include_archived: true,
+                limit: 50,
+                ..Default::default()
+            })
+            .await;
+        match page {
+            Ok(page) => {
+                visible_session_ids.extend(page.sessions.into_iter().map(|session| session.id))
+            }
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        }
+    }
+    if visible_session_ids.is_empty() {
+        return Json(json!({"context_id":context_id,"query":query_text,"matches":[]}))
+            .into_response();
+    }
     let events = match state
         .runtime
         .query_events(QueryFilter {
@@ -3847,6 +3944,7 @@ async fn handle_update_inference(
 async fn handle_session_pending_approvals(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    Query(query): Query<crate::memory::ApprovalPageRequest>,
     headers: HeaderMap,
 ) -> Response {
     if !is_authorized(&state, &headers, None) {
@@ -3858,7 +3956,7 @@ async fn handle_session_pending_approvals(
     };
     match state
         .sdk
-        .session_pending_approvals(&principal.principal_id, &session_id)
+        .session_pending_approvals_page(&principal.principal_id, &session_id, &query)
         .await
     {
         Ok(page) => Json(page).into_response(),
@@ -3911,15 +4009,47 @@ async fn handle_session_approval_decision(
     }
 }
 
+#[derive(Default, serde::Deserialize)]
+struct PendingApprovalQuery {
+    #[serde(flatten)]
+    auth: AuthQuery,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
 async fn handle_list_approvals(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<PendingApprovalQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.auth.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = crate::memory::approval_page::key(query.cursor.as_deref()) {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state
+        .runtime
+        .pending_approvals_page(query.cursor.as_deref(), query.limit.unwrap_or(50))
+        .await
+    {
+        Ok(page) => Json(json!(page)).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+async fn handle_get_pending_approval(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    Json(json!({ "approvals": state.runtime.pending_approvals().await })).into_response()
+    match state.runtime.get_pending_approval(&id).await {
+        Ok(Some(approval)) => Json(json!(approval)).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Approval is no longer pending"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
 }
 
 async fn handle_decide_approval(
@@ -4423,6 +4553,53 @@ async fn resolve_context_mount(
     }
 }
 
+async fn runtime_directory_response(
+    state: &AppState,
+    query: SessionListQuery,
+    kind: crate::memory::RuntimeDirectoryKind,
+    principal_id: Option<String>,
+) -> Response {
+    let ids = match query.ids.as_deref() {
+        Some(value) if value.len() <= 27000 => match serde_json::from_str::<Vec<String>>(value) {
+            Ok(ids) => Some(ids),
+            Err(_) => {
+                return error_response(StatusCode::BAD_REQUEST, "invalid metadata point selection")
+            }
+        },
+        Some(_) => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "metadata point selection too large",
+            )
+        }
+        None => None,
+    };
+    let request = crate::memory::RuntimeDirectoryQuery {
+        kind,
+        principal_id: principal_id.clone(),
+        include_archived: query.include_archived,
+        identity_order: false,
+        cursor: query.cursor,
+        limit: query.limit.unwrap_or(50).clamp(1, 200),
+        context_id: query.context_id,
+        agent_id: query.agent_id,
+        ids,
+    };
+    if let Err(error) = request.validate() {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state.runtime.read_runtime_directory_page(request).await {
+        Ok(page) => {
+            let mut value = serde_json::to_value(page).expect("directory page is serializable");
+            if let Some(principal_id) = principal_id {
+                value["principal_id"] = json!(principal_id);
+            }
+            Json(value).into_response()
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
 async fn handle_list_agents(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -4431,10 +4608,13 @@ async fn handle_list_agents(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    match state.runtime.list_agents(query.include_archived).await {
-        Ok(agents) => Json(json!({ "agents": agents })).into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
+    runtime_directory_response(
+        &state,
+        query,
+        crate::memory::RuntimeDirectoryKind::Agents,
+        None,
+    )
+    .await
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -4745,26 +4925,22 @@ async fn handle_list_sessions(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    // Operator visibility is administrative and must not be represented by
-    // adding the Runtime's default Principal as a participant in every Session.
-    if is_operator_authorized(&state, &headers, query.token.as_deref()) {
-        return match state.runtime.list_sessions(query.include_archived).await {
-            Ok(sessions) => Json(json!({ "sessions": sessions })).into_response(),
-            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        };
-    }
-    let principal = match request_principal(&state, &headers, None) {
-        Ok(principal) => principal,
-        Err(error) => return sdk_error_response(error),
+    // Operator read authority stays distinct from Principal participation.
+    let principal_id = if is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        None
+    } else {
+        match request_principal(&state, &headers, None) {
+            Ok(principal) => Some(principal.principal_id),
+            Err(error) => return sdk_error_response(error),
+        }
     };
-    match state
-        .sdk
-        .list_sessions(&principal.principal_id, query.include_archived)
-        .await
-    {
-        Ok(sessions) => Json(json!({ "sessions": sessions })).into_response(),
-        Err(error) => sdk_error_response(error),
-    }
+    runtime_directory_response(
+        &state,
+        query,
+        crate::memory::RuntimeDirectoryKind::Sessions,
+        principal_id,
+    )
+    .await
 }
 
 async fn handle_search_operator_principals(
@@ -4815,18 +4991,21 @@ async fn handle_list_operator_principal_sessions(
     if let Err(error) = validate_principal_id(&principal_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
-    match state
-        .runtime
-        .list_principal_sessions(&principal_id, query.include_archived)
-        .await
-    {
-        Ok(sessions) => Json(json!({
-            "principal_id": principal_id,
-            "sessions": sessions,
-        }))
-        .into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
+    runtime_directory_response(
+        &state,
+        SessionListQuery {
+            include_archived: query.include_archived,
+            token: query.token,
+            cursor: query.cursor,
+            limit: query.limit,
+            context_id: query.context_id,
+            agent_id: query.agent_id,
+            ids: query.ids,
+        },
+        crate::memory::RuntimeDirectoryKind::Sessions,
+        Some(principal_id),
+    )
+    .await
 }
 
 async fn handle_list_contexts(
@@ -4837,16 +5016,19 @@ async fn handle_list_contexts(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    match state.runtime.list_contexts(query.include_archived).await {
-        Ok(contexts) => Json(json!({ "contexts": contexts })).into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
+    runtime_directory_response(
+        &state,
+        query,
+        crate::memory::RuntimeDirectoryKind::Contexts,
+        None,
+    )
+    .await
 }
 
 async fn handle_list_execution_targets(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<InventoryHttpQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -4860,13 +5042,22 @@ async fn handle_list_execution_targets(
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
-    match state
-        .sdk
-        .list_execution_targets(&principal.principal_id)
-        .await
-    {
-        Ok(targets) => Json(json!({ "targets": targets })).into_response(),
-        Err(error) => sdk_error_response(error),
+    let request = crate::memory::RuntimeInventoryQuery {
+        kind: crate::memory::RuntimeInventoryKind::Targets,
+        principal_id: principal.principal_id.clone(),
+        context_id: None,
+        thread_id: query.thread_id,
+        target_id: query.target_id,
+        active_only: query.active_only,
+        cursor: query.cursor,
+        limit: query.limit.unwrap_or(50),
+    };
+    if let Err(error) = request.validate() {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state.runtime.read_operator_inventory_page(request).await {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -5032,7 +5223,7 @@ async fn handle_revoke_execution_target_authorization(
 async fn handle_list_capability_leases(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<CapabilityLeaseQuery>,
+    Query(query): Query<InventoryHttpQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -5041,18 +5232,22 @@ async fn handle_list_capability_leases(
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
-    match state
-        .sdk
-        .list_capability_leases(
-            &principal.principal_id,
-            query.thread_id,
-            query.target_id,
-            query.active_only,
-        )
-        .await
-    {
-        Ok(leases) => Json(json!({ "leases": leases })).into_response(),
-        Err(error) => sdk_error_response(error),
+    let request = crate::memory::RuntimeInventoryQuery {
+        kind: crate::memory::RuntimeInventoryKind::Leases,
+        principal_id: principal.principal_id.clone(),
+        context_id: None,
+        thread_id: query.thread_id,
+        target_id: query.target_id,
+        active_only: query.active_only,
+        cursor: query.cursor,
+        limit: query.limit.unwrap_or(50),
+    };
+    if let Err(error) = request.validate() {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state.runtime.read_operator_inventory_page(request).await {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -5209,7 +5404,7 @@ async fn handle_rotate_execution_node_key(
 async fn handle_list_execution_nodes(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<InventoryHttpQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -5218,13 +5413,22 @@ async fn handle_list_execution_nodes(
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
-    match state
-        .sdk
-        .list_execution_nodes(&principal.principal_id)
-        .await
-    {
-        Ok(nodes) => Json(json!({ "nodes": nodes })).into_response(),
-        Err(error) => sdk_error_response(error),
+    let request = crate::memory::RuntimeInventoryQuery {
+        kind: crate::memory::RuntimeInventoryKind::Nodes,
+        principal_id: principal.principal_id.clone(),
+        context_id: None,
+        thread_id: query.thread_id,
+        target_id: query.target_id,
+        active_only: query.active_only,
+        cursor: query.cursor,
+        limit: query.limit.unwrap_or(50),
+    };
+    if let Err(error) = request.validate() {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state.runtime.read_operator_inventory_page(request).await {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -6427,6 +6631,52 @@ async fn handle_get_model_usage(
     }
 }
 
+#[derive(Default, serde::Deserialize)]
+struct GroupMemberHttpQuery {
+    token: Option<String>,
+    cursor: Option<String>,
+    limit: Option<usize>,
+    expected_revision: Option<u64>,
+}
+async fn handle_group_member_page(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, group_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<GroupMemberHttpQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) =
+        crate::memory::group_page::GroupMemberCursor::decode(query.cursor.as_deref())
+    {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state
+        .runtime
+        .scheduler_group_member_page(
+            &context_id,
+            &group_id,
+            query.cursor,
+            query.limit.unwrap_or(64),
+            query.expected_revision,
+        )
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => {
+            let status = if error.to_string().contains("revision conflict") {
+                StatusCode::CONFLICT
+            } else if error.to_string().contains("does not exist") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            error_response(status, error.to_string())
+        }
+    }
+}
+
 async fn handle_get_scheduler_snapshot(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
@@ -6442,6 +6692,8 @@ async fn handle_get_scheduler_snapshot(
             &context_id,
             SchedulerQuery {
                 include_terminal: query.include_terminal,
+                history_only: query.history_only,
+                history_cursor: query.history_cursor,
                 limit: query.limit.unwrap_or(200),
             },
         )
@@ -6513,14 +6765,68 @@ async fn handle_acknowledge_attention(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ThreadInspectionHttpQuery {
+    #[serde(flatten)]
+    auth: AuthQuery,
+    #[serde(flatten)]
+    read: crate::memory::inspection_page::ThreadInspectionQuery,
+}
+async fn handle_thread_inspection_page(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<ThreadInspectionHttpQuery>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.auth.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if query.read.key(&thread_id).is_err() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "invalid inspection cursor or scope",
+        )
+            .into_response();
+    }
+    match state
+        .sdk
+        .runtime()
+        .thread_inspection_page(&context_id, &thread_id, query.read)
+        .await
+    {
+        Ok(Some(page)) => Json(page).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ThreadDetailHttpQuery {
+    #[serde(flatten)]
+    auth: AuthQuery,
+    #[serde(default)]
+    metadata_only: bool,
+}
 async fn handle_get_thread_detail(
     State(state): State<Arc<AppState>>,
     Path((context_id, thread_id)): Path<(String, String)>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<ThreadDetailHttpQuery>,
 ) -> impl IntoResponse {
-    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+    if !is_operator_authorized(&state, &headers, query.auth.token.as_deref()) {
         return unauthorized_response();
+    }
+    if query.metadata_only {
+        return match state
+            .sdk
+            .runtime()
+            .thread_detail_metadata(&context_id, &thread_id)
+            .await
+        {
+            Ok(Some(detail)) => Json(detail).into_response(),
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        };
     }
     match state.sdk.thread_detail(&context_id, &thread_id).await {
         Ok(detail) => Json(detail).into_response(),
@@ -10082,15 +10388,27 @@ async fn handle_cancel_delegation(
     }
 }
 
+#[derive(serde::Deserialize)]
+struct WebSocketReadQuery {
+    #[serde(flatten)]
+    auth: AuthQuery,
+    #[serde(default)]
+    changes_only: bool,
+}
+
 async fn handle_ws_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<WebSocketReadQuery>,
     #[cfg(feature = "remote-store")] gate: Option<
         axum::Extension<Arc<crate::memory::remote::host_lifecycle::HostRequestGate>>,
     >,
 ) -> impl IntoResponse {
+    let WebSocketReadQuery {
+        auth: query,
+        changes_only,
+    } = query;
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
@@ -10130,7 +10448,8 @@ async fn handle_ws_upgrade(
             socket,
             state,
             query.session_id,
-            query.observe_model_requests,
+            query.observe_model_requests && !changes_only,
+            changes_only,
         )
         .await
     })
@@ -10196,6 +10515,7 @@ fn dashboard_event_requires_session_touch(event: &Event) -> bool {
             | "runtime/model_attempt_snapshot"
             | "runtime/model_request_snapshot"
             | "chat/context_inspect"
+            | "runtime/terminal_changed"
     )
 }
 
@@ -10316,12 +10636,24 @@ async fn mirror_durable_dashboard_events(
     identity_mode: ServerIdentityMode,
     recent_event_ids: Arc<Mutex<RecentDashboardEventIds>>,
     mut after_sequence: u64,
+    mut changes: tokio::sync::watch::Receiver<u64>,
 ) {
     let mut wait_before_query = true;
+    let mut failed = false;
     loop {
-        if wait_before_query {
-            tokio::time::sleep(DASHBOARD_DURABLE_EVENT_POLL_INTERVAL).await;
+        if failed {
+            // A failed read/mirror owns bounded retry. Healthy idle never
+            // enters this branch and never queries the Store on a timer.
+            tokio::time::sleep(DASHBOARD_DURABLE_EVENT_RETRY_DELAY).await;
+            failed = false;
+        } else if wait_before_query && changes.changed().await.is_err() {
+            tracing::error!(
+                event_code = "web.websocket.durable_tail_notifications_closed",
+                "Durable Event notification source closed"
+            );
+            return;
         }
+        changes.borrow_and_update();
         let events = match runtime
             .query_events(QueryFilter {
                 after_sequence: Some(after_sequence),
@@ -10337,7 +10669,7 @@ async fn mirror_durable_dashboard_events(
                     %error,
                     "Durable Dashboard Event tail failed; retaining its cursor for retry"
                 );
-                wait_before_query = true;
+                failed = true;
                 continue;
             }
         };
@@ -10372,7 +10704,7 @@ async fn mirror_durable_dashboard_events(
                     %error,
                     "Could not mirror a peer Runtime's durable Event to Dashboard WebSockets"
                 );
-                wait_before_query = true;
+                failed = true;
                 break;
             }
             after_sequence = after_sequence.max(sequence);
@@ -10385,6 +10717,7 @@ async fn handle_ws(
     state: Arc<AppState>,
     session_filter: Option<String>,
     observe_model_requests: bool,
+    changes_only: bool,
 ) {
     let mut rx = state.broadcast_tx.subscribe();
     let observer_id = observe_model_requests
@@ -10408,6 +10741,7 @@ async fn handle_ws(
         Arc::clone(&state),
         session_filter,
         observe_model_requests,
+        changes_only,
         &mut rx,
     )
     .await;
@@ -10417,18 +10751,59 @@ async fn handle_ws(
     }
 }
 
+fn websocket_event_text(
+    event: &Event,
+    changes_only: bool,
+) -> Result<String, crate::runtime::RuntimeError> {
+    if !changes_only {
+        return Ok(serde_json::to_string(event)?);
+    }
+    if event.id.len() > 512 || event.topic.len() > 256 {
+        return Err("Event invalidation metadata budget exceeded".into());
+    }
+    let mut payload = serde_json::Map::new();
+    for key in ["context_id", "session_id"] {
+        if let Some(value) = event.payload.get(key).and_then(serde_json::Value::as_str) {
+            if value.len() > 512 {
+                return Err("Event invalidation scope budget exceeded".into());
+            }
+            payload.insert(key.into(), json!(value));
+        }
+    }
+    if event.topic == "runtime/terminal_changed" {
+        for key in [
+            "terminal_id",
+            "principal_id",
+            "root_turn_id",
+            "scope_ref",
+            "kind",
+        ] {
+            if let Some(value) = event.payload.get(key).and_then(serde_json::Value::as_str) {
+                if value.len() > 512 {
+                    return Err("Terminal invalidation metadata budget exceeded".into());
+                }
+                payload.insert(key.into(), json!(value));
+            }
+        }
+    }
+    Ok(serde_json::to_string(
+        &json!({"id":event.id,"sequence":event.sequence,"topic":event.topic,"payload":payload}),
+    )?)
+}
+
 async fn handle_ws_connection(
     mut socket: WebSocket,
     state: Arc<AppState>,
     session_filter: Option<String>,
     observe_model_requests: bool,
+    changes_only: bool,
     rx: &mut broadcast::Receiver<Event>,
 ) {
     // Subscribe before reading the durable state. Events committed during the
     // snapshot query remain queued in `rx`, so the client sees a consistent
     // snapshot followed by its incremental suffix instead of losing the
     // transition that raced with reconnect.
-    if let Some(session_id) = session_filter.as_deref() {
+    if let Some(session_id) = session_filter.as_deref().filter(|_| !changes_only) {
         match model_attempt_snapshot_event(&state.runtime, session_id).await {
             Ok(snapshot) => {
                 if let Ok(json_str) = serde_json::to_string(&snapshot) {
@@ -10462,6 +10837,7 @@ async fn handle_ws_connection(
             broadcast_msg = rx.recv() => {
                 match broadcast_msg {
                     Ok(ev) => {
+                        if changes_only && matches!(ev.topic.as_str(), "runtime/model_stream" | "runtime/model_request_snapshot" | "runtime/model_attempt_snapshot") { continue; }
                         if ev.topic == "runtime/model_request_snapshot" && !observe_model_requests {
                             continue;
                         }
@@ -10474,10 +10850,9 @@ async fn handle_ws_connection(
                                 continue;
                             }
                         }
-                        if let Ok(json_str) = serde_json::to_string(&ev) {
-                            if socket.send(WsMessage::Text(json_str)).await.is_err() {
-                                break;
-                            }
+                        match websocket_event_text(&ev,changes_only) {
+                            Ok(json_str) => if socket.send(WsMessage::Text(json_str)).await.is_err() { break; },
+                            Err(error) => {tracing::warn!(%error,event_code="web.websocket.metadata_budget_exceeded","Closing invalidation stream for current-state resynchronization");break;}
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
@@ -11030,6 +11405,43 @@ mod tests {
         (tmp, state, runtime)
     }
 
+    #[test]
+    fn terminal_changes_only_frames_expose_scope_metadata_without_screen_bytes() {
+        let event=Event::new("terminal-hint".into(),"runtime/terminal".into(),"runtime/terminal_changed".into(),"runtime/terminal_changed".into(),json!({"session_id":"session","context_id":"context","terminal_id":"terminal","principal_id":"human","scope_ref":"scope","kind":"output","text":"X".repeat(100000),"screen":{"text":"untrusted bytes"}}).as_object().unwrap().clone());
+        let hint = websocket_event_text(&event, true).unwrap();
+        assert!(hint.len() < 1024);
+        let value: serde_json::Value = serde_json::from_str(&hint).unwrap();
+        assert_eq!(
+            value["payload"],
+            json!({"session_id":"session","context_id":"context","terminal_id":"terminal","principal_id":"human","scope_ref":"scope","kind":"output"})
+        );
+        assert!(!dashboard_event_requires_session_touch(&event));
+    }
+
+    #[test]
+    fn websocket_change_hints_never_serialize_event_bodies() {
+        let mut payload = serde_json::Map::new();
+        payload.insert("context_id".into(), json!("context-one"));
+        payload.insert("session_id".into(), json!("session-one"));
+        payload.insert("text".into(), json!("PRIVATE".repeat(100_000)));
+        let event = Event::new(
+            "bounded-hint".into(),
+            "fixture".into(),
+            "test".into(),
+            "runtime/thread_completed".into(),
+            payload,
+        );
+        let hint = websocket_event_text(&event, true).unwrap();
+        assert!(hint.len() < 2048);
+        assert!(!hint.contains("PRIVATE"));
+        let value: serde_json::Value = serde_json::from_str(&hint).unwrap();
+        assert_eq!(value["payload"]["session_id"], "session-one");
+        assert_eq!(value["payload"].as_object().unwrap().len(), 2);
+        assert!(websocket_event_text(&event, false)
+            .unwrap()
+            .contains("PRIVATE"));
+    }
+
     #[tokio::test]
     async fn session_approval_http_requires_gateway_auth_before_principal_assertion() {
         let dir = tempfile::tempdir().unwrap();
@@ -11080,6 +11492,7 @@ mod tests {
             handle_session_pending_approvals(
                 State(state.clone()),
                 Path("approval-http-session".into()),
+                Query(Default::default()),
                 headers.clone()
             )
             .await
@@ -11118,6 +11531,7 @@ mod tests {
             handle_session_pending_approvals(
                 State(state.clone()),
                 Path("approval-http-session".into()),
+                Query(Default::default()),
                 headers.clone()
             )
             .await
@@ -11129,11 +11543,9 @@ mod tests {
             handle_list_approvals(
                 State(state.clone()),
                 headers.clone(),
-                Query(AuthQuery {
-                    token: None,
-                    principal_id: None,
-                    session_id: None,
-                    observe_model_requests: false,
+                Query(PendingApprovalQuery {
+                    auth: AuthQuery::default(),
+                    ..Default::default()
                 })
             )
             .await
@@ -11146,6 +11558,7 @@ mod tests {
             handle_session_pending_approvals(
                 State(state.clone()),
                 Path("approval-http-session".into()),
+                Query(Default::default()),
                 headers
             )
             .await
@@ -11912,7 +12325,27 @@ mod tests {
 
     #[tokio::test]
     async fn objective_http_creation_atomically_binds_exact_harness() {
-        let (_database, state, runtime) = test_state().await;
+        // This contract is HTTP atomic binding/editing. Live evaluation owns
+        // its own lifecycle tests; a running supervisor can legitimately
+        // advance the CAS revision between the read and edit below.
+        let database = TempSqliteDb::new().unwrap();
+        let (state, runtime) = test_state_at_with_workers(database.path(), false).await;
+        runtime
+            .ensure_agent(NewAgent {
+                id: "agent-test".into(),
+                title: "Test".into(),
+                root_context_id: "context-test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: "context-test".into(),
+                agent_id: "agent-test".into(),
+                title: "Test".into(),
+            })
+            .await
+            .unwrap();
         let session_response = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -12047,10 +12480,8 @@ mod tests {
             "a rejected Objective must not leave an orphan request Event"
         );
 
-        // Objective creation may immediately hand the record to the supervisor,
-        // which advances its revision before this HTTP round trip continues.
-        // Editing must therefore fence against the latest authoritative record,
-        // not the creation response snapshot.
+        // Fence the edit to the authoritative record, rather than depending
+        // on the creation response or weakening the revision assertion.
         let objective_before_edit = runtime
             .get_objective("objective-http-harness")
             .await
@@ -13607,6 +14038,7 @@ mod tests {
             Query(SessionListQuery {
                 token: None,
                 include_archived: true,
+                ..Default::default()
             }),
         )
         .await
@@ -13631,6 +14063,7 @@ mod tests {
             Query(SessionListQuery {
                 token: None,
                 include_archived: true,
+                ..Default::default()
             }),
         )
         .await
@@ -13717,6 +14150,7 @@ mod tests {
             Query(OperatorPrincipalSessionsQuery {
                 token: None,
                 include_archived: true,
+                ..Default::default()
             }),
         )
         .await
@@ -14071,6 +14505,7 @@ mod tests {
             Query(OperatorPrincipalSessionsQuery {
                 token: None,
                 include_archived: true,
+                ..Default::default()
             }),
         )
         .await
@@ -19018,6 +19453,7 @@ account = "xai-account"
                 token: None,
                 include_terminal: true,
                 limit: Some(100),
+                ..Default::default()
             }),
         )
         .await

@@ -724,6 +724,7 @@ struct UiState {
     delegations: Vec<DelegationRecord>,
     sessions: Vec<SessionRecord>,
     session_selection: usize,
+    session_next_cursor: Option<String>,
     session_drafts: BTreeMap<String, String>,
     model_options: Vec<InferenceModelOption>,
     tool_names: Vec<String>,
@@ -795,6 +796,7 @@ impl UiState {
             delegations: Vec::new(),
             sessions: Vec::new(),
             session_selection: 0,
+            session_next_cursor: None,
             session_drafts: BTreeMap::new(),
             model_options: Vec::new(),
             tool_names: runtime.tool_names(),
@@ -4844,6 +4846,7 @@ enum UiAction {
     OpenControl,
     ExecuteControl(ControlAction),
     SwitchSession(String),
+    LoadMoreSessions,
     Approve(TuiApprovalChoice),
 }
 
@@ -4933,6 +4936,9 @@ pub async fn run(
         state.context_id = record.context_id;
         state.session_title = Some(record.title);
     }
+    let mut durable_event_changes = runtime.subscribe_event_changes()?;
+    let mut durable_notifications_live = true;
+    let mut runtime_events = runtime.subscribe("*", 2_048);
     let history = session.events(None).await.unwrap_or_default();
     for event in &history {
         state.ingest_history(event);
@@ -4955,13 +4961,6 @@ pub async fn run(
     if let Ok(model_options) = runtime.inference_model_options().await {
         state.model_options = model_options;
     }
-    let sdk = MorphzSdk::new(runtime.clone());
-    let principal = sdk.default_principal();
-    if let Ok(sessions) = sdk.list_sessions(&principal.principal_id, false).await {
-        state.set_sessions(sessions);
-    }
-
-    let mut runtime_events = runtime.subscribe("*", 2_048);
     let mut pending_harness = initial_harness;
     if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
         submit_prompt(
@@ -4982,8 +4981,6 @@ pub async fn run(
     let mut input_events = EventStream::new();
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut durable_event_tick = tokio::time::interval(std::time::Duration::from_millis(500));
-    durable_event_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let shell_cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut embedded_shell: Option<shell::EmbeddedShell> = None;
     let mut shell_visible = false;
@@ -5124,6 +5121,24 @@ pub async fn run(
                                     }
                                 }
                             }
+                            UiAction::LoadMoreSessions => {
+                                if let Some(cursor)=state.session_next_cursor.clone() {
+                                    let sdk=MorphzSdk::new(runtime.clone());
+                                    let principal=sdk.default_principal();
+                                    match sdk.list_sessions_page(&principal.principal_id,crate::memory::RuntimeDirectoryQuery{cursor:Some(cursor),..Default::default()}).await {
+                                        Ok(page)=>{
+                                            state.session_next_cursor=page.next_cursor;
+                                            let selected=state.selected_session_id().map(str::to_owned);
+                                            let mut sessions=std::mem::take(&mut state.sessions);
+                                            let ids=sessions.iter().map(|s|s.id.clone()).collect::<std::collections::HashSet<_>>();
+                                            sessions.extend(page.sessions.into_iter().filter(|s|!ids.contains(&s.id)));
+                                            state.set_sessions(sessions);
+                                            if let Some(selected)=selected {if let Some(index)=state.sessions.iter().position(|s|s.id==selected){state.session_selection=index;}}
+                                        }
+                                        Err(error)=>state.push(EntryKind::Error,error.to_string()),
+                                    }
+                                }
+                            }
                             UiAction::SwitchSession(session_id) => {
                                 if let Err(error) = switch_tui_session(
                                     &runtime,
@@ -5192,10 +5207,17 @@ pub async fn run(
                     ingest_tui_runtime_event(&runtime, &session, &mut state, event).await;
                 }
             }
-            _ = durable_event_tick.tick() => {
-                // EventBus is intentionally process-local. Tail the durable
-                // Session log as the cross-Runtime observation channel while
-                // retaining EventBus for low-latency and transient model deltas.
+            changed = async {
+                if durable_notifications_live {durable_event_changes.changed().await}
+                else {std::future::pending().await}
+            } => {
+                if changed.is_err() {
+                    durable_notifications_live=false;
+                    state.push(EntryKind::Error,"Durable change notifications closed; retained output is preserved. Reopen the view to reconnect.");
+                    continue;
+                }
+                // A native committed-change hint owns this bounded delta.
+                // Local animation ticks perform no data reads.
                 if let Ok(events) = session.events(Some(durable_event_cursor)).await {
                     for event in events {
                         if let Some(sequence) = event.sequence {
@@ -5367,9 +5389,13 @@ async fn execute_control_action(
         ControlAction::ShowSessions => {
             let sdk = MorphzSdk::new(runtime.clone());
             let principal = sdk.default_principal();
-            match sdk.list_sessions(&principal.principal_id, false).await {
-                Ok(sessions) => {
-                    state.set_sessions(sessions);
+            match sdk
+                .list_sessions_page(&principal.principal_id, Default::default())
+                .await
+            {
+                Ok(page) => {
+                    state.session_next_cursor = page.next_cursor;
+                    state.set_sessions(page.sessions);
                     state.close_nonapproval_overlays();
                     state.show_sessions = true;
                 }
@@ -5667,7 +5693,6 @@ async fn switch_tui_session(
     let history = target.events(None).await?;
     let context_view = target.inspect_context_view().await?;
     let delegations = runtime.list_delegations().await?;
-    let sessions = sdk.list_sessions(&principal.principal_id, false).await?;
 
     state
         .session_drafts
@@ -5711,7 +5736,6 @@ async fn switch_tui_session(
         state.tr("ready", "就绪")
     }
     .to_string();
-    state.set_sessions(sessions);
     state.set_active_view(UiView::Conversation);
     *session = target;
     Ok(())
@@ -5844,16 +5868,28 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
                 UiAction::None
             }
             KeyCode::Down => {
-                state.move_session_selection(1);
-                UiAction::None
+                if state.session_selection + 1 >= state.sessions.len()
+                    && state.session_next_cursor.is_some()
+                {
+                    UiAction::LoadMoreSessions
+                } else {
+                    state.move_session_selection(1);
+                    UiAction::None
+                }
             }
             KeyCode::PageUp => {
                 state.move_session_selection(-8);
                 UiAction::None
             }
             KeyCode::PageDown => {
-                state.move_session_selection(8);
-                UiAction::None
+                if state.session_selection + 8 >= state.sessions.len()
+                    && state.session_next_cursor.is_some()
+                {
+                    UiAction::LoadMoreSessions
+                } else {
+                    state.move_session_selection(8);
+                    UiAction::None
+                }
             }
             KeyCode::Home => {
                 state.session_selection = 0;
@@ -7102,6 +7138,7 @@ mod tests {
             delegations: Vec::new(),
             sessions: Vec::new(),
             session_selection: 0,
+            session_next_cursor: None,
             session_drafts: BTreeMap::new(),
             model_options: Vec::new(),
             tool_names: vec!["read".to_string(), "search".to_string()],
@@ -7278,6 +7315,7 @@ mod tests {
             },
             UiAction::None
             | UiAction::Submit { .. }
+            | UiAction::LoadMoreSessions
             | UiAction::SwitchSession(_)
             | UiAction::Approve(_) => {}
         }

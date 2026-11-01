@@ -240,6 +240,7 @@ export class HttpApplicationClient {
               }
             : {}),
           refreshActivity: p.refreshActivity,
+          loadMoreApprovals: p.loadMoreApprovals,
         });
         if (paramsQuery) path += "?" + paramsQuery;
         break;

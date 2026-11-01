@@ -224,7 +224,7 @@ export const UserInputDialogHost = forwardRef<
         return;
       }
       void DASHBOARD_API.get<ThreadDetailResponse>(
-        `/api/contexts/${encodeURIComponent(request.context_id)}/threads/${encodeURIComponent(request.thread_id)}`,
+        `/api/contexts/${encodeURIComponent(request.context_id)}/threads/${encodeURIComponent(request.thread_id)}?metadata_only=true`,
       )
         .then((detail) => {
           const actual = currentQuestion(detail.snapshot);
@@ -309,7 +309,7 @@ export const UserInputDialogHost = forwardRef<
     try {
       if (!command) {
         const detail = await DASHBOARD_API.get<ThreadDetailResponse>(
-          `/api/contexts/${encodeURIComponent(draft.request.context_id)}/threads/${encodeURIComponent(draft.request.thread_id)}`,
+          `/api/contexts/${encodeURIComponent(draft.request.context_id)}/threads/${encodeURIComponent(draft.request.thread_id)}?metadata_only=true`,
         );
         if (!mounted.current) return;
         const actual = currentQuestion(detail.snapshot);

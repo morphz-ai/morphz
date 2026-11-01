@@ -313,6 +313,37 @@ impl SchedulerDependencyStore for PostgresStore {
         rows.iter().map(dependency_from_row).collect()
     }
 
+    async fn list_objective_projection_dependencies(
+        &self,
+        owners: &[(String, u64)],
+    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
+        let mut records = Vec::new();
+        for chunk in owners.chunks(128) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut query =
+                sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH owners(id,generation) AS (VALUES ");
+            {
+                let mut values = query.separated(",");
+                for (id, generation) in chunk {
+                    values
+                        .push("(")
+                        .push_bind_unseparated(id)
+                        .push_unseparated(",")
+                        .push_bind_unseparated(i64::try_from(*generation)?)
+                        .push_unseparated(")");
+                }
+            }
+            query.push(") SELECT d.* FROM owners o JOIN scheduler_dependencies d ON d.owner_id=o.id AND d.owner_generation=o.generation WHERE d.owner_kind='objective' AND d.status='pending' AND d.required=TRUE ORDER BY d.owner_id,d.id");
+            let rows = query.build().fetch_all(&self.pool).await?;
+            for row in &rows {
+                records.push(dependency_from_row(row)?);
+            }
+        }
+        Ok(records)
+    }
+
     async fn list_thread_projection_dependencies(
         &self,
         owners: &[(String, u64)],

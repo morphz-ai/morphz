@@ -93,7 +93,7 @@ export async function submitThreadControl(
     } catch (error) {
       if (!(error instanceof DashboardApiError) || error.status !== 409)
         throw error
-      if (attempt === 1) throw new Error(conflictMessage)
+      if (attempt === 1) throw new Error(conflictMessage, { cause: error })
     }
   }
   throw new Error(conflictMessage)

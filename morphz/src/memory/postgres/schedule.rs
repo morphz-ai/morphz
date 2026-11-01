@@ -19,7 +19,7 @@ use crate::scheduler::{
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, QueryBuilder, Row};
+use sqlx::{PgPool, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -88,7 +88,7 @@ fn parse_status(value: &str) -> Result<ScheduleStatus, StoreError> {
     }
 }
 
-fn schedule_from_row(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
+pub(super) fn schedule_from_row(row: &PgRow) -> Result<ScheduleRecord, StoreError> {
     Ok(ScheduleRecord {
         reasoning_effort: row.get("reasoning_effort"),
         id: row.get("id"),
@@ -1239,22 +1239,22 @@ impl ScheduleStore for PostgresStore {
         include_terminal: bool,
         limit: usize,
     ) -> Result<Vec<ScheduleRecord>, StoreError> {
-        let mut query = QueryBuilder::<Postgres>::new(
-            r#"SELECT schedules.* FROM schedules
-               INNER JOIN threads ON threads.id = schedules.thread_id
-               WHERE threads.context_id = "#,
-        );
-        query.push_bind(context_id);
-        if !include_terminal {
-            query.push(" AND schedules.status IN ('queued', 'paused')");
+        if limit == 0 {
+            return Ok(Vec::new());
         }
+        let mut query = crate::memory::directory::schedule_index::schedule_inventory_query!(
+            sqlx::Postgres,
+            context_id,
+            include_terminal,
+            limit
+        );
         query
-            .push(
-                " ORDER BY CASE WHEN schedules.status IN ('queued', 'paused') THEN 0 ELSE 1 END, schedules.updated_at DESC, schedules.id LIMIT ",
-            )
-            .push_bind(i64::try_from(limit)?);
-        let rows = query.build().fetch_all(&self.pool).await?;
-        rows.iter().map(schedule_from_row).collect()
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(schedule_from_row)
+            .collect()
     }
 
     async fn list_thread_schedules(
@@ -1262,24 +1262,34 @@ impl ScheduleStore for PostgresStore {
         context_id: &str,
         thread_ids: &[String],
     ) -> Result<Vec<ScheduleRecord>, StoreError> {
-        if thread_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut query = QueryBuilder::<Postgres>::new(
-            "SELECT schedules.* FROM schedules INNER JOIN threads ON threads.id = schedules.thread_id WHERE threads.context_id = ",
-        );
-        query
-            .push_bind(context_id)
-            .push(" AND schedules.thread_id IN (");
-        {
-            let mut values = query.separated(", ");
-            for thread_id in thread_ids {
-                values.push_bind(thread_id);
+        let mut records = Vec::new();
+        for ids in thread_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query
+                    .push("SELECT * FROM (SELECT s.* FROM schedules s JOIN threads t ON t.id=s.thread_id WHERE t.context_id=")
+                    .push_bind(context_id)
+                    .push(" AND s.thread_id=")
+                    .push_bind(id)
+                    .push(" ORDER BY s.created_at DESC,s.id DESC LIMIT 32) schedule_head");
+            }
+            records.extend(
+                query
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(schedule_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
-        query.push(") ORDER BY COALESCE(schedules.not_before, schedules.created_at), schedules.id");
-        let rows = query.build().fetch_all(&self.pool).await?;
-        rows.iter().map(schedule_from_row).collect()
+        Ok(records)
     }
 
     async fn wake_schedules_for_dependency(

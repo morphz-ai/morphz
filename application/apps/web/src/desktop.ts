@@ -45,7 +45,10 @@ declare global {
                 conversationId: string;
                 kind?: "platform";
               }
-            | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope,
+            | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope
+            | import("zod").infer<
+                typeof import("../../../packages/core/src/terminal.js").terminalChangeScopeSchema
+              >,
           generation: string,
         ): Promise<void>;
         unsubscribe(id: string): void;
@@ -55,7 +58,8 @@ declare global {
             closed?: boolean;
             value?:
               | import("../../../packages/core/src/live-conversation.js").ConversationStream
-              | import("../../../packages/core/src/workspace-changes.js").WorkspaceChange;
+              | import("../../../packages/core/src/workspace-changes.js").WorkspaceChange
+              | import("../../../packages/core/src/terminal.js").TerminalChange;
           }) => void,
         ): () => void;
       };

@@ -1851,26 +1851,20 @@ impl ActivationStore for PostgresStore {
         &self,
         activation_ids: &[String],
     ) -> Result<Vec<(String, ThreadSignalRecord)>, StoreError> {
-        if activation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = Vec::new();
-        for activation_ids in activation_ids.chunks(500) {
-            let mut query = QueryBuilder::<Postgres>::new(
-                "SELECT links.activation_id AS link_activation_id, signals.* FROM activation_signals links JOIN thread_signals signals ON signals.id = links.signal_id WHERE links.activation_id IN (",
-            );
-            {
-                let mut values = query.separated(", ");
-                for activation_id in activation_ids {
-                    values.push_bind(activation_id);
-                }
+        for ids in activation_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
-            query.push(") ORDER BY links.activation_id, links.ordinal");
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query.push("SELECT * FROM (SELECT l.activation_id AS link_activation_id,s.* FROM activation_signals l CROSS JOIN thread_signals s WHERE s.id=l.signal_id AND l.activation_id=").push_bind(id).push(" ORDER BY l.ordinal DESC,l.signal_id DESC LIMIT 64) signal_head");
+            }
             for row in query.build().fetch_all(&self.pool).await? {
-                records.push((
-                    row.try_get::<String, _>("link_activation_id")?,
-                    signal_from_row(&row)?,
-                ));
+                records.push((row.try_get("link_activation_id")?, signal_from_row(&row)?));
             }
         }
         Ok(records)
@@ -2382,37 +2376,45 @@ impl ActivationStore for PostgresStore {
         if root_turn_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut query = QueryBuilder::<Postgres>::new(
-            "WITH selected AS MATERIALIZED (SELECT * FROM thread_activations WHERE context_id = ",
-        );
-        query.push_bind(context_id).push(" AND root_turn_id IN (");
-        {
-            let mut values = query.separated(", ");
-            for root_turn_id in root_turn_ids {
-                values.push_bind(root_turn_id);
+        let mut records = Vec::new();
+        // Every branch seeks one root's live range or newest terminal range.
+        // Never rank/materialize that root's lifetime before applying its cap.
+        for roots in root_turn_ids.chunks(64) {
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT * FROM (");
+            let mut first = true;
+            for root in roots {
+                for terminal in [false, true] {
+                    if terminal && terminal_limit_per_root == 0 {
+                        continue;
+                    }
+                    if !first {
+                        query.push(" UNION ALL ");
+                    }
+                    first = false;
+                    query
+                        .push("SELECT * FROM (SELECT * FROM thread_activations WHERE context_id=")
+                        .push_bind(context_id)
+                        .push(" AND root_turn_id=")
+                        .push_bind(root);
+                    query.push(if terminal {" AND status IN ('completed','cancelled','failed') ORDER BY updated_at DESC,id DESC LIMIT "}else{" AND status IN ('queued','running') ORDER BY created_at,id LIMIT "});
+                    query
+                        .push_bind(if terminal {
+                            terminal_limit_per_root.min(200) as i64
+                        } else {
+                            201
+                        })
+                        .push(") root_page");
+                }
             }
+            query.push(") selected ORDER BY created_at,id");
+            let rows = query.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(activation_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
-        query.push(
-            r#")), terminal_page AS (
-                 SELECT id FROM (
-                   SELECT id,
-                          ROW_NUMBER() OVER (
-                            PARTITION BY root_turn_id
-                            ORDER BY updated_at DESC, id DESC
-                          ) AS terminal_rank
-                   FROM selected
-                   WHERE status IN ('completed', 'cancelled', 'failed')
-                 ) ranked WHERE terminal_rank <= "#,
-        );
-        query.push_bind(i64::try_from(terminal_limit_per_root)?);
-        query.push(
-            r#") SELECT * FROM selected
-                WHERE status IN ('queued', 'running')
-                   OR id IN (SELECT id FROM terminal_page)
-                ORDER BY created_at, id"#,
-        );
-        let rows = query.build().fetch_all(&self.pool).await?;
-        rows.iter().map(activation_from_row).collect()
+        Ok(records)
     }
 
     async fn list_active_thread_activations(

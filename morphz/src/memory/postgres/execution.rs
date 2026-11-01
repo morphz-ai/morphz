@@ -485,6 +485,34 @@ fn validate_terminal_transition(
 
 #[async_trait::async_trait]
 impl ExecutionJobStore for PostgresStore {
+    async fn live_execution_job_routes(
+        &self,
+        context_id: &str,
+        job_ids: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        if job_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if job_ids.len() > 201 {
+            return Err("Job route proof page exceeds 201".into());
+        }
+        let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT j.id FROM execution_jobs j JOIN thread_activations a ON a.id=j.activation_id JOIN threads t ON t.id=j.thread_id WHERE j.context_id=");
+        query.push_bind(context_id).push(" AND j.id IN (");
+        {
+            let mut ids = query.separated(",");
+            for id in job_ids {
+                ids.push_bind(id);
+            }
+        }
+        query.push(") AND j.status IN ('queued','running','waiting_approval') AND a.status IN ('queued','running') AND t.status='open' AND t.context_id=j.context_id AND t.session_id=j.session_id AND a.context_id=j.context_id AND a.session_id=j.session_id AND a.root_turn_id=t.root_turn_id");
+        Ok(query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| r.get("id"))
+            .collect())
+    }
     async fn ensure_artifact_transfer_execution(
         &self,
         execution: NewArtifactTransferExecution,
@@ -760,21 +788,23 @@ impl ExecutionJobStore for PostgresStore {
         context_id: &str,
         activation_ids: &[String],
     ) -> Result<Vec<ExecutionJobRecord>, StoreError> {
-        if activation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = Vec::new();
-        for activation_ids in activation_ids.chunks(500) {
-            let mut query =
-                QueryBuilder::<Postgres>::new("SELECT * FROM execution_jobs WHERE context_id = ");
-            query.push_bind(context_id).push(" AND activation_id IN (");
-            {
-                let mut values = query.separated(", ");
-                for activation_id in activation_ids {
-                    values.push_bind(activation_id);
-                }
+        for ids in activation_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
-            query.push(") ORDER BY created_at, id");
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query
+                    .push("SELECT * FROM (SELECT * FROM execution_jobs WHERE context_id=")
+                    .push_bind(context_id)
+                    .push(" AND activation_id=")
+                    .push_bind(id)
+                    .push(" ORDER BY created_at DESC,id DESC LIMIT 32) job_head");
+            }
             let rows = query.build().fetch_all(&self.pool).await?;
             records.extend(
                 rows.iter()

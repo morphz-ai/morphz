@@ -173,7 +173,7 @@ pub(super) fn approval_from_row(row: &PgRow) -> Result<ApprovalRecord, StoreErro
     })
 }
 
-fn capability_lease_from_row(row: &PgRow) -> Result<CapabilityLeaseRecord, StoreError> {
+pub(super) fn capability_lease_from_row(row: &PgRow) -> Result<CapabilityLeaseRecord, StoreError> {
     Ok(CapabilityLeaseRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
@@ -379,26 +379,57 @@ impl ApprovalStore for PostgresStore {
         authority: &crate::memory::ApprovalDecisionAuthority,
         limit: usize,
     ) -> Result<Vec<ApprovalRecord>, StoreError> {
-        let rows = sqlx::query(
-            r#"SELECT a.* FROM approval_requests a
-               JOIN execution_jobs j ON j.id = a.job_id
-               JOIN sessions s ON s.id = j.session_id
-               JOIN session_principal_bindings b ON b.session_id = s.id
-               JOIN threads t ON t.id = j.thread_id
-               JOIN thread_activations activation ON activation.id = j.activation_id
-               WHERE s.id = $1 AND b.principal_id = $2 AND b.unbound_at IS NULL
-                 AND j.initiating_principal_id = b.principal_id AND s.status = 'active'
-                 AND a.status = 'pending_human' AND j.status = 'waiting_approval'
-                 AND t.status = 'open' AND activation.status IN ('queued', 'running')
-               ORDER BY a.created_at, a.id LIMIT $3"#,
-        )
-        .bind(&authority.session_id)
-        .bind(&authority.principal_id)
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Postgres,
+            None,
+            Some(authority),
+            None,
+            limit
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(approval_from_row).collect()
     }
+    async fn read_principal_pending_approval_page(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::memory::PendingApprovalRecordsPage, StoreError> {
+        let limit = limit.clamp(1, 200);
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Postgres,
+            None,
+            Some(authority),
+            cursor,
+            limit + 1
+        )?;
+        let mut rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = if has_more {
+            rows.last().map(|row| {
+                crate::memory::directory::DirectoryCursor {
+                    sort_at: row.get("created_at"),
+                    id: row.get("id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        Ok(crate::memory::PendingApprovalRecordsPage {
+            records: rows
+                .iter()
+                .map(approval_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+            has_more,
+            next_cursor,
+        })
+    }
+
     async fn ensure_approval_request(
         &self,
         request: NewApprovalRequest,
@@ -417,6 +448,38 @@ impl ApprovalStore for PostgresStore {
             .as_ref()
             .map(approval_from_row)
             .transpose()
+    }
+
+    async fn read_pending_approval_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::memory::PendingApprovalRecordsPage, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let limit = limit.clamp(1, 200);
+        let mut query = crate::memory::approval_page::pending_query!(Postgres, cursor, limit)?;
+        let mut rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = has_more
+            .then(|| {
+                rows.last().map(|row| {
+                    crate::memory::directory::DirectoryCursor {
+                        sort_at: row.get("created_at"),
+                        id: row.get("id"),
+                    }
+                    .encode()
+                })
+            })
+            .flatten();
+        Ok(crate::memory::PendingApprovalRecordsPage {
+            records: rows
+                .iter()
+                .map(approval_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+            has_more,
+            next_cursor,
+        })
     }
 
     async fn list_approvals(
@@ -485,17 +548,14 @@ impl ApprovalStore for PostgresStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query(
-            r#"SELECT approvals.* FROM approval_requests approvals
-               INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id
-               WHERE jobs.context_id = $1
-                 AND approvals.status IN ('pending_auto', 'pending_human')
-               ORDER BY approvals.created_at, approvals.id LIMIT $2"#,
-        )
-        .bind(context_id)
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?;
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Postgres,
+            Some(context_id),
+            None,
+            None,
+            limit
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(approval_from_row).collect()
     }
 
@@ -523,24 +583,18 @@ impl ApprovalStore for PostgresStore {
         context_id: &str,
         job_ids: &[String],
     ) -> Result<Vec<ApprovalRecord>, StoreError> {
-        if job_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = Vec::new();
-        for job_ids in job_ids.chunks(500) {
-            let mut query = QueryBuilder::<Postgres>::new(
-                "SELECT approval_requests.* FROM approval_requests INNER JOIN execution_jobs ON execution_jobs.id = approval_requests.job_id WHERE execution_jobs.context_id = ",
-            );
-            query
-                .push_bind(context_id)
-                .push(" AND approval_requests.job_id IN (");
-            {
-                let mut values = query.separated(", ");
-                for job_id in job_ids {
-                    values.push_bind(job_id);
-                }
+        for ids in job_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
-            query.push(") ORDER BY approval_requests.created_at, approval_requests.id");
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query.push("SELECT * FROM (SELECT a.* FROM approval_requests a JOIN execution_jobs j ON j.id=a.job_id WHERE j.context_id=").push_bind(context_id).push(" AND a.job_id=").push_bind(id).push(" ORDER BY a.created_at DESC,a.id DESC LIMIT 1) approval_head");
+            }
             let rows = query.build().fetch_all(&self.pool).await?;
             records.extend(
                 rows.iter()
@@ -1042,6 +1096,20 @@ impl CapabilityLeaseStore for PostgresStore {
             .transpose()
     }
 
+    async fn get_owned_capability_lease(
+        &self,
+        lease_id: &str,
+        principal_id: &str,
+    ) -> Result<Option<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM capability_leases WHERE id=$1 AND principal_id=$2")
+            .bind(lease_id)
+            .bind(principal_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(capability_lease_from_row)
+            .transpose()
+    }
     async fn list_capability_leases(
         &self,
         filter: CapabilityLeaseFilter,

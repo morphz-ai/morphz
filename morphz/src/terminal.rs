@@ -150,6 +150,31 @@ pub struct TerminalView {
     pub checkpoint: bool,
 }
 
+/// Metadata-only invalidation; output bytes stay in the bounded PTY screen.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct TerminalChange {
+    pub terminal_id: String,
+    pub session_id: String,
+    pub context_id: String,
+    pub principal_id: String,
+    pub root_turn_id: Option<String>,
+    pub scope_ref: Option<String>,
+    pub kind: &'static str,
+}
+impl TerminalChange {
+    fn of(record: &TerminalSessionRecord, kind: &'static str) -> Self {
+        Self {
+            terminal_id: record.id.clone(),
+            session_id: record.session_id.clone(),
+            context_id: record.context_id.clone(),
+            principal_id: record.principal_id.clone(),
+            root_turn_id: record.root_turn_id.clone(),
+            scope_ref: record.scope_ref.clone(),
+            kind,
+        }
+    }
+}
+
 struct ScreenState {
     parser: vt100::Parser,
     sequence: u64,
@@ -159,6 +184,7 @@ struct ScreenState {
 }
 
 struct LiveTerminal {
+    changed: tokio::sync::watch::Sender<u64>,
     control: tokio::sync::Mutex<()>,
     screen: Arc<Mutex<ScreenState>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
@@ -183,6 +209,8 @@ impl Drop for StartingChild {
 impl LiveTerminal {
     fn stop(&self) {
         if !self.stopped.swap(true, Ordering::SeqCst) {
+            self.changed
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
             #[cfg(unix)]
             if let Ok(master) = self.master.lock() {
                 // Interactive job control gives each foreground/background
@@ -238,6 +266,7 @@ pub struct TerminalManager {
     live: Mutex<HashMap<String, Arc<LiveTerminal>>>,
     opens: tokio::sync::Mutex<()>,
     source: OnceLock<TerminalSourceResolver>,
+    changes: tokio::sync::broadcast::Sender<TerminalChange>,
 }
 
 fn now() -> String {
@@ -541,7 +570,86 @@ impl TerminalManager {
             live: Mutex::new(HashMap::new()),
             opens: tokio::sync::Mutex::new(()),
             source: OnceLock::new(),
+            changes: tokio::sync::broadcast::channel(128).0,
         })
+    }
+
+    /// One bounded bridge per Runtime, independent of any visible page. A lag
+    /// emits a gap hint instead of dropping the final output silently.
+    pub(crate) fn bind_change_bus(&self, bus: &Arc<crate::event::InMemoryEventBus>) {
+        let weak = Arc::downgrade(bus);
+        let mut changes = self.changes.subscribe();
+        let source_id = self.instance_id.clone();
+        tokio::spawn(async move {
+            let mut hint_generation = 0u64;
+            loop {
+                let mut resync = false;
+                let first = match changes.recv().await {
+                    Ok(change) => Some(change),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        resync = true;
+                        None
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                let mut latest = HashMap::new();
+                if let Some(change) = first {
+                    latest.insert(change.terminal_id.clone(), change);
+                }
+                for _ in 0..128 {
+                    match changes.try_recv() {
+                        Ok(change) => {
+                            latest.insert(change.terminal_id.clone(), change);
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                            resync = true
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let Some(bus) = weak.upgrade() else {
+                    break;
+                };
+                let mut payloads = latest
+                    .into_values()
+                    .map(|change| {
+                        serde_json::to_value(change)
+                            .unwrap()
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                    })
+                    .collect::<Vec<_>>();
+                if resync {
+                    payloads.push(
+                        serde_json::json!({"kind":"resync"})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    );
+                }
+                for payload in payloads {
+                    let event = crate::event::Event::new(
+                        {
+                            hint_generation = hint_generation
+                                .checked_add(1)
+                                .expect("terminal hint identity exhausted");
+                            format!("{source_id}:change:{hint_generation}")
+                        },
+                        "runtime/terminal".into(),
+                        "runtime/terminal_changed".into(),
+                        "runtime/terminal_changed".into(),
+                        payload,
+                    );
+                    if let Err(error) = bus.publish_ephemeral(event).await {
+                        tracing::warn!(%error,event_code="terminal.change_delivery_failed","Terminal change hint was not delivered");
+                    }
+                }
+            }
+        });
+    }
+    fn notify(&self, record: &TerminalSessionRecord, kind: &'static str) {
+        let _ = self.changes.send(TerminalChange::of(record, kind));
     }
 
     pub(crate) fn bind_source(&self, resolver: TerminalSourceResolver) {
@@ -560,10 +668,8 @@ impl TerminalManager {
         if record.context_id != context
             || !self
                 .store
-                .list_session_principals(session)
+                .verify_session_principal(session, principal)
                 .await?
-                .iter()
-                .any(|p| p.principal_id == principal && p.unbound_at.is_none())
         {
             return Err(TerminalAccessError::Forbidden.into());
         }
@@ -748,19 +854,22 @@ impl TerminalManager {
         let Some(live) = live else {
             return Ok(());
         };
+        let mut changed = live.changed.subscribe();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
         loop {
             let ready = {
                 let screen = live.screen.lock().map_err(|_| "terminal screen poisoned")?;
                 screen.sequence > after.unwrap() || screen.eof
             };
-            if ready
-                || live.stopped.load(Ordering::SeqCst)
-                || tokio::time::Instant::now() >= deadline
-            {
+            if ready || live.stopped.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            if !matches!(
+                tokio::time::timeout_at(deadline, changed.changed()).await,
+                Ok(Ok(()))
+            ) {
+                return Ok(());
+            }
         }
     }
 
@@ -1001,6 +1110,8 @@ impl TerminalManager {
             }
             crate::tool::mark_physical_side_effect().await?;
             let profile_environment = profile.shell_environment_policy;
+            let change_sender = self.changes.clone();
+            let output_change = TerminalChange::of(&record, "output");
             let spawned =
                 tokio::task::spawn_blocking(move || -> Result<Arc<LiveTerminal>, Error> {
                     let (master, child) = prepared.spawn(|command| {
@@ -1051,7 +1162,10 @@ impl TerminalManager {
                         eof: false,
                         error: None,
                     }));
+                    let changed = tokio::sync::watch::channel(0).0;
+                    let output_changed = changed.clone();
                     let live = Arc::new(LiveTerminal {
+                        changed,
                         control: tokio::sync::Mutex::new(()),
                         screen: screen.clone(),
                         master: Mutex::new(master),
@@ -1085,6 +1199,10 @@ impl TerminalManager {
                                         if let Ok(mut s) = screen.lock() {
                                             s.eof = true;
                                         }
+                                        output_changed.send_modify(|generation| {
+                                            *generation = generation.wrapping_add(1)
+                                        });
+                                        let _ = change_sender.send(output_change.clone());
                                         break;
                                     }
                                     Ok(count) => {
@@ -1093,12 +1211,21 @@ impl TerminalManager {
                                         };
                                         s.parser.process(&buffer[..count]);
                                         s.sequence = s.sequence.saturating_add(1);
+                                        drop(s);
+                                        output_changed.send_modify(|generation| {
+                                            *generation = generation.wrapping_add(1)
+                                        });
+                                        let _ = change_sender.send(output_change.clone());
                                     }
                                     Err(error) => {
                                         if let Ok(mut s) = screen.lock() {
                                             s.eof = true;
                                             s.error = Some(error.to_string());
                                         }
+                                        output_changed.send_modify(|generation| {
+                                            *generation = generation.wrapping_add(1)
+                                        });
+                                        let _ = change_sender.send(output_change.clone());
                                         break;
                                     }
                                 }
@@ -1133,6 +1260,7 @@ impl TerminalManager {
                 .lock()
                 .map_err(|_| "terminal registry poisoned")?
                 .insert(id.clone(), live.clone());
+            self.notify(&record, "catalog");
             let weak = Arc::downgrade(self);
             let weak_live = Arc::downgrade(&live);
             let monitor_id = id.clone();
@@ -1163,6 +1291,7 @@ impl TerminalManager {
             live.stop();
             return Ok(());
         };
+        let previous_revision = record.revision;
         if record.owner_instance_id != self.instance_id {
             live.stop();
             return Err("terminal owner changed".into());
@@ -1197,6 +1326,9 @@ impl TerminalManager {
                     .compare_terminal(record.revision - 1, &record)
                     .await?;
             }
+        }
+        if record.revision != previous_revision {
+            self.notify(&record, "catalog");
         }
         let screen = screen_snapshot(
             &mut *live.screen.lock().map_err(|_| "terminal screen poisoned")?,
@@ -1377,6 +1509,14 @@ impl TerminalManager {
                     .into(),
             );
         }
+        self.notify(
+            &record,
+            if record.status == TerminalStatus::Closed {
+                "catalog"
+            } else {
+                "screen"
+            },
+        );
         if let Some(receipt) = &mut receipt {
             receipt.status = "submitted".into();
             self.store.finish_terminal_command(receipt).await?;
@@ -1851,6 +1991,51 @@ mod tests {
             .await
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_output_changes_are_bounded_metadata_and_never_durable_screen_history() {
+        let fixture = Fixture::new().await;
+        let mut hints = fixture.runtime.subscribe("runtime/terminal_changed", 32);
+        let terminal = fixture.open().await;
+        let hint = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let hint = hints.recv().await.expect("terminal hint channel closed");
+                if hint.payload.get("kind").and_then(Value::as_str) == Some("output") {
+                    break hint;
+                }
+            }
+        })
+        .await
+        .expect("physical PTY output must produce a change notification");
+        assert_eq!(hint.payload["terminal_id"], terminal.id);
+        assert_eq!(hint.payload["session_id"], terminal.session_id);
+        assert!(hint.payload.keys().all(|key| [
+            "terminal_id",
+            "session_id",
+            "context_id",
+            "principal_id",
+            "root_turn_id",
+            "scope_ref",
+            "kind"
+        ]
+        .contains(&key.as_str())));
+        let text = serde_json::to_string(&hint).unwrap();
+        assert!(text.len() < 4096);
+        assert!(!text.contains("__READY__"));
+        let stored = fixture
+            .runtime
+            .query_events(crate::memory::QueryFilter {
+                topics: vec!["runtime/terminal_changed".into()],
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            stored.is_empty(),
+            "a terminal hint must not write screen output into Event history"
+        );
     }
 
     #[tokio::test]

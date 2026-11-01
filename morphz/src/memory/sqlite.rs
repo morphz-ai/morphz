@@ -99,6 +99,8 @@ mod user_input;
 
 pub struct SqliteStore {
     pool: SqlitePool,
+    event_database_path: Option<std::path::PathBuf>,
+    event_changes: std::sync::Mutex<Option<super::event_changes::SqliteEventChanges>>,
     edge_command_notify: Arc<Notify>,
     #[cfg(feature = "context-db")]
     context_db: Option<crate::context_db_runtime::ContextDbRuntimeAdapter>,
@@ -2179,6 +2181,11 @@ impl SqliteStore {
         sqlx::query("CREATE TRIGGER IF NOT EXISTS objective_approval_wait_invalidated AFTER UPDATE OF status, active_evaluation_id, generation ON objectives BEGIN DELETE FROM objective_approval_waits WHERE objective_id = NEW.id AND (NEW.status <> 'active' OR NEW.active_evaluation_id IS NULL OR evaluation_id <> NEW.active_evaluation_id OR objective_generation <> NEW.generation); END")
             .execute(&pool).await?;
         migrate_thread_evaluation_policy_control(&pool).await?;
+        crate::memory::directory::index::sqlite(&pool).await?;
+        crate::memory::directory::priority::sqlite(&pool).await?;
+        crate::memory::directory::schedule_index::sqlite(&pool).await?;
+        crate::memory::directory::approval_index::sqlite(&pool).await?;
+        crate::memory::directory::binding_agent::sqlite(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -2186,6 +2193,8 @@ impl SqliteStore {
 
         Ok(Self {
             pool,
+            event_database_path: (db_path != ":memory:").then(|| std::path::PathBuf::from(db_path)),
+            event_changes: std::sync::Mutex::new(None),
             edge_command_notify: Arc::new(Notify::new()),
             #[cfg(feature = "context-db")]
             context_db: None,
@@ -5108,7 +5117,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
         // `json(...)` marks nested JSON values so arrays contain objects rather
         // than escaped JSON strings.
         let directory_sql_prefix = r#"WITH
-               scoped_sessions AS MATERIALIZED (
+               scoped_sessions AS NOT MATERIALIZED (
                  SELECT s.*,
                         sm.attention_state AS mount_attention_state,
                         sm.attention_revision AS mount_attention_revision,
@@ -5136,10 +5145,10 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  SELECT COALESCE(MAX(
                    CASE WHEN id = ?2 AND context_sharing = 'isolated' THEN 1 ELSE 0 END
                  ), 0) AS current_is_isolated
-                 FROM scoped_sessions
+                 FROM scoped_sessions WHERE id = ?2
                ),
-               classified_sessions AS MATERIALIZED (
-                 SELECT s.*,
+               classified_sessions AS NOT MATERIALIZED (
+                 SELECT s.id,s.status,s.context_sharing,s.last_activity_at,s.directory_priority,
                    CASE
                      WHEN s.id = ?2 THEN NULL
                      WHEN policy.current_is_isolated != 0 OR s.context_sharing = 'isolated'
@@ -5152,19 +5161,23 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  FROM scoped_sessions s
                  CROSS JOIN active_policy policy
                ),
-               full_session_ids AS MATERIALIZED (
-                 SELECT id
-                 FROM classified_sessions
-                 WHERE exclusion_reason IS NULL
-                 ORDER BY CASE WHEN id = ?2 THEN 0 ELSE 1 END,
-                          last_activity_at DESC, id
-                 LIMIT ?4
+               full_other_ids AS MATERIALIZED (
+                 SELECT id,last_activity_at FROM classified_sessions
+                 WHERE exclusion_reason IS NULL AND id <> ?2
+                 ORDER BY last_activity_at DESC,id LIMIT ?4
                ),
-               metadata_candidate_ids AS MATERIALIZED (
-                 SELECT s.id, s.last_activity_at
+               full_session_ids AS MATERIALIZED (
+                 SELECT id FROM (
+                   SELECT id,last_activity_at,0 AS selection_order FROM classified_sessions WHERE id=?2 AND exclusion_reason IS NULL
+                   UNION ALL
+                   SELECT id,last_activity_at,1 AS selection_order FROM full_other_ids
+                 ) full_page ORDER BY selection_order,last_activity_at DESC,id LIMIT ?4
+               ),
+               metadata_candidate_ids AS NOT MATERIALIZED (
+                 SELECT s.id, s.last_activity_at,s.directory_priority
                  FROM classified_sessions s
                  CROSS JOIN active_policy policy
-                 WHERE NOT EXISTS (
+                 WHERE s.directory_priority < 4 AND NOT EXISTS (
                          SELECT 1 FROM full_session_ids selected_full
                          WHERE selected_full.id = s.id
                        )
@@ -5187,10 +5200,15 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    )
                ),
                metadata_session_ids AS MATERIALIZED (
-                 SELECT id
-                 FROM metadata_candidate_ids
-                 ORDER BY last_activity_at DESC, id
-                 LIMIT ?5
+                 SELECT id FROM (
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=0 ORDER BY last_activity_at DESC,id LIMIT ?5) metadata_rank_0
+                 UNION ALL
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=1 ORDER BY last_activity_at DESC,id LIMIT ?5) metadata_rank_1
+                 UNION ALL
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=2 ORDER BY last_activity_at DESC,id LIMIT ?5) metadata_rank_2
+                 UNION ALL
+                 SELECT * FROM (SELECT id,last_activity_at FROM metadata_candidate_ids WHERE directory_priority=3 ORDER BY last_activity_at DESC,id LIMIT ?5) metadata_rank_3
+                 ) metadata_heads ORDER BY last_activity_at DESC,id LIMIT ?5
                ),
                selected_session_ids AS MATERIALIZED (
                  SELECT id, 0 AS projection_order FROM full_session_ids
@@ -11030,6 +11048,77 @@ impl SessionDirectoryStore for SqliteStore {
         Ok(row.as_ref().map(agent_from_row))
     }
 
+    async fn read_operator_inventory_page(
+        &self,
+        request: crate::memory::RuntimeInventoryQuery,
+    ) -> Result<crate::memory::RuntimeInventoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::memory::{RuntimeInventoryKind::*, RuntimeInventoryPage};
+        request.validate()?;
+        let mut query = crate::memory::inventory::inventory_query!(sqlx::Sqlite, &request)?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let limit = request.page_limit();
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                crate::memory::directory::DirectoryCursor {
+                    sort_at: row.get(if request.kind == Leases {
+                        "issued_at"
+                    } else {
+                        "updated_at"
+                    }),
+                    id: row.get("id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        let mut page = RuntimeInventoryPage {
+            has_more,
+            next_cursor,
+            ..Default::default()
+        };
+        for row in rows.iter().take(limit) {
+            match request.kind {
+            Targets=>page.targets.push(execution_target_from_row(row)?), Nodes=>page.nodes.push(execution_node_from_row(row)?), Leases=>page.leases.push(capability_lease_from_row(row)?),
+            Objectives=>page.objectives.push(serde_json::json!({"id":row.get::<String,_>("id"),"context_id":row.get::<String,_>("context_id"),"stated_objective":row.get::<String,_>("stated_objective"),"status":row.get::<String,_>("status")})),
+        }
+        }
+        Ok(page)
+    }
+
+    async fn read_runtime_directory_page(
+        &self,
+        request: crate::memory::RuntimeDirectoryQuery,
+    ) -> Result<crate::memory::RuntimeDirectoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::memory::{RuntimeDirectoryKind, RuntimeDirectoryPage};
+        request.validate()?;
+        if request.ids.as_ref().is_some_and(|ids| ids.is_empty()) {
+            return Ok(RuntimeDirectoryPage::default());
+        }
+        let mut query = crate::memory::directory::directory_query!(sqlx::Sqlite, &request, false)?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let mut page = RuntimeDirectoryPage::default();
+        match request.kind {
+            RuntimeDirectoryKind::Agents => page.agents = rows.iter().map(agent_from_row).collect(),
+            RuntimeDirectoryKind::Contexts => {
+                page.contexts = rows.iter().map(context_from_row).collect()
+            }
+            RuntimeDirectoryKind::Sessions => {
+                page.sessions = rows.iter().map(session_from_row).collect()
+            }
+        }
+        let cursor = rows.get(request.page_limit() - 1).map(|row| {
+            crate::memory::directory::DirectoryCursor {
+                sort_at: row.get("directory_sort_at"),
+                id: row.get("id"),
+            }
+            .encode()
+        });
+        page.finish(request.kind, request.page_limit(), cursor);
+        Ok(page)
+    }
+
     async fn list_agents(
         &self,
         include_archived: bool,
@@ -11126,31 +11215,9 @@ impl SessionDirectoryStore for SqliteStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let limit = i64::try_from(limit).map_err(|_| "Context 查询上限超出 SQLite INTEGER 范围")?;
-        let rows = sqlx::query(
-            r#"SELECT c.id, c.agent_id, c.title, c.status, c.created_at, c.updated_at,
-                      c.seed_context_id, c.seed_context_version, c.seed_snapshot_hash,
-                      c.seed_projection, c.requested_hard_token_limit, c.token_budget_revision
-               FROM cognitive_contexts c
-               WHERE (? OR c.status = 'active')
-               ORDER BY MAX(
-                          c.updated_at,
-                          COALESCE(
-                            (SELECT s.last_activity_at
-                             FROM sessions s
-                             WHERE s.context_id = c.id
-                             ORDER BY s.last_activity_at DESC, s.id
-                             LIMIT 1),
-                            c.updated_at
-                          )
-                        ) DESC,
-                        c.id
-               LIMIT ?"#,
-        )
-        .bind(include_archived)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        let mut query =
+            crate::memory::directory::recent_contexts_query!(sqlx::Sqlite, include_archived, limit);
+        let rows = query.build().fetch_all(&self.pool).await?;
         Ok(rows.iter().map(context_from_row).collect())
     }
 
@@ -11593,72 +11660,14 @@ impl SessionDirectoryStore for SqliteStore {
         if context_ids.is_empty() || per_context_limit == 0 {
             return Ok(Vec::new());
         }
-        let context_ids_json = serde_json::to_string(context_ids)?;
-        let per_context_limit = i64::try_from(per_context_limit)
-            .map_err(|_| "Session 每 Context 查询上限超出 SQLite INTEGER 范围")?;
-        let rows = sqlx::query(
-            r#"WITH ranked AS (
-                 SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.model_alias, s.reasoning_effort, s.permission_mode, s.sandbox_mode, s.default_target_id, s.context_sharing,
-                        s.status, s.created_at, s.updated_at, s.last_activity_at,
-                        sm.attention_state, sm.attention_revision, sm.attention_reason,
-                        sm.attention_changed_at, sm.attention_event_id,
-                        ROW_NUMBER() OVER (
-                          PARTITION BY s.context_id
-                          ORDER BY
-                            CASE
-                              WHEN EXISTS (
-                                SELECT 1 FROM objectives o
-                                WHERE o.context_id = s.context_id
-                                  AND (o.coordinator_session_id = s.id OR o.delivery_session_id = s.id)
-                                  AND (
-                                    o.status = 'blocked'
-                                    OR (
-                                      o.status = 'active'
-                                      AND json_extract(o.wait_condition_json, '$.kind') = 'user_input'
-                                    )
-                                  )
-                              ) THEN 0
-                              WHEN EXISTS (
-                                SELECT 1 FROM thread_activations a
-                                WHERE a.session_id = s.id AND a.status = 'running'
-                              ) THEN 1
-                              WHEN EXISTS (
-                                SELECT 1 FROM thread_activations a
-                                WHERE a.session_id = s.id AND a.status = 'queued'
-                              ) THEN 2
-                              WHEN EXISTS (
-                                SELECT 1 FROM objectives o
-                                WHERE o.context_id = s.context_id
-                                  AND (o.coordinator_session_id = s.id OR o.delivery_session_id = s.id)
-                                  AND o.status IN ('active', 'paused', 'blocked')
-                              ) OR EXISTS (
-                                SELECT 1 FROM threads t
-                                WHERE t.session_id = s.id AND t.status = 'open'
-                              ) THEN 3
-                              ELSE 4
-                            END,
-                            s.last_activity_at DESC,
-                            s.id
-                        ) AS rank_in_context
-                 FROM sessions s
-                 JOIN session_mounts sm
-                   ON sm.session_id = s.id AND sm.unmounted_at IS NULL
-                 WHERE s.context_id IN (SELECT value FROM json_each(?))
-                   AND (? OR s.status = 'active')
-               )
-               SELECT id, agent_id, context_id, parent_session_id, title, status, model_alias, reasoning_effort, permission_mode, sandbox_mode, default_target_id, context_sharing,
-                      created_at, updated_at, last_activity_at, attention_state,
-                      attention_revision, attention_reason, attention_changed_at,
-                      attention_event_id
-               FROM ranked
-               WHERE rank_in_context <= ?
-               ORDER BY last_activity_at DESC, id"#,
-        )
-        .bind(context_ids_json)
-        .bind(include_archived)
-        .bind(per_context_limit)
-        .fetch_all(&self.pool)
-        .await?;
+        let mut query = crate::memory::directory::priority::session_heads_query!(
+            sqlx::Sqlite,
+            context_ids,
+            include_archived,
+            per_context_limit,
+            false
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         Ok(rows.iter().map(session_from_row).collect())
     }
 
@@ -13054,24 +13063,21 @@ impl ActivationStore for SqliteStore {
         &self,
         activation_ids: &[String],
     ) -> Result<Vec<(String, ThreadSignalRecord)>, Box<dyn std::error::Error + Send + Sync>> {
-        if activation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = Vec::new();
-        for activation_ids in activation_ids.chunks(500) {
-            let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-                "SELECT links.activation_id AS link_activation_id, signals.* FROM activation_signals links JOIN thread_signals signals ON signals.id = links.signal_id WHERE links.activation_id IN (",
-            );
-            {
-                let mut values = query.separated(", ");
-                for activation_id in activation_ids {
-                    values.push_bind(activation_id);
-                }
+        for ids in activation_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
-            query.push(") ORDER BY links.activation_id, links.ordinal");
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query.push("SELECT * FROM (SELECT l.activation_id AS link_activation_id,s.* FROM activation_signals l CROSS JOIN thread_signals s WHERE s.id=l.signal_id AND l.activation_id=").push_bind(id).push(" ORDER BY l.ordinal DESC,l.signal_id DESC LIMIT 64) signal_head");
+            }
             for row in query.build().fetch_all(&self.pool).await? {
                 records.push((
-                    row.try_get::<String, _>("link_activation_id")?,
+                    row.try_get("link_activation_id")?,
                     thread_signal_from_row(&row)?,
                 ));
             }
@@ -13474,37 +13480,45 @@ impl ActivationStore for SqliteStore {
         if root_turn_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-            "WITH selected AS (SELECT * FROM thread_activations WHERE context_id = ",
-        );
-        query.push_bind(context_id).push(" AND root_turn_id IN (");
-        {
-            let mut values = query.separated(", ");
-            for root_turn_id in root_turn_ids {
-                values.push_bind(root_turn_id);
+        let mut records = Vec::new();
+        // Every branch seeks one root's live range or newest terminal range.
+        // Never rank/materialize that root's lifetime before applying its cap.
+        for roots in root_turn_ids.chunks(64) {
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM (");
+            let mut first = true;
+            for root in roots {
+                for terminal in [false, true] {
+                    if terminal && terminal_limit_per_root == 0 {
+                        continue;
+                    }
+                    if !first {
+                        query.push(" UNION ALL ");
+                    }
+                    first = false;
+                    query
+                        .push("SELECT * FROM (SELECT * FROM thread_activations WHERE context_id=")
+                        .push_bind(context_id)
+                        .push(" AND root_turn_id=")
+                        .push_bind(root);
+                    query.push(if terminal {" AND status IN ('completed','cancelled','failed') ORDER BY updated_at DESC,id DESC LIMIT "}else{" AND status IN ('queued','running') ORDER BY created_at,id LIMIT "});
+                    query
+                        .push_bind(if terminal {
+                            terminal_limit_per_root.min(200) as i64
+                        } else {
+                            201
+                        })
+                        .push(") root_page");
+                }
             }
+            query.push(") selected ORDER BY created_at,id");
+            let rows = query.build().fetch_all(&self.pool).await?;
+            records.extend(
+                rows.iter()
+                    .map(thread_activation_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
-        query.push(
-            r#")), terminal_page AS (
-                 SELECT id FROM (
-                   SELECT id,
-                          ROW_NUMBER() OVER (
-                            PARTITION BY root_turn_id
-                            ORDER BY updated_at DESC, id DESC
-                          ) AS terminal_rank
-                   FROM selected
-                   WHERE status IN ('completed', 'cancelled', 'failed')
-                 ) WHERE terminal_rank <= "#,
-        );
-        query.push_bind(i64::try_from(terminal_limit_per_root)?);
-        query.push(
-            r#") SELECT * FROM selected
-                WHERE status IN ('queued', 'running')
-                   OR id IN (SELECT id FROM terminal_page)
-                ORDER BY created_at, id"#,
-        );
-        let rows = query.build().fetch_all(&self.pool).await?;
-        rows.iter().map(thread_activation_from_row).collect()
+        Ok(records)
     }
 
     async fn list_active_thread_activations(
@@ -15700,6 +15714,95 @@ impl ThreadGroupStore for SqliteStore {
         rows.iter().map(thread_group_from_row).collect()
     }
 
+    async fn count_group_members(
+        &self,
+        ids: &[String],
+    ) -> Result<
+        Vec<crate::scheduler::domain::GroupMemberCounts>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if ids.len() > 200 {
+            return Err("Group statistics budget exceeded".into());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("WITH selected(id) AS (VALUES ");
+        {
+            let mut values = query.separated(",");
+            for id in ids {
+                values
+                    .push("(")
+                    .push_bind_unseparated(id)
+                    .push_unseparated(")");
+            }
+        }
+        query.push(") SELECT s.id,COUNT(m.thread_id) AS total,COUNT(CASE WHEN m.required=TRUE THEN 1 END) AS required_count,COUNT(CASE WHEN m.required=TRUE AND m.status IN ('completed','failed','cancelled') THEN 1 END) AS terminal_count,COUNT(CASE WHEN m.required=TRUE AND m.status='completed' THEN 1 END) AS successful_count FROM selected s LEFT JOIN thread_group_members m ON m.group_id=s.id GROUP BY s.id");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::scheduler::domain::GroupMemberCounts {
+                    group_id: row.get("id"),
+                    total: u64::try_from(row.get::<i64, _>("total"))?,
+                    required: u64::try_from(row.get::<i64, _>("required_count"))?,
+                    terminal: u64::try_from(row.get::<i64, _>("terminal_count"))?,
+                    successful: u64::try_from(row.get::<i64, _>("successful_count"))?,
+                })
+            })
+            .collect()
+    }
+    async fn read_group_member_page(
+        &self,
+        id: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<
+        crate::memory::directory::CursorPage<ThreadGroupMemberRecord>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        use crate::memory::{directory::CursorPage, group_page::GroupMemberCursor};
+        let key = GroupMemberCursor::decode(cursor.as_deref())?;
+        let limit = limit.clamp(1, 64);
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT * FROM thread_group_members WHERE group_id=",
+        );
+        query.push_bind(id);
+        if let Some(key) = key {
+            query
+                .push(" AND (ordinal,thread_id) > (")
+                .push_bind(key.ordinal as i64)
+                .push(",")
+                .push_bind(key.thread_id)
+                .push(")");
+        }
+        query
+            .push(" ORDER BY ordinal,thread_id LIMIT ")
+            .push_bind((limit + 1) as i64);
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                GroupMemberCursor {
+                    ordinal: row.get::<i64, _>("ordinal") as u64,
+                    thread_id: row.get("thread_id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(thread_group_member_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CursorPage {
+            items,
+            has_more,
+            next_cursor,
+        })
+    }
+
     async fn list_thread_group_members(
         &self,
         group_id: &str,
@@ -15819,6 +15922,82 @@ impl ThreadGroupStore for SqliteStore {
 
 #[async_trait::async_trait]
 impl ThreadStore for SqliteStore {
+    async fn read_thread_inspection_page(
+        &self,
+        thread: &ThreadRecord,
+        request: &crate::memory::inspection_page::ThreadInspectionQuery,
+    ) -> Result<
+        crate::memory::inspection_page::ThreadInspectionPage,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        use crate::memory::inspection_page::{ThreadInspectionKind as K, ThreadInspectionPage};
+        let mut query =
+            crate::memory::inspection_page::inspection_query!(sqlx::Sqlite, thread, request)?;
+        let mut rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > request.page_limit();
+        rows.truncate(request.page_limit());
+        let next_cursor = if has_more {
+            rows.last().map(|row| {
+                request.cursor_for(&thread.id, row.get("inspection_clock"), row.get("id"))
+            })
+        } else {
+            None
+        };
+        let mut page = ThreadInspectionPage {
+            has_more,
+            next_cursor,
+            ..Default::default()
+        };
+        match request.kind {
+            K::ModelEvents => return Err("Model Events use the bounded Event store".into()),
+            K::Activations => {
+                page.activations = rows
+                    .iter()
+                    .map(thread_activation_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            K::Jobs => {
+                page.jobs = rows
+                    .iter()
+                    .map(execution_job_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            K::PendingSignals | K::ActivationSignals => {
+                page.signals = rows
+                    .iter()
+                    .map(thread_signal_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            K::Schedules => {
+                page.schedules = rows
+                    .iter()
+                    .map(schedule_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        }
+        Ok(page)
+    }
+    async fn read_transfer_projection_recovery_page(
+        &self,
+        source: crate::memory::TransferProjectionSource,
+        after: &str,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::memory::TransferProjectionCandidate>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let mut query =
+            crate::memory::recovery::transfer_query!(sqlx::Sqlite, source, after, limit, false);
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::memory::TransferProjectionCandidate {
+                cursor_id: row.get("cursor_id"),
+                thread_id: row.get("thread_id"),
+                job_id: row.get("job_id"),
+            })
+            .collect())
+    }
     async fn thread_activity_flags(
         &self,
         context_id: &str,
@@ -16187,6 +16366,48 @@ impl ThreadStore for SqliteStore {
             .fetch_one(&self.pool)
             .await?,
         )?)
+    }
+
+    async fn read_terminal_thread_page(
+        &self,
+        context_id: &str,
+        cursor: Option<String>,
+        limit: usize,
+    ) -> Result<
+        crate::memory::directory::CursorPage<ThreadRecord>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        use crate::memory::directory::{CursorPage, DirectoryCursor};
+        let limit = limit.clamp(1, 200);
+        let mut query = crate::memory::directory::terminal_thread_query!(
+            sqlx::Sqlite,
+            context_id,
+            cursor,
+            limit
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                DirectoryCursor {
+                    sort_at: row.get("updated_at"),
+                    id: row.get("id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        let items = rows
+            .iter()
+            .take(limit)
+            .map(thread_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CursorPage {
+            items,
+            has_more,
+            next_cursor,
+        })
     }
 
     async fn list_recent_terminal_threads(
@@ -17487,6 +17708,37 @@ impl SchedulerDependencyStore for SqliteStore {
         query.push(") ORDER BY created_at, id");
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(scheduler_dependency_from_row).collect()
+    }
+
+    async fn list_objective_projection_dependencies(
+        &self,
+        owners: &[(String, u64)],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut records = Vec::new();
+        for chunk in owners.chunks(128) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut query =
+                sqlx::QueryBuilder::<sqlx::Sqlite>::new("WITH owners(id,generation) AS (VALUES ");
+            {
+                let mut values = query.separated(",");
+                for (id, generation) in chunk {
+                    values
+                        .push("(")
+                        .push_bind_unseparated(id)
+                        .push_unseparated(",")
+                        .push_bind_unseparated(i64::try_from(*generation)?)
+                        .push_unseparated(")");
+                }
+            }
+            query.push(") SELECT d.* FROM owners o JOIN scheduler_dependencies d ON d.owner_id=o.id AND d.owner_generation=o.generation WHERE d.owner_kind='objective' AND d.status='pending' AND d.required=TRUE ORDER BY d.owner_id,d.id");
+            let rows = query.build().fetch_all(&self.pool).await?;
+            for row in &rows {
+                records.push(scheduler_dependency_from_row(row)?);
+            }
+        }
+        Ok(records)
     }
 
     async fn list_thread_projection_dependencies(
@@ -19071,22 +19323,22 @@ impl ScheduleStore for SqliteStore {
         include_terminal: bool,
         limit: usize,
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-            r#"SELECT schedules.* FROM schedules
-               INNER JOIN threads ON threads.id = schedules.thread_id
-               WHERE threads.context_id = "#,
-        );
-        query.push_bind(context_id);
-        if !include_terminal {
-            query.push(" AND schedules.status IN ('queued', 'paused')");
+        if limit == 0 {
+            return Ok(Vec::new());
         }
+        let mut query = crate::memory::directory::schedule_index::schedule_inventory_query!(
+            sqlx::Sqlite,
+            context_id,
+            include_terminal,
+            limit
+        );
         query
-            .push(
-                " ORDER BY CASE WHEN schedules.status IN ('queued', 'paused') THEN 0 ELSE 1 END, schedules.updated_at DESC, schedules.id LIMIT ",
-            )
-            .push_bind(i64::try_from(limit)?);
-        let rows = query.build().fetch_all(&self.pool).await?;
-        rows.iter().map(schedule_from_row).collect()
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(schedule_from_row)
+            .collect()
     }
 
     async fn list_thread_schedules(
@@ -19094,24 +19346,34 @@ impl ScheduleStore for SqliteStore {
         context_id: &str,
         thread_ids: &[String],
     ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if thread_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-            "SELECT schedules.* FROM schedules INNER JOIN threads ON threads.id = schedules.thread_id WHERE threads.context_id = ",
-        );
-        query
-            .push_bind(context_id)
-            .push(" AND schedules.thread_id IN (");
-        {
-            let mut values = query.separated(", ");
-            for thread_id in thread_ids {
-                values.push_bind(thread_id);
+        let mut records = Vec::new();
+        for ids in thread_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query
+                    .push("SELECT * FROM (SELECT s.* FROM schedules s JOIN threads t ON t.id=s.thread_id WHERE t.context_id=")
+                    .push_bind(context_id)
+                    .push(" AND s.thread_id=")
+                    .push_bind(id)
+                    .push(" ORDER BY s.created_at DESC,s.id DESC LIMIT 32) schedule_head");
+            }
+            records.extend(
+                query
+                    .build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(schedule_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
         }
-        query.push(") ORDER BY COALESCE(schedules.not_before, schedules.created_at), schedules.id");
-        let rows = query.build().fetch_all(&self.pool).await?;
-        rows.iter().map(schedule_from_row).collect()
+        Ok(records)
     }
 
     async fn wake_schedules_for_dependency(
@@ -21136,6 +21398,36 @@ async fn insert_new_objective_in_transaction(
 
 #[async_trait::async_trait]
 impl ObjectiveStore for SqliteStore {
+    async fn count_context_objectives_by_status(
+        &self,
+        context_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT status,COUNT(*) AS count FROM objectives WHERE context_id=",
+        );
+        query.push_bind(context_id).push(" GROUP BY status LIMIT 7");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        if rows.len() > 6
+            || rows.iter().any(|row| {
+                !matches!(
+                    row.get::<String, _>("status").as_str(),
+                    "active" | "paused" | "blocked" | "completed" | "cancelled" | "failed"
+                )
+            })
+        {
+            return Err("Objective status aggregate contains an invalid status".into());
+        }
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.get::<String, _>("status"),
+                    u64::try_from(row.get::<i64, _>("count"))?,
+                ))
+            })
+            .collect()
+    }
+
     async fn create_objective(
         &self,
         objective: NewObjective,
@@ -23719,6 +24011,20 @@ impl EdgeExecutionStore for SqliteStore {
         row.as_ref().map(execution_node_from_row).transpose()
     }
 
+    async fn get_owned_execution_node(
+        &self,
+        node_id: &str,
+        principal_id: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM execution_nodes WHERE id=? AND owner_principal_id=?")
+            .bind(node_id)
+            .bind(principal_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(execution_node_from_row)
+            .transpose()
+    }
     async fn list_execution_nodes(
         &self,
         owner_principal_id: &str,
@@ -24423,6 +24729,34 @@ async fn ensure_execution_job_in_transaction(
 
 #[async_trait::async_trait]
 impl ExecutionJobStore for SqliteStore {
+    async fn live_execution_job_routes(
+        &self,
+        context_id: &str,
+        job_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if job_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if job_ids.len() > 201 {
+            return Err("Job route proof page exceeds 201".into());
+        }
+        let mut query=sqlx::QueryBuilder::<sqlx::Sqlite>::new("SELECT j.id FROM execution_jobs j JOIN thread_activations a ON a.id=j.activation_id JOIN threads t ON t.id=j.thread_id WHERE j.context_id=");
+        query.push_bind(context_id).push(" AND j.id IN (");
+        {
+            let mut ids = query.separated(",");
+            for id in job_ids {
+                ids.push_bind(id);
+            }
+        }
+        query.push(") AND j.status IN ('queued','running','waiting_approval') AND a.status IN ('queued','running') AND t.status='open' AND t.context_id=j.context_id AND t.session_id=j.session_id AND a.context_id=j.context_id AND a.session_id=j.session_id AND a.root_turn_id=t.root_turn_id");
+        Ok(query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|r| r.get("id"))
+            .collect())
+    }
     async fn ensure_artifact_transfer_execution(
         &self,
         execution: NewArtifactTransferExecution,
@@ -24711,22 +25045,23 @@ impl ExecutionJobStore for SqliteStore {
         context_id: &str,
         activation_ids: &[String],
     ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if activation_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = Vec::new();
-        for activation_ids in activation_ids.chunks(500) {
-            let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-                "SELECT * FROM execution_jobs WHERE context_id = ",
-            );
-            query.push_bind(context_id).push(" AND activation_id IN (");
-            {
-                let mut values = query.separated(", ");
-                for activation_id in activation_ids {
-                    values.push_bind(activation_id);
-                }
+        for ids in activation_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
-            query.push(") ORDER BY created_at, id");
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query
+                    .push("SELECT * FROM (SELECT * FROM execution_jobs WHERE context_id=")
+                    .push_bind(context_id)
+                    .push(" AND activation_id=")
+                    .push_bind(id)
+                    .push(" ORDER BY created_at DESC,id DESC LIMIT 32) job_head");
+            }
             let rows = query.build().fetch_all(&self.pool).await?;
             records.extend(
                 rows.iter()
@@ -25886,26 +26221,58 @@ impl ApprovalStore for SqliteStore {
         authority: &crate::memory::ApprovalDecisionAuthority,
         limit: usize,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let rows = sqlx::query(
-            r#"SELECT a.* FROM approval_requests a
-               JOIN execution_jobs j ON j.id = a.job_id
-               JOIN sessions s ON s.id = j.session_id
-               JOIN session_principal_bindings b ON b.session_id = s.id
-               JOIN threads t ON t.id = j.thread_id
-               JOIN thread_activations activation ON activation.id = j.activation_id
-               WHERE s.id = ? AND b.principal_id = ? AND b.unbound_at IS NULL
-                 AND j.initiating_principal_id = b.principal_id AND s.status = 'active'
-                 AND a.status = 'pending_human' AND j.status = 'waiting_approval'
-                 AND t.status = 'open' AND activation.status IN ('queued', 'running')
-               ORDER BY a.created_at, a.id LIMIT ?"#,
-        )
-        .bind(&authority.session_id)
-        .bind(&authority.principal_id)
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Sqlite,
+            None,
+            Some(authority),
+            None,
+            limit
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(approval_from_row).collect()
     }
+    async fn read_principal_pending_approval_page(
+        &self,
+        authority: &crate::memory::ApprovalDecisionAuthority,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::memory::PendingApprovalRecordsPage, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let limit = limit.clamp(1, 200);
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Sqlite,
+            None,
+            Some(authority),
+            cursor,
+            limit + 1
+        )?;
+        let mut rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = if has_more {
+            rows.last().map(|row| {
+                crate::memory::directory::DirectoryCursor {
+                    sort_at: row.get("created_at"),
+                    id: row.get("id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        Ok(crate::memory::PendingApprovalRecordsPage {
+            records: rows
+                .iter()
+                .map(approval_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+            has_more,
+            next_cursor,
+        })
+    }
+
     async fn ensure_approval_request(
         &self,
         request: NewApprovalRequest,
@@ -25927,6 +26294,38 @@ impl ApprovalStore for SqliteStore {
             .as_ref()
             .map(approval_from_row)
             .transpose()
+    }
+
+    async fn read_pending_approval_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::memory::PendingApprovalRecordsPage, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let limit = limit.clamp(1, 200);
+        let mut query = crate::memory::approval_page::pending_query!(sqlx::Sqlite, cursor, limit)?;
+        let mut rows = query.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = has_more
+            .then(|| {
+                rows.last().map(|row| {
+                    crate::memory::directory::DirectoryCursor {
+                        sort_at: row.get("created_at"),
+                        id: row.get("id"),
+                    }
+                    .encode()
+                })
+            })
+            .flatten();
+        Ok(crate::memory::PendingApprovalRecordsPage {
+            records: rows
+                .iter()
+                .map(approval_from_row)
+                .collect::<Result<Vec<_>, _>>()?,
+            has_more,
+            next_cursor,
+        })
     }
 
     async fn list_approvals(
@@ -26002,18 +26401,14 @@ impl ApprovalStore for SqliteStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let rows = sqlx::query(
-            r#"SELECT approval_requests.*
-               FROM approval_requests
-               INNER JOIN execution_jobs ON execution_jobs.id = approval_requests.job_id
-               WHERE execution_jobs.context_id = ?
-                 AND approval_requests.status IN ('pending_auto', 'pending_human')
-               ORDER BY approval_requests.created_at, approval_requests.id LIMIT ?"#,
-        )
-        .bind(context_id)
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?;
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Sqlite,
+            Some(context_id),
+            None,
+            None,
+            limit
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(approval_from_row).collect()
     }
 
@@ -26044,24 +26439,18 @@ impl ApprovalStore for SqliteStore {
         context_id: &str,
         job_ids: &[String],
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if job_ids.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut records = Vec::new();
-        for job_ids in job_ids.chunks(500) {
-            let mut query = QueryBuilder::<sqlx::Sqlite>::new(
-                "SELECT approval_requests.* FROM approval_requests INNER JOIN execution_jobs ON execution_jobs.id = approval_requests.job_id WHERE execution_jobs.context_id = ",
-            );
-            query
-                .push_bind(context_id)
-                .push(" AND approval_requests.job_id IN (");
-            {
-                let mut values = query.separated(", ");
-                for job_id in job_ids {
-                    values.push_bind(job_id);
-                }
+        for ids in job_ids.chunks(64) {
+            if ids.is_empty() {
+                continue;
             }
-            query.push(") ORDER BY approval_requests.created_at, approval_requests.id");
+            let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query.push("SELECT * FROM (SELECT a.* FROM approval_requests a JOIN execution_jobs j ON j.id=a.job_id WHERE j.context_id=").push_bind(context_id).push(" AND a.job_id=").push_bind(id).push(" ORDER BY a.created_at DESC,a.id DESC LIMIT 1) approval_head");
+            }
             let rows = query.build().fetch_all(&self.pool).await?;
             records.extend(
                 rows.iter()
@@ -26580,6 +26969,20 @@ impl CapabilityLeaseStore for SqliteStore {
             .transpose()
     }
 
+    async fn get_owned_capability_lease(
+        &self,
+        lease_id: &str,
+        principal_id: &str,
+    ) -> Result<Option<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM capability_leases WHERE id=? AND principal_id=?")
+            .bind(lease_id)
+            .bind(principal_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(capability_lease_from_row)
+            .transpose()
+    }
     async fn list_capability_leases(
         &self,
         filter: CapabilityLeaseFilter,
@@ -27092,6 +27495,20 @@ async fn approval_mutation_failure(
 
 #[async_trait::async_trait]
 impl EventStore for SqliteStore {
+    fn subscribe_event_changes(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut changes = self
+            .event_changes
+            .lock()
+            .map_err(|_| "SQLite Event notification lock poisoned")?;
+        if changes.is_none() {
+            *changes = Some(super::event_changes::SqliteEventChanges::new(
+                self.event_database_path.as_deref(),
+            )?);
+        }
+        Ok(changes.as_ref().unwrap().subscribe())
+    }
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.append_batch(vec![EventAppend { event: ev }]).await
     }
@@ -27113,7 +27530,12 @@ impl EventStore for SqliteStore {
             }
             .await;
             match result {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    if let Some(changes) = self.event_changes.lock().unwrap().as_ref() {
+                        changes.committed();
+                    }
+                    return Ok(());
+                }
                 Err(error) if is_transient_storage_contention(error.as_ref()) => {
                     contention_retries = contention_retries.saturating_add(1);
                     if contention_retries == 1 || contention_retries.is_power_of_two() {
@@ -27147,7 +27569,38 @@ impl EventStore for SqliteStore {
             append_event_idempotent_in_transaction(&mut tx, &entry.event).await?;
         }
         tx.commit().await?;
+        if let Some(changes) = self.event_changes.lock().unwrap().as_ref() {
+            changes.committed();
+        }
         Ok(())
+    }
+
+    async fn event_session_points(
+        &self,
+        context_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if event_ids.len() > 500 {
+            return Err("Event candidate budget exceeded".into());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT DISTINCT COALESCE(session_id,json_extract(payload,'$.session_id')) AS session_id FROM events WHERE COALESCE(context_id,json_extract(payload,'$.context_id'))=",
+        );
+        query
+            .push_bind(context_id)
+            .push(" AND COALESCE(session_id,json_extract(payload,'$.session_id')) IS NOT NULL AND id IN (");
+        {
+            let mut ids = query.separated(",");
+            for id in event_ids {
+                ids.push_bind(id);
+            }
+        }
+        query.push(") LIMIT 500");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|row| row.get("session_id")).collect())
     }
 
     async fn query(
@@ -31850,7 +32303,7 @@ mod tests {
         for (table, index, terminal_statuses) in [
             (
                 "threads",
-                "idx_threads_context_updated",
+                "idx_terminal_thread_page",
                 "'completed', 'failed', 'cancelled'",
             ),
             (
@@ -31859,17 +32312,32 @@ mod tests {
                 "'completed', 'cancelled', 'failed'",
             ),
         ] {
-            let statement = format!(
-                "EXPLAIN QUERY PLAN SELECT * FROM {table} \
-                 WHERE context_id = ? AND status IN ({terminal_statuses}) \
-                 ORDER BY updated_at DESC, id LIMIT ?"
-            );
-            let rows = sqlx::query(&statement)
-                .bind("index-context")
-                .bind(20_i64)
-                .fetch_all(&store.pool)
-                .await
+            let rows = if table == "threads" {
+                use sqlx::Execute;
+                let mut query = crate::memory::directory::terminal_thread_query!(
+                    sqlx::Sqlite,
+                    "ctx",
+                    None::<String>,
+                    50usize
+                )
                 .unwrap();
+                let mut built = query.build();
+                let args = built.take_arguments().unwrap().unwrap();
+                sqlx::query_with(&format!("EXPLAIN QUERY PLAN {}", built.sql()), args)
+                    .fetch_all(&store.pool)
+                    .await
+                    .unwrap()
+            } else {
+                let statement = format!(
+                    "EXPLAIN QUERY PLAN SELECT * FROM {table} WHERE context_id = ? AND status IN ({terminal_statuses}) ORDER BY updated_at DESC, id LIMIT ?"
+                );
+                sqlx::query(&statement)
+                    .bind("ctx")
+                    .bind(50_i64)
+                    .fetch_all(&store.pool)
+                    .await
+                    .unwrap()
+            };
             let plan = rows
                 .iter()
                 .map(|row| row.get::<String, _>("detail"))
@@ -44699,12 +45167,6 @@ mod tests {
                 true,
             ),
             (
-                "pending approvals by Context",
-                "EXPLAIN QUERY PLAN SELECT approvals.* FROM approval_requests approvals INNER JOIN execution_jobs jobs ON jobs.id = approvals.job_id WHERE jobs.context_id = 'ctx' AND approvals.status IN ('pending_auto', 'pending_human') ORDER BY approvals.created_at, approvals.id",
-                "idx_approval_requests_status",
-                true,
-            ),
-            (
                 "waiting plan kind",
                 "EXPLAIN QUERY PLAN SELECT * FROM plan_executions WHERE status = 'waiting' AND pending_kind = 'evaluation' ORDER BY updated_at DESC, id LIMIT 128",
                 "idx_plan_executions_wait_kind",
@@ -44747,6 +45209,36 @@ mod tests {
                 );
             }
         }
+        use sqlx::Execute;
+        let mut query = crate::memory::approval_page::scoped_query!(
+            sqlx::Sqlite,
+            Some("ctx"),
+            None,
+            None,
+            51usize
+        )
+        .unwrap();
+        let mut built = query.build();
+        let args = built.take_arguments().unwrap().unwrap();
+        let rows = sqlx::query_with(&format!("EXPLAIN QUERY PLAN {}", built.sql()), args)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            plan.matches("SEARCH a USING INDEX idx_approval_context_page")
+                .count(),
+            2,
+            "each status owns a Context-leading range: {plan}"
+        );
+        assert!(
+            !plan.contains("SCAN a"),
+            "a retained Approval lifetime must never feed this page: {plan}"
+        );
     }
 
     #[tokio::test]
@@ -44755,35 +45247,44 @@ mod tests {
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
-        let rows = sqlx::query(
-            r#"EXPLAIN QUERY PLAN
-               SELECT c.id
-               FROM cognitive_contexts c
-               WHERE c.status = 'active'
-               ORDER BY MAX(
-                 c.updated_at,
-                 COALESCE(
-                   (SELECT s.last_activity_at
-                    FROM sessions s
-                    WHERE s.context_id = c.id
-                    ORDER BY s.last_activity_at DESC, s.id
-                    LIMIT 1),
-                   c.updated_at
-                 )
-               ) DESC, c.id
-               LIMIT 41"#,
-        )
-        .fetch_all(&store.pool)
-        .await
-        .unwrap();
+        store
+            .ensure_agent(crate::memory::NewAgent {
+                id: "clock-agent".into(),
+                title: "TEST clock".into(),
+                root_context_id: "clock-c0".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(crate::memory::NewCognitiveContext {
+                id: "clock-c0".into(),
+                agent_id: "clock-agent".into(),
+                title: "TEST current".into(),
+            })
+            .await
+            .unwrap();
+        sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO cognitive_contexts(id,agent_id,title,status,created_at,updated_at) SELECT 'clock-old-'||i,'clock-agent','TEST old','active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z' FROM n").execute(&store.pool).await.unwrap();
+        assert_eq!(
+            store.list_recent_contexts(false, 41).await.unwrap()[0].id,
+            "clock-c0"
+        );
+        use sqlx::Execute;
+        let mut query =
+            crate::memory::directory::recent_contexts_query!(sqlx::Sqlite, false, 41usize);
+        let plan_sql = format!("EXPLAIN QUERY PLAN {}", query.sql());
+        let args = query.build().take_arguments().unwrap().unwrap();
+        let rows = sqlx::query_with(&plan_sql, args)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
         let plan = rows
             .iter()
             .map(|row| row.get::<String, _>("detail"))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            plan.contains("idx_sessions_context_activity"),
-            "recent Context lookup must use the per-Context Session activity index: {plan}"
+            plan.contains("idx_context_status_activity") && !plan.contains("TEMP B-TREE"),
+            "recent Context lookup must seek the maintained activity index without a lifetime sort: {plan}"
         );
         assert!(
             !plan.contains("SCAN sessions") && !plan.contains("SCAN s"),
@@ -44910,5 +45411,335 @@ mod tests {
             )
             .await
             .unwrap());
+    }
+    #[tokio::test]
+    async fn runtime_directory_keyset_pages_sqlite() {
+        let tmp_file = TempSqliteDb::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        use crate::memory::{RuntimeDirectoryKind, RuntimeDirectoryQuery, SessionDirectoryStore};
+        store
+            .ensure_agent(crate::memory::NewAgent {
+                id: "dir-agent".into(),
+                title: "TEST directory".into(),
+                root_context_id: "dir-a".into(),
+            })
+            .await
+            .unwrap();
+        for id in ["dir-a", "dir-b"] {
+            store
+                .ensure_context(crate::memory::NewCognitiveContext {
+                    id: id.into(),
+                    agent_id: "dir-agent".into(),
+                    title: id.into(),
+                })
+                .await
+                .unwrap();
+        }
+        for id in ["dir-human-a", "dir-human-b"] {
+            store
+                .ensure_principal(crate::memory::NewPrincipal {
+                    id: id.into(),
+                    provider_id: "test".into(),
+                    assurance: "test".into(),
+                    display_name: None,
+                })
+                .await
+                .unwrap();
+        }
+        let mut expected = Vec::new();
+        for i in 0..105 {
+            let id = format!("s-{i:04}");
+            let context = if i % 3 == 0 { "dir-b" } else { "dir-a" };
+            let principal = if i % 2 == 0 {
+                "dir-human-a"
+            } else {
+                "dir-human-b"
+            };
+            store
+                .create_session_for_principal(
+                    crate::memory::NewSession {
+                        id: id.clone(),
+                        agent_id: "dir-agent".into(),
+                        context_id: context.into(),
+                        parent_session_id: None,
+                        title: id.clone(),
+                        mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                    },
+                    principal,
+                )
+                .await
+                .unwrap();
+            if i % 7 == 0 {
+                let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                    "UPDATE sessions SET status='archived' WHERE id=",
+                );
+                query
+                    .push_bind(&id)
+                    .build()
+                    .execute(&store.pool)
+                    .await
+                    .unwrap();
+            } else if principal == "dir-human-a" && context == "dir-a" {
+                expected.push(id);
+            }
+        }
+        sqlx::query("WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000) INSERT INTO sessions(id,agent_id,context_id,title,status,context_sharing,created_at,updated_at,last_activity_at) SELECT 'a-noise-'||n,'dir-agent','dir-a','noise','archived','shared','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO session_mounts(session_id,generation,context_id,mount_kind,mounted_at) SELECT id,1,context_id,'existing_context',created_at FROM sessions WHERE id LIKE 'a-noise-%'").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO session_principal_bindings(session_id,principal_id,bound_at) SELECT id,'dir-human-b','2026-11-01T00:00:00Z' FROM sessions WHERE id LIKE 'a-noise-%'").execute(&store.pool).await.unwrap();
+        sqlx::query(
+            "UPDATE sessions SET last_activity_at='2026-11-01T01:02:03.100Z' WHERE id LIKE 's-%'",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE cognitive_contexts SET updated_at='2026-11-01T01:02:03.100Z' WHERE id LIKE 'dir-%'").execute(&store.pool).await.unwrap();
+        let seed = "x".repeat(1024 * 1024);
+        let mut update = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "UPDATE cognitive_contexts SET seed_projection=",
+        );
+        update
+            .push_bind(&seed)
+            .push(" WHERE id='dir-a'")
+            .build()
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut request = RuntimeDirectoryQuery {
+            kind: RuntimeDirectoryKind::Sessions,
+            include_archived: false,
+            identity_order: false,
+            cursor: None,
+            limit: 7,
+            principal_id: Some("dir-human-a".into()),
+            context_id: Some("dir-a".into()),
+            agent_id: None,
+            ids: None,
+        };
+        let mut seen = Vec::new();
+        loop {
+            let page = store
+                .read_runtime_directory_page(request.clone())
+                .await
+                .unwrap();
+            assert!(page.sessions.len() <= 7);
+            assert!(page.sessions.iter().all(|row| row.context_id == "dir-a"
+                && row.status == crate::memory::SessionStatus::Active));
+            seen.extend(page.sessions.iter().map(|row| row.id.clone()));
+            if !page.has_more {
+                assert!(page.next_cursor.is_none());
+                break;
+            }
+            let cursor = page.next_cursor.unwrap();
+            assert!(request
+                .cursor
+                .as_ref()
+                .is_none_or(|previous| previous != &cursor));
+            request.cursor = Some(cursor);
+        }
+        assert_eq!(seen,expected,"complete authorized continuation, no duplicates, archived/foreign rows never consume the page");
+        let first = store
+            .read_runtime_directory_page(RuntimeDirectoryQuery {
+                kind: RuntimeDirectoryKind::Contexts,
+                include_archived: true,
+                limit: 1,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(first.contexts.len(), 1);
+        assert!(first.has_more);
+        assert!(
+            first.contexts[0].seed_projection.is_none(),
+            "directory does not transfer large seed bodies"
+        );
+        let second = store
+            .read_runtime_directory_page(RuntimeDirectoryQuery {
+                kind: RuntimeDirectoryKind::Contexts,
+                include_archived: true,
+                limit: 1,
+                cursor: first.next_cursor,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(second.contexts[0].id, "dir-b");
+        assert!(!second.has_more);
+        assert_eq!(
+            store
+                .get_context("dir-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .seed_projection
+                .as_deref(),
+            Some(seed.as_str()),
+            "full exact object retained"
+        );
+        let forbidden = RuntimeDirectoryQuery {
+            kind: RuntimeDirectoryKind::Contexts,
+            principal_id: Some("dir-human-a".into()),
+            limit: 5,
+            ..Default::default()
+        };
+        assert!(store.read_runtime_directory_page(forbidden).await.is_err());
+        request.cursor = Some(String::new());
+        assert!(store
+            .read_runtime_directory_page(request.clone())
+            .await
+            .is_err());
+        request.cursor = Some(
+            crate::memory::directory::DirectoryCursor {
+                sort_at: "1900-01-01T00:00:00Z".into(),
+                id: "zzzz".into(),
+            }
+            .encode(),
+        );
+        let empty = store
+            .read_runtime_directory_page(request.clone())
+            .await
+            .unwrap();
+        assert!(empty.sessions.is_empty() && !empty.has_more);
+        request.cursor = Some(
+            crate::memory::directory::DirectoryCursor {
+                sort_at: "2026-11-01T01:02:03.100Z".into(),
+                id: "s-0020".into(),
+            }
+            .encode(),
+        );
+
+        use sqlx::Execute;
+        let mut query =
+            crate::memory::directory::directory_query!(sqlx::Sqlite, &request, false).unwrap();
+        let plan_sql = format!("EXPLAIN QUERY PLAN {}", query.sql());
+        let args = query.build().take_arguments().unwrap().unwrap();
+        let rows = sqlx::query_with(&plan_sql, args)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("SEARCH b")
+                && !plan.contains("SCAN d")
+                && plan.contains("directory_activity_at=? AND session_id>?")
+                && plan.contains("directory_activity_at<?"),
+            "{plan}"
+        );
+        crate::memory::directory::tests::lifecycle!(&store);
+        crate::memory::directory::tests::related_pages!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::approval_pages!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::scoped_pending_pages!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::session_priority!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::inspection_pages!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::schedule_pages!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::identity_recovery!(sqlx::Sqlite, &store, false);
+        crate::memory::directory::tests::transfer_recovery!(sqlx::Sqlite, &store, false);
+        for (name, mut query) in crate::memory::directory::tests::plan_cases!(sqlx::Sqlite) {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            let operations = std::sync::Arc::new(AtomicUsize::new(0));
+            let observed = operations.clone();
+            let mut connection = store.pool.acquire().await.unwrap();
+            connection
+                .lock_handle()
+                .await
+                .unwrap()
+                .set_progress_handler(100, move || {
+                    observed.fetch_add(100, Ordering::Relaxed) < 20000
+                });
+            let rows = query.build().fetch_all(&mut *connection).await;
+            connection
+                .lock_handle()
+                .await
+                .unwrap()
+                .remove_progress_handler();
+            assert!(
+                rows.is_ok(),
+                "{name} exceeded its fixed instruction budget against retained history: {:?}",
+                rows.as_ref().err()
+            );
+            assert!(rows.unwrap().len() <= 8, "{name}");
+            assert!(operations.load(Ordering::Relaxed) < 20000, "{name}");
+        }
+        {
+            use sqlx::Execute;
+            let key = crate::memory::directory::DirectoryCursor {
+                sort_at: "2026-11-01T01:02:03.100Z".into(),
+                id: "approval-zz".into(),
+            }
+            .encode();
+            let mut query = crate::memory::approval_page::pending_query!(
+                sqlx::Sqlite,
+                Some(key.as_str()),
+                7usize
+            )
+            .unwrap();
+            let mut built = query.build();
+            let arguments = built.take_arguments().unwrap().unwrap();
+            let explain = format!("EXPLAIN QUERY PLAN {}", built.sql());
+            let rows = sqlx::query_with(&explain, arguments)
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+            let plan = rows
+                .iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(plan.contains("idx_pending_approval_page"), "{plan}");
+            assert!(
+                plan.matches("SEARCH approval_requests").count() >= 2,
+                "each status must seek its own capped range: {plan}"
+            );
+            // A bounded merge may use a tiny temporary sort. Test the actual
+            // execution cost against 10000 live plus 10000 terminal rows,
+            // rather than rejecting that merge or trusting estimated rows.
+            for cursor in [
+                None,
+                Some(
+                    crate::memory::directory::DirectoryCursor {
+                        sort_at: "2026-11-02T00:00:00.100Z".into(),
+                        id: "large-pending-5000".into(),
+                    }
+                    .encode(),
+                ),
+            ] {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let operations = Arc::new(AtomicUsize::new(0));
+                let observed = Arc::clone(&operations);
+                let mut connection = store.pool.acquire().await.unwrap();
+                connection
+                    .lock_handle()
+                    .await
+                    .unwrap()
+                    .set_progress_handler(100, move || {
+                        observed.fetch_add(100, Ordering::Relaxed) < 20_000
+                    });
+                let mut query = crate::memory::approval_page::pending_query!(
+                    sqlx::Sqlite,
+                    cursor.as_deref(),
+                    7usize
+                )
+                .unwrap();
+                let result = query.build().fetch_all(&mut *connection).await;
+                connection
+                    .lock_handle()
+                    .await
+                    .unwrap()
+                    .remove_progress_handler();
+                assert!(
+                    result.is_ok(),
+                    "a pending page exceeded its 20000-instruction budget: {:?}",
+                    result.as_ref().err()
+                );
+                assert_eq!(result.unwrap().len(), 8);
+                assert!(operations.load(Ordering::Relaxed) < 20_000);
+            }
+        }
     }
 }

@@ -1,4 +1,9 @@
 import {
+  terminalChangeSchema,
+  terminalChangeScopeSchema,
+  type TerminalChange,
+} from "../../../packages/core/src/terminal.js";
+import {
   cognitiveAppApplicationRoute,
   type ApplicationMethod,
 } from "../../../packages/core/src/application-api.js";
@@ -363,9 +368,16 @@ export function subscribeConversation(
 
 /** Invalidations carry no objects or authority. A new connection's first valid
  * frame requests a fresh authorized snapshot; its sequence is connection-local. */
-export function subscribeWorkspaceChanges(
-  update: (value: WorkspaceChange) => void,
-  lifecycle: { onConnected?: () => void; onClosed?: () => void } = {},
+function subscribeChangeHints<T extends { sequence: number }>(
+  scope: Parameters<
+    NonNullable<
+      NonNullable<Window["morphzDesktop"]>["application"]
+    >["subscribe"]
+  >[1],
+  url: string,
+  parse: (raw: unknown) => T,
+  update: (value: T) => void,
+  lifecycle: { onConnected?: () => void; onClosed?: () => void },
 ) {
   const bridge = window.morphzDesktop?.application;
   const expected = generation,
@@ -384,7 +396,7 @@ export function subscribeWorkspaceChanges(
   };
   const receive = (raw: unknown) => {
     if (!validIdentity()) return;
-    const value = workspaceChangeSchema.parse(raw);
+    const value = parse(raw);
     if (value.sequence <= sequence) return;
     sequence = value.sequence;
     if (!connected) {
@@ -411,7 +423,7 @@ export function subscribeWorkspaceChanges(
       activeId = crypto.randomUUID();
       sequence = 0;
       const id = activeId;
-      void bridge.subscribe(id, { kind: "workspace" }, expected).catch(() => {
+      void bridge.subscribe(id, scope, expected).catch(() => {
         if (id === activeId) reconnect();
       });
     };
@@ -435,7 +447,7 @@ export function subscribeWorkspaceChanges(
       dispose();
     };
   }
-  const stream = new EventSource("/api/platform/workspace/stream");
+  const stream = new EventSource(url);
   stream.onopen = () => {
     sequence = 0;
     connected = false;
@@ -452,4 +464,31 @@ export function subscribeWorkspaceChanges(
     closed = true;
     stream.close();
   };
+}
+
+export function subscribeWorkspaceChanges(
+  update: (value: WorkspaceChange) => void,
+  lifecycle: { onConnected?: () => void; onClosed?: () => void } = {},
+) {
+  return subscribeChangeHints(
+    { kind: "workspace" },
+    "/api/platform/workspace/stream",
+    (raw) => workspaceChangeSchema.parse(raw),
+    update,
+    lifecycle,
+  );
+}
+export function subscribeTerminalChanges(
+  scope: import("zod").infer<typeof terminalChangeScopeSchema>,
+  update: (value: TerminalChange) => void,
+  lifecycle: { onConnected?: () => void; onClosed?: () => void } = {},
+) {
+  const owned = terminalChangeScopeSchema.parse(scope);
+  return subscribeChangeHints(
+    owned,
+    `/api/platform/terminal/stream?scope=${encodeURIComponent(JSON.stringify(owned))}`,
+    (raw) => terminalChangeSchema.parse(raw),
+    update,
+    lifecycle,
+  );
 }

@@ -14,13 +14,22 @@ import {Terminal} from '/src/features/terminal/Terminal.tsx';
 import {ApplicationRequestError} from ${JSON.stringify("/@fs" + resolve("packages/core/src/application-api.ts"))};
 ${currentAppCSSImports()}
 const events=[],query=new URL(location.href).searchParams;let api,copied='';
+const feeds=new Set();
+class TerminalFeed {
+ constructor(url){this.url=url;this.sequence=0;this.closed=false;feeds.add(this);setTimeout(()=>this.emit(true,true,'resync'),0);}
+ emit(catalog,screen,reason='changed'){if(!this.closed)this.onmessage?.({data:JSON.stringify({kind:'terminal',sequence:++this.sequence,catalog,screen,reason})});}
+ close(){this.closed=true;feeds.delete(this);}
+}
+Reflect.set(window,'EventSource',TerminalFeed);
+const wake=(catalog=false,screen=true)=>{for(const feed of feeds)feed.emit(catalog,screen);};
+
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{copied=text;}}});
 const record={id:'terminal-exact',session_id:'session-exact',context_id:'context-exact',principal_id:'human-exact',root_turn_id:'root-exact',source_job_id:'job-exact',target_id:'target-default',revision:2,status:'open',title:'编译与检查',shell:'/bin/zsh',cwd:'/workspace/terminal-check',rows:24,cols:80,sandbox_status:'enforced',network_enabled:false,exit_code:null,created_at:'2026-10-16T00:00:00Z',updated_at:'2026-10-16T00:00:00Z'};
 const records=new Map(query.has('emptyCatalog')?[]:[[record.id,record]]),opens=new Map();let openAttempts=0;
 const text='实际输出：中文 <script>不是脚本</script>',screen={sequence:3,rows:24,cols:80,lines:Array.from({length:24},(_,i)=>i===1?[{text:'~/workspace',fg:'#3973c6',fg_index:4},{text:' ❯ ',fg:'#298451',fg_index:2},{text:'truecolor',fg:'#298451'}].map(span=>({...span,bold:false,italic:false,underline:false,inverse:false})):[{text:i===0?text:' ',bold:false,italic:false,underline:false,inverse:false}]),text,cursor:[1,13],cursor_visible:true,alternate_screen:false,scrollback:0,previous_available:true};
 function Frame(){
  const [facts,setFacts]=useState({active:true,online:true,inputSupported:true,appearance:'dark',accent:'cyan',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
- api={set:value=>setFacts(old=>({...old,...value}))};
+ api={set:value=>{setFacts(old=>({...old,...value}));if(['screenError','serverError','inputSupported','checkpoint','unrestricted','noHistory'].some(key=>key in value))queueMicrotask(()=>wake());}};
  const client={boot:{centerId:'center-exact',principalId:facts.principal??'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
  terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[...records.values()],limit:50,has_more:false};},
  terminalOpen:async(scope,commandId)=>{events.push(['open',scope,commandId]);openAttempts++;if(!opens.has(commandId)){const created={...record,id:'human-'+commandId,title:'终端 '+(opens.size+1),root_turn_id:null,source_job_id:null,creation_command_id:commandId};records.set(created.id,created);opens.set(commandId,created);}await new Promise(r=>setTimeout(r,100));if(query.has('lostOpen')&&openAttempts===1)throw Error('TEST lost creation receipt');return {command_id:commandId,terminal:opens.get(commandId),connected:true};},
@@ -30,7 +39,7 @@ function Frame(){
  return <div className="app" data-appearance={facts.appearance} data-accent={facts.accent} style={{height:'100dvh',display:'block',colorScheme:facts.appearance==='system'?'light dark':facts.appearance}}><Terminal client={client} instance={facts.instance} projectId="project-exact" conversationId="conversation-exact" active={facts.active} onContext={value=>events.push(['context',value])} onNotice={value=>events.push(['notice',value])}/></div>;
 }
 createRoot(document.getElementById('root')).render(<StrictMode><Frame/></StrictMode>);
-Reflect.set(window,'terminalFixture',{set:value=>api.set(value),state:()=>({events:[...events],copied})});
+Reflect.set(window,'terminalFixture',{set:value=>api.set(value),wake,state:()=>({events:[...events],copied,feeds:feeds.size})});
 `;
 
 test("mounted Terminal uses one Agent composer, compact stable copy feedback and bounded active-only reads", async (t) => {
@@ -249,6 +258,39 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
     await page.getByRole("button", { name: "终端配色", exact: true }).count(),
     0,
   );
+  await page.waitForTimeout(100);
+  const idleReads = await page.evaluate(
+    () =>
+      Reflect.get(window, "terminalFixture")
+        .state()
+        .events.filter((e: any[]) => ["catalog", "read"].includes(e[0])).length,
+  );
+  await page.waitForTimeout(1300);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter((e: any[]) => ["catalog", "read"].includes(e[0]))
+          .length,
+    ),
+    idleReads,
+    "healthy visible idle performs zero reads beyond the former polling interval",
+  );
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").wake(false, true),
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          Reflect.get(window, "terminalFixture")
+            .state()
+            .events.filter((e: any[]) => ["catalog", "read"].includes(e[0]))
+            .length,
+      ),
+    )
+    .toBe(idleReads + 1);
   for (const appearance of ["light", "dark", "system"]) {
     await page.evaluate(
       (appearance) =>

@@ -56,13 +56,13 @@ test("background activity reads keep terminal history off the hot path and discl
     await x.internal.refreshActivity(false);
     assert.equal(
       paths.filter((path) => path.includes("include_terminal=true")).length,
-      2,
+      1,
     );
-    assert.equal(x.read().readScopes![0]!.historyAvailable, true);
+    assert.equal(x.read().readScopes![0]!.historyAvailable, false);
     await x.internal.refreshActivity();
     assert.equal(
       paths.filter((path) => path.includes("include_terminal=true")).length,
-      3,
+      2,
     );
     assert.equal(x.diagnostics.length, 0);
   } finally {
@@ -144,13 +144,13 @@ test("a terminal invalidation arriving during a history read is not lost when th
       }
       return x.view([x.thread("current")]);
     };
-    const first = x.internal.refreshActivity(false);
+    const first = x.internal.refreshActivity(true);
     await started;
     x.internal.activityHistoryDirty.set(x.contextId, 2);
     release();
     await first;
     assert.equal(x.internal.activityHistoryDirty.get(x.contextId), 2);
-    await x.internal.refreshActivity(false);
+    await x.internal.refreshActivity(true);
     assert.equal(histories, 2);
     assert.equal(x.internal.activityHistoryDirty.has(x.contextId), false);
   } finally {

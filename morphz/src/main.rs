@@ -2967,17 +2967,21 @@ async fn resolve_resumed_session(
     }
     let session_id =
         if use_last || (option_value(invocation, "session").is_none() && prompt_args.is_empty()) {
-            sdk.list_sessions(&principal.principal_id, false)
-                .await?
-                .into_iter()
-                .find(|session| {
-                    option_value(invocation, "context")
-                        .is_none_or(|context| session.context_id == context)
-                        && option_value(invocation, "agent")
-                            .is_none_or(|agent| session.agent_id == agent)
-                })
-                .map(|session| session.id)
-                .ok_or("没有可恢复的活跃 Session")?
+            sdk.list_sessions_page(
+                &principal.principal_id,
+                morphz::memory::RuntimeDirectoryQuery {
+                    context_id: option_value(invocation, "context").map(str::to_owned),
+                    agent_id: option_value(invocation, "agent").map(str::to_owned),
+                    limit: 1,
+                    ..Default::default()
+                },
+            )
+            .await?
+            .sessions
+            .into_iter()
+            .next()
+            .map(|session| session.id)
+            .ok_or("没有可恢复的活跃 Session")?
         } else if let Some(session_id) = option_value(invocation, "session") {
             session_id.to_string()
         } else if !prompt_args.is_empty() {
@@ -2998,11 +3002,22 @@ fn json_output(invocation: &Invocation) -> bool {
 }
 
 async fn list_contexts(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
-    let records = runtime
-        .list_contexts(switch_enabled(invocation, "include-archived")?)
+    let page = runtime
+        .read_runtime_directory_page(morphz::memory::RuntimeDirectoryQuery {
+            kind: morphz::memory::RuntimeDirectoryKind::Contexts,
+            include_archived: switch_enabled(invocation, "include-archived")?,
+            agent_id: option_value(invocation, "agent").map(str::to_owned),
+            cursor: option_value(invocation, "cursor").map(str::to_owned),
+            limit: option_value(invocation, "limit")
+                .map(str::parse)
+                .transpose()?
+                .unwrap_or(50),
+            ..Default::default()
+        })
         .await?;
+    let records = &page.contexts;
     if json_output(invocation) {
-        println!("{}", serde_json::to_string_pretty(&records)?);
+        println!("{}", serde_json::to_string_pretty(&page)?);
     } else {
         for record in records {
             println!(
@@ -3012,6 +3027,11 @@ async fn list_contexts(runtime: &MorphzRuntime, invocation: &Invocation) -> Resu
                 record.agent_id,
                 record.title
             );
+        }
+    }
+    if !json_output(invocation) {
+        if let Some(cursor) = page.next_cursor {
+            println!("next_cursor={cursor}");
         }
     }
     Ok(())
@@ -3276,6 +3296,7 @@ async fn show_scheduler(
             SchedulerQuery {
                 include_terminal: switch_enabled(invocation, "include-terminal")?,
                 limit,
+                ..Default::default()
             },
         )
         .await?;
@@ -3485,20 +3506,25 @@ async fn supersede_scheduler_thread(
 async fn list_sessions(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
     let sdk = MorphzSdk::new(runtime.clone());
     let principal = sdk.default_principal();
-    let mut records = sdk
-        .list_sessions(
+    let page = sdk
+        .list_sessions_page(
             &principal.principal_id,
-            switch_enabled(invocation, "include-archived")?,
+            morphz::memory::RuntimeDirectoryQuery {
+                include_archived: switch_enabled(invocation, "include-archived")?,
+                context_id: option_value(invocation, "context").map(str::to_owned),
+                agent_id: option_value(invocation, "agent").map(str::to_owned),
+                cursor: option_value(invocation, "cursor").map(str::to_owned),
+                limit: option_value(invocation, "limit")
+                    .map(str::parse)
+                    .transpose()?
+                    .unwrap_or(50),
+                ..Default::default()
+            },
         )
         .await?;
-    if let Some(context) = option_value(invocation, "context") {
-        records.retain(|record| record.context_id == context);
-    }
-    if let Some(agent) = option_value(invocation, "agent") {
-        records.retain(|record| record.agent_id == agent);
-    }
+    let records = &page.sessions;
     if json_output(invocation) {
-        println!("{}", serde_json::to_string_pretty(&records)?);
+        println!("{}", serde_json::to_string_pretty(&page)?);
     } else {
         for record in records {
             println!(
@@ -3510,6 +3536,11 @@ async fn list_sessions(runtime: &MorphzRuntime, invocation: &Invocation) -> Resu
                 morphz::local_time::format_utc_for_local(record.last_activity_at),
                 record.title
             );
+        }
+    }
+    if !json_output(invocation) {
+        if let Some(cursor) = page.next_cursor {
+            println!("next_cursor={cursor}");
         }
     }
     Ok(())

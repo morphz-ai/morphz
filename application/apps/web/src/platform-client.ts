@@ -464,7 +464,7 @@ export class PlatformClient {
   async navigationRuntime(
     signal?: AbortSignal,
     scope?: { projectId: string; conversationId: string } | null,
-    options?: { refreshActivity?: boolean },
+    options?: { refreshActivity?: boolean; loadMoreApprovals?: boolean },
   ) {
     return z
       .object({
@@ -480,8 +480,8 @@ export class PlatformClient {
       .parse(
         await this.call(
           "runtime.navigation",
-          options?.refreshActivity
-            ? { ...scope, refreshActivity: true }
+          options?.refreshActivity || options?.loadMoreApprovals
+            ? { ...scope, ...options }
             : (scope ?? undefined),
           signal,
         ),

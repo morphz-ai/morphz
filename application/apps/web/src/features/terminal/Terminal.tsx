@@ -1,3 +1,4 @@
+import { subscribeTerminalChanges } from "../../application-transport.js";
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
@@ -71,6 +72,15 @@ export function Terminal({
   const [screenError, setScreenError] = useState("");
   const error = screenError || catalogError;
   const [tick, setTick] = useState(0);
+  const [visible, setVisible] = useState(
+    () => typeof document === "undefined" || !document.hidden,
+  );
+  const [hints, setHints] = useState<{
+    scope: string;
+    catalog: number;
+    screen: number;
+    ready: boolean;
+  } | null>(null);
   const [scrollback, setScrollback] = useState(0);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -207,16 +217,56 @@ export function Terminal({
     automaticSelection.current = "";
   }, [identity]);
   useEffect(() => {
-    if (!active || !client.online) return;
-    const timer = setInterval(() => {
-      if (!document.hidden) setTick((n) => n + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [active, client.online]);
+    const changed = () => setVisible(!document.hidden);
+    document.addEventListener("visibilitychange", changed);
+    return () => document.removeEventListener("visibilitychange", changed);
+  }, []);
+  const feedScope = JSON.stringify([identity, selection]);
+  useEffect(() => {
+    if (!active || !client.online || !visible) return;
+    let closed = false;
+    setHints(null);
+    const dispose = subscribeTerminalChanges(
+      { kind: "terminal", scope, terminalId: selection },
+      (change) => {
+        if (
+          closed ||
+          current.current !== identity ||
+          liveInputScope.current.selection !== selection
+        )
+          return;
+        setHints((previous) => ({
+          scope: feedScope,
+          ready: true,
+          catalog:
+            (previous?.scope === feedScope ? previous.catalog : 0) +
+            (change.catalog ? 1 : 0),
+          screen:
+            (previous?.scope === feedScope ? previous.screen : 0) +
+            (change.screen ? 1 : 0),
+        }));
+      },
+      {
+        onClosed: () => {
+          if (!closed)
+            setHints((previous) =>
+              previous?.scope === feedScope
+                ? { ...previous, ready: false }
+                : previous,
+            );
+        },
+      },
+    );
+    return () => {
+      closed = true;
+      dispose();
+    };
+  }, [identity, selection, active, client.online, visible]);
+  const feed = hints?.scope === feedScope ? hints : null;
   const refreshCatalog = useObservedRead({
     scope: identity,
-    enabled: active && client.online,
-    revision: Math.floor(tick / 4) + client.workspaceChangeRevision,
+    enabled: active && client.online && visible && !!feed?.ready,
+    revision: feed?.catalog ?? 0,
     invalidation: "coalesce",
     read: (signal) => api.current.terminalCatalog(scope, signal),
     publish: (page) => {
@@ -232,8 +282,8 @@ export function Terminal({
   });
   const refreshView = useObservedRead({
     scope: observationScope,
-    enabled: active && client.online && !!selection,
-    revision: tick,
+    enabled: active && client.online && visible && !!selection && !!feed?.ready,
+    revision: tick + (feed?.screen ?? 0),
     invalidation: "coalesce",
     read: (signal) =>
       api.current.terminalRead(scope, selection!, scrollback, signal),

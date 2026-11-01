@@ -1,3 +1,6 @@
+import { useLayoutEffect, useRef, useState } from 'react'
+import { DASHBOARD_API } from '../api/runtime'
+import { inspectionSlot, inspectionScope, retainInspectionHistory, mergeInspectionPage, type InspectionContinuation, type InspectionResponse } from '../app/inspectionPage'
 import { Brain, Check, ChevronDown, CircleDot, Clock3, Filter, GitBranch, KeyRound, Layers3, LoaderCircle, MessageSquarePlus, Pause, Play, Radio, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
@@ -206,8 +209,9 @@ function ActivationGroup({
 }
 
 export function ThreadCausalCard({
-  snapshot,
-  modelAttemptEvents = [],
+  snapshot: head,
+  modelAttemptEvents: headEvents = [],
+  continuations: headContinuations = [],
   liveModelAttempts = [],
   t,
   locale,
@@ -224,6 +228,7 @@ export function ThreadCausalCard({
   onInspect,
 }: {
   snapshot: SchedulerThreadSnapshot
+  continuations?: InspectionContinuation[]
   modelAttemptEvents?: ThreadDetailResponse['model_attempt_events']
   liveModelAttempts?: LiveModelAttempt[]
   t: TFunction
@@ -240,7 +245,36 @@ export function ThreadCausalCard({
   onSupervisorFilter?: (supervisorId: string) => void
   onInspect?: (threadId: string) => void
 }) {
+  const scope=inspectionScope(head)
+  const owner = useRef(scope); useLayoutEffect(()=>{owner.current=scope},[scope])
+  const requestSerial=useRef(0)
+  const [loaded,setLoaded]=useState<{scope:string; snapshot:SchedulerThreadSnapshot; events:ThreadDetailResponse['model_attempt_events']; continuations:InspectionContinuation[]; progress:Map<string,string|null>}|null>(null)
+  const [reading,setReading]=useState<{scope:string;key:string}|null>(null), [readError,setReadError]=useState<{scope:string;text:string}|null>(null)
+  const retained=loaded?.scope===scope?loaded:null
+  const snapshot=retained?retainInspectionHistory(head,retained.snapshot):head
+  const modelAttemptEvents=retained?[...new Map([...retained.events,...headEvents].map(e=>[e.id,e])).values()].sort((a,b)=>(a.sequence??0)-(b.sequence??0)):headEvents
+  const progress=retained?.progress??new Map<string,string|null>()
+  const handles=new Map((retained?.continuations??[]).map(c=>[inspectionSlot(c),c]))
+  for(const c of headContinuations)if(!progress.has(inspectionSlot(c)))handles.set(inspectionSlot(c),c)
+  const continuations=[...handles.values()].filter(c=>!c.activation_id||snapshot.activations.some(a=>a.activation.id===c.activation_id)).filter(c=>progress.get(inspectionSlot(c))!==null)
+  const pending=reading?.scope===scope?reading.key:''
+  const error=readError?.scope===scope?readError.text:''
   const { thread } = snapshot
+  const readPage=async (request:InspectionContinuation)=>{
+    if(pending)return
+    const serial=++requestSerial.current
+    setReading({scope,key:inspectionSlot(request)});setReadError(null)
+    try {
+      const params=new URLSearchParams({kind:request.kind,cursor:request.next_cursor,limit:'32'})
+      if(request.activation_id)params.set('activation_id',request.activation_id)
+      const response=await DASHBOARD_API.get<InspectionResponse>(`/api/contexts/${encodeURIComponent(thread.context_id)}/threads/${encodeURIComponent(thread.id)}/records?${params}`)
+      if(owner.current!==scope||requestSerial.current!==serial)return
+      const next=mergeInspectionPage(snapshot,modelAttemptEvents,continuations,request,response)
+      const advanced=new Map(progress);advanced.set(inspectionSlot(request),response.page.has_more?response.page.next_cursor:null)
+      setLoaded({scope,...next,progress:advanced})
+    }catch(cause){if(owner.current===scope&&requestSerial.current===serial)setReadError({scope,text:cause instanceof Error?cause.message:String(cause)})}
+    finally {if(requestSerial.current===serial)setReading(null)}
+  }
   // `open` is a semantic lifecycle (the Thread may accept a later Signal),
   // not evidence of physical activity. Only the Scheduler projection decides
   // whether this aggregate is currently runnable/running/waiting.
@@ -351,6 +385,10 @@ export function ThreadCausalCard({
             </div>
           </article>
         ))}
+        {continuations.length>0 && <div className="thread-actions">
+          {continuations.map(page=><button key={inspectionSlot(page)} type="button" disabled={!!pending} onClick={()=>void readPage(page)}>{pending===inspectionSlot(page)?t('common.loading'):t(`work.causal.more.${page.kind}`)}{page.activation_id?` · ${shortId(page.activation_id,12)}`:''}</button>)}
+        </div>}
+        {error && <p role="alert" className="error-banner">{error}</p>}
         <footer className={`delivery-state ${thread.delivery_status}`}>
           <span>{t('work.causal.delivery')}</span><b>{statusLabel(thread.delivery_status, t)}</b>
           {thread.result_text && <p>{thread.result_text}</p>}

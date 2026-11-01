@@ -1,3 +1,6 @@
+import { WebSocketServer, WebSocket } from "ws";
+import { until, pause } from "./runtime-change-fixture.js";
+import type { TerminalChange } from "../packages/core/src/terminal.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -727,6 +730,15 @@ test("direct creation prepares only the canonical execution Session, with no acc
           });
     return answer({}, 404);
   });
+  const sockets = new WebSocketServer({ server, path: "/ws" });
+  sockets.on("connection", (_peer, request) => {
+    assert.equal(
+      new URL(request.url!, "http://test.invalid").searchParams.get(
+        "changes_only",
+      ),
+      "true",
+    );
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const f = await platformRuntimeHostFixture({
     url: `http://127.0.0.1:${(server.address() as any).port}`,
@@ -818,9 +830,86 @@ test("direct creation prepares only the canonical execution Session, with no acc
     );
     assert.equal(ioCalls, 0);
     assert.equal((f.runtime as any).state.deliveries.length, before);
+    await f.enableDispatch();
+    const frames: TerminalChange[] = [];
+    const stop = await f.session().observeTerminalChanges(
+      { kind: "terminal", scope, terminalId: receipt.terminal.id },
+      (frame) => frames.push(frame),
+      () => {},
+    );
+    try {
+      await until(
+        () => sockets.clients.size === 1 && frames.length > 0,
+        "terminal metadata subscription did not become ready",
+      );
+      await pause(100);
+      frames.length = 0;
+      const requestsBefore = calls.length;
+      await pause(1200);
+      assert.equal(
+        calls.length,
+        requestsBefore,
+        "idle observation must not read Runtime metadata or screen",
+      );
+      const send = (payload: Record<string, unknown>) => {
+        const frame = {
+          id: randomUUID(),
+          topic: "runtime/terminal_changed",
+          payload,
+        };
+        for (const peer of sockets.clients)
+          if (peer.readyState === WebSocket.OPEN)
+            peer.send(JSON.stringify(frame));
+      };
+      const own = {
+        terminal_id: created.id,
+        session_id: created.session_id,
+        context_id: created.context_id,
+        principal_id: created.principal_id,
+        scope_ref: created.scope_ref,
+        kind: "output",
+      };
+      for (let n = 0; n < 12; n++)
+        send({
+          ...own,
+          untrusted_output: "must not cross the metadata boundary",
+        });
+      await until(
+        () => frames.length === 1,
+        "selected terminal output hint was lost",
+      );
+      assert.deepEqual(
+        { ...frames[0], sequence: 1 },
+        {
+          kind: "terminal",
+          sequence: 1,
+          reason: "changed",
+          catalog: false,
+          screen: true,
+        },
+      );
+      assert.equal(
+        calls.length,
+        requestsBefore,
+        "a hint itself never fetches screen, history or activity",
+      );
+      send({ ...own, principal_id: "foreign" });
+      send({ ...own, context_id: "foreign" });
+      await pause(100);
+      assert.equal(
+        frames.length,
+        1,
+        "foreign metadata cannot invalidate the selected terminal",
+      );
+      assert.equal(JSON.stringify(frames).includes("must not cross"), false);
+    } finally {
+      stop();
+    }
     f.assertNoLegacyData();
   } finally {
     await f.close();
+    for (const peer of sockets.clients) peer.terminate();
+    await new Promise<void>((resolve) => sockets.close(() => resolve()));
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });

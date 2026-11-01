@@ -743,6 +743,7 @@ async fn run_group_wait(read_before_spawn: bool) {
                     SchedulerQuery {
                         include_terminal: true,
                         limit: 16,
+                        ..Default::default()
                     },
                 )
                 .await

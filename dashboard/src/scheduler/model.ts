@@ -20,9 +20,25 @@ export function mergeSchedulerCurrentAndHistory(current: SchedulerSnapshot, hist
   return { ...current, threads: [...threads.values()], objectives: [...objectives.values()],
     detail_bounds: { ...current.detail_bounds,
       has_more_threads: current.detail_bounds.has_more_threads || history.detail_bounds.has_more_threads,
+      has_more_history: history.detail_bounds.has_more_history,
+      next_history_cursor: history.detail_bounds.next_history_cursor,
       has_more_objectives: current.detail_bounds.has_more_objectives || history.detail_bounds.has_more_objectives,
     },
   }
+}
+
+/** Append one explicitly requested cursor page, keeping newer terminal facts
+ * when a record moved during reading. Current authority is merged separately. */
+export function appendSchedulerHistoryPage(previous: SchedulerSnapshot, page: SchedulerSnapshot): SchedulerSnapshot {
+  if (previous.context_id !== page.context_id) throw new Error('Scheduler history scope changed')
+  const threads = new Map(previous.threads.map(row => [row.thread.id, row]))
+  for (const row of page.threads) {
+    const old = threads.get(row.thread.id)
+    if (!old || row.thread.updated_at >= old.thread.updated_at) threads.set(row.thread.id, row)
+  }
+  const objectives = new Map(previous.objectives.map(row => [row.objective.id, row]))
+  for (const row of page.objectives) objectives.set(row.objective.id, row)
+  return {...page, threads: [...threads.values()], objectives: [...objectives.values()]}
 }
 
 export function schedulerDetailsTruncated(

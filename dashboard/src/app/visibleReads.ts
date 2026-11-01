@@ -21,7 +21,7 @@ export function visibleReads(scope: VisibleReadScope, invalidated: readonly Auth
   const workChanged = queries.has('scheduler') || queries.has('session')
   return {
     catalog: queries.has('catalog'),
-    session: scope.hasContext && scope.hasSession && sessionPage && !scope.globalOverview && workChanged,
+    session: scope.hasContext && scope.hasSession && sessionPage && !scope.globalOverview && (workChanged || queries.has('model-usage') || queries.has('delegations')),
     overview: scope.hasContext && scope.view === 'overview' && !scope.globalOverview
       && !scope.hasSession && (queries.has('overview') || workChanged),
     runtimeOverview: (scope.view === 'runtime' || scope.globalOverview)

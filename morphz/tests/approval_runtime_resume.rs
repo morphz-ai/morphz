@@ -893,6 +893,7 @@ async fn approval_runtime_child() {
                 morphz::runtime::SchedulerQuery {
                     include_terminal: true,
                     limit: 100,
+                    ..Default::default()
                 },
             )
             .await

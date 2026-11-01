@@ -82,6 +82,9 @@ interface RuntimePageProps {
   executionTargets: Array<{ id: string; revision: number; name: string; kind: string; status: string; platform?: string; workspace_root?: string; provider_node_id?: string; capabilities: string[] }>
   executionNodes: Array<{ id: string; revision: number; name: string; status: string; platform?: string; protocol_version: number; capabilities: string[]; last_seen_at?: string }>
   capabilityLeases: CapabilityLeaseSummary[]
+  inventoryCursors: Record<'targets' | 'nodes' | 'leases', string | null>
+  inventoryBusy: boolean
+  onLoadMoreInventory: (kind: 'targets' | 'nodes' | 'leases') => void
   executionJobs: Array<{ id: string; revision: number; thread_id: string; target_id: string; tool_name: string; status: string; claimed_by?: string; progress_ref?: string; created_at: string }>
   onRefresh: () => void
   onRefreshOverview: () => void
@@ -273,6 +276,7 @@ export function RuntimePage(props: RuntimePageProps) {
                   </button>
                 </article>
               ))}
+              {props.inventoryCursors.targets && <button className="history-more" type="button" disabled={props.inventoryBusy} onClick={() => props.onLoadMoreInventory('targets')}>{t('header.loadMorePrincipals')}</button>}
               {props.executionTargets.length === 0 && <p>{t('runtime.noExecutionTargets')}</p>}
             </div>
           </section>
@@ -287,6 +291,7 @@ export function RuntimePage(props: RuntimePageProps) {
                   {node.status !== 'revoked' && <button type="button" onClick={() => props.onRevokeNode(node.id, node.revision)}>{t('runtime.revoke')}</button>}
                 </article>
               ))}
+              {props.inventoryCursors.nodes && <button className="history-more" type="button" disabled={props.inventoryBusy} onClick={() => props.onLoadMoreInventory('nodes')}>{t('header.loadMorePrincipals')}</button>}
               {props.executionNodes.length === 0 && <p>{t('runtime.noExecutionNodes')}</p>}
             </div>
           </section>
@@ -320,6 +325,7 @@ export function RuntimePage(props: RuntimePageProps) {
             <p className="authorization-rules-hint">{t('runtime.authorizationRulesHint')}</p>
             <div className="execution-plane-list authorization-rules-list">
               {props.capabilityLeases.map(lease => <AuthorizationRule key={`${lease.id}:${lease.revision}`} lease={lease} onRestrict={props.onRestrictLease} onRevoke={props.onRevokeLease} />)}
+              {props.inventoryCursors.leases && <button className="history-more" type="button" disabled={props.inventoryBusy} onClick={() => props.onLoadMoreInventory('leases')}>{t('header.loadMorePrincipals')}</button>}
               {props.capabilityLeases.length === 0 && <p>{t('runtime.noCapabilityLeases')}</p>}
             </div>
           </section>

@@ -1,4 +1,6 @@
-import { memo, startTransition, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { sessionReadPlan } from './app/sessionReadPlan'
+import { readDirectoryPage, readNavigationHead, mergeDirectoryPage } from './app/directoryPage'
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { CSSProperties, RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BrandMark } from './BrandMark'
@@ -85,6 +87,7 @@ import {
   attentionJobKey,
   actionableSchedulerJobs,
   mergeSchedulerCurrentAndHistory,
+  appendSchedulerHistoryPage,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
@@ -133,6 +136,8 @@ import type {
   ScheduleRecord,
   SchedulerSnapshot,
   SchedulerThreadSnapshot,
+  ObjectiveRecord,
+  SchedulerThreadGroupSnapshot,
   ThreadDetailResponse,
   ThreadActivationRecord,
   ThreadSignalRecord,
@@ -141,6 +146,7 @@ import type {
 import {
   dashboardPath,
   observesExactModelRequests,
+  sessionStreamNeedsBodies,
   parseDashboardRoute,
   threadPath,
   type CognitionView,
@@ -167,7 +173,7 @@ import { DASHBOARD_API, getDashboardToken } from './api/runtime'
 import { submitThreadControl } from './app/threadControl'
 import { visibleReads } from './app/visibleReads'
 import { objectiveControlReceipt } from './app/objectiveControl'
-import {
+import { eventHistoryInvalidatedByTopic,
   invalidatedQueriesForTopic,
   type AuthoritativeQuery,
 } from './app/invalidation'
@@ -574,7 +580,6 @@ function useStoredDisclosure(key: string, fallback: boolean) {
 
 const MESSAGE_PAGE_SIZE = 100
 const MODEL_STREAM_RENDER_INTERVAL_MS = 50
-const WORK_HISTORY_THREAD_LIMIT = 60
 const SCHEDULER_HISTORY_PAGE_SIZE = 60
 const DIALOGUE_ACTIVITY_HISTORY_LIMIT = 12
 const CONTEXT_READER_HIGHLIGHT_TOKEN_LIMIT = 16_000
@@ -1359,23 +1364,8 @@ interface SessionWorkingSet {
   selection: string
 }
 
-export interface ObjectiveRecord {
-  id: string
-  generation: number
-  context_id: string
-  coordinator_session_id: string
-  delivery_session_id: string
-  stated_objective: string
-  revision: number
-  status: string
-  status_reason?: string
-  wait_condition?: { kind: string; [key: string]: unknown }
-  tokens_used: number
-  token_budget?: number
-  time_used_seconds: number
-  created_at: string
-  updated_at: string
-}
+export type {ObjectiveRecord} from './scheduler/types'
+
 
 type ObjectiveMutationKind = 'edit' | 'pause' | 'resume' | 'delete' | ''
 
@@ -1498,7 +1488,7 @@ interface ContextOverviewResponse {
   retired_items: number
   pressure?: ContextPressure
   attribution?: ContextAttribution
-  objectives: ObjectiveRecord[]
+  objective_status_counts: Record<string, number>
   scheduler: SchedulerSnapshot['summary']
 }
 
@@ -3417,7 +3407,7 @@ export default function App() {
   const workControlVersion = useRef(0)
   const [attentionAcknowledgements, setAttentionAcknowledgements] = useState<AttentionAcknowledgement[]>([])
   const [acknowledgingAttentionKey, setAcknowledgingAttentionKey] = useState('')
-  const [schedulerHistoryLimit, setSchedulerHistoryLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
+  const [schedulerHistoryDisplayLimit, setSchedulerHistoryDisplayLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
   const [threadDetail, setThreadDetail] = useState<ThreadDetailResponse | null>(null)
   const [dialogueActivityOpen, setDialogueActivityOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.open', true)
   const [dialogueActivityVisible, setDialogueActivityVisible] = useStoredDisclosure('morphz.dashboard.dialogueActivity.visible', true)
@@ -3450,8 +3440,8 @@ export default function App() {
   const [systemPromptCopied, setSystemPromptCopied] = useState(false)
   const [liveModelState, dispatchModelStream] = useReducer(modelStreamReducer, createLiveModelState())
   const [selectedAgentId, setSelectedAgentId] = useState('')
-  const [selectedContextId, setSelectedContextId] = useState('')
-  const [selectedSessionId, setSelectedSessionId] = useState('')
+  const [selectedContextId, setSelectedContextId] = useState(route.contextId || '')
+  const [selectedSessionId, setSelectedSessionId] = useState(route.sessionId || '')
   const [selectedFrameId, setSelectedFrameId] = useState('')
   const [activeFramesOnly, setActiveFramesOnly] = useState(true)
   const [recallQuery, setRecallQuery] = useState('')
@@ -3550,8 +3540,8 @@ export default function App() {
   const viewFrameRef = useRef<HTMLDivElement>(null)
   const dialogueThreadReloadRef = useRef<() => Promise<void>>(async () => {})
   const sessionLoadInFlight = useRef(false)
-  const sessionLoadQueued = useRef<{ sessionId: string, contextId: string } | null>(null)
-  const loadSessionRef = useRef<(sessionId: string, contextId: string) => Promise<void>>(async () => {})
+  const sessionLoadQueued = useRef<{ sessionId: string, contextId: string, invalidated?: readonly AuthoritativeQuery[] } | null>(null)
+  const loadSessionRef = useRef<(sessionId: string, contextId: string, invalidated?: readonly AuthoritativeQuery[]) => Promise<void>>(async () => {})
   const contextSelectorRef = useRef<HTMLDivElement>(null)
   const sessionSelectorRef = useRef<HTMLDivElement>(null)
   const conversationSessionSelectorRef = useRef<HTMLDivElement>(null)
@@ -3567,14 +3557,41 @@ export default function App() {
   const appDialogSequence = useRef(0)
   const principalSearchRequestSequence = useRef(0)
   const executionTargetCatalogRequestRef = useRef('')
-  const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
+  const catalogSequence = useRef(0)
+  const catalogScopeRef = useRef('')
+  const catalogRequestScopeRef = useRef('')
+  const [directoryCursors, setDirectoryCursors] = useState<{contexts: string | null; sessions: string | null}>({contexts: null, sessions: null})
+  const [directoryBusy, setDirectoryBusy] = useState(false)
+  const [openMemberGroups, setOpenMemberGroups] = useState<Set<string>>(() => new Set())
+  const [groupMemberPages, setGroupMemberPages] = useState<Record<string, {members: SchedulerThreadGroupSnapshot['members']; outcomes: SchedulerThreadGroupSnapshot['outcomes']; next_cursor: string | null; has_more: boolean}>>({})
+  const groupPageRequests = useRef(new Set<string>())
+  const [runtimeCursors, setRuntimeCursors] = useState<Record<'targets' | 'nodes' | 'leases', string | null>>({targets: null, nodes: null, leases: null})
+  const [runtimePageBusy, setRuntimePageBusy] = useState(false)
+  const directoryDemandRef = useRef({contextsOpen: false, sessionsOpen: false})
+  const selectedScopeRef = useRef({ sessionId: route.sessionId || '', contextId: route.contextId || '' })
   const principalScopeRef = useRef<PrincipalDirectoryEntry | null>(null)
   const operatorReturnScopeRef = useRef<PrincipalScopeLocation | null>(null)
   const activeViewRef = useRef(view)
-  const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
+  const threadDetailOwner = useRef({ contextId: '', threadId: '', principalId: '', epoch: 0 })
+  const threadDetailReading = useRef(false)
+  const threadDetailQueued = useRef<{ contextId: string; threadId: string } | null>(null)
+  useLayoutEffect(() => {
+    threadDetailOwner.current = {
+      contextId: view === 'scheduler' ? selectedContextId : '',
+      threadId: view === 'scheduler' ? route.threadId ?? '' : '',
+      principalId: principalScope?.principal.id ?? '',
+      epoch: threadDetailOwner.current.epoch + 1,
+    }
+    threadDetailQueued.current = null
+    return () => {
+      threadDetailOwner.current = { contextId: '', threadId: '', principalId: '', epoch: threadDetailOwner.current.epoch + 1 }
+      threadDetailQueued.current = null
+    }
+  }, [view, route.threadId, selectedContextId, principalScope?.principal.id])
+  const [schedulerHistoryBusy, setSchedulerHistoryBusy] = useState(false)
   const schedulerHistoryVersionRef = useRef(0)
   const schedulerHistoryCacheRef = useRef<{
-    contextId: string; principalId: string; limit: number; version: number; snapshot: SchedulerSnapshot
+    contextId: string; principalId: string; pages: number; version: number; snapshot: SchedulerSnapshot
   } | null>(null)
   const schedulerOpenIdsRef = useRef<{ contextId: string; ids: Set<string> }>({contextId: '', ids: new Set()})
 
@@ -3677,15 +3694,13 @@ export default function App() {
   const authoritativeRefreshRef = useRef<(queries: readonly AuthoritativeQuery[]) => void>(() => {})
   const initialProviderSetupHandled = useRef(false)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeViewRef.current = view
   }, [view])
 
-  useEffect(() => {
-    schedulerHistoryLimitRef.current = schedulerHistoryLimit
-  }, [schedulerHistoryLimit])
 
-  useEffect(() => {
+
+  useLayoutEffect(() => {
     principalScopeRef.current = principalScope
   }, [principalScope])
 
@@ -3703,65 +3718,166 @@ export default function App() {
     navigate(dashboardPath('cognition', selectedContextId, selectedSessionId, next))
   }, [navigate, selectedContextId, selectedSessionId])
 
+  // The header owns exact selected metadata; picker heads are read only while
+  // open (or when first selecting a missing Session). Ancillary registries have
+  // their own visible-page owner below.
   const loadCatalog = useCallback(async () => {
+    const sequence = ++catalogSequence.current
+    const scope = {...selectedScopeRef.current}
+    const principalId = principalScopeRef.current?.principal.id
+    const key = `${principalId ?? ''}:${scope.contextId}`
+    const requestKey = `${key}:${scope.sessionId}`
+    catalogRequestScopeRef.current = requestKey
+    const current = () => sequence === catalogSequence.current
+      && principalId === principalScopeRef.current?.principal.id
+      && scope.contextId === selectedScopeRef.current.contextId
+      && scope.sessionId === selectedScopeRef.current.sessionId
     try {
-      const observedPrincipalId = principalScopeRef.current?.principal.id
-      const sessionsPath = observedPrincipalId
-        ? `/api/operator/principals/${encodeURIComponent(observedPrincipalId)}/sessions?include_archived=true`
-        : '/api/sessions?include_archived=true'
-      const executionTargetsPath = observedPrincipalId
-        ? `/api/execution-targets?principal_id=${encodeURIComponent(observedPrincipalId)}`
-        : '/api/execution-targets'
-      const [nextStatus, agentsResult, contextsResult, sessionsResult, delegationsResult, targetsResult, nodesResult, leasesResult, jobsResult] = await Promise.all([
-        DASHBOARD_API.get<RuntimeStatus>('/api/status'),
-        DASHBOARD_API.tryGet<{ agents?: AgentRecord[] }>('/api/agents?include_archived=true'),
-        DASHBOARD_API.tryGet<{ contexts?: ContextRecord[] }>('/api/contexts?include_archived=true'),
-        DASHBOARD_API.tryGet<{ sessions?: SessionRecord[] }>(sessionsPath),
-        DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations'),
-        DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>(executionTargetsPath),
-        DASHBOARD_API.tryGet<{ nodes?: ExecutionNodeSummary[] }>('/api/edge/nodes'),
-        DASHBOARD_API.tryGet<{ leases?: CapabilityLeaseSummary[] }>('/api/capability-leases?active_only=true'),
-        DASHBOARD_API.tryGet<{ jobs?: ExecutionJobSummary[] }>('/api/execution-jobs?include_terminal=true&newest_first=true&limit=100'),
-      ])
-      const nextAgents = agentsResult?.agents ?? []
-      const nextContexts = contextsResult?.contexts ?? []
-      const nextSessions = sessionsResult?.sessions ?? []
-      const nextDelegations = delegationsResult?.delegations ?? []
+      const nextStatus = await DASHBOARD_API.get<RuntimeStatus>('/api/status')
+      const next = await readNavigationHead<AgentRecord, ContextRecord, SessionRecord>(DASHBOARD_API, {
+        ...scope, principalId, defaultContextId: nextStatus.context_id, defaultAgentId: nextStatus.agent_id,
+        ...directoryDemandRef.current,
+      })
+      if (!current()) return
+      const sameScope = catalogScopeRef.current === key
+      catalogScopeRef.current = `${principalId ?? ''}:${next.contextId}`
       setStatus(nextStatus)
-      setAgents(nextAgents)
-      setContexts(nextContexts)
-      setSessions(nextSessions)
-      setDelegations(nextDelegations)
-      setExecutionTargets(targetsResult?.targets ?? [])
-      setExecutionNodes(nodesResult?.nodes ?? [])
-      setCapabilityLeases(leasesResult?.leases ?? [])
-      setExecutionJobs(jobsResult?.jobs ?? [])
-      setSelectedAgentId(current => current || nextStatus.agent_id || nextAgents[0]?.id || '')
-      setSelectedContextId(current => {
-        if (current && nextContexts.some(item => item.id === current && item.status === 'active')) return current
-        if (nextContexts.some(item => item.id === nextStatus.context_id && item.status === 'active')) return nextStatus.context_id
-        return nextContexts.find(item => item.status === 'active')?.id ?? ''
-      })
-      setSelectedSessionId(current => {
-        if (current && nextSessions.some(item => item.id === current && item.status === 'active')) return current
-        const contextId = nextStatus.context_id || nextContexts[0]?.id
-        return nextSessions
-          .filter(item => item.context_id === contextId && item.status === 'active')
-          .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]?.id ?? nextSessions[0]?.id ?? ''
-      })
+      setAgents(next.agents)
+      setContexts(before => next.readHeads.contexts || !sameScope ? next.contexts : mergeDirectoryPage(before, next.contexts))
+      setSessions(before => next.readHeads.sessions || !sameScope ? next.sessions : mergeDirectoryPage(before, next.sessions))
+      setDirectoryCursors(before => ({
+        contexts: next.readHeads.contexts ? next.cursors.contexts : sameScope ? before.contexts : null,
+        sessions: next.readHeads.sessions ? next.cursors.sessions : sameScope ? before.sessions : null,
+      }))
+      setSelectedAgentId(next.agentId)
+      setSelectedContextId(next.contextId)
+      setSelectedSessionId(next.sessions.find(row => row.id === scope.sessionId)?.id ?? next.sessions[0]?.id ?? '')
       setError('')
-      return {
-        contexts: nextContexts,
-        sessions: nextSessions,
-        delegations: nextDelegations,
-      }
+      return {contexts: next.contexts, sessions: next.sessions}
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
+      if (current()) setError(reason instanceof Error ? reason.message : String(reason))
       return undefined
     } finally {
-      setCatalogReady(true)
+      if (sequence === catalogSequence.current) catalogRequestScopeRef.current = ''
+      if (current()) setCatalogReady(true)
     }
   }, [])
+
+  const loadDirectoryHead = useCallback(async (kind: 'contexts' | 'sessions') => {
+    const contextId = selectedScopeRef.current.contextId
+    const principalId = principalScopeRef.current?.principal.id
+    const sequence = catalogSequence.current
+    try {
+      if (kind === 'contexts') {
+        const page = await readDirectoryPage<ContextRecord>(DASHBOARD_API, kind, {agentId: selectedAgentId})
+        if (sequence !== catalogSequence.current || contextId !== selectedScopeRef.current.contextId) return
+        setContexts(before => mergeDirectoryPage(page.items, before.filter(row => row.id === selectedScopeRef.current.contextId)))
+        setDirectoryCursors(before => ({...before, contexts: page.nextCursor}))
+      } else {
+        const page = await readDirectoryPage<SessionRecord>(DASHBOARD_API, kind, {contextId, principalId})
+        if (sequence !== catalogSequence.current || contextId !== selectedScopeRef.current.contextId || principalId !== principalScopeRef.current?.principal.id) return
+        setSessions(before => mergeDirectoryPage(page.items, before.filter(row => row.id === selectedScopeRef.current.sessionId)))
+        setDirectoryCursors(before => ({...before, sessions: page.nextCursor}))
+      }
+    } catch (reason) {
+      if (sequence === catalogSequence.current) setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [selectedAgentId])
+
+  const loadMoreDirectory = useCallback(async (kind: 'contexts' | 'sessions') => {
+    const cursor = directoryCursors[kind]
+    if (!cursor || directoryBusy) return
+    const scope = {...selectedScopeRef.current}
+    const principalId = principalScopeRef.current?.principal.id
+    const sequence = catalogSequence.current
+    setDirectoryBusy(true)
+    try {
+      if (kind === 'contexts') {
+        const page = await readDirectoryPage<ContextRecord>(DASHBOARD_API, kind, {agentId: selectedAgentId}, {cursor})
+        if (sequence !== catalogSequence.current || scope.contextId !== selectedScopeRef.current.contextId) return
+        setContexts(before => mergeDirectoryPage(before, page.items))
+        setDirectoryCursors(before => ({...before, contexts: page.nextCursor}))
+      } else {
+        const page = await readDirectoryPage<SessionRecord>(DASHBOARD_API, kind, {contextId: scope.contextId, principalId}, {cursor})
+        if (sequence !== catalogSequence.current || scope.contextId !== selectedScopeRef.current.contextId
+          || principalId !== principalScopeRef.current?.principal.id) return
+        setSessions(before => mergeDirectoryPage(before, page.items))
+        setDirectoryCursors(before => ({...before, sessions: page.nextCursor}))
+      }
+    } catch (reason) {
+      if (sequence === catalogSequence.current) setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {setDirectoryBusy(false)}
+  }, [directoryBusy, directoryCursors, selectedAgentId])
+
+  const loadRuntimeCatalog = useCallback(async () => {
+    const principalId = principalScopeRef.current?.principal.id
+    const prefix = principalId ? `principal_id=${encodeURIComponent(principalId)}&` : ''
+    const [targets, nodes, leases, jobs] = await Promise.all([
+      DASHBOARD_API.get<{targets: ExecutionTargetSummary[]; next_cursor: string | null}>(`/api/execution-targets?${prefix}limit=50`),
+      DASHBOARD_API.get<{nodes: ExecutionNodeSummary[]; next_cursor: string | null}>('/api/edge/nodes?limit=50'),
+      DASHBOARD_API.get<{leases: CapabilityLeaseSummary[]; next_cursor: string | null}>('/api/capability-leases?active_only=true&limit=50'),
+      DASHBOARD_API.get<{jobs: ExecutionJobSummary[]}>('/api/execution-jobs?include_terminal=true&newest_first=true&limit=100'),
+    ])
+    if (activeViewRef.current !== 'runtime' || principalId !== principalScopeRef.current?.principal.id) return
+    setExecutionTargets(targets.targets); setExecutionNodes(nodes.nodes)
+    setCapabilityLeases(leases.leases); setExecutionJobs(jobs.jobs)
+    setRuntimeCursors({targets: targets.next_cursor, nodes: nodes.next_cursor, leases: leases.next_cursor})
+  }, [])
+
+  const loadMoreRuntimeInventory = async (kind: 'targets' | 'nodes' | 'leases') => {
+    const cursor = runtimeCursors[kind]
+    if (!cursor || runtimePageBusy) return
+    const principalId = principalScopeRef.current?.principal.id
+    const path = {targets: '/api/execution-targets', nodes: '/api/edge/nodes', leases: '/api/capability-leases'}[kind]
+    const params = new URLSearchParams({limit: '50', cursor})
+    if (principalId) params.set('principal_id', principalId)
+    if (kind === 'leases') params.set('active_only', 'true')
+    setRuntimePageBusy(true)
+    try {
+      const page = await DASHBOARD_API.get<{targets: ExecutionTargetSummary[]; nodes: ExecutionNodeSummary[]; leases: CapabilityLeaseSummary[]; next_cursor: string | null}>(`${path}?${params}`)
+      if (activeViewRef.current !== 'runtime' || principalId !== principalScopeRef.current?.principal.id) return
+      if (page.next_cursor === cursor) throw new Error('Inventory continuation did not advance')
+      if (kind === 'targets') setExecutionTargets(before => mergeDirectoryPage(before, page.targets))
+      if (kind === 'nodes') setExecutionNodes(before => mergeDirectoryPage(before, page.nodes))
+      if (kind === 'leases') setCapabilityLeases(before => mergeDirectoryPage(before, page.leases))
+      setRuntimeCursors(before => ({...before, [kind]: page.next_cursor}))
+    } catch (reason) {setError(reason instanceof Error ? reason.message : String(reason))}
+    finally {setRuntimePageBusy(false)}
+  }
+
+  const loadGroupMemberPage = useCallback(async (snapshot: SchedulerThreadGroupSnapshot, cursor = '') => {
+    if (activeViewRef.current !== 'scheduler') return
+    const contextId = selectedScopeRef.current.contextId
+    const principalId = principalScopeRef.current?.principal.id ?? ''
+    const key = `${principalId}:${contextId}:${snapshot.group.id}:${snapshot.group.revision}`
+    if (groupPageRequests.current.has(key) || (!cursor && groupMemberPages[key])) return
+    groupPageRequests.current.add(key)
+    try {
+      const params = new URLSearchParams({limit: '64', expected_revision: String(snapshot.group.revision)})
+      if (cursor) params.set('cursor', cursor)
+      const page = await DASHBOARD_API.get<{group: SchedulerThreadGroupSnapshot['group']; members: SchedulerThreadGroupSnapshot['members']; outcomes: SchedulerThreadGroupSnapshot['outcomes']; next_cursor: string | null; has_more: boolean}>(`/api/contexts/${encodeURIComponent(contextId)}/thread-groups/${encodeURIComponent(snapshot.group.id)}/members?${params}`)
+      if (activeViewRef.current !== 'scheduler' || contextId !== selectedScopeRef.current.contextId || principalId !== (principalScopeRef.current?.principal.id ?? '')) return
+      if (page.members.length > 64 || page.group.id !== snapshot.group.id || page.group.revision !== snapshot.group.revision || (page.has_more && (!page.next_cursor || page.next_cursor === cursor))) throw new Error('Group member page boundary changed')
+      setGroupMemberPages(before => {
+        const previous = cursor ? before[key] : null
+        const members = [...new Map([...(previous?.members ?? []),...page.members].map(row => [row.thread_id,row])).values()]
+        const outcomes = [...new Map([...(previous?.outcomes ?? []),...page.outcomes].map(row => [row.thread_id,row])).values()]
+        return Object.fromEntries([...Object.entries(before).filter(([old]) => old !== key),[key,{...page,members,outcomes}]].slice(-32))
+      })
+    } catch (reason) {
+      if (contextId === selectedScopeRef.current.contextId) setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {groupPageRequests.current.delete(key)}
+  }, [groupMemberPages])
+
+  useEffect(() => {
+    if (view !== 'scheduler' || !openMemberGroups.size) return
+    const timer = window.setTimeout(() => {
+      for (const snapshot of schedulerSnapshot?.thread_groups ?? []) {
+        if (openMemberGroups.has(snapshot.group.id) && snapshot.members_loaded === false) void loadGroupMemberPage(snapshot)
+      }
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [loadGroupMemberPage, openMemberGroups, schedulerSnapshot?.thread_groups, view])
 
   const reloadRuntimeStatus = useCallback(async () => {
     try {
@@ -3812,10 +3928,10 @@ export default function App() {
   const clearPrincipalScope = useCallback(async () => {
     const rememberedScope = operatorReturnScopeRef.current
     try {
-      const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(
-        '/api/sessions?include_archived=true',
-      )
-      const nextSessions = response.sessions ?? []
+      const point = rememberedScope?.sessionId
+        ? await readDirectoryPage<SessionRecord>(DASHBOARD_API, 'sessions', {}, {id: rememberedScope.sessionId}) : null
+      const page = point?.items.length ? point : await readDirectoryPage<SessionRecord>(DASHBOARD_API, 'sessions', {contextId: rememberedScope?.contextId || status?.context_id || selectedContextId})
+      const nextSessions = page.items
       const nextSession = selectOperatorReturnSession(
         nextSessions,
         rememberedScope,
@@ -3855,10 +3971,8 @@ export default function App() {
     principalScopeRef.current = entry
     setPrincipalScope(entry)
     try {
-      const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(
-        `/api/operator/principals/${encodeURIComponent(principalId)}/sessions?include_archived=true`,
-      )
-      const nextSessions = response.sessions ?? []
+      const response = await readDirectoryPage<SessionRecord>(DASHBOARD_API, 'sessions', {principalId})
+      const nextSessions = response.items
       const nextSession = nextSessions
         .filter(item => item.status === 'active')
         .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
@@ -3899,22 +4013,22 @@ export default function App() {
         expected_revision: revision,
         status,
       })
-      await loadCatalog()
+      await loadRuntimeCatalog()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [loadCatalog])
+  }, [loadRuntimeCatalog])
 
   const revokeExecutionNode = useCallback(async (nodeId: string, revision: number) => {
     try {
       await DASHBOARD_API.command(`/api/edge/nodes/${encodeURIComponent(nodeId)}`, 'DELETE', {
         expected_revision: revision,
       })
-      await loadCatalog()
+      await loadRuntimeCatalog()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [loadCatalog])
+  }, [loadRuntimeCatalog])
 
   const revokeCapabilityLease = useCallback(async (leaseId: string, revision: number) => {
     const confirmed = await requestConfirmation({
@@ -3930,11 +4044,11 @@ export default function App() {
         expected_revision: revision,
         reason: 'Revoked from Dashboard',
       })
-      await loadCatalog()
+      await loadRuntimeCatalog()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [loadCatalog, requestConfirmation, t])
+  }, [loadRuntimeCatalog, requestConfirmation, t])
 
   const restrictCapabilityLease = useCallback(async (
     leaseId: string,
@@ -3948,14 +4062,14 @@ export default function App() {
         requested,
         expires_at: expiresAt,
       })
-      await loadCatalog()
+      await loadRuntimeCatalog()
       setError('')
       return true
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
       return false
     }
-  }, [loadCatalog])
+  }, [loadRuntimeCatalog])
 
   const cancelExecutionJob = useCallback(async (jobId: string, revision: number) => {
     try {
@@ -3963,19 +4077,23 @@ export default function App() {
         expected_revision: revision,
         reason: 'Cancelled from Dashboard',
       })
-      await loadCatalog()
+      await loadRuntimeCatalog()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [loadCatalog])
+  }, [loadRuntimeCatalog])
 
-  const loadSession = useCallback(async (sessionId: string, contextId: string) => {
+  const loadSession = useCallback(async (sessionId: string, contextId: string, invalidated?: readonly AuthoritativeQuery[]) => {
     if (!sessionId || !contextId || !['dialogue', 'scheduler', 'cognition', 'overview'].includes(activeViewRef.current)) return
     if (sessionLoadInFlight.current) {
       // Never lose the last WebSocket-driven refresh. Without this queue, a
       // terminal event arriving while a previous snapshot was loading could
       // leave a completed Activation rendered as running until the next poll.
-      sessionLoadQueued.current = { sessionId, contextId }
+      const queued = sessionLoadQueued.current
+      const same = queued?.sessionId === sessionId && queued.contextId === contextId
+      sessionLoadQueued.current = {sessionId, contextId, invalidated: same
+        ? queued.invalidated && invalidated ? [...new Set([...queued.invalidated,...invalidated])] : undefined
+        : invalidated}
       return
     }
     sessionLoadInFlight.current = true
@@ -3986,13 +4104,15 @@ export default function App() {
         return selectedScope.sessionId === sessionId && selectedScope.contextId === contextId
       }
       const currentView = activeViewRef.current
+      const readPlan = sessionReadPlan(currentView, invalidated)
+      const own = (needed: boolean, read: () => Promise<unknown>) => needed ? read() : Promise.resolve()
       const includeTerminal = currentView === 'scheduler' || currentView === 'dialogue'
       // Dialogue and Scheduler render two surfaces of the same authoritative
       // read model. Re-querying that model with a different history boundary
       // on navigation used to make derived attention facts appear or vanish.
       // Keep one window for both views; "load more" then remains stable when
       // the operator returns to Dialogue and opens Scheduler again.
-      const schedulerLimit = includeTerminal ? schedulerHistoryLimitRef.current : 50
+      const schedulerLimit = includeTerminal ? SCHEDULER_HISTORY_PAGE_SIZE : 50
       const readPrincipalId = principalScopeRef.current?.principal.id ?? ''
       let resolvedSchedulerSummary: SchedulerSnapshot['summary'] | null = null
       const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
@@ -4017,7 +4137,7 @@ export default function App() {
           cutoffMs: Date.now() - 10_000,
         })
       }
-      const overviewRequest = DASHBOARD_API.get<ContextOverviewResponse>(
+      const overviewRequest = own(readPlan.overview, () => DASHBOARD_API.get<ContextOverviewResponse>(
         `/api/contexts/${encodeURIComponent(contextId)}/overview?session_id=${encodeURIComponent(sessionId)}&include_scheduler_summary=${includeTerminal ? 'false' : 'true'}`,
       ).then(async snapshot => {
         if (!isCurrentScope()) return
@@ -4044,7 +4164,7 @@ export default function App() {
           `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=${schedulerLimit}`,
         )
         applySchedulerSnapshot(scheduler)
-      })
+      }))
       const activityRequest = async () => {
         const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200`
         const current = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
@@ -4058,21 +4178,25 @@ export default function App() {
         const matching = cached?.contextId === contextId && cached.principalId === readPrincipalId ? cached : null
         applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(current, matching?.snapshot))
         const version = schedulerHistoryVersionRef.current
-        if (matching?.limit === schedulerLimit && matching.version === version) return
+        if (matching && matching.version === version) return
         const history = await DASHBOARD_API.get<SchedulerSnapshot>(
-          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
+          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&history_only=true&limit=${schedulerLimit}`,
         )
         if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
-        schedulerHistoryCacheRef.current = {contextId, principalId: readPrincipalId, limit: schedulerLimit, version, snapshot: history}
+        const retained = matching && matching.pages > 1
+          ? {...appendSchedulerHistoryPage(matching.snapshot, history), detail_bounds: {...history.detail_bounds,
+            has_more_history: matching.snapshot.detail_bounds.has_more_history,
+            next_history_cursor: matching.snapshot.detail_bounds.next_history_cursor}} : history
+        schedulerHistoryCacheRef.current = {contextId, principalId: readPrincipalId, pages: matching?.pages ?? 1, version, snapshot: retained}
         // History can take longer than current state. Re-read the small live
         // inventory so a late historical page never restores old approvals,
         // terminal phase or a question that has already been answered.
         const latest = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
         if ((principalScopeRef.current?.principal.id ?? '') === readPrincipalId)
-          applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(latest, history))
+          applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(latest, schedulerHistoryCacheRef.current?.snapshot))
       }
       const requests = [
-        DASHBOARD_API.tryGet<AttentionAcknowledgementsPage>(
+        own(readPlan.attention, () => DASHBOARD_API.tryGet<AttentionAcknowledgementsPage>(
           (() => {
             const delta = attentionDeltaCursorRef.current
             const base = `/api/contexts/${encodeURIComponent(contextId)}/attention/acknowledgements?limit=250`
@@ -4102,8 +4226,8 @@ export default function App() {
                 : latestSequence,
             }
           }
-        }),
-        DASHBOARD_API.get<SessionEventsPage>(scopedSessionReadPath((() => {
+        })),
+        own(readPlan.messages, () => DASHBOARD_API.get<SessionEventsPage>(scopedSessionReadPath((() => {
           const delta = eventDeltaCursorRef.current
           const base = `/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=250`
           return delta.sessionId === sessionId && delta.initialized
@@ -4142,29 +4266,26 @@ export default function App() {
               setSessionEventsError({ sessionId, message: reason instanceof Error ? reason.message : String(reason) })
             }
             throw reason
-          }),
-        DASHBOARD_API.tryGet<ModelUsagePage>(
+          })),
+        own(readPlan.usage, () => DASHBOARD_API.tryGet<ModelUsagePage>(
           `/api/contexts/${encodeURIComponent(contextId)}/model-usage?session_id=${encodeURIComponent(sessionId)}&limit=100`,
         ).then(result => {
           if (result && isCurrentScope()) setModelUsagePage(result)
-        }),
+        })),
         overviewRequest,
-        ...(includeTerminal
+        ...(includeTerminal && readPlan.work
           ? [activityRequest()]
           : []),
-        DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>(
+        own(readPlan.delegations, () => DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>(
           `/api/delegations?context_id=${encodeURIComponent(contextId)}&include_terminal=true&limit=200`,
         )
           .then(delegationsResult => {
             if (delegationsResult && isCurrentScope()) {
               const nextDelegations = delegationsResult.delegations ?? []
               setDelegations(nextDelegations)
-              const knownContextIds = new Set(contexts.map(context => context.id))
-              if (nextDelegations.some(delegation => !knownContextIds.has(delegation.child_context_id))) {
-                void loadCatalog()
-              }
+
             }
-          }),
+          })),
       ]
       const results = await Promise.allSettled(requests)
       const failure = results.find(result => result.status === 'rejected')
@@ -4179,12 +4300,12 @@ export default function App() {
       sessionLoadQueued.current = null
       if (queued) {
         window.setTimeout(
-          () => void loadSessionRef.current(queued.sessionId, queued.contextId),
+          () => void loadSessionRef.current(queued.sessionId, queued.contextId, queued.invalidated),
           0,
         )
       }
     }
-  }, [contexts, loadCatalog])
+  }, [])
 
   const loadContextProjection = useCallback(async (sessionId: string, contextId: string) => {
     if (!sessionId || !contextId) return
@@ -4360,18 +4481,34 @@ export default function App() {
     }
   }, [])
 
-  const loadThreadDetail = useCallback(async (contextId: string, threadId: string) => {
-    if (!contextId || !threadId) return
+  const loadThreadDetail = useCallback(async function readThreadDetail(contextId: string, threadId: string) {
+    const owner = threadDetailOwner.current
+    if (!contextId || !threadId || owner.contextId !== contextId || owner.threadId !== threadId) return
+    if (threadDetailReading.current) {
+      // A relevant change during an in-flight read owns one subsequent read.
+      threadDetailQueued.current = { contextId, threadId }
+      return
+    }
+    threadDetailReading.current = true
+    const controlVersion = workControlVersion.current
+    const isCurrent = () => threadDetailOwner.current === owner
+      && controlVersion === workControlVersion.current
     try {
       const detail = await DASHBOARD_API.get<ThreadDetailResponse>(
         `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(threadId)}`,
       )
-      if (selectedScopeRef.current.contextId !== contextId) return
-      setThreadDetail(detail)
+      if (!isCurrent() || detail.context_id !== contextId || detail.snapshot.thread.id !== threadId) return
+      setThreadDetail(current => current?.snapshot.thread.id === threadId
+        && current.context_id === contextId
+        && current.snapshot.thread.revision > detail.snapshot.thread.revision ? current : detail)
       setError('')
     } catch (reason) {
-      setThreadDetail(null)
-      setError(reason instanceof Error ? reason.message : String(reason))
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      threadDetailReading.current = false
+      const queued = threadDetailQueued.current
+      threadDetailQueued.current = null
+      if (queued) void readThreadDetail(queued.contextId, queued.threadId)
     }
   }, [])
 
@@ -4442,8 +4579,18 @@ export default function App() {
     }
   }, [dialogueSearchQuery, selectedContextId])
 
-  const openDialogueSearchHit = useCallback((hit: DialogueHistorySearchHit) => {
-    const targetSession = sessions.find(session => session.id === hit.session_id)
+  const openDialogueSearchHit = useCallback(async (hit: DialogueHistorySearchHit) => {
+    let targetSession = sessions.find(session => session.id === hit.session_id)
+    if (!targetSession) {
+      const contextId = selectedContextId
+      const principalId = principalScopeRef.current?.principal.id
+      try {
+        const point = await readDirectoryPage<SessionRecord>(DASHBOARD_API, 'sessions', {contextId, principalId}, {id: hit.session_id})
+        if (contextId !== selectedScopeRef.current.contextId || principalId !== principalScopeRef.current?.principal.id) return
+        targetSession = point.items[0]
+        setSessions(before => mergeDirectoryPage(before, point.items))
+      } catch (reason) {setError(reason instanceof Error ? reason.message : String(reason)); return}
+    }
     if (!targetSession) {
       setError(t('conversation.search.sessionUnavailable'))
       return
@@ -4459,7 +4606,7 @@ export default function App() {
       setSelectedSessionId(targetSession.id)
     }
     navigate(dashboardPath('dialogue', targetSession.context_id, targetSession.id))
-  }, [navigate, selectedSessionId, sessions, t])
+  }, [navigate, selectedContextId, selectedSessionId, sessions, t])
 
   const mutateFrameLifecycle = useCallback(async (frameId: string, action: 'restore' | 'protect' | 'unprotect') => {
     if (!selectedContextId || !selectedSessionId || !contextView) return
@@ -4567,9 +4714,25 @@ export default function App() {
   }, [showReasoningSummary])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadCatalog(), 0)
+    const previous = directoryDemandRef.current
+    const next = {contextsOpen: contextMenuOpen, sessionsOpen: sessionMenuOpen || conversationSessionMenuOpen}
+    const scopeKnown = catalogScopeRef.current === `${principalScope?.principal.id ?? ''}:${selectedContextId}`
+      && contexts.some(row => row.id === selectedContextId)
+      && (!selectedSessionId || sessions.some(row => row.id === selectedSessionId && row.context_id === selectedContextId))
+    const timer = window.setTimeout(() => {
+      directoryDemandRef.current = next
+      if (!scopeKnown) {void loadCatalog(); return}
+      if (next.contextsOpen && !previous.contextsOpen) void loadDirectoryHead('contexts')
+      if (next.sessionsOpen && !previous.sessionsOpen) void loadDirectoryHead('sessions')
+    }, 0)
     return () => window.clearTimeout(timer)
-  }, [loadCatalog])
+  }, [contexts, sessions, loadCatalog, loadDirectoryHead, selectedContextId, selectedSessionId, contextMenuOpen, sessionMenuOpen, conversationSessionMenuOpen, principalScope])
+
+  useEffect(() => {
+    if (view !== 'runtime') return
+    const timer = window.setTimeout(() => void loadRuntimeCatalog().catch(reason => setError(String(reason))), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadRuntimeCatalog, view, principalScope])
 
   useEffect(() => {
     if (
@@ -4593,25 +4756,7 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [route.contextId, route.sessionId])
 
-  useEffect(() => {
-    if (!selectedContextId || sessions.length === 0) return
-    const selectedBelongsToContext = sessions.some(session => (
-      session.id === selectedSessionId
-      && session.context_id === selectedContextId
-      && session.status === 'active'
-    ))
-    if (selectedBelongsToContext) return
-    const nextSession = sessions
-      .filter(session => session.context_id === selectedContextId && session.status === 'active')
-      .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
-    const timer = window.setTimeout(() => {
-      setSelectedSessionId(nextSession?.id ?? '')
-      if (view === 'dialogue' && nextSession) {
-        navigate(dashboardPath('dialogue', selectedContextId, nextSession.id), { replace: true })
-      }
-    }, 0)
-    return () => window.clearTimeout(timer)
-  }, [navigate, selectedContextId, selectedSessionId, sessions, view])
+
 
   useEffect(() => {
     const context = contexts.find(item => item.id === selectedContextId)
@@ -4620,7 +4765,7 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [contexts, selectedAgentId, selectedContextId])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     selectedScopeRef.current = { sessionId: selectedSessionId, contextId: selectedContextId }
   }, [selectedContextId, selectedSessionId])
 
@@ -4656,7 +4801,8 @@ export default function App() {
       setContextInspectTab('encoding')
       setContextInspectCopied(false)
       setSexprReader(null)
-      setSchedulerHistoryLimit(SCHEDULER_HISTORY_PAGE_SIZE)
+      setSchedulerHistoryDisplayLimit(SCHEDULER_HISTORY_PAGE_SIZE)
+      schedulerHistoryCacheRef.current = null
       setExpandedDialogueThreadId('')
       setDialogueThreadDetail(null)
     }, 0)
@@ -4670,7 +4816,7 @@ export default function App() {
     return () => {
       window.clearTimeout(initial)
     }
-  }, [loadSession, route.contextId, schedulerHistoryLimit, selectedContextId, selectedSessionId, view])
+  }, [loadSession, route.contextId, selectedContextId, selectedSessionId, view])
 
   useEffect(() => {
     if (!selectedContextId || selectedSessionId) return
@@ -4708,7 +4854,7 @@ export default function App() {
     const connect = () => {
       if (disposed) return
       reconnectTimer = undefined
-      const params = new URLSearchParams()
+      const params = new URLSearchParams({changes_only:'true'})
       const token = getDashboardToken()
       if (token) params.set('token', token)
       const query = params.size > 0 ? `?${params}` : ''
@@ -4728,7 +4874,7 @@ export default function App() {
             if (invalidated.includes('catalog')) scheduleRefresh(['catalog'])
             return
           }
-          if (!event.topic.startsWith('runtime/model_')) invalidated.push('events')
+          if (eventHistoryInvalidatedByTopic(event.topic)) invalidated.push('events')
           if (invalidated.length) scheduleRefresh(invalidated)
         } catch {
           // The primary Session socket owns user-facing parse diagnostics.
@@ -4889,7 +5035,7 @@ export default function App() {
         hasContext: !!selectedContextId, hasSession: !!selectedSessionId, eventHistoryBeforeSequence,
         threadId: route.threadId, dialogueActivityOpen, expandedDialogueThreadId}, invalidated)
       if (reads.catalog) void loadCatalog()
-      if (reads.session) void loadSession(selectedSessionId, selectedContextId)
+      if (reads.session) void loadSession(selectedSessionId, selectedContextId, invalidated)
       if (reads.overview) void loadOverview(selectedContextId, selectedSessionId)
       if (reads.runtimeOverview) void loadRuntimeOverview()
       if (reads.executionJobs) void loadExecutionJobs()
@@ -4933,12 +5079,13 @@ export default function App() {
     let streamTimer: number | undefined
     let pendingStreamEvents: ModelStreamBatchItem[] = []
     const pendingAuthoritativeQueries = new Set<AuthoritativeQuery>()
+    const metadataOnly = !sessionStreamNeedsBodies(view,cognitionView)
     let disposed = false
     const scheduleAuthoritativeRefresh = (topic: string) => {
       if (['chat/reply', 'chat/no_reply', 'chat/cancelled', 'chat/runtime_error',
         'runtime/thread_completed', 'runtime/thread_cancelled', 'runtime/thread_failed'].includes(topic) || topic.startsWith('objective/'))
         schedulerHistoryVersionRef.current++
-      if (!topic.startsWith('runtime/model_')) pendingAuthoritativeQueries.add('events')
+      if (eventHistoryInvalidatedByTopic(topic)) pendingAuthoritativeQueries.add('events')
       for (const query of invalidatedQueriesForTopic(topic)) {
         pendingAuthoritativeQueries.add(query)
       }
@@ -4979,6 +5126,7 @@ export default function App() {
       reconnectTimer = undefined
       setWsStatus('connecting')
       const params = new URLSearchParams({ session_id: selectedSessionId })
+      if (metadataOnly) params.set('changes_only','true')
       const token = getDashboardToken()
       if (token) params.set('token', token)
       if (observesExactModelRequests(view, cognitionView)) {
@@ -4996,6 +5144,10 @@ export default function App() {
         if (disposed || socket !== nextSocket) return
         try {
           const event = JSON.parse(messageEvent.data) as MorphzEvent
+          if (metadataOnly) {
+            scheduleAuthoritativeRefresh(event.topic)
+            return
+          }
           if (event.topic === 'runtime/model_attempt_snapshot') {
             const items = Array.isArray(event.payload.attempts)
               ? event.payload.attempts.flatMap(value => {
@@ -5429,8 +5581,8 @@ export default function App() {
     return eventIds
   }, [schedulerSnapshot?.orphan_activations, schedulerSnapshot?.orphan_signals, schedulerThreads])
   const objectives = useMemo(
-    () => contextOverview?.objectives ?? contextView?.objectives ?? [],
-    [contextOverview?.objectives, contextView?.objectives],
+    () => schedulerSnapshot?.objectives.map(row => row.objective) ?? contextView?.objectives ?? [],
+    [schedulerSnapshot?.objectives, contextView?.objectives],
   )
   const selectedObjectiveFilterId = requestedObjectiveFilterId
     && objectives.some(objective => objective.id === requestedObjectiveFilterId)
@@ -5896,9 +6048,9 @@ export default function App() {
     const recentHistory = filtered
       .filter(snapshot => !activeIds.has(snapshot.thread.id))
       .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
-      .slice(0, WORK_HISTORY_THREAD_LIMIT)
+      .slice(0, schedulerHistoryDisplayLimit)
     return [...active, ...recentHistory]
-  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSupervisorFilterId, selectedThreadGroupFilterId, selectedThreadGroupMemberIds])
+  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSupervisorFilterId, selectedThreadGroupFilterId, selectedThreadGroupMemberIds, schedulerHistoryDisplayLimit])
   const schedulerFilteredThreadCount = schedulerThreads.filter(snapshot => (
     (!selectedObjectiveFilterId
       || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId))
@@ -5907,8 +6059,31 @@ export default function App() {
   )).length
   const hiddenSchedulerThreadCount = schedulerFilteredThreadCount - visibleSchedulerThreads.length
   const schedulerHistoryPageFull = view === 'scheduler'
-    && schedulerThreads.length >= schedulerHistoryLimit
-    && schedulerThreads.some(snapshot => snapshot.thread.lifecycle !== 'open')
+    && !!schedulerSnapshot?.detail_bounds.next_history_cursor
+  const loadMoreSchedulerHistory = async () => {
+    const cached = schedulerHistoryCacheRef.current
+    const cursor = cached?.snapshot.detail_bounds.next_history_cursor
+    if (!cached || !cursor || schedulerHistoryBusy) return
+    const scope = {...selectedScopeRef.current}
+    const principalId = principalScopeRef.current?.principal.id ?? ''
+    const isCurrent = () => scope.contextId === selectedScopeRef.current.contextId
+      && scope.sessionId === selectedScopeRef.current.sessionId
+      && principalId === (principalScopeRef.current?.principal.id ?? '')
+      && schedulerHistoryCacheRef.current === cached
+    setSchedulerHistoryBusy(true)
+    try {
+      const page = await DASHBOARD_API.get<SchedulerSnapshot>(`/api/contexts/${encodeURIComponent(scope.contextId)}/scheduler?include_terminal=true&history_only=true&limit=${SCHEDULER_HISTORY_PAGE_SIZE}&history_cursor=${encodeURIComponent(cursor)}`)
+      if (!isCurrent()) return
+      if (page.detail_bounds.next_history_cursor === cursor) throw new Error('Scheduler continuation did not advance')
+      const snapshot = appendSchedulerHistoryPage(cached.snapshot, page)
+      schedulerHistoryCacheRef.current = {...cached, snapshot, pages: cached.pages + 1}
+      setSchedulerHistoryDisplayLimit(count => count + SCHEDULER_HISTORY_PAGE_SIZE)
+      setSchedulerSnapshot(current => current ? mergeSchedulerCurrentAndHistory(current, snapshot) : current)
+    } catch (reason) {
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {setSchedulerHistoryBusy(false)}
+  }
+
   const schedulerThreadGroups = useMemo(() => {
     const groups: Record<'attention' | 'running' | 'runnable' | 'waiting' | 'recent', SchedulerThreadSnapshot[]> = {
       attention: [],
@@ -7759,10 +7934,15 @@ export default function App() {
   const openDelegationContext = async (delegation: DelegationRecord) => {
     let childSession = sessions.find(session => session.id === delegation.child_session_id)
     let childContext = contexts.find(context => context.id === delegation.child_context_id)
-    if (!childSession && !childContext) {
-      const catalog = await loadCatalog()
-      childSession = catalog?.sessions.find(session => session.id === delegation.child_session_id)
-      childContext = catalog?.contexts.find(context => context.id === delegation.child_context_id)
+    if (!childSession || !childContext) {
+      const [sessionPoint, contextPoint] = await Promise.all([
+        readDirectoryPage<SessionRecord>(DASHBOARD_API, 'sessions', {principalId: principalScopeRef.current?.principal.id}, {id: delegation.child_session_id}),
+        readDirectoryPage<ContextRecord>(DASHBOARD_API, 'contexts', {}, {id: delegation.child_context_id}),
+      ])
+      childSession = sessionPoint.items[0]
+      childContext = contextPoint.items[0]
+      setSessions(before => mergeDirectoryPage(before, sessionPoint.items))
+      setContexts(before => mergeDirectoryPage(before, contextPoint.items))
     }
     if (childSession) {
       chooseSession(childSession)
@@ -7943,6 +8123,7 @@ export default function App() {
                         </div>
                       </details>
                     )}
+                    {directoryCursors.contexts && <button className="history-more" type="button" disabled={directoryBusy} onClick={() => void loadMoreDirectory('contexts')}>{t('header.loadMorePrincipals')}</button>}
                     {visibleContexts.length === 0 && <div className="catalog-empty">{t('header.noVisibleContexts')}</div>}
                   </div>
                 </div>
@@ -7979,6 +8160,7 @@ export default function App() {
                         </div>
                       </div>
                     })}
+                    {directoryCursors.sessions && <button className="history-more" type="button" disabled={directoryBusy} onClick={() => void loadMoreDirectory('sessions')}>{t('header.loadMorePrincipals')}</button>}
                     {visibleSessions.length === 0 && <div className="catalog-empty">{t('header.noVisibleSessions')}</div>}
                   </div>
                 </div>
@@ -8333,7 +8515,8 @@ export default function App() {
                           </button>
                         </div>
                       ))}
-                      {visibleSessions.length === 0 && <div className="catalog-empty">{t('header.noVisibleSessions')}</div>}
+                      {directoryCursors.sessions && <button className="history-more" type="button" disabled={directoryBusy} onClick={() => void loadMoreDirectory('sessions')}>{t('header.loadMorePrincipals')}</button>}
+                    {visibleSessions.length === 0 && <div className="catalog-empty">{t('header.noVisibleSessions')}</div>}
                     </div>
                   </div>
                 )}
@@ -8506,7 +8689,7 @@ export default function App() {
                 approvals: pendingApprovals.length,
                 failedJobs: failedSchedulerJobs.length,
                 failedDeliveries: failedDeliveries.length,
-                inactiveObjectives: blockedObjectives.length,
+                inactiveObjectives: contextOverview ? (contextOverview.objective_status_counts.blocked ?? 0) : blockedObjectives.length,
                 waitingUser: waitingUserObjectives.length,
               }}
               activities={schedulerThreads
@@ -9080,11 +9263,12 @@ export default function App() {
                       <ArrowLeft size={14} /> {t('work.causal.backToBoard')}
                     </button>
                   </header>
-                  {threadDetail?.snapshot.thread.id === route.threadId ? (
+                  {threadDetail?.snapshot.thread.id === route.threadId && threadDetail.context_id === selectedContextId ? (
                     <ThreadCausalCard
                       onSteer={steerThread}
                       onReplyQuestion={snapshot => userInputDialogRef.current?.open(snapshot)}
                       snapshot={threadDetail.snapshot}
+                      continuations={threadDetail.continuations}
                       modelAttemptEvents={threadDetail.model_attempt_events}
                       liveModelAttempts={threadDetailLiveAttempts}
                       t={t}
@@ -9303,9 +9487,12 @@ export default function App() {
                 <div className="thread-group-grid">
                   {durableThreadGroups.map(snapshot => {
                     const selected = selectedThreadGroupFilterId === snapshot.group.id
-                    const outcomesByThread = new Map(snapshot.outcomes.map(outcome => [outcome.thread_id, outcome] as const))
+                    const memberKey = `${principalScope?.principal.id ?? ''}:${selectedContextId}:${snapshot.group.id}:${snapshot.group.revision}`
+                    const page = groupMemberPages[memberKey]
+                    const members = snapshot.members_loaded === false ? page?.members ?? [] : snapshot.members
+                    const outcomesByThread = new Map((snapshot.members_loaded === false ? page?.outcomes ?? [] : snapshot.outcomes).map(outcome => [outcome.thread_id, outcome] as const))
                     return (
-                      <details className={`thread-group-card ${selected ? 'is-filtered' : ''}`} key={snapshot.group.id} open={snapshot.group.status === 'open'}>
+                      <details onToggle={event => {const open = event.currentTarget.open; setOpenMemberGroups(before => {const next = new Set(before); if (open) next.add(snapshot.group.id); else next.delete(snapshot.group.id); return next})}} className={`thread-group-card ${selected ? 'is-filtered' : ''}`} key={snapshot.group.id} open={snapshot.group.status === 'open'}>
                         <summary>
                           <span className={`status-pill ${snapshot.group.status}`}>{statusLabel(snapshot.group.status, t)}</span>
                           <span>
@@ -9333,7 +9520,7 @@ export default function App() {
                               <Filter size={11} /> {selected ? t('work.causal.groups.clearFilter') : t('work.causal.groups.filter')}
                             </button>
                           </header>
-                          {snapshot.members.map(member => {
+                          {members.map(member => {
                             const outcome = outcomesByThread.get(member.thread_id)
                             return (
                               <button
@@ -9351,6 +9538,7 @@ export default function App() {
                               </button>
                             )
                           })}
+                          {page?.has_more && <button className="history-more" type="button" onClick={() => void loadGroupMemberPage(snapshot,page.next_cursor ?? '')}>{t('header.loadMorePrincipals')}</button>}
                         </div>
                       </details>
                     )
@@ -9394,7 +9582,8 @@ export default function App() {
                     <button
                       className="history-more"
                       type="button"
-                      onClick={() => setSchedulerHistoryLimit(current => current + SCHEDULER_HISTORY_PAGE_SIZE)}
+                      disabled={schedulerHistoryBusy}
+                      onClick={() => void loadMoreSchedulerHistory()}
                     >
                       {t('work.causal.loadMore')}
                     </button>
@@ -9494,8 +9683,11 @@ export default function App() {
               executionTargets={executionTargets}
               executionNodes={executionNodes}
               capabilityLeases={capabilityLeases}
+              inventoryCursors={runtimeCursors}
+              inventoryBusy={runtimePageBusy}
+              onLoadMoreInventory={kind => void loadMoreRuntimeInventory(kind)}
               executionJobs={executionJobs}
-              onRefresh={() => void loadCatalog()}
+              onRefresh={() => void loadRuntimeCatalog().catch(reason => setError(String(reason)))}
               onRefreshOverview={() => void loadRuntimeOverview()}
               onOpenSession={(contextId, sessionId) => {
                 const session = sessions.find(item => item.id === sessionId)
@@ -9522,7 +9714,7 @@ export default function App() {
             />
           )}
 
-          {view === 'credentials' && <CredentialsPage api={DASHBOARD_API} />}
+          {view === 'credentials' && <CredentialsPage api={DASHBOARD_API} contextId={selectedContextId} principalId={activePrincipalId ?? ''} />}
 
           {view === 'providers' && (
             <ProvidersPage

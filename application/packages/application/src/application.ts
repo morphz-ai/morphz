@@ -1,6 +1,8 @@
 import { z, ZodError } from "zod";
 import {
   terminalReadSchema,
+  terminalChangeScopeSchema,
+  type TerminalChange,
   terminalCommandSchema,
   terminalOpenSchema,
 } from "../../core/src/terminal.js";
@@ -922,8 +924,14 @@ export class ApplicationSession {
     let { projectIds, catalogVersion, revisions } = await this.work(
       (service, actor) => service.conversationNavigation(actor),
     );
-    if (request.refreshActivity && this.options.runtime) {
-      await this.options.runtime.refreshPlatformActivity();
+    if (
+      (request.refreshActivity || request.loadMoreApprovals) &&
+      this.options.runtime
+    ) {
+      if (request.loadMoreApprovals)
+        await this.options.runtime.loadMorePlatformApprovals();
+      if (request.refreshActivity)
+        await this.options.runtime.refreshPlatformActivity();
       // A read may finish after membership/identity changes. Re-read the
       // current Human's project grant before publishing the new inventory.
       ({ projectIds, catalogVersion, revisions } = await this.work(
@@ -3834,6 +3842,97 @@ export class ApplicationSession {
       throw error;
     }
   }
+  async observeTerminalChanges(
+    raw: unknown,
+    emit: (value: TerminalChange) => void,
+    onClose: () => void,
+    signal?: AbortSignal,
+  ): Promise<() => void> {
+    const request = terminalChangeScopeSchema.parse(raw);
+    this.active();
+    signal?.throwIfAborted();
+    if (!this.options.runtime)
+      throw new ApplicationUnavailable("终端变化通知尚未接入。");
+    let closed = false,
+      queued = false,
+      sequence = 0,
+      catalog = false,
+      screen = false,
+      resync = false;
+    let frameTimer: ReturnType<typeof setTimeout> | undefined;
+    let disposeNative: (() => void) | undefined,
+      disposeAccess: (() => void) | undefined;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      signal?.removeEventListener("abort", close);
+      clearTimeout(frameTimer);
+      disposeNative?.();
+      disposeAccess?.();
+      onClose();
+    };
+    const wake = (nextCatalog: boolean, nextScreen: boolean, gap: boolean) => {
+      if (closed) return;
+      catalog ||= nextCatalog;
+      screen ||= nextScreen;
+      resync ||= gap;
+      if (queued) return;
+      queued = true;
+      frameTimer = setTimeout(
+        () => {
+          frameTimer = undefined;
+          queued = false;
+          if (closed) return;
+          try {
+            this.active();
+            const value: TerminalChange = {
+              kind: "terminal",
+              sequence: ++sequence,
+              reason: resync ? "resync" : "changed",
+              catalog,
+              screen,
+            };
+            catalog = false;
+            screen = false;
+            resync = false;
+            emit(value);
+          } catch {
+            close();
+          }
+        },
+        gap ? 0 : 32,
+      );
+    };
+    signal?.addEventListener("abort", close, { once: true });
+    try {
+      // Membership/access changes retire this observation. PTY output never
+      // wakes the workspace/catalog observer or queries Platform state.
+      disposeAccess = await this.observeWorkspaceChanges(
+        (change) => {
+          if (change.accessChanged) close();
+        },
+        close,
+        signal,
+      );
+      if (closed) {
+        disposeAccess();
+        return close;
+      }
+      const resource = await this.options.runtime.platformTerminalResources(
+        request.scope,
+        this.access,
+        () => this.active(),
+      );
+      if (closed) return close;
+      disposeNative = await resource.observe(request.terminalId, wake);
+      if (closed) disposeNative();
+      return close;
+    } catch (error) {
+      close();
+      throw error;
+    }
+  }
+
   async observeWorkspaceChanges(
     emit: (value: WorkspaceChange) => void,
     onClose: () => void,

@@ -1,4 +1,8 @@
 import {
+  terminalChangeScopeSchema,
+  type TerminalChange,
+} from "../../../packages/core/src/terminal.js";
+import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
@@ -531,10 +535,12 @@ export function createAppServer(
             "projectId",
             "conversationId",
             "refreshActivity",
+            "loadMoreApprovals",
           ]);
           const projectId = query.value("projectId");
           const conversationId = query.value("conversationId");
           const refreshActivity = query.boolean("refreshActivity");
+          const loadMoreApprovals = query.boolean("loadMoreApprovals");
           if (!!projectId !== !!conversationId)
             throw new DomainError("invalid", "对话范围参数不完整。");
           json(
@@ -544,6 +550,7 @@ export function createAppServer(
               projectId,
               conversationId,
               refreshActivity,
+              loadMoreApprovals,
             }),
           );
           return;
@@ -1386,6 +1393,70 @@ export function createAppServer(
               if (!res.headersSent && !res.destroyed)
                 json(res, 503, { message: "浏览器通知连接已关闭。" });
             }
+          } catch (error) {
+            clearInterval(heartbeat);
+            streams.delete(close);
+            res.off("close", close);
+            if (res.headersSent || res.writableEnded) close();
+            else throw error;
+          }
+          return;
+        }
+        if (url.pathname === "/api/platform/terminal/stream") {
+          platformQuery(url, ["scope"]);
+          if (req.method !== "GET") {
+            json(res, 405, { message: "Method not allowed" });
+            return;
+          }
+          const encoded = url.searchParams.get("scope") ?? "";
+          if (encoded.length > 8192)
+            throw new DomainError("invalid", "终端订阅范围过大。");
+          const scope = terminalChangeScopeSchema.parse(JSON.parse(encoded));
+          const controller = new AbortController();
+          let closed = false,
+            dispose: (() => void) | undefined;
+          const close = () => {
+            if (closed) return;
+            closed = true;
+            controller.abort();
+            clearInterval(heartbeat);
+            streams.delete(close);
+            dispose?.();
+            if (!res.destroyed && !res.writableEnded) {
+              if (res.headersSent) res.end();
+              else
+                json(res, 503, { message: "终端通知暂不可用，请重新连接。" });
+            }
+          };
+          const heartbeat = setInterval(() => {
+            if (!closed && res.headersSent) res.write(": keepalive\n\n");
+          }, 15000);
+          res.on("close", close);
+          streams.add(close);
+          const send = (value: TerminalChange) => {
+            if (closed) return;
+            if (!res.headersSent) {
+              res.writeHead(200, {
+                "Content-Type": "text/event-stream",
+                "X-Accel-Buffering": "no",
+                Connection: "keep-alive",
+              });
+              res.flushHeaders();
+            }
+            if (res.writableLength > 16 * 1024) {
+              close();
+              return;
+            }
+            res.write(`data: ${JSON.stringify(value)}\n\n`);
+          };
+          try {
+            dispose = await business.observeTerminalChanges(
+              scope,
+              send,
+              close,
+              controller.signal,
+            );
+            if (closed) dispose();
           } catch (error) {
             clearInterval(heartbeat);
             streams.delete(close);

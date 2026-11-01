@@ -115,6 +115,8 @@ async fn assert_quiescent(runtime: &MorphzRuntime) {
             SchedulerQuery {
                 include_terminal: false,
                 limit: 2_000,
+                history_only: false,
+                history_cursor: None,
             },
         )
         .await

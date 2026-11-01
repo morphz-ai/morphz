@@ -46,6 +46,8 @@ export const runtimeScheduleSchema = z.object({
 export type RuntimeSchedule = z.infer<typeof runtimeScheduleSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
+  /** Host invalidation generation; visible readers own history HTTP reads. */
+  historyVersion: z.number().int().nonnegative().optional(),
   /** Read observations, not execution/control authority. A failed Context must
    * not erase another Context's successfully read current work. */
   readScopes: z

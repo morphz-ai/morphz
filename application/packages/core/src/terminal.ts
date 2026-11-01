@@ -134,3 +134,22 @@ export type TerminalReceipt = z.infer<typeof terminalReceiptSchema>;
 export type TerminalRecord = z.infer<typeof terminalRecordSchema>;
 export type TerminalScreen = z.infer<typeof terminalScreenSchema>;
 export type TerminalView = z.infer<typeof terminalViewSchema>;
+
+/** Refresh permission, never PTY bytes or a control receipt. */
+export const terminalChangeScopeSchema = z
+  .object({
+    kind: z.literal("terminal"),
+    scope: executionScopeSchema,
+    terminalId: z.string().min(1).max(500).nullable(),
+  })
+  .strict();
+export const terminalChangeSchema = z
+  .object({
+    kind: z.literal("terminal"),
+    sequence: z.number().int().positive(),
+    reason: z.enum(["changed", "resync"]),
+    catalog: z.boolean(),
+    screen: z.boolean(),
+  })
+  .strict();
+export type TerminalChange = z.infer<typeof terminalChangeSchema>;

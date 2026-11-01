@@ -864,7 +864,6 @@
       "description": "Neutral, low-distraction"
     }
   },
-
   "reasoning": {
     "label": "Reasoning",
     "title": "Sets the reasoning effort for subsequent Evaluations in this Session; choices follow the current physical model's native capabilities.",
@@ -1315,7 +1314,15 @@
       "pauseThreadHint": "Pause future scheduling; already-started external side effects are not presented as frozen",
       "resumeThread": "Resume Thread",
       "cancelThread": "Cancel Thread",
-      "supersedeThread": "Correct Thread"
+      "supersedeThread": "Correct Thread",
+      "more": {
+        "activations": "More executions",
+        "jobs": "More tool records",
+        "pending_signals": "More pending signals",
+        "activation_signals": "More input signals",
+        "schedules": "More schedules",
+        "model_events": "Earlier model records"
+      }
     }
   },
   "mindView": {

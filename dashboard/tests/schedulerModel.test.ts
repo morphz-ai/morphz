@@ -6,6 +6,7 @@ import {
   attentionJobKey,
   actionableSchedulerJobs,
   mergeSchedulerCurrentAndHistory,
+  appendSchedulerHistoryPage,
   activeSchedulerActivations,
   activeSchedulerThreads,
   currentSchedulerSchedules,
@@ -416,4 +417,25 @@ test('failure reply may retry only a Runtime-owned root Execution Thread', () =>
     runtime_failure_kind: 'server_unavailable',
     thread_id: failed.thread.id,
   }), undefined)
+})
+
+
+test('appending a history cursor page retains loaded history, newer receipts and the next page boundary', () => {
+  const before=fixture(), page=fixture(), current=fixture()
+  before.objectives=[];page.objectives=[];current.objectives=[]
+  before.threads[0]!.thread.lifecycle='completed'
+  before.threads[0]!.thread.updated_at='2026-11-01T01:00:00Z'
+  page.threads[0]!.thread.lifecycle='completed'
+  page.threads[0]!.thread.updated_at='2026-10-01T01:00:00Z'
+  const next=structuredClone(page.threads[0]!)
+  next.thread.id='next-page-only'; page.threads.push(next)
+  page.detail_bounds.next_history_cursor='opaque-tail';page.detail_bounds.has_more_history=true
+  const appended=appendSchedulerHistoryPage(before,page)
+  assert.equal(appended.threads.length,2)
+  assert.equal(appended.threads[0],before.threads[0])
+  const merged=mergeSchedulerCurrentAndHistory(current,appended)
+  assert.equal(merged.summary,current.summary)
+  assert.equal(merged.detail_bounds.next_history_cursor,'opaque-tail')
+  assert.equal(merged.threads.find(row=>row.thread.id===current.threads[0]!.thread.id),current.threads[0])
+  page.context_id='other'; assert.throws(()=>appendSchedulerHistoryPage(before,page),/scope/)
 })

@@ -47,8 +47,8 @@ use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentProviderBindingRecord, AgentProviderBindingSet,
-    AgentProviderBindingStore, AgentProviderPolicyMode, AgentRecord, ApprovalFilter,
-    ApprovalMutation, ApprovalResolution, ApprovalStore, ArtifactTransferExecutionRecord,
+    AgentProviderBindingStore, AgentProviderPolicyMode, AgentRecord, ApprovalMutation,
+    ApprovalResolution, ApprovalStore, ArtifactTransferExecutionRecord,
     AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
     CapabilityLeaseRecord, CapabilityLeaseRestriction, CapabilityLeaseScope,
     CognitiveContextRecord, ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
@@ -69,10 +69,9 @@ use crate::memory::{
     ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
     SessionRecord, SessionStatus, SessionStore, SessionTimelineCursor, SessionTimelineItem,
     SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
-    TransientStorageRetention,
+    ThreadControlState, ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
+    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -97,10 +96,10 @@ use crate::provider::control::{
 use crate::provider::routing::EffectiveProviderCatalog;
 use crate::provider::{build_configured_client, normalize_reasoning_effort_for_model};
 use crate::scheduler::{
-    audit_scheduler_invariants, derive_objective_readiness, KernelResult,
-    SchedulerDependencyFilter, SchedulerDependencyKind, SchedulerDependencyOwnerKind,
-    SchedulerDependencyStatus, SchedulerInvariantCode, SchedulerInvariantInput,
-    SchedulerInvariantSeverity, SchedulerInvariantViolation, SchedulerKernel,
+    derive_objective_readiness, KernelResult, SchedulerDependencyFilter, SchedulerDependencyKind,
+    SchedulerDependencyOwnerKind, SchedulerDependencyStatus, SchedulerInvariantCode,
+    SchedulerInvariantInput, SchedulerInvariantSeverity, SchedulerInvariantViolation,
+    SchedulerKernel,
 };
 pub use crate::scheduler::{
     SchedulerActivationSnapshot, SchedulerAdmissionSnapshot, SchedulerDeliverySnapshot,
@@ -503,7 +502,7 @@ pub struct ContextOverview {
     /// Latest full-Prompt component attribution. Values are estimates; exact
     /// Provider accounting is exposed separately through ModelUsage records.
     pub attribution: Option<ContextAttribution>,
-    pub objectives: Vec<ObjectiveRecord>,
+    pub objective_status_counts: BTreeMap<String, u64>,
     pub scheduler: SchedulerSummary,
 }
 
@@ -752,10 +751,13 @@ pub struct ModelUsagePage {
     pub next_before_sequence: Option<u64>,
 }
 
-/// One complete causal Thread aggregate. Scheduler lists and inspectors use
+/// One bounded causal Thread inspector. Scheduler lists and inspectors use
 /// this same type so an Execution Job can never become a global, ownerless row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadDetail {
+    pub collections_loaded: bool,
+    #[serde(default)]
+    pub continuations: Vec<crate::memory::inspection_page::ThreadInspectionContinuation>,
     pub context_id: String,
     pub generated_at: chrono::DateTime<chrono::Utc>,
     pub snapshot: SchedulerThreadSnapshot,
@@ -763,6 +765,14 @@ pub struct ThreadDetail {
     /// summaries causally routed to this Thread. Ephemeral deltas remain on
     /// the live stream and are intentionally absent from this aggregate.
     pub model_attempt_events: Vec<Event>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadInspectionView {
+    pub thread: ThreadRecord,
+    pub page: crate::memory::inspection_page::ThreadInspectionPage,
+    pub jobs: Vec<SchedulerJobSnapshot>,
+    pub activation_snapshots: Vec<SchedulerActivationSnapshot>,
+    pub continuations: Vec<crate::memory::inspection_page::ThreadInspectionContinuation>,
 }
 
 /// Runtime-owned immutable provenance, not a permission grant. A Host must
@@ -1879,6 +1889,7 @@ impl MorphzRuntimeBuilder {
                 start_lock: tokio::sync::Mutex::new(()),
             }),
         };
+        runtime.inner.terminals.bind_change_bus(&runtime.inner.bus);
         let weak = Arc::downgrade(&runtime.inner);
         runtime.inner.terminals.bind_source(Arc::new(move |caller| {
             let weak = weak.clone();
@@ -2873,11 +2884,33 @@ impl MorphzRuntime {
         }
         // Missing policies follow this single operator's live catalog, even
         // when it is initially empty. Persisted restrictions remain untouched.
-        for agent in self.inner.store.list_agents(true).await? {
-            self.inner
+        let mut directory = crate::memory::RuntimeDirectoryQuery {
+            kind: crate::memory::RuntimeDirectoryKind::Agents,
+            include_archived: true,
+            identity_order: true,
+            limit: 200,
+            ..Default::default()
+        };
+        loop {
+            let page = self
+                .inner
                 .store
-                .initialize_agent_provider_policy(&agent.id, AgentProviderPolicyMode::Inherit, &[])
+                .read_runtime_directory_page(directory.clone())
                 .await?;
+            for agent in page.agents {
+                self.inner
+                    .store
+                    .initialize_agent_provider_policy(
+                        &agent.id,
+                        AgentProviderPolicyMode::Inherit,
+                        &[],
+                    )
+                    .await?;
+            }
+            if !page.has_more {
+                break;
+            }
+            directory.cursor = page.next_cursor;
         }
         self.inner
             .store
@@ -2890,16 +2923,33 @@ impl MorphzRuntime {
         // Archived Sessions cannot receive new work. Register only active
         // routes; archived records remain queryable through the directory and
         // are registered again if the user explicitly reactivates them.
-        for session in self.inner.store.list_sessions(false).await? {
-            self.inner
-                .permissions
-                .set_session_permission_mode(&session.id, session.permission_mode);
-            self.inner
-                .permissions
-                .set_session_sandbox_mode(&session.id, session.sandbox_mode);
-            self.inner
-                .orchestrator
-                .register_session_context(&session.id, &session.context_id);
+        let mut directory = crate::memory::RuntimeDirectoryQuery {
+            kind: crate::memory::RuntimeDirectoryKind::Sessions,
+            identity_order: true,
+            limit: 200,
+            ..Default::default()
+        };
+        loop {
+            let page = self
+                .inner
+                .store
+                .read_runtime_directory_page(directory.clone())
+                .await?;
+            for session in page.sessions {
+                self.inner
+                    .permissions
+                    .set_session_permission_mode(&session.id, session.permission_mode);
+                self.inner
+                    .permissions
+                    .set_session_sandbox_mode(&session.id, session.sandbox_mode);
+                self.inner
+                    .orchestrator
+                    .register_session_context(&session.id, &session.context_id);
+            }
+            if !page.has_more {
+                break;
+            }
+            directory.cursor = page.next_cursor;
         }
         log_message_attachment_recovery(
             reconcile_pending_message_attachments(&self.inner).await?,
@@ -3836,6 +3886,31 @@ impl MorphzRuntime {
             .store
             .bind_unbound_sessions_to_principal(&principal.id, include_archived)
             .await
+    }
+
+    pub async fn read_operator_inventory_page(
+        &self,
+        request: crate::memory::RuntimeInventoryQuery,
+    ) -> Result<crate::memory::RuntimeInventoryPage, RuntimeError> {
+        self.inner.store.read_operator_inventory_page(request).await
+    }
+
+    pub async fn event_session_points(
+        &self,
+        context_id: &str,
+        event_ids: &[String],
+    ) -> Result<Vec<String>, RuntimeError> {
+        self.inner
+            .store
+            .event_session_points(context_id, event_ids)
+            .await
+    }
+
+    pub async fn read_runtime_directory_page(
+        &self,
+        query: crate::memory::RuntimeDirectoryQuery,
+    ) -> Result<crate::memory::RuntimeDirectoryPage, RuntimeError> {
+        self.inner.store.read_runtime_directory_page(query).await
     }
 
     pub async fn list_principal_sessions(
@@ -5356,6 +5431,16 @@ impl MorphzRuntime {
             .await
     }
 
+    pub async fn get_owned_execution_node(
+        &self,
+        node_id: &str,
+        principal_id: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .get_owned_execution_node(node_id, principal_id)
+            .await
+    }
     pub async fn list_execution_nodes(
         &self,
         owner_principal_id: &str,
@@ -6409,157 +6494,147 @@ impl MorphzRuntime {
     async fn reconcile_artifact_transfer_scheduler_projections(
         &self,
     ) -> Result<usize, RuntimeError> {
-        // Recovery cost follows live scheduler authority, never lifetime
-        // Transfer history. An open transfer Thread owns the deterministic
-        // Job ID directly; the activation scan covers the narrow partial
-        // state where a Thread was terminalized before its Activation.
-        let mut candidate_job_ids = HashSet::new();
-        for context in self.inner.store.list_contexts(false).await? {
-            for thread in self
-                .inner
-                .store
-                .list_context_threads(&context.id, false)
-                .await?
-            {
-                if thread.executor_kind == ARTIFACT_TRANSFER_EXECUTOR_KIND {
-                    let job_id = thread.executor_id.as_deref().ok_or_else(|| {
-                        format!(
-                            "open Artifact Transfer Thread '{}' is missing an Execution Job identity",
-                            thread.id
-                        )
-                    })?;
-                    candidate_job_ids.insert(job_id.to_string());
-                }
-            }
-            for activation in self
-                .inner
-                .store
-                .list_context_thread_activations(&context.id, false)
-                .await?
-            {
-                let Some(thread) = self
+        let mut repaired = 0usize;
+        for source in [
+            crate::memory::TransferProjectionSource::OpenThreads,
+            crate::memory::TransferProjectionSource::LiveActivations,
+        ] {
+            let mut cursor = String::new();
+            loop {
+                let mut page = self
                     .inner
                     .store
-                    .get_thread_by_root(&activation.root_turn_id)
-                    .await?
-                else {
-                    continue;
-                };
-                if thread.executor_kind == ARTIFACT_TRANSFER_EXECUTOR_KIND {
-                    let job_id = thread.executor_id.as_deref().ok_or_else(|| {
-                        format!(
-                            "Thread '{}' of Artifact Transfer Activation '{}' is missing an Execution Job identity",
-                            thread.id, activation.id
-                        )
-                    })?;
-                    candidate_job_ids.insert(job_id.to_string());
+                    .read_transfer_projection_recovery_page(source, &cursor, 200)
+                    .await?;
+                let has_more = page.len() > 200;
+                page.truncate(200);
+                if let Some(last) = page.last() {
+                    cursor = last.cursor_id.clone();
+                }
+                let mut seen = HashSet::new();
+                for candidate in page {
+                    let job_id=candidate.job_id.ok_or_else(||format!("Artifact Transfer Thread '{}' for '{}' is missing its Execution Job identity",candidate.thread_id,candidate.cursor_id))?;
+                    if seen.insert(job_id.clone())
+                        && self
+                            .reconcile_artifact_transfer_job_projection(&job_id)
+                            .await?
+                    {
+                        repaired = repaired.saturating_add(1);
+                    }
+                }
+                if !has_more {
+                    break;
                 }
             }
-        }
-        let mut candidate_job_ids = candidate_job_ids.into_iter().collect::<Vec<_>>();
-        candidate_job_ids.sort();
-        let mut repaired = 0usize;
-        for job_id in candidate_job_ids {
-            let job = self
-                .inner
-                .store
-                .get_execution_job(&job_id)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "Artifact Transfer scheduler projection references missing Job '{job_id}'"
-                    )
-                })?;
-            if job.tool_name != ARTIFACT_TRANSFER_TOOL_NAME {
-                return Err(format!(
-                    "Artifact Transfer scheduler projection references Job '{}' with tool '{}'",
-                    job.id, job.tool_name
-                )
-                .into());
-            }
-            if !job.status.is_terminal() {
-                continue;
-            }
-            let activation_open = self
-                .inner
-                .store
-                .get_thread_activation(&job.activation_id)
-                .await?
-                .is_some_and(|activation| !activation.status.is_terminal());
-            let thread_open = self
-                .inner
-                .store
-                .get_thread(&job.thread_id)
-                .await?
-                .is_some_and(|thread| !thread.lifecycle.is_terminal());
-            if !activation_open && !thread_open {
-                continue;
-            }
-            let result_event_id = job.result_event_id.as_deref().ok_or_else(|| {
-                format!(
-                    "terminal Artifact Transfer Job '{}' is missing result_event_id",
-                    job.id
-                )
-            })?;
-            let result = self
-                .inner
-                .store
-                .query(QueryFilter {
-                    event_id: Some(result_event_id.to_string()),
-                    context_id: Some(job.context_id.clone()),
-                    top_k: Some(1),
-                    ..Default::default()
-                })
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    format!(
-                        "result Event '{}' for terminal Artifact Transfer Job '{}' does not exist",
-                        result_event_id, job.id
-                    )
-                })?;
-            let text = result
-                .payload
-                .get("text")
-                .and_then(serde_json::Value::as_str)
-                .or(job.error.as_deref())
-                .unwrap_or("Artifact Transfer is terminal")
-                .to_string();
-            let (activation_status, lifecycle) = match job.status {
-                ExecutionJobStatus::Succeeded => (
-                    ThreadActivationStatus::Succeeded,
-                    ThreadLifecycle::Completed,
-                ),
-                ExecutionJobStatus::Cancelled => (
-                    ThreadActivationStatus::Cancelled,
-                    ThreadLifecycle::Cancelled,
-                ),
-                ExecutionJobStatus::Failed | ExecutionJobStatus::Lost => {
-                    (ThreadActivationStatus::Failed, ThreadLifecycle::Failed)
-                }
-                _ => continue,
-            };
-            self.close_artifact_transfer_scheduler_projection(
-                &job,
-                activation_status,
-                lifecycle,
-                &text,
-                result_event_id,
-            )
-            .await;
-            repaired = repaired.saturating_add(1);
         }
         if repaired > 0 {
-            tracing::info!(
-                repaired,
-                event_code = "runtime.artifact_transfer.scheduler_projection_recovered",
-                "Recovered terminal Artifact Transfer scheduler projections from durable Job results"
-            );
+            tracing::info!(repaired,event_code="runtime.artifact_transfer.scheduler_projection_recovered","Recovered terminal Artifact Transfer scheduler projections from durable Job results");
         }
         Ok(repaired)
     }
+    async fn reconcile_artifact_transfer_job_projection(
+        &self,
+        job_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        let job = self
+            .inner
+            .store
+            .get_execution_job(job_id)
+            .await?
+            .ok_or_else(|| {
+                format!("Artifact Transfer scheduler projection references missing Job '{job_id}'")
+            })?;
+        if job.tool_name != ARTIFACT_TRANSFER_TOOL_NAME {
+            return Err(format!(
+                "Artifact Transfer scheduler projection references Job '{}' with tool '{}'",
+                job.id, job.tool_name
+            )
+            .into());
+        }
+        if !job.status.is_terminal() {
+            return Ok(false);
+        }
+        let activation_open = self
+            .inner
+            .store
+            .get_thread_activation(&job.activation_id)
+            .await?
+            .is_some_and(|activation| !activation.status.is_terminal());
+        let thread_open = self
+            .inner
+            .store
+            .get_thread(&job.thread_id)
+            .await?
+            .is_some_and(|thread| !thread.lifecycle.is_terminal());
+        if !activation_open && !thread_open {
+            return Ok(false);
+        }
+        let result_event_id = job.result_event_id.as_deref().ok_or_else(|| {
+            format!(
+                "terminal Artifact Transfer Job '{}' is missing result_event_id",
+                job.id
+            )
+        })?;
+        let result = self
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(result_event_id.to_string()),
+                context_id: Some(job.context_id.clone()),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                format!(
+                    "result Event '{}' for terminal Artifact Transfer Job '{}' does not exist",
+                    result_event_id, job.id
+                )
+            })?;
+        let text = result
+            .payload
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .or(job.error.as_deref())
+            .unwrap_or("Artifact Transfer is terminal")
+            .to_string();
+        let (activation_status, lifecycle) = match job.status {
+            ExecutionJobStatus::Succeeded => (
+                ThreadActivationStatus::Succeeded,
+                ThreadLifecycle::Completed,
+            ),
+            ExecutionJobStatus::Cancelled => (
+                ThreadActivationStatus::Cancelled,
+                ThreadLifecycle::Cancelled,
+            ),
+            ExecutionJobStatus::Failed | ExecutionJobStatus::Lost => {
+                (ThreadActivationStatus::Failed, ThreadLifecycle::Failed)
+            }
+            _ => return Ok(false),
+        };
+        self.close_artifact_transfer_scheduler_projection(
+            &job,
+            activation_status,
+            lifecycle,
+            &text,
+            result_event_id,
+        )
+        .await;
+        Ok(true)
+    }
 
+    pub async fn get_owned_capability_lease(
+        &self,
+        lease_id: &str,
+        principal_id: &str,
+    ) -> Result<Option<CapabilityLeaseRecord>, RuntimeError> {
+        self.inner
+            .store
+            .get_owned_capability_lease(lease_id, principal_id)
+            .await
+    }
     pub async fn list_capability_leases(
         &self,
         filter: CapabilityLeaseFilter,
@@ -7238,6 +7313,12 @@ impl MorphzRuntime {
         Ok(cancelled)
     }
 
+    pub fn subscribe_event_changes(
+        &self,
+    ) -> Result<tokio::sync::watch::Receiver<u64>, RuntimeError> {
+        self.inner.store.subscribe_event_changes()
+    }
+
     pub async fn query_events(&self, filter: QueryFilter) -> Result<Vec<Event>, RuntimeError> {
         self.inner.store.query(filter).await
     }
@@ -7734,84 +7815,92 @@ impl MorphzRuntime {
         self.inner.bus.clear_ephemeral_observations(observer_id);
     }
 
+    /// Compatibility head only. Product callers use the page contract below.
     pub async fn pending_approvals(&self) -> Vec<PendingHumanApproval> {
-        let mut pending = self.inner.human_approval_hub.pending();
-        let mut known = pending
-            .iter()
-            .map(|entry| entry.request.approval_id.clone())
-            .collect::<std::collections::HashSet<_>>();
-        let records = match self
+        match self.pending_approvals_page(None, 200).await {
+            Ok(page) => page.approvals,
+            Err(error) => {
+                tracing::error!(%error,event_code="runtime.approvals.list_persistent_failed","Pending Approval head unavailable");
+                Vec::new()
+            }
+        }
+    }
+    pub async fn pending_approvals_page(
+        &self,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::approval::PendingHumanApprovalPage, RuntimeError> {
+        let page = self
             .inner
             .store
-            .list_approvals(ApprovalFilter {
-                pending_only: true,
-                ..ApprovalFilter::default()
-            })
-            .await
-        {
-            Ok(records) => records,
-            Err(error) => {
-                tracing::error!(event_code = "runtime.approvals.list_persistent_failed", %error, "Failed to read persistent pending approvals; falling back to the in-process view");
-                return pending;
-            }
-        };
-        for record in records {
-            if !known.insert(record.id.clone()) {
-                continue;
-            }
-            let Ok(Some(job)) = self.inner.store.get_execution_job(&record.job_id).await else {
-                continue;
-            };
-            let Ok(Some(activation)) = self
-                .inner
-                .store
-                .get_thread_activation(&job.activation_id)
-                .await
-            else {
-                tracing::error!(
-                    approval_id = %record.id,
-                    activation_id = %job.activation_id,
-                    event_code = "runtime.approval.activation_missing",
-                    "Pending approval request is missing its causal Activation"
-                );
-                continue;
-            };
-            let Ok(action) =
-                serde_json::from_value::<crate::approval::ApprovalAction>(record.action.clone())
-            else {
-                tracing::error!(event_code = "runtime.approval.action_decode_failed", approval_id = %record.id, "Failed to decode the pending approval action");
-                continue;
-            };
-            let Ok(requested) = serde_json::from_value::<crate::approval::CapabilityDelta>(
-                record.requested.clone(),
-            ) else {
-                tracing::error!(event_code = "runtime.approval.capability_delta_decode_failed", approval_id = %record.id, "Failed to decode the pending approval capability delta");
-                continue;
-            };
-            let lease_offer = self
-                .approval_lease_offer(&record, &job, &action, &requested)
-                .await;
-            pending.push(PendingHumanApproval {
-                request: crate::approval::ApprovalRequest {
-                    approval_id: record.id,
-                    context_id: job.context_id,
-                    session_id: job.session_id,
-                    attempt_id: job.activation_id,
-                    thread_id: job.thread_id,
-                    root_turn_id: activation.root_turn_id,
-                    trigger_event_id: activation.trigger_event_id,
-                    trigger_sequence: activation.trigger_sequence,
-                    model_alias: activation.model_alias,
-                    action,
-                    requested,
-                    justification: record.justification,
-                    lease_offer,
-                },
-                requested_at: record.created_at,
-            });
+            .read_pending_approval_page(cursor, limit)
+            .await?;
+        let mut approvals = Vec::with_capacity(page.records.len());
+        for record in page.records {
+            approvals.push(self.pending_approval_view(record).await?);
         }
-        pending.sort_by_key(|entry| entry.requested_at);
-        pending
+        Ok(crate::approval::PendingHumanApprovalPage {
+            approvals,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+        })
+    }
+    pub async fn get_pending_approval(
+        &self,
+        id: &str,
+    ) -> Result<Option<PendingHumanApproval>, RuntimeError> {
+        let Some(record) = self
+            .inner
+            .store
+            .get_approval(id)
+            .await?
+            .filter(|record| record.status.is_pending())
+        else {
+            return Ok(None);
+        };
+        self.pending_approval_view(record).await.map(Some)
+    }
+    async fn pending_approval_view(
+        &self,
+        record: crate::memory::ApprovalRecord,
+    ) -> Result<PendingHumanApproval, RuntimeError> {
+        let job = self
+            .inner
+            .store
+            .get_execution_job(&record.job_id)
+            .await?
+            .ok_or_else(|| format!("Approval '{}' is missing its Execution Job", record.id))?;
+        let activation = self
+            .inner
+            .store
+            .get_thread_activation(&job.activation_id)
+            .await?
+            .ok_or_else(|| format!("Approval '{}' is missing its causal Activation", record.id))?;
+        let action =
+            serde_json::from_value::<crate::approval::ApprovalAction>(record.action.clone())?;
+        let requested =
+            serde_json::from_value::<crate::approval::CapabilityDelta>(record.requested.clone())?;
+        let lease_offer = self
+            .approval_lease_offer(&record, &job, &action, &requested)
+            .await;
+        Ok(PendingHumanApproval {
+            request: crate::approval::ApprovalRequest {
+                approval_id: record.id,
+                context_id: job.context_id,
+                session_id: job.session_id,
+                attempt_id: job.activation_id,
+                thread_id: job.thread_id,
+                root_turn_id: activation.root_turn_id,
+                trigger_event_id: activation.trigger_event_id,
+                trigger_sequence: activation.trigger_sequence,
+                model_alias: activation.model_alias,
+                action,
+                requested,
+                justification: record.justification,
+                lease_offer,
+            },
+            requested_at: record.created_at,
+        })
     }
 
     pub async fn decide_approval(
@@ -7992,10 +8081,9 @@ impl MorphzRuntime {
         }
         if !exact_scope_replay {
             let pending = self
-                .pending_approvals()
+                .get_pending_approval(&approval.id)
                 .await
-                .into_iter()
-                .find(|pending| pending.request.approval_id == approval.id)
+                .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("Approval '{}' is not pending", approval.id))?;
             if pending.request.lease_offer.is_none() {
                 return Err(format!(
@@ -8777,6 +8865,55 @@ impl MorphzRuntime {
             }))
     }
 
+    pub async fn scheduler_group_member_page(
+        &self,
+        context_id: &str,
+        group_id: &str,
+        cursor: Option<String>,
+        limit: usize,
+        expected_revision: Option<u64>,
+    ) -> Result<crate::memory::group_page::GroupMemberPage, RuntimeError> {
+        let group = self
+            .inner
+            .store
+            .get_thread_group(group_id)
+            .await?
+            .filter(|group| group.context_id == context_id)
+            .ok_or("ThreadGroup does not exist")?;
+        if expected_revision.is_some_and(|revision| revision != group.revision) {
+            return Err("ThreadGroup revision conflict".into());
+        }
+        let page = self
+            .inner
+            .store
+            .read_group_member_page(group_id, cursor, limit)
+            .await?;
+        let ids = page
+            .items
+            .iter()
+            .map(|row| row.thread_id.clone())
+            .collect::<Vec<_>>();
+        let outcomes = self.inner.store.list_thread_outcomes(&ids).await?;
+        if !self
+            .inner
+            .store
+            .get_thread_group(group_id)
+            .await?
+            .is_some_and(|current| {
+                current.revision == group.revision && current.context_id == context_id
+            })
+        {
+            return Err("ThreadGroup revision conflict".into());
+        }
+        Ok(crate::memory::group_page::GroupMemberPage {
+            group,
+            members: page.items,
+            outcomes,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+        })
+    }
+
     pub async fn scheduler_snapshot(
         &self,
         context_id: &str,
@@ -8785,11 +8922,20 @@ impl MorphzRuntime {
         let context = self
             .inner
             .store
-            .get_context(context_id)
+            .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                kind: crate::memory::RuntimeDirectoryKind::Contexts,
+                ids: Some(vec![context_id.to_string()]),
+                include_archived: true,
+                limit: 1,
+                ..Default::default()
+            })
             .await?
+            .contexts
+            .into_iter()
+            .next()
             .ok_or_else(|| format!("Context '{context_id}' does not exist"))?;
         let include_terminal = query.include_terminal;
-        let limit = query.limit.clamp(1, 2_000);
+        let limit = query.limit.clamp(1, 200);
         let detail_fetch_limit = limit.saturating_add(1);
         let count_at = chrono::Utc::now();
         let (
@@ -8848,23 +8994,35 @@ impl MorphzRuntime {
             .await?;
         let has_more_schedules = schedules.len() > limit || exact_active_schedules > limit;
         schedules.truncate(limit);
-        let mut context_threads = self
-            .inner
-            .store
-            .list_context_threads_bounded(context_id, false, detail_fetch_limit)
-            .await?;
-        let mut has_more_threads = context_threads.len() > limit || exact_open_threads > limit;
+        let mut context_threads = if query.history_only {
+            Vec::new()
+        } else {
+            self.inner
+                .store
+                .list_context_threads_bounded(context_id, false, detail_fetch_limit)
+                .await?
+        };
+        let mut has_more_threads =
+            context_threads.len() > limit || (!query.history_only && exact_open_threads > limit);
         context_threads.truncate(limit);
-        if include_terminal {
+        let mut has_more_history = false;
+        let mut next_history_cursor = None;
+        if include_terminal || query.history_only {
+            let history = self
+                .inner
+                .store
+                .read_terminal_thread_page(context_id, query.history_cursor, limit)
+                .await?;
+            has_more_history = history.has_more;
+            next_history_cursor = history.next_cursor;
+            has_more_threads |= has_more_history;
             let active_ids = context_threads
                 .iter()
                 .map(|thread| thread.id.clone())
                 .collect::<HashSet<_>>();
             context_threads.extend(
-                self.inner
-                    .store
-                    .list_recent_terminal_threads(context_id, limit)
-                    .await?
+                history
+                    .items
                     .into_iter()
                     .filter(|thread| !active_ids.contains(&thread.id)),
             );
@@ -8915,7 +9073,11 @@ impl MorphzRuntime {
             .list_scheduler_thread_activations_by_roots(
                 context_id,
                 &root_turn_ids,
-                SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD,
+                if include_terminal {
+                    SCHEDULER_TERMINAL_ACTIVATIONS_PER_THREAD
+                } else {
+                    0
+                },
             )
             .await?;
         let aggregate_activation_ids = all_context_activations
@@ -9023,8 +9185,16 @@ impl MorphzRuntime {
                 ..ExecutionJobFilter::default()
             })
             .await?;
-        let has_more_jobs =
-            live_job_candidates.len() > limit || exact_job_counts.active_jobs > limit;
+        let has_more_jobs = live_job_candidates.len() > limit
+            || exact_job_counts.active_jobs > limit
+            || jobs
+                .iter()
+                .fold(HashMap::<String, usize>::new(), |mut counts, j| {
+                    *counts.entry(j.activation_id.clone()).or_default() += 1;
+                    counts
+                })
+                .values()
+                .any(|count| *count >= 32);
         let displaced_job_activation_ids = live_job_candidates
             .iter()
             .filter(|job| {
@@ -9082,9 +9252,25 @@ impl MorphzRuntime {
             .await?;
         let has_more_approvals =
             pending_approval_candidates.len() > limit || exact_pending_approvals > limit;
+        let unchecked_job_ids = pending_approval_candidates
+            .iter()
+            .take(limit)
+            .filter(|a| {
+                !live_job_ids.contains(&a.job_id) && !valid_displaced_job_ids.contains(&a.job_id)
+            })
+            .map(|a| a.job_id.clone())
+            .collect::<Vec<_>>();
+        let valid_approval_routes = self
+            .inner
+            .store
+            .live_execution_job_routes(context_id, &unchecked_job_ids)
+            .await?
+            .into_iter()
+            .collect::<HashSet<_>>();
         for approval in pending_approval_candidates.into_iter().take(limit) {
             if !live_job_ids.contains(&approval.job_id)
                 && !valid_displaced_job_ids.contains(&approval.job_id)
+                && !valid_approval_routes.contains(&approval.job_id)
             {
                 orphan_approvals.push(approval.clone());
             }
@@ -9236,42 +9422,28 @@ impl MorphzRuntime {
                 authority_groups.truncate(limit);
             }
         }
-        let mut authority_group_members = Vec::new();
-        let mut thread_groups = Vec::new();
+        let authority_group_members = Vec::new();
         let authority_group_ids = authority_groups
             .iter()
             .map(|group| group.id.clone())
             .collect::<Vec<_>>();
-        let mut members_by_group = HashMap::<String, Vec<ThreadGroupMemberRecord>>::new();
-        for (group_id, member) in self
+        // Integrity uses exact indexed counters. Collapsed parent rows do not
+        // load member/outcome bodies; expansion owns its independent page.
+        let group_counts = self
             .inner
             .store
-            .list_thread_group_members_for_groups(&authority_group_ids)
-            .await?
-        {
-            members_by_group.entry(group_id).or_default().push(member);
-        }
-        let mut outcomes_by_group = HashMap::<String, Vec<ThreadOutcomeRecord>>::new();
-        for (group_id, outcome) in self
-            .inner
-            .store
-            .list_thread_group_outcomes_for_groups(&authority_group_ids)
-            .await?
-        {
-            outcomes_by_group.entry(group_id).or_default().push(outcome);
-        }
-        for group in &authority_groups {
-            let members = members_by_group.remove(&group.id).unwrap_or_default();
-            authority_group_members.extend(members.iter().cloned());
-            let outcomes = outcomes_by_group.remove(&group.id).unwrap_or_default();
-            if thread_groups.len() < limit && (!group.status.is_terminal() || include_terminal) {
-                thread_groups.push(SchedulerThreadGroupSnapshot {
-                    group: group.clone(),
-                    members,
-                    outcomes,
-                });
-            }
-        }
+            .count_group_members(&authority_group_ids)
+            .await?;
+        let thread_groups = authority_groups
+            .iter()
+            .filter(|group| !group.status.is_terminal() || include_terminal)
+            .map(|group| SchedulerThreadGroupSnapshot {
+                group: group.clone(),
+                members_loaded: false,
+                members: Vec::new(),
+                outcomes: Vec::new(),
+            })
+            .collect::<Vec<_>>();
 
         let authority_thread_ids = authority_threads
             .iter()
@@ -9321,6 +9493,17 @@ impl MorphzRuntime {
             .iter()
             .filter_map(|event| thread_input_intent(event).map(|intent| (event.id.clone(), intent)))
             .collect::<HashMap<_, _>>();
+        let mut phase_flags = HashMap::new();
+        for ids in selected_thread_ids.chunks(100) {
+            for flag in self
+                .inner
+                .store
+                .thread_activity_flags(context_id, ids)
+                .await?
+            {
+                phase_flags.insert(flag.thread_id.clone(), flag);
+            }
+        }
         let thread_sources = self
             .scheduler_thread_sources(context_id, &all_threads)
             .await?;
@@ -9335,12 +9518,14 @@ impl MorphzRuntime {
             let dependencies = dependencies_by_thread
                 .remove(&thread.id)
                 .unwrap_or_default();
-            let phase = crate::scheduler::thread_phase(
+            let flag = phase_flags
+                .get(&thread.id)
+                .ok_or("Thread activity scope changed")?;
+            let phase = crate::scheduler::snapshot::thread_phase_from_activity(
                 &thread,
-                &pending_signals,
-                &thread_activations,
-                &schedules,
-                &dependencies,
+                flag.running,
+                flag.runnable,
+                flag.waiting,
             );
             threads.push(SchedulerThreadSnapshot {
                 dependencies: Some(crate::scheduler::snapshot::current_thread_dependencies(
@@ -9423,17 +9608,15 @@ impl MorphzRuntime {
         let context_deferred = exact_activation_counts
             .queued_activations
             .saturating_sub(context_loaded_queued);
-        let objective_ids = authority_objectives
-            .iter()
-            .map(|objective| objective.id.clone())
-            .collect::<Vec<_>>();
         let mut dependencies = thread_dependencies;
         dependencies.extend(
             self.inner
                 .store
-                .list_scheduler_dependencies_for_owners(
-                    SchedulerDependencyOwnerKind::Objective,
-                    &objective_ids,
+                .list_objective_projection_dependencies(
+                    &authority_objectives
+                        .iter()
+                        .map(|goal| (goal.id.clone(), goal.generation))
+                        .collect::<Vec<_>>(),
                 )
                 .await?,
         );
@@ -9479,15 +9662,19 @@ impl MorphzRuntime {
             .store
             .list_thread_outcomes(&authority_thread_ids)
             .await?;
-        let mut invariant_violations = audit_scheduler_invariants(SchedulerInvariantInput {
-            objectives: &authority_objectives,
-            threads: &authority_threads,
-            activations: &all_context_activations,
-            outcomes: &authority_outcomes,
-            groups: &authority_groups,
-            group_members: &authority_group_members,
-            dependencies: &dependencies,
-        });
+        let mut invariant_violations =
+            crate::scheduler::domain::audit_scheduler_invariants_with_group_counts(
+                SchedulerInvariantInput {
+                    objectives: &authority_objectives,
+                    threads: &authority_threads,
+                    activations: &all_context_activations,
+                    outcomes: &authority_outcomes,
+                    groups: &authority_groups,
+                    group_members: &authority_group_members,
+                    dependencies: &dependencies,
+                },
+                &group_counts,
+            );
         let requested_barrier_event_ids = authority_groups
             .iter()
             .filter_map(|group| group.barrier_event_id.as_ref())
@@ -9599,11 +9786,17 @@ impl MorphzRuntime {
                 has_more_sessions,
                 has_more_objectives,
                 has_more_threads,
+                has_more_history,
+                next_history_cursor,
                 has_more_activations,
-                has_more_signals,
+                has_more_signals: has_more_signals
+                    || threads
+                        .iter()
+                        .any(|t| t.activations.iter().any(|a| a.signals.len() >= 64)),
                 has_more_jobs,
                 has_more_approvals,
-                has_more_schedules,
+                has_more_schedules: has_more_schedules
+                    || threads.iter().any(|t| t.schedules.len() >= 32),
                 has_more_thread_groups,
             },
             admission: SchedulerAdmissionSnapshot {
@@ -10364,17 +10557,31 @@ impl MorphzRuntime {
         let context = self
             .inner
             .store
-            .get_context(context_id)
+            .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                kind: crate::memory::RuntimeDirectoryKind::Contexts,
+                ids: Some(vec![context_id.to_string()]),
+                include_archived: true,
+                limit: 1,
+                ..Default::default()
+            })
             .await?
+            .contexts
+            .into_iter()
+            .next()
             .ok_or_else(|| format!("Context '{context_id}' does not exist"))?;
         let agent = self.inner.store.get_agent(&context.agent_id).await?;
-        let objectives = self.list_context_objectives(context_id, false).await?;
+        let objective_status_counts = self
+            .inner
+            .store
+            .count_context_objectives_by_status(context_id)
+            .await?;
         let scheduler_summary = if query.include_scheduler_summary.unwrap_or(true) {
             self.scheduler_snapshot(
                 context_id,
                 SchedulerQuery {
                     include_terminal: false,
                     limit: 100,
+                    ..Default::default()
                 },
             )
             .await?
@@ -10462,7 +10669,7 @@ impl MorphzRuntime {
             retired_items,
             pressure,
             attribution,
-            objectives,
+            objective_status_counts,
             scheduler: scheduler_summary,
         })
     }
@@ -10724,6 +10931,264 @@ impl MorphzRuntime {
         }))
     }
 
+    async fn inspection_activation(
+        &self,
+        thread: &ThreadRecord,
+        activation: ThreadActivationRecord,
+    ) -> Result<
+        (
+            SchedulerActivationSnapshot,
+            Vec<crate::memory::inspection_page::ThreadInspectionContinuation>,
+        ),
+        RuntimeError,
+    > {
+        use crate::memory::inspection_page::{
+            ThreadInspectionContinuation as C, ThreadInspectionKind as K,
+            ThreadInspectionQuery as Q,
+        };
+        let mut continuations = Vec::new();
+        let query = Q {
+            kind: K::Jobs,
+            activation_id: Some(activation.id.clone()),
+            cursor: None,
+            limit: Some(32),
+        };
+        let job_page = self
+            .inner
+            .store
+            .read_thread_inspection_page(thread, &query)
+            .await?;
+        if let Some(next_cursor) = job_page.next_cursor {
+            continuations.push(C {
+                kind: query.kind,
+                activation_id: query.activation_id.clone(),
+                next_cursor,
+            });
+        }
+        let ids = job_page
+            .jobs
+            .iter()
+            .map(|j| j.id.clone())
+            .collect::<Vec<_>>();
+        let mut approvals = self
+            .inner
+            .store
+            .list_job_approvals(&thread.context_id, &ids)
+            .await?
+            .into_iter()
+            .map(|a| (a.job_id.clone(), a))
+            .collect();
+        let jobs = job_page
+            .jobs
+            .into_iter()
+            .map(|j| crate::scheduler::job_snapshot(j, &mut approvals))
+            .collect();
+        let query = Q {
+            kind: K::ActivationSignals,
+            activation_id: Some(activation.id.clone()),
+            cursor: None,
+            limit: Some(32),
+        };
+        let signal_page = self
+            .inner
+            .store
+            .read_thread_inspection_page(thread, &query)
+            .await?;
+        if let Some(next_cursor) = signal_page.next_cursor {
+            continuations.push(C {
+                kind: query.kind,
+                activation_id: query.activation_id.clone(),
+                next_cursor,
+            });
+        }
+        Ok((
+            SchedulerActivationSnapshot {
+                activation,
+                signals: signal_page.signals,
+                jobs,
+            },
+            continuations,
+        ))
+    }
+    async fn inspection_page(
+        &self,
+        thread: &ThreadRecord,
+        query: &crate::memory::inspection_page::ThreadInspectionQuery,
+    ) -> Result<crate::memory::inspection_page::ThreadInspectionPage, RuntimeError> {
+        use crate::memory::inspection_page::{ThreadInspectionKind as K, ThreadInspectionPage};
+        if query.kind != K::ModelEvents {
+            return Ok(self
+                .inner
+                .store
+                .read_thread_inspection_page(thread, query)
+                .await?);
+        }
+        let key = query.key(&thread.id)?;
+        let before = key
+            .map(|(sequence, _)| sequence.parse::<u64>())
+            .transpose()?;
+        let mut events = Vec::new();
+        for topic in [
+            "runtime/model_attempt_state",
+            "runtime/model_reasoning_summary",
+        ] {
+            events.extend(
+                self.query_events(QueryFilter {
+                    context_id: Some(thread.context_id.clone()),
+                    session_id: Some(thread.session_id.clone()),
+                    thread_id: Some(thread.id.clone()),
+                    topic: Some(topic.into()),
+                    before_sequence: before,
+                    latest_k: Some(query.page_limit() + 1),
+                    ..Default::default()
+                })
+                .await?,
+            );
+        }
+        events.sort_by(|a, b| b.sequence.cmp(&a.sequence).then_with(|| b.id.cmp(&a.id)));
+        events.dedup_by(|a, b| a.id == b.id);
+        let has_more = events.len() > query.page_limit();
+        events.truncate(query.page_limit());
+        let next_cursor = if has_more {
+            events
+                .last()
+                .map(|e| {
+                    Ok::<_, RuntimeError>(
+                        query.cursor_for(
+                            &thread.id,
+                            e.sequence
+                                .ok_or("Model inspection Event has no durable sequence")?
+                                .to_string(),
+                            e.id.clone(),
+                        ),
+                    )
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(ThreadInspectionPage {
+            events,
+            has_more,
+            next_cursor,
+            ..Default::default()
+        })
+    }
+
+    pub async fn thread_inspection_page(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+        query: crate::memory::inspection_page::ThreadInspectionQuery,
+    ) -> Result<Option<ThreadInspectionView>, RuntimeError> {
+        let Some(thread) = self
+            .inner
+            .store
+            .get_thread(thread_id)
+            .await?
+            .filter(|t| t.context_id == context_id)
+        else {
+            return Ok(None);
+        };
+        query.key(thread_id)?;
+        let page = self.inspection_page(&thread, &query).await?;
+        let mut activation_snapshots = Vec::new();
+        let mut continuations = Vec::new();
+        for activation in page.activations.iter().cloned() {
+            let (snapshot, more) = self.inspection_activation(&thread, activation).await?;
+            activation_snapshots.push(snapshot);
+            continuations.extend(more);
+        }
+        let ids = page.jobs.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
+        let mut approvals = self
+            .inner
+            .store
+            .list_job_approvals(context_id, &ids)
+            .await?
+            .into_iter()
+            .map(|a| (a.job_id.clone(), a))
+            .collect();
+        let jobs = page
+            .jobs
+            .iter()
+            .cloned()
+            .map(|j| crate::scheduler::job_snapshot(j, &mut approvals))
+            .collect();
+        let Some(current) = self.inner.store.get_thread(thread_id).await? else {
+            return Ok(None);
+        };
+        if current.context_id != thread.context_id
+            || current.session_id != thread.session_id
+            || current.root_turn_id != thread.root_turn_id
+            || current.generation != thread.generation
+        {
+            return Err("Thread inspection scope changed".into());
+        }
+        Ok(Some(ThreadInspectionView {
+            thread: current,
+            page,
+            jobs,
+            activation_snapshots,
+            continuations,
+        }))
+    }
+
+    /// Current question/control metadata is an exact read, never an implicit
+    /// request to hydrate tool/Activation/Schedule/Event histories.
+    pub async fn thread_detail_metadata(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<ThreadDetail>, RuntimeError> {
+        let Some(thread) = self
+            .inner
+            .store
+            .get_thread(thread_id)
+            .await?
+            .filter(|t| t.context_id == context_id)
+        else {
+            return Ok(None);
+        };
+        let flags = self
+            .inner
+            .store
+            .thread_activity_flags(context_id, &[thread_id.to_string()])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("Thread activity scope changed")?;
+        let phase = crate::scheduler::snapshot::thread_phase_from_activity(
+            &thread,
+            flags.running,
+            flags.runnable,
+            flags.waiting,
+        );
+        let mut detail = ThreadDetail {
+            collections_loaded: false,
+            continuations: Vec::new(),
+            context_id: context_id.into(),
+            generated_at: chrono::Utc::now(),
+            model_attempt_events: Vec::new(),
+            snapshot: SchedulerThreadSnapshot {
+                thread,
+                phase,
+                dependencies: None,
+                user_input_request: None,
+                execution_model: None,
+                source: None,
+                response_annotations: None,
+                intent: None,
+                outcome: None,
+                pending_signals: Vec::new(),
+                activations: Vec::new(),
+                schedules: Vec::new(),
+            },
+        };
+        self.attach_user_input_requests(context_id, std::slice::from_mut(&mut detail.snapshot))
+            .await?;
+        Ok(Some(detail))
+    }
+
     pub async fn thread_detail(
         &self,
         context_id: &str,
@@ -10736,152 +11201,94 @@ impl MorphzRuntime {
             return Ok(None);
         }
 
-        // A deep link is an exact aggregate read, not a search through the
-        // bounded Scheduler board. Otherwise an old terminal Thread would
-        // become uninspectable as soon as enough newer history exists.
-        let mut activations = self
+        use crate::memory::inspection_page::{
+            ThreadInspectionContinuation as C, ThreadInspectionKind as K,
+            ThreadInspectionQuery as Q,
+        };
+        let mut continuations = Vec::new();
+        let read_page = |kind, activation_id| Q {
+            kind,
+            activation_id,
+            cursor: None,
+            limit: Some(32),
+        };
+        let query = read_page(K::Activations, None);
+        let activation_page = self
             .inner
             .store
-            .list_thread_activations_by_root(context_id, &thread.root_turn_id)
+            .read_thread_inspection_page(&thread, &query)
             .await?;
-        activations.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-
-        let activation_ids = activations
-            .iter()
-            .map(|activation| activation.id.clone())
-            .collect::<Vec<_>>();
-        let mut jobs = self
-            .inner
-            .store
-            .list_execution_jobs_for_activations(context_id, &activation_ids)
-            .await?;
-        jobs.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        let job_ids = jobs
-            .iter()
-            .map(|job| job.id.clone())
-            .collect::<HashSet<_>>();
-        let mut approval_by_job = self
-            .inner
-            .store
-            .list_job_approvals(context_id, &job_ids.iter().cloned().collect::<Vec<_>>())
-            .await?
-            .into_iter()
-            .map(|approval| (approval.job_id.clone(), approval))
-            .collect::<HashMap<_, _>>();
-        let mut jobs_by_activation = HashMap::<String, Vec<SchedulerJobSnapshot>>::new();
-        for job in jobs {
-            jobs_by_activation
-                .entry(job.activation_id.clone())
-                .or_default()
-                .push(crate::scheduler::job_snapshot(job, &mut approval_by_job));
-        }
-
-        let mut activation_snapshots = Vec::with_capacity(activations.len());
-        let mut claimed_signal_ids = HashSet::new();
-        let mut signals_by_activation = HashMap::<String, Vec<ThreadSignalRecord>>::new();
-        for (activation_id, signal) in self
-            .inner
-            .store
-            .list_activation_signals_for_activations(&activation_ids)
-            .await?
-        {
-            signals_by_activation
-                .entry(activation_id)
-                .or_default()
-                .push(signal);
-        }
-        for activation in activations {
-            let signals = signals_by_activation
-                .remove(&activation.id)
-                .unwrap_or_default();
-            claimed_signal_ids.extend(signals.iter().map(|signal| signal.id.clone()));
-            let jobs = jobs_by_activation
-                .remove(&activation.id)
-                .unwrap_or_default();
-            activation_snapshots.push(SchedulerActivationSnapshot {
-                activation,
-                signals,
-                jobs,
+        if let Some(next_cursor) = activation_page.next_cursor {
+            continuations.push(C {
+                kind: query.kind,
+                activation_id: None,
+                next_cursor,
             });
         }
-
-        let mut pending_signals = self
+        let mut activation_snapshots = Vec::new();
+        for activation in activation_page.activations {
+            let (snapshot, more) = self.inspection_activation(&thread, activation).await?;
+            activation_snapshots.push(snapshot);
+            continuations.extend(more);
+        }
+        let query = read_page(K::PendingSignals, None);
+        let signal_page = self
             .inner
             .store
-            .list_context_thread_signals_for_threads(
-                context_id,
-                &[thread_id.to_string()],
-                Some(ThreadSignalStatus::Pending),
-            )
-            .await?
-            .into_iter()
-            .filter(|signal| !claimed_signal_ids.contains(&signal.id))
-            .collect::<Vec<_>>();
-        pending_signals.sort_by(|left, right| {
-            left.sequence
-                .cmp(&right.sequence)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        let mut schedules = self
-            .inner
-            .store
-            .list_thread_schedules(context_id, &[thread_id.to_string()])
+            .read_thread_inspection_page(&thread, &query)
             .await?;
-        schedules.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        if let Some(next_cursor) = signal_page.next_cursor {
+            continuations.push(C {
+                kind: query.kind,
+                activation_id: None,
+                next_cursor,
+            });
+        }
+        let pending_signals = signal_page.signals;
+        let query = read_page(K::Schedules, None);
+        let schedule_page = self
+            .inner
+            .store
+            .read_thread_inspection_page(&thread, &query)
+            .await?;
+        if let Some(next_cursor) = schedule_page.next_cursor {
+            continuations.push(C {
+                kind: query.kind,
+                activation_id: None,
+                next_cursor,
+            });
+        }
+        let schedules = schedule_page.schedules;
         let dependencies = self
             .inner
             .store
             .list_thread_projection_dependencies(&[(thread_id.to_string(), thread.generation)])
             .await?;
-        let phase = crate::scheduler::thread_phase(
+        let flags = self
+            .inner
+            .store
+            .thread_activity_flags(context_id, &[thread_id.to_string()])
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("Thread activity scope changed")?;
+        let phase = crate::scheduler::snapshot::thread_phase_from_activity(
             &thread,
-            &pending_signals,
-            &activation_snapshots,
-            &schedules,
-            &dependencies,
+            flags.running,
+            flags.runnable,
+            flags.waiting,
         );
-        let mut model_attempt_events = Vec::new();
-        for topic in [
-            "runtime/model_attempt_state",
-            "runtime/model_reasoning_summary",
-        ] {
-            // Thread-detail inspection is a read path.  It must never perform
-            // a compatibility migration: SQLite has one Writer, and locating
-            // even a bounded number of legacy rows can scan a large JSON
-            // history while that Writer is held.  New Events populate the
-            // causal columns at append time.  Legacy projection repair remains
-            // an explicit/background maintenance operation and may not delay
-            // durable outcomes, Timers, Recall, or ordinary Dashboard reads.
-            model_attempt_events.extend(
-                self.query_events(QueryFilter {
-                    context_id: Some(context_id.to_string()),
-                    session_id: Some(thread.session_id.clone()),
-                    topic: Some(topic.to_string()),
-                    thread_id: Some(thread_id.to_string()),
-                    latest_k: Some(2_048),
-                    ..QueryFilter::default()
-                })
-                .await?,
-            );
+        let query = read_page(K::ModelEvents, None);
+        let page = self.inspection_page(&thread, &query).await?;
+        if let Some(next_cursor) = page.next_cursor {
+            continuations.push(C {
+                kind: K::ModelEvents,
+                activation_id: None,
+                next_cursor,
+            });
         }
-        model_attempt_events.sort_by(|left, right| {
-            left.sequence
-                .cmp(&right.sequence)
-                .then_with(|| left.timestamp.cmp(&right.timestamp))
-                .then_with(|| left.id.cmp(&right.id))
-        });
+        let mut model_attempt_events = page.events;
+        model_attempt_events.sort_by_key(|event| event.sequence);
 
         let primary_objective_intent = if thread.supervision.supervisor_kind
             == crate::memory::ThreadSupervisorKind::Objective
@@ -10902,6 +11309,8 @@ impl MorphzRuntime {
         };
 
         let mut detail = ThreadDetail {
+            collections_loaded: true,
+            continuations,
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
@@ -19883,6 +20292,7 @@ mod tests {
                 SchedulerQuery {
                     include_terminal: true,
                     limit: 100,
+                    ..Default::default()
                 },
             )
             .await
@@ -20130,6 +20540,7 @@ mod tests {
                 SchedulerQuery {
                     include_terminal: true,
                     limit: 1,
+                    ..Default::default()
                 },
             )
             .await
@@ -20230,6 +20641,7 @@ mod tests {
                 SchedulerQuery {
                     include_terminal: false,
                     limit: 1,
+                    ..Default::default()
                 },
             )
             .await
@@ -20688,6 +21100,7 @@ mod tests {
                 SchedulerQuery {
                     include_terminal: true,
                     limit: 100,
+                    ..Default::default()
                 },
             )
             .await
@@ -21074,7 +21487,7 @@ mod tests {
         let approvals = runtime
             .inner
             .store
-            .list_approvals(ApprovalFilter::default())
+            .list_approvals(crate::memory::ApprovalFilter::default())
             .await
             .unwrap();
         assert_eq!(approvals.len(), 1);
@@ -22106,7 +22519,7 @@ mod tests {
         let approvals = runtime
             .inner
             .store
-            .list_approvals(ApprovalFilter::default())
+            .list_approvals(crate::memory::ApprovalFilter::default())
             .await
             .unwrap();
         assert_eq!(approvals.len(), 1);
@@ -22226,7 +22639,7 @@ mod tests {
         let approvals = runtime
             .inner
             .store
-            .list_approvals(ApprovalFilter::default())
+            .list_approvals(crate::memory::ApprovalFilter::default())
             .await
             .unwrap();
         assert_eq!(approvals.len(), expected_approvals);
@@ -26326,6 +26739,7 @@ mod tests {
                 SchedulerQuery {
                     include_terminal: true,
                     limit: 200,
+                    ..Default::default()
                 },
             )
             .await
@@ -26506,6 +26920,7 @@ mod tests {
                 SchedulerQuery {
                     include_terminal: false,
                     limit: 1,
+                    ..Default::default()
                 },
             )
             .await

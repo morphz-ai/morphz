@@ -237,6 +237,7 @@ async fn actual_four_node_scheduled_family_mounts_nonempty_frozen_custom_with_ex
                     SchedulerQuery {
                         include_terminal: true,
                         limit: 50,
+                        ..Default::default()
                     },
                 )
                 .await

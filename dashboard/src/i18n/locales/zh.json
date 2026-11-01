@@ -864,7 +864,6 @@
       "description": "中性、低干扰"
     }
   },
-
   "reasoning": {
     "label": "推理",
     "title": "设置当前会话后续求值的推理强度；可选档位由当前物理模型的原生能力决定",
@@ -1314,7 +1313,15 @@
       "pauseThreadHint": "暂停后续调度；已经开始的外部副作用不会被伪装为冻结",
       "resumeThread": "继续线程",
       "cancelThread": "取消线程",
-      "supersedeThread": "纠正线程"
+      "supersedeThread": "纠正线程",
+      "more": {
+        "activations": "更多执行记录",
+        "jobs": "更多工具记录",
+        "pending_signals": "更多待处理信号",
+        "activation_signals": "更多输入信号",
+        "schedules": "更多定时记录",
+        "model_events": "更早的模型记录"
+      }
     }
   },
   "mindView": {

@@ -307,7 +307,7 @@ for (const driver of ["sqlite", "postgres"] as const)
           { kind: "workspace" },
           boot.csrfToken,
           (frame) => {
-            assert.ok("kind" in frame);
+            assert.ok("kind" in frame && frame.kind === "workspace");
             frames.push(frame);
             frameVersions.push(completedVersion);
           },

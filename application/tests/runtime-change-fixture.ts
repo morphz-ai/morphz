@@ -95,11 +95,13 @@ export async function runtimeChangeFixture(sessionIds = ["session-one"]) {
   const sockets = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "", "http://fixture.invalid");
-    const sessionId = url.searchParams.get("session_id") ?? "";
+    const sessionId =
+      url.searchParams.get("session_id") ??
+      (url.searchParams.get("changes_only") === "true" ? "*" : "");
     if (
       url.pathname !== "/ws" ||
       request.headers.authorization !== `Bearer ${token}` ||
-      !sessions.has(sessionId)
+      (sessionId !== "*" && !sessions.has(sessionId))
     ) {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
@@ -116,7 +118,7 @@ export async function runtimeChangeFixture(sessionIds = ["session-one"]) {
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const send = (sessionId: string, raw: unknown) => {
     for (const [ws, id] of clients)
-      if (id === sessionId && ws.readyState === WebSocket.OPEN)
+      if ((id === sessionId || id === "*") && ws.readyState === WebSocket.OPEN)
         ws.send(typeof raw === "string" ? raw : JSON.stringify(raw));
   };
   const append = (

@@ -75,7 +75,7 @@ test("started Host reconciles committed changes without UI listeners or healthy 
   try {
     runtime.start();
     await until(
-      () => peer.opens.length === 2,
+      () => peer.opens.length === 1,
       "Host did not establish its own invalidation owner",
     );
     await until(
@@ -185,8 +185,8 @@ test("started Host reconciles committed changes without UI listeners or healthy 
       "unsequenced hint did not reconcile the actual HTTP frontier",
     );
     const beforeReconnect = peer.requests.length;
-    peer.disconnect("session-one");
-    await until(() => peer.opens.length === 3, "no affected Session reconnect");
+    peer.disconnect("*");
+    await until(() => peer.opens.length === 2, "no shared metadata reconnect");
     await internal.executionObserver.sync();
     await until(
       () => !internal.busy && !internal.wakeTimer,
@@ -196,9 +196,22 @@ test("started Host reconciles committed changes without UI listeners or healthy 
       .slice(beforeReconnect)
       .filter((r) => r.path.includes("/events?after_sequence="));
     assert.ok(replay.length > 0);
+    assert.ok(replay.some((r) => r.path.includes("/session-one/")));
     assert.ok(
-      replay.every((r) => r.path.includes("after_sequence=2524")),
-      "reconnect must use the durable HTTP frontier, not the unsequenced stream's old head",
+      replay.length <= 2,
+      "a shared reconnect closes one bounded gap per known Session",
+    );
+    assert.ok(
+      replay
+        .filter((r) => r.path.includes("/session-two/"))
+        .every((r) => r.path.includes("after_sequence=0")),
+    );
+
+    assert.ok(
+      replay
+        .filter((r) => r.path.includes("/session-one/"))
+        .every((r) => r.path.includes("after_sequence=2524")),
+      "reconnect must use each durable HTTP frontier, not an unsequenced hint's old head",
     );
   } finally {
     held.resolve();

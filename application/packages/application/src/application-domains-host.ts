@@ -353,7 +353,12 @@ export async function openApplicationDomainsHost(
       },
       {
         taskRuns: {
-          sourceEventForRuntime: (sessionId, clientMessageId) => platform.taskRunSourceEventForRuntime(tenantId, sessionId, clientMessageId),
+          sourceEventForRuntime: (sessionId, clientMessageId) =>
+            platform.taskRunSourceEventForRuntime(
+              tenantId,
+              sessionId,
+              clientMessageId,
+            ),
           admissionForRuntime: (sessionId, scheduleId) =>
             platform.taskRunAdmissionForRuntime(
               tenantId,
@@ -424,7 +429,9 @@ export async function openApplicationDomainsHost(
   const remaining: Omit<PlatformAuthorityVerifier, "resolveActor"> = {
     async resolveProfileAgent({ tenantId: scopeTenant, principalId }) {
       if (scopeTenant !== tenantId || !activeAgent) return null;
-      const resolved = await activeAgent.runtime.profiles.identity({ principalId });
+      const resolved = await activeAgent.runtime.profiles.identity({
+        principalId,
+      });
       return { agentId: resolved.agentId, editable: resolved.agentEditable };
     },
     async verifyProfileAvatar({ actor, subject, subjectId, media }) {
@@ -726,15 +733,48 @@ export async function openApplicationDomainsHost(
           }
         : {}),
     });
-    const avatarRoot = cloudStore ? join(cloudStore.stagingRoot, tenantId, "avatars") : join(directory, "profile-avatars");
-    const avatarReferences = await platform.hasProfileAvatarReferences(tenantId);
-    if (cloudStore && existsSync(join(directory, "profile-avatars", "manifest.sqlite"))) throw new Error("已有本机头像 Store；请显式迁移原件后再切到云 Store。");
-    if (!cloudStore && avatarReferences && !existsSync(join(avatarRoot, "manifest.sqlite"))) throw new Error("头像原件 Store 缺失，拒绝创建空 Store 覆盖已保存头像。");
-    if (cloudStore && !cloudStore.schemas.avatars && avatarReferences) throw new Error("已有头像引用但云头像 Store 未配置，拒绝不完整启动。");
+    const avatarRoot = cloudStore
+      ? join(cloudStore.stagingRoot, tenantId, "avatars")
+      : join(directory, "profile-avatars");
+    const avatarReferences =
+      await platform.hasProfileAvatarReferences(tenantId);
+    if (
+      cloudStore &&
+      existsSync(join(directory, "profile-avatars", "manifest.sqlite"))
+    )
+      throw new Error("已有本机头像 Store；请显式迁移原件后再切到云 Store。");
+    if (
+      !cloudStore &&
+      avatarReferences &&
+      !existsSync(join(avatarRoot, "manifest.sqlite"))
+    )
+      throw new Error("头像原件 Store 缺失，拒绝创建空 Store 覆盖已保存头像。");
+    if (cloudStore && !cloudStore.schemas.avatars && avatarReferences)
+      throw new Error("已有头像引用但云头像 Store 未配置，拒绝不完整启动。");
     if (!cloudStore || cloudStore.schemas.avatars) {
-      avatars = await ProfileAvatarService.open({ root: avatarRoot, tenantId, platform, verifier, ...(cloudStore ? { cloud: { connectionString: cloudStore.connectionString, schema: cloudStore.schemas.avatars!, bytes: cloudBytes("avatars"), ...(cloudStore.s3Client ? { s3Client: cloudStore.s3Client } : {}) } } : {}) });
+      avatars = await ProfileAvatarService.open({
+        root: avatarRoot,
+        tenantId,
+        platform,
+        verifier,
+        ...(cloudStore
+          ? {
+              cloud: {
+                connectionString: cloudStore.connectionString,
+                schema: cloudStore.schemas.avatars!,
+                bytes: cloudBytes("avatars"),
+                ...(cloudStore.s3Client
+                  ? { s3Client: cloudStore.s3Client }
+                  : {}),
+              },
+            }
+          : {}),
+      });
     }
-    if (avatarReferences && avatars && !await avatars.hasCommittedVersions()) throw new Error("已保存头像引用但头像 Store 缺少已提交原件，拒绝不完整启动。");
+    if (avatarReferences && avatars && !(await avatars.hasCommittedVersions()))
+      throw new Error(
+        "已保存头像引用但头像 Store 缺少已提交原件，拒绝不完整启动。",
+      );
     if (
       cloudStore &&
       (await objects.hasImageVersions(tenantId)) &&
@@ -906,7 +946,12 @@ export async function openApplicationDomainsHost(
     const contentMessageAttachments = messageAttachments;
     const contentImages = images;
     const contentAvatars = avatars;
-    const profiles = new ProfileService(() => activeAgent?.runtime, platform, contentAvatars, identity ? access => identity.displayName(access) : undefined);
+    const profiles = new ProfileService(
+      () => activeAgent?.runtime,
+      platform,
+      contentAvatars,
+      identity ? (access) => identity.displayName(access) : undefined,
+    );
     const service = new BrowserBookmarkService(platform, contentBrowser);
     const work = new PlatformWorkService(
       platform,
@@ -978,27 +1023,70 @@ export async function openApplicationDomainsHost(
         views: cognitiveHost.views,
       },
       workspaceChanges: {
-        sources: [platform.changeSource(), contentObjects.changeSource(), contentBrowser.changeSource(), contentReader.changeSource(),
-          contentStudio.changeSource()],
+        sources: [
+          platform.changeSource(),
+          contentObjects.changeSource(),
+          contentBrowser.changeSource(),
+          contentReader.changeSource(),
+          contentStudio.changeSource(),
+        ],
         async readVersion(access: AccessContext, assertActive: () => void) {
-          return human.withSession(access, assertActive, async actor => {
+          return human.withSession(access, assertActive, async (actor) => {
             const before = await platform.workspaceChangeVersion(actor);
             const readable = async (read: () => Promise<unknown>) => {
-              try { return await read(); } catch { assertActive(); return "unavailable"; }
+              try {
+                return await read();
+              } catch {
+                assertActive();
+                return "unavailable";
+              }
             };
-            const originals = await Promise.all(before.contentRefs.map(async ref => [ref.appId, ref.objectId,
-              ref.appId === "morphz.objects"
-                ? await readable(() => contentObjects.workspaceChangeVersion({ credential: actor.credential, objectId: ref.objectId }))
-                : ref.appId === "morphz.script-studio"
-                  ? await readable(() => contentStudio.readProductionHead({ credential: actor.credential, productionId: ref.objectId }))
-                  : ref.appId === "morphz.reader"
-                    ? await readable(() => contentReader.readBookHead({ credential: actor.credential, bookId: ref.objectId })) : null,
-              await readable(() => contentReader.workspaceChangeVersion({ credential: actor.credential, ...ref })),
-            ]));
-            const bookmarks = await readable(() => contentBrowser.workspaceChangeVersion(actor));
+            const originals = await Promise.all(
+              before.contentRefs.map(async (ref) => [
+                ref.appId,
+                ref.objectId,
+                ref.appId === "morphz.objects"
+                  ? await readable(() =>
+                      contentObjects.workspaceChangeVersion({
+                        credential: actor.credential,
+                        objectId: ref.objectId,
+                      }),
+                    )
+                  : ref.appId === "morphz.script-studio"
+                    ? await readable(() =>
+                        contentStudio.readProductionHead({
+                          credential: actor.credential,
+                          productionId: ref.objectId,
+                        }),
+                      )
+                    : ref.appId === "morphz.reader"
+                      ? await readable(() =>
+                          contentReader.readBookHead({
+                            credential: actor.credential,
+                            bookId: ref.objectId,
+                          }),
+                        )
+                      : null,
+                await readable(() =>
+                  contentReader.workspaceChangeVersion({
+                    credential: actor.credential,
+                    ...ref,
+                  }),
+                ),
+              ]),
+            );
+            const bookmarks = await readable(() =>
+              contentBrowser.workspaceChangeVersion(actor),
+            );
             const profile = await readable(async () => {
               const snapshot = await profiles.read(actor, assertActive);
-              return [snapshot.human.revision, snapshot.human.available, snapshot.agent.id, snapshot.agent.revision, snapshot.agent.available];
+              return [
+                snapshot.human.revision,
+                snapshot.human.available,
+                snapshot.agent.id,
+                snapshot.agent.revision,
+                snapshot.agent.available,
+              ];
             });
             assertActive();
             // A grant removed during an app read never re-publishes its old proof.
@@ -1007,10 +1095,16 @@ export async function openApplicationDomainsHost(
             const after = await platform.workspaceChangeVersion(actor);
             assertActive();
             return {
-              version: createHash("sha256").update(JSON.stringify({
-                platform: after.version,
-                ...(before.accessVersion === after.accessVersion ? { originals, bookmarks, profile } : {}),
-              })).digest("hex"),
+              version: createHash("sha256")
+                .update(
+                  JSON.stringify({
+                    platform: after.version,
+                    ...(before.accessVersion === after.accessVersion
+                      ? { originals, bookmarks, profile }
+                      : {}),
+                  }),
+                )
+                .digest("hex"),
               accessVersion: after.accessVersion,
               projectIds: after.projectIds,
             };
@@ -1086,7 +1180,10 @@ export async function openApplicationDomainsHost(
                 );
               if (source.cognitiveApplication) {
                 const target = await authorizeCognitiveAppInputTarget(
-                  platform, actor, source.projectId, source.cognitiveApplication,
+                  platform,
+                  actor,
+                  source.projectId,
+                  source.cognitiveApplication,
                 );
                 if (
                   !source.application ||
@@ -1097,7 +1194,8 @@ export async function openApplicationDomainsHost(
                     JSON.stringify(target.definition.harness)
                 )
                   throw new PlatformStorageError(
-                    "conflict", "消息应用与显式认知目标不一致。",
+                    "conflict",
+                    "消息应用与显式认知目标不一致。",
                   );
               }
               if (source.cognitiveObject) {
@@ -1341,13 +1439,49 @@ export async function openApplicationDomainsHost(
           },
           Date.now,
           {
-            inspectTaskSourceDestination: (admission, ref, access) => runtime.inspectTaskSourceDestination(admission, ref, access),
-            reconcileTaskSourceEvent: (event, access) => runtime.reconcileTaskSourceEvent(event, access),
-            deliverTaskSource: (event, admission, access) => runtime.deliverTaskSource(event, admission, access),
-            stopTaskSource: (event, access) => runtime.stopTaskSource(event, access),
-            prepare: (run, destination, access) => human.withSession(access, () => {}, actor => platform.prepareTaskSourceEvent(actor, run, destination, work.readWatchSource!)),
-            check: (run, access) => human.withSession(access, () => {}, actor => platform.assertTaskSourceDelivery(actor, run)),
-            attempt: (run, event, access) => human.withSession(access, () => {}, actor => platform.markTaskSourceDeliveryAttempt(actor, run, event)),
+            inspectTaskSourceDestination: (admission, ref, access) =>
+              runtime.inspectTaskSourceDestination(admission, ref, access),
+            reconcileTaskSourceEvent: (event, access) =>
+              runtime.reconcileTaskSourceEvent(event, access),
+            deliverTaskSource: (event, admission, access) =>
+              runtime.deliverTaskSource(event, admission, access),
+            stopTaskSource: (event, access) =>
+              runtime.stopTaskSource(event, access),
+            prepare: (run, destination, access) =>
+              human.withSession(
+                access,
+                () => {},
+                (actor) =>
+                  platform.prepareTaskSourceEvent(
+                    actor,
+                    run,
+                    destination,
+                    work.readWatchSource!,
+                  ),
+              ),
+            check: (run, access) =>
+              human.withSession(
+                access,
+                () => {},
+                (actor) => platform.assertTaskSourceDelivery(actor, run),
+              ),
+            attempt: (run, event, access) =>
+              human.withSession(
+                access,
+                () => {},
+                (actor) =>
+                  platform.markTaskSourceDeliveryAttempt(actor, run, event),
+              ),
+          },
+          {
+            sources: [
+              contentObjects.changeSource(),
+              contentBrowser.changeSource(),
+              contentReader.changeSource(),
+              contentStudio.changeSource(),
+            ],
+            observeRuntime: (listener) =>
+              runtime.observeWorkspaceChanges(listener),
           },
         );
         activeAgent = {
@@ -1377,8 +1511,8 @@ export async function openApplicationDomainsHost(
         await contentReader.close();
         await contentReaderOriginals.close();
         await contentMessageAttachments.close();
-          await contentImages.close();
-          await contentAvatars?.close();
+        await contentImages.close();
+        await contentAvatars?.close();
         await uiPackages?.close();
         await contentStudio.close();
         await contentObjects.close();

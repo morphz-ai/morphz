@@ -534,6 +534,88 @@ impl SessionDirectoryStore for PostgresStore {
             .transpose()
     }
 
+    async fn read_operator_inventory_page(
+        &self,
+        request: crate::memory::RuntimeInventoryQuery,
+    ) -> Result<crate::memory::RuntimeInventoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::memory::{RuntimeInventoryKind::*, RuntimeInventoryPage};
+        request.validate()?;
+        let mut query = crate::memory::inventory::inventory_query!(sqlx::Postgres, &request)?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let limit = request.page_limit();
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                crate::memory::directory::DirectoryCursor {
+                    sort_at: row.get(if request.kind == Leases {
+                        "issued_at"
+                    } else {
+                        "updated_at"
+                    }),
+                    id: row.get("id"),
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        let mut page = RuntimeInventoryPage {
+            has_more,
+            next_cursor,
+            ..Default::default()
+        };
+        for row in rows.iter().take(limit) {
+            match request.kind {
+            Targets=>page.targets.push(super::target::target_from_row(row)?), Nodes=>page.nodes.push(super::edge::node_from_row(row)?), Leases=>page.leases.push(super::approval::capability_lease_from_row(row)?),
+            Objectives=>page.objectives.push(serde_json::json!({"id":row.get::<String,_>("id"),"context_id":row.get::<String,_>("context_id"),"stated_objective":row.get::<String,_>("stated_objective"),"status":row.get::<String,_>("status")})),
+        }
+        }
+        Ok(page)
+    }
+
+    async fn read_runtime_directory_page(
+        &self,
+        request: crate::memory::RuntimeDirectoryQuery,
+    ) -> Result<crate::memory::RuntimeDirectoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::memory::{RuntimeDirectoryKind, RuntimeDirectoryPage};
+        request.validate()?;
+        if request.ids.as_ref().is_some_and(|ids| ids.is_empty()) {
+            return Ok(RuntimeDirectoryPage::default());
+        }
+        let mut query = crate::memory::directory::directory_query!(sqlx::Postgres, &request, true)?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let mut page = RuntimeDirectoryPage::default();
+        match request.kind {
+            RuntimeDirectoryKind::Agents => {
+                page.agents = rows
+                    .iter()
+                    .map(agent_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            RuntimeDirectoryKind::Contexts => {
+                page.contexts = rows
+                    .iter()
+                    .map(context_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+            RuntimeDirectoryKind::Sessions => {
+                page.sessions = rows
+                    .iter()
+                    .map(session_from_row)
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        }
+        let cursor = rows.get(request.page_limit() - 1).map(|row| {
+            crate::memory::directory::DirectoryCursor {
+                sort_at: row.get("directory_sort_at"),
+                id: row.get("id"),
+            }
+            .encode()
+        });
+        page.finish(request.kind, request.page_limit(), cursor);
+        Ok(page)
+    }
+
     async fn list_agents(&self, include_archived: bool) -> Result<Vec<AgentRecord>, StoreError> {
         let sql = if include_archived {
             format!("SELECT {AGENT_COLUMNS} FROM agents ORDER BY updated_at DESC, id ASC")
@@ -640,34 +722,17 @@ impl SessionDirectoryStore for PostgresStore {
         &self,
         include_archived: bool,
         limit: usize,
-    ) -> Result<Vec<CognitiveContextRecord>, StoreError> {
+    ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        sqlx::query(
-            "SELECT c.id, c.agent_id, c.title, c.status, c.created_at, c.updated_at, \
-                    c.seed_context_id, c.seed_context_version, c.seed_snapshot_hash, \
-                    c.seed_projection, c.requested_hard_token_limit, c.token_budget_revision \
-             FROM cognitive_contexts c \
-             WHERE ($1 OR c.status = 'active') \
-             ORDER BY GREATEST( \
-                       c.updated_at, \
-                       COALESCE( \
-                         (SELECT s.last_activity_at FROM sessions s \
-                          WHERE s.context_id = c.id \
-                          ORDER BY s.last_activity_at DESC, s.id LIMIT 1), \
-                         c.updated_at \
-                       ) \
-                     ) DESC, \
-                      c.id ASC LIMIT $2",
-        )
-        .bind(include_archived)
-        .bind(i64::try_from(limit)?)
-        .fetch_all(&self.pool)
-        .await?
-        .iter()
-        .map(context_from_row)
-        .collect()
+        let mut query = crate::memory::directory::recent_contexts_query!(
+            sqlx::Postgres,
+            include_archived,
+            limit
+        );
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(context_from_row).collect()
     }
 
     async fn update_context(
@@ -1061,70 +1126,15 @@ impl SessionDirectoryStore for PostgresStore {
         if context_ids.is_empty() || per_context_limit == 0 {
             return Ok(Vec::new());
         }
-        let sql = format!(
-            r#"WITH ranked AS (
-                 SELECT {SESSION_COLUMNS},
-                        ROW_NUMBER() OVER (
-                          PARTITION BY context_id
-                          ORDER BY
-                            CASE
-                              WHEN EXISTS (
-                                SELECT 1 FROM objectives o
-                                WHERE o.context_id = sessions.context_id
-                                  AND (
-                                    o.coordinator_session_id = sessions.id
-                                    OR o.delivery_session_id = sessions.id
-                                  )
-                                  AND (
-                                    o.status = 'blocked'
-                                    OR (
-                                      o.status = 'active'
-                                      AND o.wait_condition_json ->> 'kind' = 'user_input'
-                                    )
-                                  )
-                              ) THEN 0
-                              WHEN EXISTS (
-                                SELECT 1 FROM thread_activations a
-                                WHERE a.session_id = sessions.id AND a.status = 'running'
-                              ) THEN 1
-                              WHEN EXISTS (
-                                SELECT 1 FROM thread_activations a
-                                WHERE a.session_id = sessions.id AND a.status = 'queued'
-                              ) THEN 2
-                              WHEN EXISTS (
-                                SELECT 1 FROM objectives o
-                                WHERE o.context_id = sessions.context_id
-                                  AND (
-                                    o.coordinator_session_id = sessions.id
-                                    OR o.delivery_session_id = sessions.id
-                                  )
-                                  AND o.status IN ('active', 'paused', 'blocked')
-                              ) OR EXISTS (
-                                SELECT 1 FROM threads t
-                                WHERE t.session_id = sessions.id AND t.status = 'open'
-                              ) THEN 3
-                              ELSE 4
-                            END,
-                            last_activity_at DESC,
-                            id
-                        ) AS rank_in_context
-                 FROM sessions
-                 WHERE context_id = ANY($1) AND ($2 OR status = 'active')
-               )
-               SELECT {SESSION_COLUMNS}
-               FROM ranked
-               WHERE rank_in_context <= $3
-               ORDER BY last_activity_at DESC, id"#
-        );
-        sqlx::query(&sql)
-            .bind(context_ids)
-            .bind(include_archived)
-            .bind(i64::try_from(per_context_limit)?)
-            .fetch_all(&self.pool)
-            .await?
-            .iter()
-            .map(session_from_row)
-            .collect()
+        let mut query = crate::memory::directory::priority::session_heads_query!(
+            sqlx::Postgres,
+            context_ids,
+            include_archived,
+            per_context_limit,
+            true
+        )?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(session_from_row).collect()
     }
 
     async fn count_context_sessions(

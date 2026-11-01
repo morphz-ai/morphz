@@ -51,3 +51,12 @@ test('exact model requests are observed only while the encoding inspector is ope
   assert.equal(observesExactModelRequests('cognition', 'mind'), false)
   assert.equal(observesExactModelRequests('dialogue', 'encoding'), false)
 })
+
+test('control pages never subscribe to message bodies or model token streams',async()=>{
+ const {sessionStreamNeedsBodies}=await import('../src/app/routes.ts')
+ for (const view of ['scheduler','overview','runtime','credentials','providers','events'] as const)
+  assert.equal(sessionStreamNeedsBodies(view,'mind'),false)
+ assert.equal(sessionStreamNeedsBodies('cognition','mind'),false)
+ assert.equal(sessionStreamNeedsBodies('cognition','encoding'),true)
+ assert.equal(sessionStreamNeedsBodies('dialogue','mind'),true)
+})
