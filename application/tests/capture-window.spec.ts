@@ -8,6 +8,8 @@ import {
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { openInput } from "./interaction-helpers.js";
 
 async function mainVisible(app: ElectronApplication) {
@@ -106,6 +108,11 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     }
   };
   try {
+    await promisify(execFile)(
+      process.execPath,
+      ["tests/fixtures/prepare-capture-center.mjs", fixture],
+      { env, timeout: 10000, maxBuffer: 65536 },
+    );
     app = await _electron.launch({
       args: ["tests/fixtures/capture-desktop-entry.cjs"],
       env,
