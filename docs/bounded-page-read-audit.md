@@ -396,3 +396,17 @@ case, focus checks and 120-minute job budget remain. Typecheck, 16 capture/picke
 contracts and 50 CI coverage/setup contracts passed locally. Local native runs
 stopped at the locked-screen foreground prerequisite and are not passes; the
 five native repetitions must succeed on the macOS CI runner before closing.
+
+That five-pass gate caught a distinct cold-start failure before any capture.
+An isolated twenty-run diagnostic retained the same five-second readiness check
+and 45-second case budget: eighteen passed, two failed. Both failure journals show
+repeated EGL display initialization errors and two/three GPU-process exits; the
+main page appeared after 6.756/5.934 seconds, with no application startup error.
+The hosted-VM capture fixture now explicitly selects Electron's supported
+[software-rendering API](https://www.electronjs.org/docs/latest/api/app#appdisablehardwareacceleration)
+before ready. Only the native capture CI step enables that test-fixture setting;
+production Desktop rendering is unchanged. Startup stderr/stdout have bounded
+diagnostic tails, retained even when no main page was observed. The five-second
+readiness check, 45-second case, real native focus/input and all capture outcome
+checks remain. The controlled twenty-run comparison and exact-current full CI
+must validate this environment correction before closing.

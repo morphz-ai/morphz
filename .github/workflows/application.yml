@@ -304,6 +304,8 @@ jobs:
       - name: Require native appearance and sidebar browser files
         run: npx playwright test tests/sidebar-native.spec.ts tests/sidebar-resize.spec.ts --forbid-only
       - name: Require five native capture completion passes without retries
+        env:
+          MORPHZ_TEST_SOFTWARE_RENDERING: "1"
         run: npx playwright test tests/capture-window.spec.ts --repeat-each=5 --forbid-only
       # Real, checksum-pinned local OCR. No Runtime, paid provider or user books.
       - name: Verify Reader OCR stage and failure-evidence contracts

@@ -1,6 +1,11 @@
 // Use the production window, picker and IPC against an isolated center/profile.
 // Only the final OS pixel read is replaced; never capture the user's desktop.
 const { writeFile } = require("node:fs/promises");
+const { app } = require("electron");
+// The hosted macOS VM has no usable accelerated EGL display. Select its
+// supported renderer before ready; native windows, input and IPC stay real.
+if (process.env.MORPHZ_TEST_SOFTWARE_RENDERING === "1")
+  app.disableHardwareAcceleration();
 const captureModule = require("../../apps/desktop/capture.cjs");
 const OriginalCapture = captureModule.DesktopCapture;
 globalThis.__captureWindowFixture = { reads: [], fail: false };

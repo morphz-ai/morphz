@@ -527,6 +527,7 @@ function verifyCaptureStability(source) {
     part.includes("name: Require five native capture completion passes without retries"),
   );
   assert.ok(step, "native picker completion must have a repeated CI owner");
+  assert.match(step, /MORPHZ_TEST_SOFTWARE_RENDERING: "1"/);
   assert.match(step, /run: npx playwright test tests\/capture-window\.spec\.ts --repeat-each=5 --forbid-only\n/);
   assert.doesNotMatch(step, /\bif:|continue-on-error|\|\||--grep|--shard|--retries|--last-failed|--list/);
   verifyNativeBrowser(source);
@@ -536,8 +537,12 @@ test("native capture completion passes five times without dropping its foregroun
   verifyCaptureStability(workflow);
   const name = "      - name: Require five native capture completion passes without retries\n";
   const command = "        run: npx playwright test tests/capture-window.spec.ts --repeat-each=5 --forbid-only\n";
+  const step = jobSource(workflow, "desktop").split("\n      - ").find((part) => part.includes("name: Require five native capture completion passes without retries"));
+  assert.ok(step);
   for (const changed of [
-    workflow.replace(name + command, ""),
+    workflow.replace(step, ""),
+    workflow.replace('          MORPHZ_TEST_SOFTWARE_RENDERING: "1"\n', ""),
+    workflow.replace('MORPHZ_TEST_SOFTWARE_RENDERING: "1"', 'MORPHZ_TEST_SOFTWARE_RENDERING: "0"'),
     workflow.replace(command, command.replace("--repeat-each=5", "--repeat-each=1")),
     workflow.replace(command, command.replace("--repeat-each=5", "--retries=5")),
     workflow.replace(command, command.replace("--forbid-only", "--forbid-only --grep fast")),
