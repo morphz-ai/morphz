@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from "@playwright/test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openInput } from "./interaction-helpers.js";
@@ -75,6 +75,8 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
   let rendererEvents: unknown;
   const snapshots: unknown[] = [];
   const diagnosticErrors: string[] = [];
+  let stderr = "";
+  let stdout = "";
   const recordState = async (stage: string) => {
     try {
       const native = await app!.evaluate(({ BrowserWindow }) => ({
@@ -108,9 +110,20 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
       args: ["tests/fixtures/capture-desktop-entry.cjs"],
       env,
     });
+    app.process().stderr?.on("data", (chunk) => {
+      stderr = (stderr + chunk).slice(-65536);
+    });
+    app.process().stdout?.on("data", (chunk) => {
+      stdout = (stdout + chunk).slice(-65536);
+    });
     await expect
       .poll(() => app!.windows().some((page) => page.url() === "morphz://app/"))
-      .toBe(true);
+      .toBe(true)
+      .catch(async (error) => {
+        // Diagnostic only: observe late startup, then preserve the SAME failure.
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        throw error;
+      });
     page = app.windows().find((page) => page.url() === "morphz://app/")!;
     // Observe native focus and the existing renderer error presentation only.
     // Do not wrap capture.select, change focus, or repair the tested gesture.
@@ -299,6 +312,27 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     });
     await expect.poll(() => app!.windows().length).toBe(0);
   } finally {
+    await testInfo.attach("capture-startup-process", {
+      body: Buffer.from(
+        JSON.stringify(
+          {
+            stderr,
+            stdout,
+            journal: await readFile(
+              join(fixture, "native-startup.jsonl"),
+              "utf8",
+            ).catch((error) => String(error)),
+            startupFailure: await readFile(
+              join(fixture, "profile", "desktop-startup-failure.json"),
+              "utf8",
+            ).catch(() => null),
+          },
+          null,
+          2,
+        ),
+      ),
+      contentType: "application/json",
+    });
     if (app && page) {
       if (!page.isClosed()) await recordState("before-fixture-cleanup");
       const nativeEvents = await app
