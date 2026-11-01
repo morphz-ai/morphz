@@ -75,11 +75,14 @@ mod tests {
     #[ignore = "child process used only by sqlite_peer_commits_wake_without_a_database_poll"]
     async fn sqlite_peer_commit_helper() {
         use crate::memory::EventStore;
+        let started = std::time::Instant::now();
         let path = std::env::var("MORPHZ_NOTIFICATION_TEST_DATABASE")
             .expect("explicit test database required");
+        eprintln!("peer open at {:?}", started.elapsed());
         let store = crate::memory::sqlite::SqliteStore::new(&path)
             .await
             .unwrap();
+        eprintln!("peer opened at {:?}", started.elapsed());
         store
             .append(crate::event::Event::new(
                 "peer-committed".into(),
@@ -90,6 +93,7 @@ mod tests {
             ))
             .await
             .unwrap();
+        eprintln!("peer committed at {:?}", started.elapsed());
     }
     #[tokio::test]
     async fn sqlite_peer_commits_wake_without_a_database_poll() {
@@ -100,6 +104,8 @@ mod tests {
             .await
             .unwrap();
         let mut changes = store.subscribe_event_changes().unwrap();
+        let child_output = temporary.path().join("peer-output.log");
+        let output = std::fs::File::create_new(&child_output).unwrap();
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "memory::event_changes::tests::sqlite_peer_commit_helper",
@@ -108,16 +114,20 @@ mod tests {
                 "--nocapture",
             ])
             .env("MORPHZ_NOTIFICATION_TEST_DATABASE", &path)
-            .stdout(std::process::Stdio::null())
+            .stdout(output.try_clone().unwrap())
+            .stderr(output)
+            .kill_on_drop(true)
             .spawn()
             .unwrap();
         let mut reads = 0;
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 // Every read below requires an OS hint, never a test timer.
                 changes.changed().await.unwrap();
                 changes.borrow_and_update();
                 reads += 1;
+                eprintln!("peer hint {reads} at {:?}", started.elapsed());
                 if !store
                     .query(QueryFilter {
                         event_id: Some("peer-committed".into()),
@@ -132,8 +142,37 @@ mod tests {
                 }
             }
         })
-        .await
-        .expect("peer commit must wake the native subscription");
+        .await;
+        if let Err(error) = outcome {
+            // Failure diagnosis only: never turn a missed hint into a pass
+            // by checking for rows on a timer or waiting for the writer first.
+            let status = child.try_wait().unwrap();
+            let visible = !store
+                .query(QueryFilter {
+                    event_id: Some("peer-committed".into()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .is_empty();
+            if status.is_none() {
+                child.kill().await.unwrap();
+                child.wait().await.unwrap();
+            }
+            use std::io::{Read, Seek, SeekFrom};
+            let mut output = std::fs::File::open(&child_output).unwrap();
+            let length = output.metadata().unwrap().len();
+            output
+                .seek(SeekFrom::Start(length.saturating_sub(8192)))
+                .unwrap();
+            let mut tail = Vec::new();
+            output.take(8192).read_to_end(&mut tail).unwrap();
+            panic!(
+                "peer commit must wake the native subscription: {error}; child={status:?}; event_visible={visible}; hint_reads={reads}; child_output={}",
+                String::from_utf8_lossy(&tail)
+            );
+        }
         assert!(child.wait().await.unwrap().success());
         assert!(reads > 0);
         let mut late = store.subscribe_event_changes().unwrap();
