@@ -3,11 +3,15 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
 COORDINATES = frozenset({"1/2", "2/2"})
+# GitHub allows 1 MiB of UTF-16 outputs per job. Bound each record below a
+# quarter of that budget; two matrix records still leave ample headroom.
+MAX_OUTPUT_BYTES = 240 * 1024
 
 
 def inventory(root=ROOT):
@@ -73,26 +77,51 @@ def capture(log, coordinate, expected, commit):
     return record
 
 
+def write_output(path, record, expected, commit):
+    coordinate, files = validate(record, expected, commit)
+    payload = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
+    size = len(payload.encode("utf-16-le"))
+    if size > MAX_OUTPUT_BYTES:
+        raise ValueError("Native shard output exceeds its UTF-16 byte budget")
+    # JSON escapes newlines: metadata cannot create another output assignment.
+    with path.open("a", encoding="utf-8") as output:
+        output.write(f"report_{coordinate[0]}={payload}\n")
+    return {"shard": coordinate, "executed_files": len(files), "output_utf16_bytes": size}
+
+
+def read_outputs(env):
+    records = []
+    for index in (1, 2):
+        payload = env.get(f"MACOS_NODE_REPORT_{index}")
+        if not payload:
+            raise ValueError(f"Missing native shard output {index}/2")
+        if len(payload.encode("utf-16-le")) > MAX_OUTPUT_BYTES:
+            raise ValueError("Native shard output exceeds its UTF-16 byte budget")
+        record = json.loads(payload)
+        if record["coverage"]["shard"]["coordinate"] != f"{index}/2":
+            raise ValueError("Native matrix output does not match its shard coordinate")
+        records.append(record)
+    return records
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="operation", required=True)
     record = commands.add_parser("capture")
     record.add_argument("--log", type=Path, required=True)
     record.add_argument("--shard", choices=sorted(COORDINATES), required=True)
-    record.add_argument("--output", type=Path, required=True)
+    record.add_argument("--github-output", type=Path, required=True)
     record.add_argument("--commit", required=True)
     complete = commands.add_parser("verify")
-    complete.add_argument("--directory", type=Path, required=True)
     complete.add_argument("--commit", required=True)
     args = parser.parse_args()
     expected = inventory()
     try:
         if args.operation == "capture":
             result = capture(args.log, args.shard, expected, args.commit)
-            args.output.write_text(json.dumps(result, indent=2) + "\n")
-            print(json.dumps({"shard": args.shard, "executed_files": len(result["coverage"]["shard"]["executedFiles"])}))
+            print(json.dumps(write_output(args.github_output, result, expected, args.commit)))
         else:
-            reports = [json.loads(path.read_text()) for path in sorted(args.directory.glob("*.json"))]
+            reports = read_outputs(os.environ)
             print(json.dumps(verify(reports, expected, args.commit), indent=2))
     except (KeyError, TypeError, ValueError, OSError) as error:
         parser.exit(1, f"Node shard coverage rejected: {error}\n")

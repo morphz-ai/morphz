@@ -168,7 +168,14 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     assert.match(complete, /test "\$NATIVE_RESULT" = success/);
     assert.match(complete, /verify-application-node-shards\.py verify .*--commit "\$GITHUB_SHA"/);
     assert.match(node, /verify-application-node-shards\.py capture/);
-    assert.match(node, /if-no-files-found: error/);
+    assert.match(node, /id: coverage/);
+    assert.ok(node.includes('--github-output "$GITHUB_OUTPUT"'));
+    assert.doesNotMatch(node, /actions\/upload-artifact/);
+    assert.doesNotMatch(complete, /actions\/download-artifact|--directory/);
+    for (const index of [1, 2]) {
+      assert.ok(node.includes(`report_${index}: \${{ steps.coverage.outputs.report_${index} }}`));
+      assert.ok(complete.includes(`MACOS_NODE_REPORT_${index}: \${{ needs.macos-node.outputs.report_${index} }}`));
+    }
     for (const command of [
       "npm run test:embedded",
       "npm run test:platform-embedded-desktop",
@@ -196,6 +203,8 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     node.replace("--test-shard=${{ matrix.shard }}/2", "--test-shard=${{ matrix.shard }}/2 --test-name-pattern=one"),
     node.replace("verify-application-node-shards.py capture", "echo omitted"),
     node.replace("MORPHZ_TEST_COVERAGE_LOG=", "OMITTED_LOG="),
+    node.replace('--github-output "$GITHUB_OUTPUT"', "--omitted-output"),
+    node.replace("steps.coverage.outputs.report_2", "steps.coverage.outputs.report_1"),
     node.replace("--test-shard=${{ matrix.shard }}/2\n", "--test-shard=${{ matrix.shard }}/2 | tee ignored.log\n"),
   ]) assert.throws(() => verifyBudget(workflow.replace(node, changed)));
   const complete = jobSource(workflow, "macos");
@@ -204,6 +213,7 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     complete.replace('test "$NODE_RESULT" = success', "true"),
     complete.replace('test "$NATIVE_RESULT" = success', "true"),
     complete.replace("verify-application-node-shards.py verify", "echo omitted"),
+    complete.replace("needs.macos-node.outputs.report_2", "needs.macos-node.outputs.report_1"),
   ]) assert.throws(() => verifyBudget(workflow.replace(complete, changed)));
 });
 

@@ -343,3 +343,13 @@ test-worker environment, so nested managed tests cannot overwrite the parent
 receipt. Both the final capture and cross-shard verification remain mandatory.
 The other macOS Node capture, the five-pass mounted-resource job, uses the same
 native destination so it cannot retain the same BSD pipe failure boundary.
+
+The next run completed shard 2's 2399 cases (2388 passed, no failures, 11 explicit
+omissions) and validated all 283 executed files. Only its subsequent artifact
+upload failed: GitHub's CreateArtifact request returned DNS `ENOTFOUND`. The small
+coverage records now use [native matrix job outputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs)
+with distinct per-shard names. Each complete record has a 240 KiB UTF-16 byte
+budget, below GitHub's 1 MiB job budget; missing, oversized or mismatched outputs
+are fatal. The exact same source/count/capability/file-union validator remains
+mandatory. Coverage no longer depends on a separate artifact upload/download;
+tests, rounds, deadlines and failure verdicts are unchanged.

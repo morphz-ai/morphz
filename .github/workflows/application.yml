@@ -207,6 +207,9 @@ jobs:
   macos-node:
     name: Complete macOS Node inventory (${{ matrix.shard }}/2)
     runs-on: macos-26-intel
+    outputs:
+      report_1: ${{ steps.coverage.outputs.report_1 }}
+      report_2: ${{ steps.coverage.outputs.report_2 }}
     # A complete serial inventory took 115m35s and exhausted the old combined
     # job before native acceptance. Partition files with Node's own runner;
     # retain every case, one file worker and all individual deadlines.
@@ -239,6 +242,7 @@ jobs:
       - run: brew install postgresql@16
       - run: npx playwright install chromium
       - name: Run complete Node shard with mandatory isolated PostgreSQL
+        id: coverage
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
         run: |
@@ -252,13 +256,7 @@ jobs:
           python3 ../scripts/verify-application-node-shards.py capture \
             --log "$RUNNER_TEMP/mac-node-shard-${{ matrix.shard }}.log" \
             --shard "${{ matrix.shard }}/2" --commit "$GITHUB_SHA" \
-            --output "$RUNNER_TEMP/shard-${{ matrix.shard }}.json"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: application-macos-node-${{ matrix.shard }}
-          path: ${{ runner.temp }}/shard-${{ matrix.shard }}.json
-          if-no-files-found: error
-          retention-days: 7
+            --github-output "$GITHUB_OUTPUT"
 
   desktop:
     name: Embedded Desktop native (macOS)
@@ -351,13 +349,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: application-macos-node-*
-          path: ${{ runner.temp }}/macos-node-reports
-          merge-multiple: true
       - name: Verify exact-commit complete nonoverlapping file coverage
-        run: python3 scripts/verify-application-node-shards.py verify --directory "$RUNNER_TEMP/macos-node-reports" --commit "$GITHUB_SHA"
+        env:
+          MACOS_NODE_REPORT_1: ${{ needs.macos-node.outputs.report_1 }}
+          MACOS_NODE_REPORT_2: ${{ needs.macos-node.outputs.report_2 }}
+        run: python3 scripts/verify-application-node-shards.py verify --commit "$GITHUB_SHA"
 
   cognitive-runtime-contract:
     name: Cognitive application and actual Runtime contracts

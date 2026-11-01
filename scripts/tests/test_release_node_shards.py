@@ -105,6 +105,65 @@ class NodeShardAdmissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 SHARDS.capture(path, "1/2", FILES, COMMIT)
 
+    def test_native_outputs_preserve_distinct_matrix_records_and_the_same_verdict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {}
+            for index, row in enumerate(reports(), 1):
+                path = Path(directory) / f"output-{index}"
+                result = SHARDS.write_output(path, row, FILES, COMMIT)
+                key, payload = path.read_text().strip().split("=", 1)
+                self.assertEqual(key, f"report_{index}")
+                self.assertEqual(json.loads(payload), row)
+                self.assertEqual(result["output_utf16_bytes"], len(payload.encode("utf-16-le")))
+                env[f"MACOS_NODE_REPORT_{index}"] = payload
+            self.assertEqual(SHARDS.verify(SHARDS.read_outputs(env), FILES, COMMIT),
+                             SHARDS.verify(reports(), FILES, COMMIT))
+
+    def test_missing_malformed_swapped_or_stale_native_outputs_are_fatal(self):
+        env = {f"MACOS_NODE_REPORT_{index}": json.dumps(row)
+               for index, row in enumerate(reports(), 1)}
+        stale = deepcopy(reports()[0])
+        stale["source_commit"] = "b" * 40
+        for payload in (None, "", "invalid JSON", "null", "42", json.dumps(reports()[1]), json.dumps(stale)):
+            changed = dict(env)
+            if payload is None:
+                del changed["MACOS_NODE_REPORT_1"]
+            else:
+                changed["MACOS_NODE_REPORT_1"] = payload
+            with self.subTest(payload=payload), self.assertRaises((ValueError, TypeError, KeyError)):
+                SHARDS.verify(SHARDS.read_outputs(changed), FILES, COMMIT)
+
+    def test_output_budget_never_truncates_or_appends_a_successful_receipt(self):
+        large = deepcopy(reports()[0])
+        large["coverage"]["selectedFiles"] = ["x" * SHARDS.MAX_OUTPUT_BYTES]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "output"
+            path.write_text("existing=preserved\n")
+            with self.assertRaisesRegex(ValueError, "UTF-16 byte budget"):
+                SHARDS.write_output(path, large, FILES, COMMIT)
+            self.assertEqual(path.read_text(), "existing=preserved\n")
+            with self.assertRaisesRegex(ValueError, "UTF-16 byte budget"):
+                SHARDS.read_outputs({"MACOS_NODE_REPORT_1": json.dumps(large)})
+
+    def test_output_metadata_cannot_inject_another_assignment(self):
+        row = deepcopy(reports()[0])
+        row["coverage"]["selectedFiles"] = ["中文\nreport_2=forged\r\n"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "output"
+            SHARDS.write_output(path, row, FILES, COMMIT)
+            lines = path.read_text().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(json.loads(lines[0].split("=", 1)[1]), row)
+
+    def test_failed_coverage_cannot_create_a_native_output(self):
+        row = deepcopy(reports()[0])
+        row["coverage"]["counts"]["failed"] = 1
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "output"
+            with self.assertRaises(ValueError):
+                SHARDS.write_output(path, row, FILES, COMMIT)
+            self.assertFalse(path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
