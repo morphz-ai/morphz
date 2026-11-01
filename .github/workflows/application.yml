@@ -14,9 +14,24 @@ jobs:
   test:
     name: Exact installed Linux event notification diagnosis
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: morphz
+          POSTGRES_PASSWORD: morphz
+          POSTGRES_DB: morphz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U morphz -d morphz_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       CARGO_BUILD_JOBS: 2
+      MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test
       MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
       MORPHZ_TEST_HOST_NETNS: /opt/morphz-sandbox-ci-host-netns
     steps:
@@ -31,14 +46,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
-      - name: Compile the exact Runtime library and native contract images
-        run: cargo test --locked -p morphz --lib --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
+      - name: Compile the exact complete Root workspace test inventory
+        run: cargo test --locked --all --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
       - name: Install the same exact test images and native service as Root CI
         run: |
           test ! -e "$MORPHZ_TEST_HOST_NETNS"
           sudo install -m 0444 /dev/null "$MORPHZ_TEST_HOST_NETNS"
           sudo mount --bind /proc/self/ns/net "$MORPHZ_TEST_HOST_NETNS"
-          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --install-service
+          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --workspace --install-service
           sudo systemctl daemon-reload
           sudo systemctl start morphz-sandbox.service
           for _ in $(seq 1 100); do
@@ -46,18 +61,14 @@ jobs:
             sleep 0.1
           done
           test -S /run/morphz-sandbox/control.sock
-      - name: Diagnose twenty independent event notification suites without retries
+      - name: Diagnose the unchanged complete Root test order with child commit evidence
         shell: bash
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/event-notification-evidence"
-          for round in $(seq 1 20); do
-            log="$RUNNER_TEMP/event-notification-evidence/pass-$round.log"
-            cargo test --locked -p morphz --lib memory::event_changes::tests:: -- --test-threads=1 --nocapture 2>&1 | tee "$log"
-            python3 -c 'import pathlib,re,sys; text=re.sub(r"\x1b\[[0-9;]*[mK]", "", pathlib.Path(sys.argv[1]).read_text()); assert "test result: ok. 3 passed; 0 failed; 1 ignored;" in text' "$log"
-          done
+          ./scripts/cargo-dev.sh test --locked --all --verbose --no-fail-fast -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/event-notification-evidence/root-workspace.log"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
