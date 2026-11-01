@@ -86,10 +86,15 @@ export const runtimeNavigationRequestSchema = z
     conversationId: z.string().min(1).optional(),
     /** Explicit read-only refresh only; routine navigation polling omits it. */
     refreshActivity: z.boolean().optional(),
+    activityCursor: z.string().min(1).max(128).optional(),
     /** Explicit one-page demand; never a background navigation flag. */
     loadMoreApprovals: z.boolean().optional(),
   })
   .strict()
+  .refine(
+    (value) => !value.activityCursor || value.refreshActivity === true,
+    "活动续页缺少读取请求。",
+  )
   .refine(
     (value) => !!value.projectId === !!value.conversationId,
     "对话范围参数不完整。",
@@ -221,7 +226,9 @@ export const applicationMethods = [
   "terminal.command",
   "terminal.open",
   "execution.result",
+  "execution.request",
   "execution.control",
+  "objective.read",
   "objective.control",
   "schedule.control",
   "task.snapshot",

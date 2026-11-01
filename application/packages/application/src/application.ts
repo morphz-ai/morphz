@@ -925,6 +925,8 @@ export class ApplicationSession {
     let { projectIds, catalogVersion, revisions } = await this.work(
       (service, actor) => service.conversationNavigation(actor),
     );
+    let activityPage:
+      Awaited<ReturnType<RuntimeBridge["refreshPlatformActivity"]>> | undefined;
     if (
       (request.refreshActivity || request.loadMoreApprovals) &&
       this.options.runtime
@@ -932,7 +934,11 @@ export class ApplicationSession {
       if (request.loadMoreApprovals)
         await this.options.runtime.loadMorePlatformApprovals();
       if (request.refreshActivity)
-        await this.options.runtime.refreshPlatformActivity();
+        activityPage = await this.options.runtime.refreshPlatformActivity(
+          this.access,
+          projectIds,
+          request.activityCursor,
+        );
       // A read may finish after membership/identity changes. Re-read the
       // current Human's project grant before publishing the new inventory.
       ({ projectIds, catalogVersion, revisions } = await this.work(
@@ -976,7 +982,12 @@ export class ApplicationSession {
               .update(JSON.stringify([value.historyVersion, head]))
               .digest("hex");
     this.active();
-    return { ...value, catalogVersion, revisions };
+    return {
+      ...value,
+      catalogVersion,
+      revisions,
+      ...(activityPage ? { activityPage } : {}),
+    };
   }
   async connectionDetails(signal: AbortSignal) {
     this.active();
@@ -3269,6 +3280,46 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async executionRequest(raw: unknown) {
+    const runtime = this.runtime();
+    const { scope, jobId } = z
+      .object({ scope: executionReadScopeSchema, jobId: identifier })
+      .strict()
+      .parse(raw);
+    if ("runtime" in scope) {
+      if (!this.options.platformWork)
+        throw new ApplicationUnavailable("执行记录尚未接入 Platform。");
+      return (
+        await runtime.platformExecutionRead(scope, this.access, () =>
+          this.active(),
+        )
+      ).requestDetail(jobId);
+    }
+    if (scope.taskRun) {
+      const { controls, recheck } = await this.platformTaskExecution(scope);
+      const result = await controls.requestDetail(scope, jobId);
+      await recheck();
+      this.active();
+      return result;
+    }
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("执行记录尚未接入 Platform。");
+    const controls = await runtime.platformExecutionControls(
+      scope,
+      this.access,
+    );
+    const result = await controls.requestDetail(jobId);
+    this.active();
+    return result;
+  }
+  async objectiveRead(raw: unknown) {
+    this.active();
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("目标尚未接入 Platform。");
+    return this.runtime().platformObjectiveRead(raw, this.access, () =>
+      this.active(),
+    );
+  }
   async objectiveControl(raw: unknown) {
     this.active();
     if (!this.options.platformWork)
@@ -4366,10 +4417,14 @@ export function invokeApplication(
       return session.terminalCommand(params);
     case "terminal.open":
       return session.terminalOpen(params);
+    case "execution.request":
+      return session.executionRequest(params);
     case "execution.result":
       return session.executionResult(params);
     case "execution.control":
       return session.executionControl(params);
+    case "objective.read":
+      return session.objectiveRead(params);
     case "objective.control":
       return session.objectiveControl(params);
     case "schedule.control":

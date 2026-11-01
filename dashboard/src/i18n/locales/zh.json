@@ -1320,6 +1320,7 @@
         "pending_signals": "更多待处理信号",
         "activation_signals": "更多输入信号",
         "schedules": "更多定时记录",
+        "dependencies": "更多等待依赖",
         "model_events": "更早的模型记录"
       }
     }

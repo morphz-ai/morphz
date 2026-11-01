@@ -196,3 +196,43 @@ test("模型等待必须来自当前线程代次的必需待满足依赖，显�
       {},
     );
 });
+
+test("native wait head requires exact generation/revision and never opens a dependency collection", () => {
+  const owner = {
+    ...thread,
+    generation: 2,
+    revision: 9,
+    control_state: "active",
+  };
+  const head = {
+    thread_id: owner.id,
+    generation: 2,
+    revision: 9,
+    kinds: ["resource"],
+    resources: ["route:one"],
+    resources_truncated: true,
+    until: null,
+  };
+  const value = { thread: owner, phase: "waiting", wait_head: head };
+  assert.deepEqual(threadWaitProjection(value), {
+    waitKinds: ["resource"],
+    waitResources: ["route:one"],
+  });
+  for (const patch of [
+    { thread_id: "foreign" },
+    { generation: 3 },
+    { revision: 10 },
+  ])
+    assert.deepEqual(
+      threadWaitProjection({ ...value, wait_head: { ...head, ...patch } }),
+      {},
+    );
+  assert.deepEqual(threadWaitProjection({ ...value, phase: "running" }), {});
+  assert.deepEqual(
+    threadWaitProjection({
+      ...value,
+      thread: { ...owner, control_state: "paused" },
+    }),
+    {},
+  );
+});

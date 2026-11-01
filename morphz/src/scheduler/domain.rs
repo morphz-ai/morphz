@@ -361,44 +361,67 @@ pub struct GroupMemberCounts {
 pub fn audit_scheduler_invariants(
     input: SchedulerInvariantInput<'_>,
 ) -> Vec<SchedulerInvariantViolation> {
-    audit_scheduler_invariants_counted(input, None)
+    audit_scheduler_invariants_counted(input, None, None)
 }
 pub fn audit_scheduler_invariants_with_group_counts(
     input: SchedulerInvariantInput<'_>,
     counts: &[GroupMemberCounts],
 ) -> Vec<SchedulerInvariantViolation> {
-    audit_scheduler_invariants_counted(input, Some(counts))
+    audit_scheduler_invariants_counted(input, Some(counts), None)
+}
+pub fn audit_scheduler_authority(
+    input: SchedulerInvariantInput<'_>,
+    counts: &[GroupMemberCounts],
+    facts: &super::authority::AuthorityFacts,
+) -> Vec<SchedulerInvariantViolation> {
+    audit_scheduler_invariants_counted(input, Some(counts), Some(facts))
 }
 fn audit_scheduler_invariants_counted(
     input: SchedulerInvariantInput<'_>,
     counts: Option<&[GroupMemberCounts]>,
+    facts: Option<&super::authority::AuthorityFacts>,
 ) -> Vec<SchedulerInvariantViolation> {
-    let outcomes_by_thread = input
-        .outcomes
+    use super::authority::{GroupAuthority, ObjectiveAuthority, ThreadAuthority};
+    let objectives = facts.map(|v| v.objectives.clone()).unwrap_or_else(|| {
+        input
+            .objectives
+            .iter()
+            .map(ObjectiveAuthority::from)
+            .collect()
+    });
+    let threads = facts
+        .map(|v| v.threads.clone())
+        .unwrap_or_else(|| input.threads.iter().map(ThreadAuthority::from).collect());
+    let groups = facts
+        .map(|v| v.groups.clone())
+        .unwrap_or_else(|| input.groups.iter().map(GroupAuthority::from).collect());
+    let outcomes_by_thread: HashSet<_> = facts
+        .map(|v| v.outcome_threads.iter().map(String::as_str).collect())
+        .unwrap_or_else(|| {
+            input
+                .outcomes
+                .iter()
+                .map(|v| v.thread_id.as_str())
+                .collect()
+        });
+    let threads_by_root = threads
         .iter()
-        .map(|outcome| (outcome.thread_id.as_str(), outcome))
+        .map(|v| (v.root_turn_id.as_str(), v))
         .collect::<HashMap<_, _>>();
-    let threads_by_root = input
-        .threads
+    let groups_by_id = groups
         .iter()
-        .map(|thread| (thread.root_turn_id.as_str(), thread))
+        .map(|v| (v.id.as_str(), v))
         .collect::<HashMap<_, _>>();
-    let groups_by_id = input
-        .groups
+    let objectives_by_id = objectives
         .iter()
-        .map(|group| (group.id.as_str(), group))
-        .collect::<HashMap<_, _>>();
-    let objectives_by_id = input
-        .objectives
-        .iter()
-        .map(|objective| (objective.id.as_str(), objective))
+        .map(|v| (v.id.as_str(), v))
         .collect::<HashMap<_, _>>();
     let mut violations = Vec::new();
-    let mut objective_primary_executions = HashMap::<(&str, u64), Vec<&ThreadRecord>>::new();
+    let mut objective_primary_executions = HashMap::<(&str, u64), Vec<&ThreadAuthority>>::new();
 
-    for thread in input.threads {
-        let outcome = outcomes_by_thread.get(thread.id.as_str()).copied();
-        if thread.lifecycle.is_terminal() && outcome.is_none() {
+    for thread in &threads {
+        let has_outcome = outcomes_by_thread.contains(thread.id.as_str());
+        if thread.lifecycle.is_terminal() && !has_outcome {
             violations.push(violation(
                 SchedulerInvariantSeverity::Quarantine,
                 SchedulerInvariantCode::TerminalThreadMissingOutcome,
@@ -407,7 +430,7 @@ fn audit_scheduler_invariants_counted(
                 "terminal Thread does not have exactly one ThreadOutcome",
             ));
         }
-        if thread.lifecycle == ThreadLifecycle::Open && outcome.is_some() {
+        if thread.lifecycle == ThreadLifecycle::Open && has_outcome {
             violations.push(violation(
                 SchedulerInvariantSeverity::Quarantine,
                 SchedulerInvariantCode::OpenThreadHasOutcome,
@@ -475,7 +498,11 @@ fn audit_scheduler_invariants_counted(
     }
 
     for ((objective_id, generation), mut threads) in objective_primary_executions {
-        if threads.len() <= 1 {
+        let exact_preserved = facts.and_then(|v| {
+            v.preserved_primary
+                .get(&(objective_id.to_string(), generation))
+        });
+        if threads.len() <= 1 && exact_preserved.is_none() {
             continue;
         }
         threads.sort_by(|left, right| {
@@ -487,11 +514,13 @@ fn audit_scheduler_invariants_counted(
             objective_id,
             generation,
         ));
-        let preserved_id = threads
-            .iter()
-            .find(|thread| thread.id == expected_id)
-            .map(|thread| thread.id.clone())
-            .unwrap_or_else(|| threads[0].id.clone());
+        let preserved_id = exact_preserved.cloned().unwrap_or_else(|| {
+            threads
+                .iter()
+                .find(|thread| thread.id == expected_id)
+                .map(|thread| thread.id.clone())
+                .unwrap_or_else(|| threads[0].id.clone())
+        });
         for thread in threads {
             if thread.id == preserved_id {
                 continue;
@@ -543,7 +572,7 @@ fn audit_scheduler_invariants_counted(
             .or_default()
             .push(member);
     }
-    for group in input.groups {
+    for group in &groups {
         let members = members_by_group
             .get(group.id.as_str())
             .cloned()
@@ -631,10 +660,16 @@ fn audit_scheduler_invariants_counted(
         })
         .map(|dependency| (dependency.owner_id.as_str(), dependency.owner_generation))
         .collect::<HashSet<_>>();
-    for objective in input.objectives {
-        let dependencies_wait =
-            pending_objective_owners.contains(&(objective.id.as_str(), objective.generation));
-        let legacy_wait = objective.wait_condition.is_some();
+    for objective in &objectives {
+        let dependencies_wait = facts
+            .map(|v| {
+                v.pending_objective_owners
+                    .contains(&(objective.id.clone(), objective.generation))
+            })
+            .unwrap_or_else(|| {
+                pending_objective_owners.contains(&(objective.id.as_str(), objective.generation))
+            });
+        let legacy_wait = objective.has_legacy_wait;
         if dependencies_wait != legacy_wait {
             violations.push(violation(
                 SchedulerInvariantSeverity::Warning,

@@ -464,11 +464,22 @@ export class PlatformClient {
   async navigationRuntime(
     signal?: AbortSignal,
     scope?: { projectId: string; conversationId: string } | null,
-    options?: { refreshActivity?: boolean; loadMoreApprovals?: boolean },
+    options?: {
+      refreshActivity?: boolean;
+      activityCursor?: string;
+      loadMoreApprovals?: boolean;
+    },
   ) {
     return z
       .object({
         runtime: conversationRuntimeSchema,
+        activityPage: z
+          .object({
+            hasMore: z.boolean(),
+            nextCursor: z.string().min(1).max(128).nullable(),
+            retry: z.boolean().optional(),
+          })
+          .optional(),
         activityByProject: z.record(id, isoTime),
         catalogVersion: z.number().int().nonnegative(),
         revisions: navigationRevisionsSchema,

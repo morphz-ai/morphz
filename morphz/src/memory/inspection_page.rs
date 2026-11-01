@@ -5,6 +5,7 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ThreadInspectionKind {
+    Dependencies,
     Activations,
     Jobs,
     PendingSignals,
@@ -26,6 +27,8 @@ struct Cursor {
     activation_id: Option<String>,
     clock: String,
     id: String,
+    #[serde(default)]
+    initial: bool,
 }
 impl ThreadInspectionQuery {
     pub fn page_limit(&self) -> usize {
@@ -62,7 +65,16 @@ impl ThreadInspectionQuery {
                 if value.thread_id != thread
                     || value.kind != self.kind
                     || value.activation_id != self.activation_id
-                    || value.id.is_empty()
+                {
+                    return Err("inspection cursor scope changed".into());
+                }
+                if value.initial {
+                    if !value.clock.is_empty() || !value.id.is_empty() {
+                        return Err("invalid initial inspection coordinate".into());
+                    }
+                    return Ok(None);
+                }
+                if value.id.is_empty()
                     || value.id.len() > 512
                     || value.clock.len() > 64
                     || (if matches!(
@@ -76,9 +88,10 @@ impl ThreadInspectionQuery {
                 {
                     return Err("inspection cursor scope changed".into());
                 }
-                Ok((value.clock, value.id))
+                Ok(Some((value.clock, value.id)))
             })
             .transpose()
+            .map(Option::flatten)
     }
     pub(crate) fn cursor_for(&self, thread: &str, clock: String, id: String) -> String {
         use base64::Engine;
@@ -89,13 +102,31 @@ impl ThreadInspectionQuery {
                 activation_id: self.activation_id.clone(),
                 clock,
                 id,
+                initial: false,
             })
             .expect("typed cursor"),
+        )
+    }
+    /// Opening a parent does not open any of its child collections. This
+    /// scoped first-page coordinate carries no rows and grants no authority.
+    pub(crate) fn head_cursor(&self, thread: &str) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&Cursor {
+                thread_id: thread.into(),
+                kind: self.kind,
+                activation_id: self.activation_id.clone(),
+                clock: String::new(),
+                id: String::new(),
+                initial: true,
+            })
+            .expect("typed initial inspection cursor"),
         )
     }
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThreadInspectionPage {
+    pub dependencies: Vec<crate::scheduler::SchedulerDependencyRecord>,
     pub activations: Vec<ThreadActivationRecord>,
     #[serde(default, skip_serializing)]
     pub jobs: Vec<ExecutionJobRecord>,
@@ -118,6 +149,7 @@ macro_rules! inspection_query {
   use crate::memory::inspection_page::ThreadInspectionKind as K;
   let request=$request;let thread=$thread;let key=request.key(&thread.id)?;
   let mut query=sqlx::QueryBuilder::<$db>::new(match request.kind {
+   K::Dependencies=>"SELECT r.*,r.created_at AS inspection_clock FROM scheduler_dependencies r JOIN threads t ON t.id=r.owner_id WHERE t.context_id=",
    K::Activations=>"SELECT r.*,r.created_at AS inspection_clock FROM thread_activations r WHERE r.context_id=",
    K::Jobs=>"SELECT r.*,r.created_at AS inspection_clock FROM execution_jobs r WHERE r.context_id=",
    K::PendingSignals=>"SELECT r.*,r.created_at AS inspection_clock FROM thread_signals r JOIN threads t ON t.id=r.thread_id WHERE t.context_id=",
@@ -127,6 +159,7 @@ macro_rules! inspection_query {
   });
   query.push_bind(thread.context_id.clone());
   if request.kind==K::Activations {query.push(" AND r.root_turn_id=").push_bind(thread.root_turn_id.clone());}
+  else if request.kind==K::Dependencies {query.push(" AND r.owner_kind='thread' AND r.owner_id=").push_bind(thread.id.clone()).push(" AND r.owner_generation=").push_bind(thread.generation as i64).push(" AND r.status='pending' AND r.required=TRUE");}
   else {query.push(" AND r.thread_id=").push_bind(thread.id.clone());}
   if let Some(activation)=&request.activation_id {query.push(if request.kind==K::ActivationSignals {" AND l.activation_id="} else {" AND r.activation_id="}).push_bind(activation.clone());}
   if request.kind==K::PendingSignals {query.push(" AND r.status='pending'");}

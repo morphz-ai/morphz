@@ -7,6 +7,7 @@ import {
   actionableSchedulerJobs,
   mergeSchedulerCurrentAndHistory,
   appendSchedulerHistoryPage,
+  appendSchedulerCollectionPage,
   activeSchedulerActivations,
   activeSchedulerThreads,
   currentSchedulerSchedules,
@@ -439,3 +440,15 @@ test('appending a history cursor page retains loaded history, newer receipts and
   assert.equal(merged.threads.find(row=>row.thread.id===current.threads[0]!.thread.id),current.threads[0])
   page.context_id='other'; assert.throws(()=>appendSchedulerHistoryPage(before,page),/scope/)
 })
+
+
+test('one collection continuation preserves sibling cursors, accepted summary and newer Goal facts',()=>{
+ const head=fixture(), page=fixture();
+ head.detail_bounds.next_thread_cursor='thread-head';head.detail_bounds.next_objective_cursor='goal-head';head.detail_bounds.next_schedule_cursor='schedule-head';
+ const goal={objective:{id:'goal',revision:9,updated_at:'2026-11-01T00:00:00Z'}} as SchedulerSnapshot['objectives'][number];
+ head.objectives=[goal];page.objectives=[{...goal,objective:{...goal.objective,revision:2}}];
+ page.detail_bounds.next_objective_cursor='goal-next';page.summary.open_threads=0;
+ const appended=appendSchedulerCollectionPage(head,page,'objectives');
+ assert.equal(appended.summary,head.summary);assert.equal(appended.detail_bounds.next_thread_cursor,'thread-head');assert.equal(appended.detail_bounds.next_schedule_cursor,'schedule-head');assert.equal(appended.detail_bounds.next_objective_cursor,'goal-next');assert.equal(appended.objectives[0]!.objective.revision,9);
+ page.context_id='foreign';assert.throws(()=>appendSchedulerCollectionPage(head,page,'threads'),/scope changed/);
+});

@@ -15,6 +15,7 @@ type InspectionClient = Pick<
   | "workspaceChangeRevision"
   | "executionSnapshot"
   | "executionResult"
+  | "executionRequest"
   | "controlExecution"
   | "contentCatalog"
 >;
@@ -40,6 +41,7 @@ export function useExecutionInspection({
     [error, setError] = useState(""),
     [busy, setBusy] = useState(""),
     [notice, setNotice] = useState("");
+  const pageBusy = useRef(false);
   const [result, setResult] = useState<{
     id: string;
     text: string;
@@ -129,6 +131,98 @@ export function useExecutionInspection({
       }
     }
   }
+  async function loadMore() {
+    const approval = !!snapshot?.nextApprovalCursor;
+    const cursor = snapshot?.nextApprovalCursor ?? snapshot?.nextJobCursor;
+    if (!cursor || pageBusy.current) return;
+    const origin = observationScope,
+      head = snapshot;
+    pageBusy.current = true;
+    setBusy("page");
+    try {
+      const next = await api.current.executionSnapshot({
+        ...scope,
+        ...(approval
+          ? { approvalCursor: cursor, jobCursor: undefined }
+          : { jobCursor: cursor, approvalCursor: undefined }),
+      });
+      if (mounted.current && currentScope.current === origin)
+        setObservation((previous) => {
+          if (previous?.scope !== origin || previous.snapshot !== head)
+            return previous;
+          const rows = new Map(next.jobs.map((job) => [job.id, job]));
+          for (const job of head.jobs) {
+            const old = rows.get(job.id);
+            if (!old || job.revision >= old.revision) rows.set(job.id, job);
+          }
+          const threads = new Map(
+            (next.threads ?? []).map((thread) => [thread.id, thread]),
+          );
+          for (const thread of head.threads ?? []) {
+            const old = threads.get(thread.id);
+            if (!old || thread.revision >= old.revision)
+              threads.set(thread.id, thread);
+          }
+          return {
+            ...previous,
+            snapshot: {
+              ...head,
+              jobs: [...rows.values()],
+              threads: [...threads.values()],
+              approvals: [
+                ...new Map(
+                  [...head.approvals, ...next.approvals].map((row) => [
+                    row.request.approval_id,
+                    row,
+                  ]),
+                ).values(),
+              ],
+              nextJobCursor: approval ? head.nextJobCursor : next.nextJobCursor,
+              nextApprovalCursor: approval
+                ? next.nextApprovalCursor
+                : head.nextApprovalCursor,
+            },
+          };
+        });
+    } catch (cause) {
+      if (mounted.current && currentScope.current === origin)
+        setNotice(
+          cause instanceof Error ? cause.message : "无法载入更多执行记录。",
+        );
+    } finally {
+      pageBusy.current = false;
+      if (mounted.current && currentScope.current === origin) setBusy("");
+    }
+  }
+  async function readRequest(id: string) {
+    const origin = observationScope;
+    try {
+      const job = await api.current.executionRequest(scope, id);
+      if (mounted.current && currentScope.current === origin)
+        setObservation((previous) =>
+          previous?.scope === origin
+            ? {
+                ...previous,
+                snapshot: {
+                  ...previous.snapshot,
+                  jobs: previous.snapshot.jobs.map((old) =>
+                    old.id === id &&
+                    old.session_id === job.session_id &&
+                    old.thread_id === job.thread_id
+                      ? { ...old, request: job.request, request_loaded: true }
+                      : old,
+                  ),
+                },
+              }
+            : previous,
+        );
+    } catch (cause) {
+      if (mounted.current && currentScope.current === origin)
+        setNotice(
+          cause instanceof Error ? cause.message : "无法读取工具参数。",
+        );
+    }
+  }
   async function readResult(id: string) {
     const origin = observationScope;
     const current = () => mounted.current && currentScope.current === origin;
@@ -174,5 +268,7 @@ export function useExecutionInspection({
     refresh,
     control,
     readResult,
+    readRequest,
+    loadMore,
   };
 }

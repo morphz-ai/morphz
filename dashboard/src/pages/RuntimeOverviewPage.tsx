@@ -104,6 +104,7 @@ export interface RuntimeOverviewSession {
     last_activity_at: string
   }
   principal_ids: string[]
+  principal_count?: number
   state: RuntimeOverviewSessionState
   attention_required: boolean
   pending_dialogue_turns: number
@@ -293,7 +294,7 @@ function SessionCard({
           <p className="runtime-overview-principal" title={item.principal_ids.join(', ')}>
             <UserRound size={10} />
             <span>{principal}</span>
-            {item.principal_ids.length > 1 && <em>+{item.principal_ids.length - 1}</em>}
+            {(item.principal_count ?? item.principal_ids.length) > 1 && <em>+{(item.principal_count ?? item.principal_ids.length) - 1}</em>}
           </p>
         )}
         {item.current_objective && (

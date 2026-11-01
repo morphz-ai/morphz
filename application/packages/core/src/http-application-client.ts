@@ -240,6 +240,7 @@ export class HttpApplicationClient {
               }
             : {}),
           refreshActivity: p.refreshActivity,
+          activityCursor: p.activityCursor,
           loadMoreApprovals: p.loadMoreApprovals,
         });
         if (paramsQuery) path += "?" + paramsQuery;
@@ -856,6 +857,13 @@ export class HttpApplicationClient {
           });
         break;
       }
+      case "execution.request": {
+        const p = fields(params);
+        path =
+          "/api/executions/request?" +
+          query({ ...executionReadQuery(p.scope), jobId: p.jobId });
+        break;
+      }
       case "execution.result": {
         const p = fields(params);
         path =
@@ -866,6 +874,9 @@ export class HttpApplicationClient {
       case "execution.control":
         path = "/api/executions/control";
         post(params);
+        break;
+      case "objective.read":
+        path = "/api/objectives/detail?" + query(fields(params));
         break;
       case "objective.control":
         path = "/api/objectives/control";

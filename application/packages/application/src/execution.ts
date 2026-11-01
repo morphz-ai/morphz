@@ -1,3 +1,4 @@
+import { boundedSourcePage } from "./bounded-source-page.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { DomainError } from "../../../packages/core/src/model.js";
@@ -33,6 +34,7 @@ type Binding = {
   additionalRoot?: (rootId: string, threadId: string) => Promise<boolean>;
   threadIds?: () => Promise<string[]>;
   records?: RuntimeExecutionRecords;
+  recordsMetadataOnly?: boolean;
   principalId?: string;
 } | null;
 const sessionIds = (binding: NonNullable<Binding>) => [
@@ -49,10 +51,32 @@ export class ExecutionControls {
     private request: RuntimeRequest,
     private binding: (scope: ExecutionReadScope) => Binding,
   ) {}
-  private async approvals(binding: NonNullable<Binding>) {
+  private async approvals(binding: NonNullable<Binding>, cursor?: string) {
+    const query = new URLSearchParams({
+      context_id: binding.contextId,
+      session_id: binding.sessionId,
+      limit: "50",
+    });
+    if (cursor) query.set("cursor", cursor);
+    if (binding.threadId && !binding.additionalRoot)
+      query.set("thread_id", binding.threadId);
+    const roots = binding.additionalRoot
+      ? undefined
+      : binding.rootId
+        ? [binding.rootId]
+        : binding.rootsBySession?.[binding.sessionId];
+    if (roots?.length) {
+      if (roots.length > 32)
+        throw new Error("Approval scope requires a source page");
+      query.set("root_ids", JSON.stringify(roots));
+    }
     const data = z
-      .object({ approvals: z.array(approvalSchema) })
-      .parse(await this.request("/api/approvals"));
+      .object({
+        approvals: z.array(approvalSchema).max(50),
+        has_more: z.boolean().optional(),
+        next_cursor: z.string().nullish(),
+      })
+      .parse(await this.request(`/api/approvals?${query}`));
     const candidates = data.approvals
       .filter(
         (a) =>
@@ -88,15 +112,22 @@ export class ExecutionControls {
           }),
         )),
       );
-    return candidates
-      .filter((_, i) => matches[i])
-      .map((a) => ({ ...a, fingerprint: approvalFingerprint(a) }));
+    return {
+      records: candidates
+        .filter((_, i) => matches[i])
+        .map((a) => ({ ...a, fingerprint: approvalFingerprint(a) })),
+      has_more: data.has_more ?? false,
+      next_cursor: data.next_cursor ?? null,
+    };
   }
   /** The task list needs a scoped count, not every execution job and result.
    * Reuse the same exact Session/Context/root/Thread checks as the inspector. */
   async pendingApprovalCount(scope: ExecutionScope) {
     const binding = this.binding(scope);
-    return binding ? (await this.approvals(binding)).length : 0;
+    if (!binding) return 0;
+    if (binding.legacySessionIds?.length) return undefined;
+    const page = await this.approvals(binding);
+    return page.has_more ? undefined : page.records.length;
   }
   private async job(binding: NonNullable<Binding>, jobId: string) {
     const job = runtimeJobSchema.parse(
@@ -138,7 +169,7 @@ export class ExecutionControls {
       })
       .parse(
         await this.request(
-          `/api/sessions/${encodeURIComponent(job.session_id)}/threads/${encodeURIComponent(job.thread_id)}`,
+          `/api/sessions/${encodeURIComponent(job.session_id)}/threads/${encodeURIComponent(job.thread_id)}?metadata_only=true`,
         ),
       );
     const rootId = data.snapshot.thread.root_turn_id;
@@ -156,6 +187,12 @@ export class ExecutionControls {
   async snapshot(
     scope: ExecutionReadScope,
     includeApprovals = true,
+    page?: {
+      sessionId: string;
+      roots?: readonly string[];
+      cursor?: string;
+      approvalOnly?: boolean;
+    },
   ): Promise<ExecutionSnapshot> {
     const binding = this.binding(scope);
     if (!binding) return { jobs: [], approvals: [], limit: 100 };
@@ -165,34 +202,179 @@ export class ExecutionControls {
     if (requestedIds?.length === 0)
       return {
         jobs: [],
-        approvals: includeApprovals ? await this.approvals(binding) : [],
+        approvals: includeApprovals
+          ? (await this.approvals(binding)).records
+          : [],
         limit: 100,
       };
-    const [pages, approvals] = await Promise.all([
-      binding.records
-        ? Promise.resolve([binding.records])
-        : Promise.all(
-            sessionIds(binding).map((sessionId) =>
-              readExecutionRecords(this.request, {
-                sessionId,
-                contextId: binding.contextId,
-                ...(requestedIds
-                  ? { threadIds: requestedIds }
-                  : binding.threadId
-                    ? { threadId: binding.threadId }
-                    : {}),
-                ...(!binding.additionalRoot
-                  ? {
-                      rootIds: binding.rootId
-                        ? [binding.rootId]
-                        : binding.rootsBySession?.[sessionId],
-                    }
+    let nextJobCursor: string | null = null;
+    let nextApprovalCursor: string | null = null;
+    const approvalOnly = !!scope.approvalCursor || !!page?.approvalOnly;
+    let approvalPage:
+      Awaited<ReturnType<ExecutionControls["approvals"]>> | undefined;
+    let approvalContinuationFor:
+      | ((page: {
+          has_more: boolean;
+          next_cursor?: string | null;
+        }) => string | null)
+      | undefined;
+    let physicalSession = binding.sessionId;
+    let pages: RuntimeExecutionRecords[];
+    const read = (
+      sessionId: string,
+      roots?: readonly string[],
+      cursor?: string,
+    ) =>
+      readExecutionRecords(this.request, {
+        sessionId,
+        contextId: binding.contextId,
+        cursor,
+        ...(requestedIds
+          ? { threadIds: requestedIds }
+          : binding.threadId
+            ? { threadId: binding.threadId }
+            : {}),
+        ...(!binding.additionalRoot
+          ? {
+              rootIds: roots
+                ? [...roots]
+                : binding.rootId
+                  ? [binding.rootId]
+                  : binding.rootsBySession?.[sessionId],
+            }
+          : {}),
+      });
+    if (approvalOnly && page) {
+      physicalSession = page.sessionId;
+      pages = [];
+      approvalPage = await this.approvals(
+        {
+          ...binding,
+          sessionId: physicalSession,
+          legacySessionIds: [],
+          ...(page.roots?.length
+            ? { rootsBySession: { [physicalSession]: [...page.roots] } }
+            : {}),
+        },
+        page.cursor,
+      );
+      nextApprovalCursor = approvalPage.next_cursor;
+    } else if (
+      binding.records &&
+      sessionIds(binding).length === 1 &&
+      !binding.recordsMetadataOnly &&
+      !page &&
+      !scope.jobCursor
+    ) {
+      pages = [binding.records];
+      nextJobCursor = binding.records.next_job_cursor ?? null;
+    } else if (page) {
+      physicalSession = page.sessionId;
+      pages = [await read(page.sessionId, page.roots, page.cursor)];
+      nextJobCursor = pages[0]!.next_job_cursor ?? null;
+    } else {
+      const result = await boundedSourcePage({
+        owner: [
+          binding.contextId,
+          binding.sessionId,
+          binding.threadId,
+          binding.rootId,
+          requestedIds,
+          binding.rootsBySession,
+        ],
+        sources: sessionIds(binding).map((sessionId) => ({
+          key: sessionId,
+          sessionId,
+          contextId: binding.contextId,
+          roots: binding.rootId
+            ? [binding.rootId]
+            : (binding.rootsBySession?.[sessionId] ?? []),
+        })),
+        cursor: approvalOnly ? scope.approvalCursor : scope.jobCursor,
+        parse: (value) =>
+          value as {
+            records?: RuntimeExecutionRecords;
+            approvalPage?: Awaited<ReturnType<ExecutionControls["approvals"]>>;
+            has_more: boolean;
+            next_cursor?: string | null;
+          },
+        read: async (source, roots, cursor) => {
+          physicalSession = source.sessionId;
+          if (approvalOnly) {
+            const approvalPage = await this.approvals(
+              {
+                ...binding,
+                sessionId: source.sessionId,
+                legacySessionIds: [],
+                ...(roots.length
+                  ? { rootsBySession: { [source.sessionId]: [...roots] } }
                   : {}),
-              }),
-            ),
-          ),
-      includeApprovals ? this.approvals(binding) : Promise.resolve([]),
-    ]);
+              },
+              cursor ?? undefined,
+            );
+            return {
+              approvalPage,
+              has_more: approvalPage.has_more,
+              next_cursor: approvalPage.next_cursor,
+            };
+          }
+          const records = await read(
+            source.sessionId,
+            roots.length ? roots : undefined,
+            cursor ?? undefined,
+          );
+          return {
+            records,
+            has_more: records.has_more_jobs,
+            next_cursor: records.next_job_cursor,
+          };
+        },
+      });
+      pages = result.page?.records ? [result.page.records] : [];
+      if (approvalOnly) {
+        approvalPage = result.page?.approvalPage;
+        nextApprovalCursor = result.next_cursor;
+      } else {
+        nextJobCursor = result.next_cursor;
+        approvalContinuationFor = result.continuationFor;
+      }
+    }
+    if (includeApprovals && !approvalPage && !scope.jobCursor) {
+      approvalPage = await this.approvals({
+        ...binding,
+        sessionId: physicalSession,
+        legacySessionIds: [],
+      });
+      if (!page && !approvalContinuationFor && approvalPage.has_more) {
+        const coordinate = await boundedSourcePage({
+          owner: [
+            binding.contextId,
+            binding.sessionId,
+            binding.threadId,
+            binding.rootId,
+            requestedIds,
+            binding.rootsBySession,
+          ],
+          sources: [
+            {
+              key: binding.sessionId,
+              sessionId: binding.sessionId,
+              contextId: binding.contextId,
+              roots: binding.rootId
+                ? [binding.rootId]
+                : (binding.rootsBySession?.[binding.sessionId] ?? []),
+            },
+          ],
+          parse: (value) =>
+            value as typeof approvalPage & { has_more: boolean },
+          read: async () => approvalPage!,
+        });
+        nextApprovalCursor = coordinate.next_cursor;
+      } else
+        nextApprovalCursor =
+          approvalContinuationFor?.(approvalPage) ?? approvalPage.next_cursor;
+    }
+    const approvals = approvalPage?.records ?? [];
     const jobs = pages
       .flatMap((page) => page.jobs)
       .sort(
@@ -239,16 +421,23 @@ export class ExecutionControls {
       ),
       approvals,
       limit: 100,
-      ...(binding.records
+      nextJobCursor,
+      ...(nextApprovalCursor ? { nextApprovalCursor } : {}),
+      ...(pages[0]
         ? {
-            threads: await executionThreadsWithWait(
-              this.request,
-              binding.records,
-            ),
-            threadsTruncated: binding.records.threads_truncated,
+            threads: await executionThreadsWithWait(this.request, pages[0]),
+            threadsTruncated: pages[0].threads_truncated,
           }
         : {}),
     };
+  }
+  async requestDetail(scope: ExecutionReadScope, jobId: string) {
+    const binding = this.binding(scope);
+    if (!binding) throw new DomainError("not_found", "工作对话不存在。");
+    const job = await this.job(binding, jobId);
+    if (job.request_loaded === false || job.request === undefined)
+      throw new DomainError("invalid", "工具参数尚未读取。");
+    return { ...job, request_loaded: true };
   }
   async result(scope: ExecutionReadScope, jobId: string) {
     const binding = this.binding(scope);
@@ -425,9 +614,35 @@ export class ExecutionControls {
         cancelRequested: !!updated.cancel_requested_at,
       };
     }
-    const approval = (await this.approvals(binding)).find(
-      (a) => a.request.approval_id === action.approvalId,
+    const loaded = approvalSchema.safeParse(
+      await this.request(
+        `/api/approvals/${encodeURIComponent(action.approvalId)}`,
+      ),
     );
+    if (!loaded.success)
+      throw new DomainError("conflict", "审批已结束或内容已变化，请重新查看。");
+    const exact = loaded.data;
+    const request = exact.request;
+    const roots = binding.rootsBySession?.[request.session_id];
+    const original =
+      (!binding.rootId || request.root_turn_id === binding.rootId) &&
+      (!binding.threadId || request.thread_id === binding.threadId);
+    const derived =
+      !original &&
+      !!binding.additionalRoot &&
+      !!request.root_turn_id &&
+      !!request.thread_id &&
+      (await binding.additionalRoot(request.root_turn_id, request.thread_id));
+    if (
+      request.approval_id !== action.approvalId ||
+      request.context_id !== binding.contextId ||
+      !sessionIds(binding).includes(request.session_id) ||
+      (roots &&
+        (!request.root_turn_id || !roots.includes(request.root_turn_id))) ||
+      (!original && !derived)
+    )
+      throw new DomainError("forbidden", "审批不属于选中的执行。");
+    const approval = { ...exact, fingerprint: approvalFingerprint(exact) };
     if (!approval || approval.fingerprint !== action.fingerprint)
       throw new DomainError("conflict", "审批已结束或内容已变化，请重新查看。");
     if (binding.threadId && approval.request.thread_id !== binding.threadId)

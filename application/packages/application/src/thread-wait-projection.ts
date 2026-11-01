@@ -16,6 +16,37 @@ export const threadWaitDependenciesSchema = z
   )
   .optional();
 
+export const threadWaitHeadSchema = z
+  .object({
+    thread_id: z.string(),
+    generation: z.number().int().nonnegative().safe(),
+    revision: z.number().int().positive().safe(),
+    kinds: z.array(z.string()).max(12),
+    resources: z.array(z.string().max(512)).max(32),
+    resources_truncated: z.boolean(),
+    until: z.string().nullish(),
+  })
+  .nullish();
+export const dependencyHeadSchema = z
+  .object({
+    owner_kind: z.string(),
+    owner_id: z.string(),
+    generation: z.number().int().positive().safe(),
+    revision: z.number().int().positive().safe(),
+    pending: z.boolean(),
+    kinds: z.array(z.string()).max(10),
+    resources: z.array(z.string().max(512)).max(32),
+    resources_truncated: z.boolean(),
+    question: z
+      .object({
+        request_id: z.string().max(512),
+        thread_id: z.string().max(512),
+        thread_generation: z.number().int().positive().safe(),
+      })
+      .nullish(),
+  })
+  .nullish();
+
 /** Thread-local Scheduler facts, independent of source attribution and its
  * supervising Objective's own dependencies. Never parse intent/diagnostics. */
 export function threadWaitProjection(value: {
@@ -25,8 +56,11 @@ export function threadWaitProjection(value: {
     context_id: string;
     lifecycle: string;
     generation?: unknown;
+    revision?: number;
+    control_state?: string;
   };
   user_input_request?: PendingUserInputRequest | null;
+  wait_head?: z.infer<typeof threadWaitHeadSchema>;
   phase: string;
   dependencies?: z.infer<typeof threadWaitDependenciesSchema>;
   schedules?: {
@@ -61,6 +95,19 @@ export function threadWaitProjection(value: {
     !["waiting", "idle"].includes(value.phase)
   )
     return {};
+  const head = value.wait_head;
+  if (
+    head &&
+    head.thread_id === value.thread.id &&
+    head.generation === value.thread.generation &&
+    head.revision === value.thread.revision &&
+    value.thread.control_state === "active"
+  )
+    return {
+      waitKinds: head.kinds,
+      ...(head.resources.length ? { waitResources: head.resources } : {}),
+      ...(head.until ? { waitUntil: head.until } : {}),
+    };
   const kinds = new Set<string>();
   const resources = new Set<string>();
   for (const edge of value.dependencies ?? []) {

@@ -90,7 +90,7 @@ test("Platform读取有界 execution-records 最近窗口，展示层只改成�
   let reads = 0;
   const controls = new ExecutionControls(
     async (path) => {
-      if (path === "/api/approvals") return { approvals: [] };
+      if (path.split("?")[0] === "/api/approvals") return { approvals: [] };
       const url = new URL(path, "http://TEST-runtime");
       assert.equal(
         url.pathname,
@@ -106,6 +106,7 @@ test("Platform读取有界 execution-records 最近窗口，展示层只改成�
         source_root_id: null,
         limit: 100,
         has_more_jobs: true,
+        next_job_cursor: "TEST-next-native-page",
         threads_truncated: false,
         jobs: recent.slice(0, 100),
         threads: [

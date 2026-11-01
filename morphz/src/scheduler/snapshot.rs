@@ -24,6 +24,11 @@ pub struct SchedulerQuery {
     #[serde(default)]
     pub history_only: bool,
     pub history_cursor: Option<String>,
+    pub thread_cursor: Option<String>,
+    pub objective_cursor: Option<String>,
+    pub schedule_cursor: Option<String>,
+    /// A continuation owns one directory, not new heads of its siblings.
+    pub collection: Option<crate::memory::activity_page::ActivityCollection>,
     #[serde(default = "default_scheduler_limit")]
     pub limit: usize,
 }
@@ -42,6 +47,10 @@ impl Default for SchedulerQuery {
             include_terminal: false,
             history_only: false,
             history_cursor: None,
+            thread_cursor: None,
+            objective_cursor: None,
+            schedule_cursor: None,
+            collection: None,
             limit: default_scheduler_limit(),
         }
     }
@@ -73,6 +82,10 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    #[serde(default)]
+    pub dependencies_loaded: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_head: Option<crate::memory::wait_head::ThreadWaitHead>,
     /// Pending required edges for this exact open Thread generation. None on
     /// views which did not read dependencies; an empty list means verified none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +138,11 @@ pub struct SchedulerSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerObjectiveSnapshot {
+    #[serde(default)]
+    pub dependencies_loaded: bool,
+    pub wait_head: Option<crate::memory::dependency_head::DependencyHead>,
+    #[serde(default)]
+    pub body_loaded: bool,
     pub objective: ObjectiveRecord,
     /// Runtime-validated creation provenance, independent of whether its
     /// creating Activation/Thread is in the bounded activity-history page.
@@ -191,6 +209,15 @@ pub struct SchedulerSummary {
 /// cursor-based diagnostic view when one of these flags is true.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchedulerDetailBounds {
+    /// False on a collection continuation: sibling arrays and Context summary
+    /// are omitted, never evidence that those collections became empty.
+    pub directory_head_loaded: bool,
+    pub collection: Option<crate::memory::activity_page::ActivityCollection>,
+    /// A directory carries bounded corruption witnesses; the integrity worker checks all pages.
+    pub invariant_details_complete: bool,
+    /// False means directory text is a preview; opening an exact object owns its body.
+    #[serde(default)]
+    pub bodies_loaded: bool,
     pub limit: usize,
     pub has_more_sessions: bool,
     pub has_more_objectives: bool,
@@ -198,6 +225,9 @@ pub struct SchedulerDetailBounds {
     #[serde(default)]
     pub has_more_history: bool,
     pub next_history_cursor: Option<String>,
+    pub next_thread_cursor: Option<String>,
+    pub next_objective_cursor: Option<String>,
+    pub next_schedule_cursor: Option<String>,
     pub has_more_activations: bool,
     pub has_more_signals: bool,
     pub has_more_jobs: bool,

@@ -1948,6 +1948,18 @@ fn agent_command(locale: Locale) -> Command {
                 locale,
                 Command::new("list")
                     .about(locale.text("List Agents", "列出智能体"))
+                    .arg(local_value_arg(
+                        "cursor",
+                        "cursor",
+                        "CURSOR",
+                        locale.text("Continue the preceding page", "继续读取上一页"),
+                    ))
+                    .arg(local_value_arg(
+                        "limit",
+                        "limit",
+                        "N",
+                        locale.text("Page size (1..200)", "每页条数（1..200）"),
+                    ))
                     .arg(local_switch_arg(
                         "include-archived",
                         "include-archived",
@@ -2001,6 +2013,8 @@ fn objective_command(locale: Locale) -> Command {
                 locale,
                 Command::new("list")
                     .about(locale.text("List Objectives in a Context", "列出上下文中的目标"))
+                    .arg(local_value_arg("cursor", "cursor", "CURSOR", locale.text("Continue the preceding page", "继续读取上一页")))
+                    .arg(local_value_arg("limit", "limit", "N", locale.text("Page size (1..200)", "每页条数（1..200）")))
                     .arg(local_switch_arg(
                         "include-terminal",
                         "include-terminal",

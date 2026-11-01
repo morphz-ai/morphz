@@ -54,7 +54,10 @@ test("explicit Objective and Session approvals retain the complete boundary fing
     const writes: unknown[] = [];
     const controls = new ExecutionControls(
       async (path, method, body) => {
-        if (!method) return { approvals: [current] };
+        if (!method) {
+          assert.equal(path, "/api/approvals/a");
+          return current;
+        }
         assert.equal(path, "/api/approvals/a");
         writes.push(body);
         return {
@@ -95,7 +98,7 @@ test("changed offer, disabled lifetime, wrong Human or absent reusable boundary 
     const controls = new ExecutionControls(
       async (_path, method) => {
         if (method) writes++;
-        return { approvals: [current] };
+        return current;
       },
       () => binding,
     );
@@ -128,8 +131,12 @@ test("waiting for the Human does not consume the offered lifetime or alter its f
     async (path, method) => {
       if (!method) {
         reads++;
-        assert.equal(path, "/api/approvals");
-        return { approvals: [current] };
+        assert.equal(
+          path,
+          "/api/approvals/a",
+          "deciding a known approval is an exact point read independent of the current page",
+        );
+        return current;
       }
       writes++;
       return { accepted: true, approval_id: "a", scope: "objective" };
@@ -175,8 +182,7 @@ test("no offer cannot become Full Access; Thread or nearby goal does not prove O
 test("reusable approval needs the exact scoped receipt, not accepted alone", async () => {
   const current = approval();
   const controls = new ExecutionControls(
-    async (_path, method) =>
-      method ? { accepted: true } : { approvals: [current] },
+    async (_path, method) => (method ? { accepted: true } : current),
     () => binding,
   );
   await assert.rejects(

@@ -118,6 +118,7 @@ async fn assert_quiescent(runtime: &MorphzRuntime) {
                 limit: 2_000,
                 history_only: false,
                 history_cursor: None,
+                ..Default::default()
             },
         )
         .await

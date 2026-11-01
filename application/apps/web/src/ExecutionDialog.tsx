@@ -46,6 +46,8 @@ export function ExecutionDialog({
     refresh,
     control,
     readResult,
+    readRequest,
+    loadMore,
   } = useExecutionInspection({ client, scope, dialog, embedded });
   const readOnly = "runtime" in scope;
   const jobs = executionJobsInReadingOrder(snapshot?.jobs ?? []);
@@ -243,6 +245,7 @@ export function ExecutionDialog({
                         result?.id === job.id && result.available
                       }
                       onReadResult={() => void readResult(job.id)}
+                      onReadRequest={() => void readRequest(job.id)}
                       onStop={() =>
                         void control(
                           {
@@ -299,6 +302,18 @@ export function ExecutionDialog({
           );
         })}
       </div>
+      {(snapshot?.nextJobCursor || snapshot?.nextApprovalCursor) && (
+        <button
+          type="button"
+          className="ui-button"
+          data-variant="outline"
+          data-size="sm"
+          disabled={!!busy}
+          onClick={() => void loadMore()}
+        >
+          加载更多执行记录
+        </button>
+      )}
     </>
   );
   return embedded ? (

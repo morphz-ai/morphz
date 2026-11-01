@@ -231,6 +231,181 @@ pub(super) async fn ensure_thread_in_tx(
 
 #[async_trait::async_trait]
 impl ThreadStore for PostgresStore {
+    async fn scheduler_authority_page(
+        &self,
+        request: &crate::memory::audit_page::AuditQuery,
+    ) -> Result<crate::memory::audit_page::AuditPage, Box<dyn std::error::Error + Send + Sync>>
+    {
+        use crate::memory::audit_page::{AuditPage, AuditSource};
+        let mut query = crate::memory::audit_page::audit_query!(sqlx::Postgres, request)?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let limit = request.limit.clamp(1, 200);
+        let mut page = AuditPage {
+            has_more: rows.len() > limit,
+            ..Default::default()
+        };
+        for row in rows.iter().take(limit) {
+            crate::memory::audit_page::authority_row!(row, request.source, page.facts)?;
+            if request.source == AuditSource::Activations {
+                page.activations
+                    .push(super::activation::activation_from_row(row)?);
+            }
+        }
+        if page.has_more {
+            page.next_id = rows.get(limit - 1).map(|row| row.get("id"));
+        }
+        Ok(page)
+    }
+    async fn scheduler_authority_witnesses(
+        &self,
+        context: &str,
+        kind: crate::memory::audit_page::AuditWitness,
+        ids: &[String],
+    ) -> Result<Vec<(String, u64)>, Box<dyn std::error::Error + Send + Sync>> {
+        if ids.len() > 200 {
+            return Err("authority witness scope exceeds 200".into());
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            crate::memory::audit_page::witness_query!(sqlx::Postgres, context, kind, ids);
+        let mut result = Vec::new();
+        for row in query.build().fetch_all(&self.pool).await? {
+            result.push((
+                row.get("id"),
+                u64::try_from(row.get::<i64, _>("generation"))?,
+            ));
+        }
+        Ok(result)
+    }
+    async fn scheduler_primary_choices(
+        &self,
+        context: &str,
+        owners: &[(String, u64)],
+    ) -> Result<Vec<(String, u64, String)>, Box<dyn std::error::Error + Send + Sync>> {
+        if owners.len() > 200 {
+            return Err("primary choice scope exceeds 200".into());
+        }
+        let mut result = Vec::new();
+        for chunk in owners.chunks(50) {
+            let mut query =
+                crate::memory::audit_page::primary_query!(sqlx::Postgres, context, chunk);
+            for row in query.build().fetch_all(&self.pool).await? {
+                if let Some(id) = row.get::<Option<String>, _>("preserved_id") {
+                    result.push((
+                        row.get("id"),
+                        u64::try_from(row.get::<i64, _>("generation"))?,
+                        id,
+                    ));
+                }
+            }
+        }
+        Ok(result)
+    }
+    async fn scheduler_invalid_group_dependency(
+        &self,
+        context: &str,
+        owner: &str,
+        id: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if !["objective", "thread"].contains(&owner) {
+            return Err("invalid dependency owner".into());
+        }
+        let mut q = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT d.id FROM scheduler_dependencies d WHERE d.owner_kind=",
+        );
+        q.push_bind(owner.to_owned()).push(" AND d.owner_id=").push_bind(id.to_owned()).push(" AND d.status='pending' AND d.dependency_kind='thread_group' AND EXISTS(SELECT 1 FROM ").push(if owner=="objective"{"objectives"}else{"threads"}).push(" p WHERE p.id=d.owner_id AND p.context_id=").push_bind(context.to_owned()).push(") AND EXISTS(SELECT 1 FROM thread_groups g WHERE g.id=d.dependency_id AND g.status IN ('satisfied','failed','cancelled')) ORDER BY d.id LIMIT 1");
+        Ok(q.build()
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|r| r.get("id")))
+    }
+    async fn scheduler_dependency_targets(
+        &self,
+        context: &str,
+        owner: &str,
+        id: &str,
+        after: &str,
+    ) -> Result<
+        Vec<crate::memory::audit_page::DependencyTarget>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if !["thread", "objective"].contains(&owner) || id.len() > 512 || after.len() > 512 {
+            return Err("invalid dependency audit scope".into());
+        }
+        let mut query =
+            crate::memory::audit_page::dependency_query!(sqlx::Postgres, context, owner, id, after);
+        Ok(query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| crate::memory::audit_page::DependencyTarget {
+                id: row.get("id"),
+                target: row.get("dependency_id"),
+            })
+            .collect())
+    }
+    async fn scheduler_dependency_heads(
+        &self,
+        context: &str,
+        owners: &[(String, String, u64, u64)],
+    ) -> Result<
+        Vec<crate::memory::dependency_head::DependencyHead>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if owners.len() > 200
+            || owners.iter().any(|(kind, id, gen, rev)| {
+                !["objective", "thread"].contains(&kind.as_str())
+                    || id.is_empty()
+                    || id.len() > 512
+                    || *gen == 0
+                    || *rev == 0
+            })
+        {
+            return Err("invalid dependency header scope".into());
+        }
+        let mut result = Vec::new();
+        for chunk in owners.chunks(8) {
+            let mut query = crate::memory::dependency_head::dependency_head_query!(
+                sqlx::Postgres,
+                context,
+                chunk
+            );
+            let rows = query.build().fetch_all(&self.pool).await?;
+            let mut query = crate::memory::dependency_head::dependency_identity_query!(
+                sqlx::Postgres,
+                context,
+                chunk
+            );
+            let identities = query.build().fetch_all(&self.pool).await?;
+            result.extend(crate::memory::dependency_head::collect_dependency_heads!(
+                rows, identities
+            ));
+        }
+        Ok(result)
+    }
+    async fn thread_wait_heads(
+        &self,
+        context: &str,
+        owners: &[(String, u64, u64)],
+    ) -> Result<
+        Vec<crate::memory::wait_head::ThreadWaitHead>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if owners.len() > 100 {
+            return Err("wait head scope exceeds 100".into());
+        }
+        let mut result = Vec::new();
+        for chunk in owners.chunks(8) {
+            let mut query =
+                crate::memory::wait_head::wait_head_query!(sqlx::Postgres, context, chunk);
+            let rows = query.build().fetch_all(&self.pool).await?;
+            result.extend(crate::memory::wait_head::collect_wait_heads!(rows, chunk));
+        }
+        Ok(result)
+    }
     async fn read_thread_inspection_page(
         &self,
         thread: &ThreadRecord,
@@ -255,6 +430,12 @@ impl ThreadStore for PostgresStore {
             ..Default::default()
         };
         match request.kind {
+            K::Dependencies => {
+                page.dependencies = rows
+                    .iter()
+                    .map(super::scheduler::dependency_from_row)
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
             K::ModelEvents => return Err("Model Events use the bounded Event store".into()),
             K::Activations => {
                 page.activations = rows
@@ -523,7 +704,7 @@ impl ThreadStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
         let row = sqlx::query(
-            "SELECT * FROM threads WHERE id = $1 AND context_id = $2 AND session_id = $3",
+            &format!("SELECT {} FROM threads source WHERE source.id = $1 AND source.context_id = $2 AND source.session_id = $3",crate::memory::activity_page::metadata_columns(crate::memory::activity_page::ActivityCollection::Threads,true)),
         )
         .bind(thread_id)
         .bind(context_id)
@@ -539,7 +720,7 @@ impl ThreadStore for PostgresStore {
         while offset < threads.len() {
             let remaining = limit + 1 - threads.len();
             let parent_id = threads[offset].id.clone();
-            let rows = sqlx::query("SELECT * FROM threads WHERE context_id = $1 AND session_id = $2 AND parent_thread_id = $3 ORDER BY created_at, id LIMIT $4")
+            let rows = sqlx::query(&format!("SELECT {} FROM threads source WHERE source.context_id = $1 AND source.session_id = $2 AND source.parent_thread_id = $3 ORDER BY source.created_at, source.id LIMIT $4",crate::memory::activity_page::metadata_columns(crate::memory::activity_page::ActivityCollection::Threads,true)))
                 .bind(context_id).bind(session_id).bind(&parent_id).bind(remaining as i64)
                 .fetch_all(&mut *tx).await?;
             for row in rows {
@@ -566,6 +747,42 @@ impl ThreadStore for PostgresStore {
         }))
     }
 
+    async fn read_thread_headers(
+        &self,
+        context: &str,
+        ids: &[String],
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if ids.len() > 200 || ids.iter().any(|id| id.is_empty() || id.len() > 512) {
+            return Err("invalid Thread metadata points".into());
+        }
+        let mut records = Vec::new();
+        for ids in ids.chunks(50) {
+            let mut q = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
+            q.push(crate::memory::activity_page::metadata_columns(
+                crate::memory::activity_page::ActivityCollection::Threads,
+                true,
+            ))
+            .push(" FROM threads source WHERE source.context_id=")
+            .push_bind(context.to_owned())
+            .push(" AND source.id IN (");
+            {
+                let mut values = q.separated(",");
+                for id in ids {
+                    values.push_bind(id.clone());
+                }
+            }
+            q.push(")");
+            records.extend(
+                q.build()
+                    .fetch_all(&self.pool)
+                    .await?
+                    .iter()
+                    .map(thread_from_row)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+        Ok(records)
+    }
     async fn list_threads_by_ids(
         &self,
         context_id: &str,
@@ -725,11 +942,53 @@ impl ThreadStore for PostgresStore {
         )?)
     }
 
+    async fn read_activity_page(
+        &self,
+        request: &crate::memory::activity_page::ActivityPageQuery,
+    ) -> Result<crate::memory::activity_page::ActivityPage, StoreError> {
+        use crate::memory::activity_page::{ActivityCollection as K, ActivityPage};
+        let mut query =
+            crate::memory::activity_page::activity_page_query!(sqlx::Postgres, request)?;
+        let rows = query.build().fetch_all(&self.pool).await?;
+        let limit = request.limit();
+        let has_more = rows.len() > limit;
+        let next_cursor = if has_more {
+            rows.get(limit - 1).map(|row| {
+                request.cursor_for(
+                    row.get("updated_at"),
+                    row.get("id"),
+                    if request.collection == K::Schedules {
+                        i64::from(row.get::<i32, _>("directory_bucket"))
+                    } else {
+                        0
+                    },
+                )
+            })
+        } else {
+            None
+        };
+        let mut page = ActivityPage {
+            has_more,
+            next_cursor,
+            ..Default::default()
+        };
+        for row in rows.iter().take(limit) {
+            match request.collection {
+                K::Threads => page.threads.push(thread_from_row(row)?),
+                K::Objectives => page.objectives.push(super::objective_from_row(row)?),
+                K::Schedules => page
+                    .schedules
+                    .push(super::schedule::schedule_from_row(row)?),
+            }
+        }
+        Ok(page)
+    }
     async fn read_terminal_thread_page(
         &self,
         context_id: &str,
         cursor: Option<String>,
         limit: usize,
+        metadata_only: bool,
     ) -> Result<crate::memory::directory::CursorPage<ThreadRecord>, StoreError> {
         use crate::memory::directory::{CursorPage, DirectoryCursor};
         let limit = limit.clamp(1, 200);
@@ -737,7 +996,8 @@ impl ThreadStore for PostgresStore {
             sqlx::Postgres,
             context_id,
             cursor,
-            limit
+            limit,
+            metadata_only
         )?;
         let rows = query.build().fetch_all(&self.pool).await?;
         let has_more = rows.len() > limit;

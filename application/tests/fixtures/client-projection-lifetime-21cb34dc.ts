@@ -47,6 +47,10 @@ export const cognitiveProjectionClear = originalProjectionClear
     "setContentCounts([]);\n    setCognitiveAppCatalog({ versions: [], connections: [] });",
   )
   .replace(
+    "scriptOverviews.current.clear();",
+    "scriptOverviews.current.clear();\n    setActivityPage(undefined);\n    activityCursorRequested.current = undefined;",
+  )
+  .replace(
     "setContentCatalogVersion(0);",
     "setContentCatalogVersion(0);\n    cognitiveManagement.invalidateAccess();",
   );

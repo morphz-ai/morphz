@@ -62,7 +62,7 @@ test("one bounded native projection feeds 13 branches/100 Jobs without full Thre
       "inspector cannot submit or stop a task",
     );
     reads.push(path);
-    if (path === "/api/approvals") return { approvals: [] };
+    if (path.split("?")[0] === "/api/approvals") return { approvals: [] };
     const url = new URL(path, "http://controlled.invalid");
     assert.equal(
       url.pathname,
@@ -152,4 +152,72 @@ test("native projection refuses foreign scope, malformed topology, duplicate Thr
     }),
     /不属于|核验/,
   );
+});
+
+test("approval continuation reads one native page without reopening Jobs and retires foreign scopes", async () => {
+  const paths: string[] = [];
+  const source = {
+    contextId: "approval-context",
+    sessionId: "approval-session",
+  };
+  const request = async (path: string) => {
+    paths.push(path);
+    const url = new URL(path, "http://test.invalid");
+    if (url.pathname.endsWith("/execution-records"))
+      return {
+        session_id: source.sessionId,
+        context_id: source.contextId,
+        selected_thread_id: null,
+        source_root_id: null,
+        limit: 100,
+        has_more_jobs: false,
+        threads_truncated: false,
+        threads: [],
+        jobs: [],
+      };
+    assert.equal(url.pathname, "/api/approvals");
+    assert.equal(url.searchParams.get("limit"), "50");
+    const second = url.searchParams.get("cursor") === "native-approval-next";
+    return {
+      approvals: Array.from({ length: second ? 1 : 50 }, (_, i) => ({
+        requested_at: "2026-11-01T00:00:00Z",
+        request: {
+          approval_id: `a-${second ? 50 : i}`,
+          session_id: source.sessionId,
+          context_id: source.contextId,
+          justification: "TEST",
+          action: {},
+          requested: {},
+        },
+      })),
+      has_more: !second,
+      next_cursor: second ? null : "native-approval-next",
+    };
+  };
+  const scope = { projectId: "project", artifactId: null };
+  const controls = new ExecutionControls(request, () => source);
+  const head = await controls.snapshot(scope);
+  assert.equal(head.approvals.length, 50);
+  assert.ok(head.nextApprovalCursor);
+  assert.equal(paths.filter((p) => p.includes("execution-records")).length, 1);
+  const tail = await controls.snapshot({
+    ...scope,
+    approvalCursor: head.nextApprovalCursor,
+  });
+  assert.equal(tail.approvals.length, 1);
+  assert.equal(tail.nextApprovalCursor, undefined);
+  assert.equal(
+    paths.filter((p) => p.includes("execution-records")).length,
+    1,
+    "only the requested child collection reads on More",
+  );
+  const before = paths.length;
+  await assert.rejects(
+    new ExecutionControls(request, () => ({
+      ...source,
+      contextId: "other",
+    })).snapshot({ ...scope, approvalCursor: head.nextApprovalCursor }),
+    /范围已变化/,
+  );
+  assert.equal(paths.length, before);
 });

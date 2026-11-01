@@ -765,6 +765,13 @@ impl PostgresStore {
             store.run_versioned_migration("20261101_06_binding_agent_index",crate::memory::directory::binding_agent::postgres(&store.pool)).await?;
             store.run_versioned_migration("20261101_07_terminal_catalog_index", terminal::migrate_catalog(&store.pool)).await?;
             store.run_versioned_migration("20261101_08_scheduler_recovery_index", crate::memory::recovery::postgres_scheduler_indexes(&store.pool)).await?;
+            store.run_versioned_migration("20261101_09_activity_page_index", async {
+                sqlx::query(crate::memory::activity_page::LIVE_GOAL_INDEX).execute(&store.pool).await?;
+                for sql in crate::memory::audit_page::INDEXES {sqlx::query(sql).execute(&store.pool).await?;}
+                sqlx::query(crate::memory::wait_head::INDEX).execute(&store.pool).await?;
+                for sql in crate::memory::job_header::HEADER_INDEXES {sqlx::query(sql).execute(&store.pool).await?;}
+                Ok(())
+            }).await?;
             // Index creation is retried outside the versioned migration so a
             // deployment that failed to build it once recovers on a later
             // start without editing migration history.
@@ -783,6 +790,32 @@ impl PostgresStore {
             .await;
         migrations?;
         unlock?;
+        store.run_versioned_migration("20261101_10_commit_visible_event_tail",async {
+            sqlx::query("ALTER TABLE events ADD COLUMN IF NOT EXISTS append_xid xid8 NOT NULL DEFAULT '0'::xid8").execute(&store.pool).await?;
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_event_append_xid_sequence ON events(append_xid,sequence)").execute(&store.pool).await?;
+            // Assign the transaction identity before reserving a sequence even
+            // for direct native SQL writers. No global writer serialization.
+            sqlx::query("DO $migration$ DECLARE source TEXT := pg_get_serial_sequence('events','sequence'); BEGIN EXECUTE format('CREATE OR REPLACE FUNCTION morphz_next_event_sequence() RETURNS BIGINT LANGUAGE plpgsql AS $function$ BEGIN PERFORM pg_current_xact_id(); RETURN nextval(%L::regclass); END $function$',source); END $migration$").execute(&store.pool).await?;
+            sqlx::query("ALTER TABLE events ALTER COLUMN sequence SET DEFAULT morphz_next_event_sequence()").execute(&store.pool).await?;
+            sqlx::query("CREATE OR REPLACE FUNCTION morphz_event_append_xid() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.append_xid := pg_current_xact_id(); RETURN NEW; END $$").execute(&store.pool).await?;
+            sqlx::query("DROP TRIGGER IF EXISTS morphz_event_append_xid ON events").execute(&store.pool).await?;
+            sqlx::query("CREATE TRIGGER morphz_event_append_xid BEFORE INSERT ON events FOR EACH ROW EXECUTE FUNCTION morphz_event_append_xid()").execute(&store.pool).await?;
+            Ok(())
+        }).await?;
+        store
+            .run_versioned_migration(
+                "20261101_11_approval_thread_page",
+                crate::memory::directory::approval_index::postgres(&store.pool),
+            )
+            .await?;
+        store
+            .run_versioned_migration("20261101_12_delegation_page", async {
+                for sql in crate::memory::delegation_page::INDEXES {
+                    sqlx::query(sql).execute(&store.pool).await?;
+                }
+                Ok(())
+            })
+            .await?;
         store.start_database_change_listener(database_url).await?;
         Ok(store)
     }
@@ -5588,6 +5621,126 @@ fn requires_snapshot(event: &Event, revision: u64) -> bool {
 
 #[async_trait::async_trait]
 impl EventStore for PostgresStore {
+    async fn event_input_previews(
+        &self,
+        context: &str,
+        ids: &[String],
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        crate::memory::event_tail::input_previews!(sqlx::Postgres, &self.pool, context, ids, true)
+    }
+    async fn event_tail_checkpoint(
+        &self,
+    ) -> Result<crate::memory::event_tail::EventTailCursor, StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let transactions = sqlx::query_scalar::<_, String>(
+            "SELECT CAST(pg_snapshot_xip(pg_current_snapshot()) AS TEXT) LIMIT 1025",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        if transactions.len() > 1024 {
+            return Err("Event snapshot exceeds transaction budget".into());
+        }
+        let sequence: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM events")
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(crate::memory::event_tail::EventTailCursor {
+            sequence: u64::try_from(sequence)?,
+            transactions: transactions
+                .into_iter()
+                .map(|id| {
+                    Ok(crate::memory::event_tail::PendingTransaction {
+                        id: id.parse()?,
+                        after: 0,
+                    })
+                })
+                .collect::<Result<Vec<_>, StoreError>>()?,
+        })
+    }
+    async fn read_event_tail_page(
+        &self,
+        cursor: &crate::memory::event_tail::EventTailCursor,
+        limit: usize,
+    ) -> Result<crate::memory::event_tail::EventTailPage, StoreError> {
+        use crate::memory::event_tail::*;
+        validate(cursor, limit)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let active = sqlx::query_scalar::<_, String>(
+            "SELECT CAST(pg_snapshot_xip(pg_current_snapshot()) AS TEXT) LIMIT 1025",
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|id| id.parse::<u64>())
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
+        if active.len() > 1024 {
+            return Err("Event snapshot exceeds transaction budget".into());
+        }
+        let mut next = cursor.clone();
+        for id in &active {
+            if !next.transactions.iter().any(|t| t.id == *id) {
+                next.transactions
+                    .push(PendingTransaction { id: *id, after: 0 });
+            }
+        }
+        if next.transactions.len() > 1024 {
+            return Err("Event snapshot exceeds retained transaction budget".into());
+        }
+        let ready = next
+            .transactions
+            .iter()
+            .position(|t| !active.contains(&t.id));
+        let mut rows = if let Some(index) = ready {
+            let pending = &next.transactions[index];
+            sqlx::query("SELECT id,sequence FROM events WHERE append_xid=CAST(CAST($1 AS TEXT) AS xid8) AND sequence>$2 AND sequence<=$3 ORDER BY sequence LIMIT $4").bind(pending.id.to_string()).bind(i64::try_from(pending.after)?).bind(i64::try_from(cursor.sequence)?).bind((limit+1) as i64).fetch_all(&mut *tx).await?
+        } else {
+            sqlx::query(
+                "SELECT id,sequence FROM events WHERE sequence>$1 ORDER BY sequence LIMIT $2",
+            )
+            .bind(i64::try_from(cursor.sequence)?)
+            .bind((limit + 1) as i64)
+            .fetch_all(&mut *tx)
+            .await?
+        };
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        let mut records = Vec::new();
+        for row in rows {
+            let id: String = row.get("id");
+            if id.len() > 512 {
+                return Err("Event locator exceeds byte budget".into());
+            }
+            records.push(EventLocator {
+                id,
+                sequence: u64::try_from(row.get::<i64, _>("sequence"))?,
+            });
+        }
+        if let Some(index) = ready {
+            if more {
+                next.transactions[index].after = records
+                    .last()
+                    .ok_or("Event locator page did not advance")?
+                    .sequence;
+            } else {
+                next.transactions.remove(index);
+            }
+        } else if let Some(last) = records.last() {
+            next.sequence = last.sequence;
+        }
+        tx.commit().await?;
+        Ok(EventTailPage {
+            records,
+            next,
+            has_more: ready.is_some() || more,
+        })
+    }
+
     fn subscribe_event_changes(&self) -> Result<tokio::sync::watch::Receiver<u64>, StoreError> {
         Ok(self.event_change_notify.subscribe())
     }
@@ -7131,6 +7284,24 @@ impl ObjectiveStore for PostgresStore {
             .ok_or_else(|| "Objective 与初始化事件提交后无法读取".into())
     }
 
+    async fn get_objective_preview(
+        &self,
+        id: &str,
+    ) -> Result<Option<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut q = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
+        q.push(crate::memory::activity_page::metadata_columns(
+            crate::memory::activity_page::ActivityCollection::Objectives,
+            true,
+        ))
+        .push(" FROM objectives source WHERE source.id=")
+        .push_bind(id.to_owned());
+        q.build()
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(objective_from_row)
+            .transpose()
+    }
     async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, StoreError> {
         sqlx::query(&format!("{OBJECTIVE_SELECT} WHERE id = $1"))
             .bind(id)
@@ -9830,6 +10001,7 @@ mod tests {
     #[ignore = "requires dedicated PostgreSQL test database"]
     async fn runtime_directory_keyset_pages_postgres() {
         use super::PostgresStore;
+        use crate::memory::EventStore;
         let url = std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL required");
         let schema = format!(
             "morphz_directory_{}_{}",
@@ -10124,6 +10296,92 @@ mod tests {
         crate::memory::directory::tests::session_priority!(sqlx::Postgres, &store);
         crate::memory::directory::tests::inspection_pages!(sqlx::Postgres, &store);
         crate::memory::directory::tests::schedule_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::activity_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::delegation_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::job_header_pages!(sqlx::Postgres, &store);
+        crate::memory::directory::tests::scalar_authority_heads!(sqlx::Postgres, &store);
+        // Two independent transactions must stay concurrent, yet a late
+        // commit below an accepted sequence must remain an exact indexed seek.
+        let initial = store.event_tail_checkpoint().await.unwrap();
+        let mut late = store.pool.begin().await.unwrap();
+        sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('tail-late','2026-11-01T00:00:00Z','TEST','test','test/tail','{}')").execute(&mut *late).await.unwrap();
+        store
+            .append(crate::event::Event::new(
+                "tail-newer".into(),
+                "TEST".into(),
+                "test".into(),
+                "test/tail".into(),
+                Default::default(),
+            ))
+            .await
+            .unwrap();
+        let page = store.read_event_tail_page(&initial, 7).await.unwrap();
+        assert_eq!(
+            page.records
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tail-newer"]
+        );
+        let checkpoint = store.event_tail_checkpoint().await.unwrap();
+        late.commit().await.unwrap();
+        for mut cursor in [page.next, checkpoint] {
+            let mut seen = Vec::new();
+            for _ in 0..8 {
+                let page = store.read_event_tail_page(&cursor, 7).await.unwrap();
+                seen.extend(page.records.iter().map(|r| r.id.clone()));
+                cursor = page.next;
+                if !page.has_more {
+                    break;
+                }
+            }
+            assert_eq!(
+                seen,
+                vec!["tail-late"],
+                "a sequence head is not a commit visibility boundary"
+            );
+        }
+        let mut late = store.pool.begin().await.unwrap();
+        sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<25) INSERT INTO events(id,timestamp,actor,type,topic,payload) SELECT 'tail-many-'||CAST(i AS TEXT),'2026-11-01T00:00:00Z','TEST','test','test/tail','{}' FROM n").execute(&mut *late).await.unwrap();
+        store
+            .append(crate::event::Event::new(
+                "tail-after-many".into(),
+                "TEST".into(),
+                "test".into(),
+                "test/tail".into(),
+                Default::default(),
+            ))
+            .await
+            .unwrap();
+        let mut cursor = store.event_tail_checkpoint().await.unwrap();
+        late.commit().await.unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..12 {
+            let page = store.read_event_tail_page(&cursor, 7).await.unwrap();
+            assert!(page.records.len() <= 7);
+            for row in page.records {
+                assert!(seen.insert(row.id));
+            }
+            cursor = page.next;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 25);
+        let mut rollback = store.pool.begin().await.unwrap();
+        sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('tail-aborted','2026-11-01T00:00:00Z','TEST','test','test/tail','{}')").execute(&mut *rollback).await.unwrap();
+        let mut cursor = store.event_tail_checkpoint().await.unwrap();
+        rollback.rollback().await.unwrap();
+        for _ in 0..4 {
+            let page = store.read_event_tail_page(&cursor, 7).await.unwrap();
+            assert!(page.records.is_empty());
+            cursor = page.next;
+            if !page.has_more {
+                break;
+            }
+        }
+        assert!(cursor.transactions.is_empty());
+
         crate::memory::directory::tests::terminal_catalog_pages!(sqlx::Postgres, &store);
         crate::memory::directory::tests::identity_recovery!(sqlx::Postgres, &store, true);
         crate::memory::directory::tests::transfer_recovery!(sqlx::Postgres, &store, true);

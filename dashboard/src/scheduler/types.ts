@@ -1,4 +1,5 @@
 export interface ObjectiveRecord {
+  source_event_id?: string
   id: string
   generation: number
   context_id: string
@@ -179,6 +180,8 @@ export interface SchedulerActivationSnapshot {
 }
 
 export interface SchedulerThreadSnapshot {
+  dependencies_loaded?:boolean
+  dependencies?: SchedulerDependencyRecord[]
   user_input_request?: import('../../../sdk/typescript/src/user-input.ts').PendingUserInputRequest | null
   intent?: string | null
   thread: ThreadRecord
@@ -281,12 +284,18 @@ export interface SchedulerSummary {
 }
 
 export interface SchedulerDetailBounds {
+  bodies_loaded?:boolean
+  invariant_details_complete?:boolean
   limit: number
   has_more_sessions: boolean
   has_more_objectives: boolean
   has_more_threads: boolean
   has_more_history?: boolean
+  next_objective_history_cursor?: string | null
   next_history_cursor?: string | null
+  next_thread_cursor?: string | null
+  next_objective_cursor?: string | null
+  next_schedule_cursor?: string | null
   has_more_activations: boolean
   has_more_signals: boolean
   has_more_jobs: boolean

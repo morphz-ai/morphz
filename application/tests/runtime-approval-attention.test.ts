@@ -300,61 +300,124 @@ test("a discovered child approval still uses the original Human command, fresh o
 });
 
 test("pending approvals read exactly one explicit continuation and never expose its operator cursor", async () => {
-  const x=await fixture();
+  const x = await fixture();
   try {
-    x.bridge.state.threadBindings[x.binding.id]=x.binding;
-    const first=x.approval;
-    const second={...first,request:{...first.request,approval_id:"second-pending"}};
-    const paths:string[]=[];
-    x.bridge.request=async(path:string)=>{
+    x.bridge.state.threadBindings[x.binding.id] = x.binding;
+    const first = x.approval;
+    const second = {
+      ...first,
+      request: { ...first.request, approval_id: "second-pending" },
+    };
+    const paths: string[] = [];
+    x.bridge.request = async (path: string) => {
       paths.push(path);
-      if(path==="/api/approvals") return {approvals:[first],has_more:true,next_cursor:"opaque-operator-cursor"};
-      const query=new URL(path,"http://test").searchParams;
-      assert.equal(query.get("cursor"),"opaque-operator-cursor"); assert.equal(query.get("limit"),"50");
-      return {approvals:[second],has_more:false,next_cursor:null};
+      if (path === "/api/approvals")
+        return {
+          approvals: [first],
+          has_more: true,
+          next_cursor: "opaque-operator-cursor",
+        };
+      const query = new URL(path, "http://test").searchParams;
+      assert.equal(query.get("cursor"), "opaque-operator-cursor");
+      assert.equal(query.get("limit"), "50");
+      return { approvals: [second], has_more: false, next_cursor: null };
     };
     await x.bridge.refreshAttention();
-    assert.equal(paths.length,1,"head must not drain continuation");
-    const before=x.f.runtime.platformNavigationSnapshot(localAccess,[x.f.projectId]).runtime.attention!;
-    assert.equal(before.hasMore,true); assert.equal(before.approvals.length,1);
+    assert.equal(paths.length, 1, "head must not drain continuation");
+    const before = x.f.runtime.platformNavigationSnapshot(localAccess, [
+      x.f.projectId,
+    ]).runtime.attention!;
+    assert.equal(before.hasMore, true);
+    assert.equal(before.approvals.length, 1);
     assert.ok(!JSON.stringify(before).includes("opaque-operator-cursor"));
     await x.f.runtime.loadMorePlatformApprovals();
-    assert.equal(paths.length,2); assert.equal(x.bridge.attention.approvals.length,2); assert.equal(x.bridge.attention.hasMore,false);
-    await x.f.runtime.loadMorePlatformApprovals(); assert.equal(paths.length,2,"exhausted inventory performs no read");
-  } finally {await x.f.close();}
+    assert.equal(paths.length, 2);
+    assert.equal(x.bridge.attention.approvals.length, 2);
+    assert.equal(x.bridge.attention.hasMore, false);
+    await x.f.runtime.loadMorePlatformApprovals();
+    assert.equal(paths.length, 2, "exhausted inventory performs no read");
+  } finally {
+    await x.f.close();
+  }
 });
 
-test("a failed continuation retains requests and the same cursor for explicit retry",async()=>{
-  const x=await fixture();
+test("a failed continuation retains requests and the same cursor for explicit retry", async () => {
+  const x = await fixture();
   try {
-    x.bridge.state.threadBindings[x.binding.id]=x.binding;
-    let fail=true;const cursors:string[]=[];
-    x.bridge.request=async(path:string)=>{
-      if(path==="/api/approvals")return {approvals:[x.approval],has_more:true,next_cursor:"same-cursor"};
-      cursors.push(new URL(path,"http://test").searchParams.get("cursor")!);
-      if(fail)throw new Error("test transport failure");
-      return {approvals:[],has_more:false,next_cursor:null};
+    x.bridge.state.threadBindings[x.binding.id] = x.binding;
+    let fail = true;
+    const cursors: string[] = [];
+    x.bridge.request = async (path: string) => {
+      if (path === "/api/approvals")
+        return {
+          approvals: [x.approval],
+          has_more: true,
+          next_cursor: "same-cursor",
+        };
+      cursors.push(new URL(path, "http://test").searchParams.get("cursor")!);
+      if (fail) throw new Error("test transport failure");
+      return { approvals: [], has_more: false, next_cursor: null };
     };
-    await x.bridge.refreshAttention();await x.f.runtime.loadMorePlatformApprovals();
-    assert.equal(x.bridge.attention.available,false);assert.equal(x.bridge.attention.approvals.length,1);assert.equal(x.bridge.attention.hasMore,true);
-    fail=false;await x.f.runtime.loadMorePlatformApprovals();
-    assert.deepEqual(cursors,["same-cursor","same-cursor"]);assert.equal(x.bridge.attention.available,true);assert.equal(x.bridge.attention.approvals.length,1);
-  }finally{await x.f.close();}
+    await x.bridge.refreshAttention();
+    await x.f.runtime.loadMorePlatformApprovals();
+    assert.equal(x.bridge.attention.available, false);
+    assert.equal(x.bridge.attention.approvals.length, 1);
+    assert.equal(x.bridge.attention.hasMore, true);
+    fail = false;
+    await x.f.runtime.loadMorePlatformApprovals();
+    assert.deepEqual(cursors, ["same-cursor", "same-cursor"]);
+    assert.equal(x.bridge.attention.available, true);
+    assert.equal(x.bridge.attention.approvals.length, 1);
+  } finally {
+    await x.f.close();
+  }
 });
 
-test("a committed invalidation received during continuation is retained and reads a fresh head afterwards",async()=>{
-  const x=await fixture();
+test("a committed invalidation received during continuation is retained and reads a fresh head afterwards", async () => {
+  const x = await fixture();
   try {
-    x.bridge.state.threadBindings[x.binding.id]=x.binding;
-    let resolve!:()=>void,entered!:()=>void;
-    const gate=new Promise<void>(done=>{resolve=done});const started=new Promise<void>(done=>{entered=done});
-    let heads=0;const latest={...x.approval,request:{...x.approval.request,justification:"Updated native request"}};
-    x.bridge.request=async(path:string)=>{
-      if(path==="/api/approvals"){heads++;return {approvals:[heads>1?latest:x.approval],has_more:true,next_cursor:"cursor"};}
-      entered();await gate;return {approvals:[],has_more:false,next_cursor:null};
+    x.bridge.state.threadBindings[x.binding.id] = x.binding;
+    let resolve!: () => void, entered!: () => void;
+    const gate = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const started = new Promise<void>((done) => {
+      entered = done;
+    });
+    let heads = 0;
+    const latest = {
+      ...x.approval,
+      request: {
+        ...x.approval.request,
+        justification: "Updated native request",
+      },
     };
-    await x.bridge.refreshAttention();const more=x.f.runtime.loadMorePlatformApprovals();await started;
-    const invalidated=x.bridge.refreshAttention();resolve();await Promise.all([more,invalidated]);
-    assert.equal(heads,2);assert.equal(x.bridge.attention.approvals[0].approval.request.justification,"Updated native request");assert.equal(x.bridge.attention.hasMore,true);
-  }finally{await x.f.close();}
+    x.bridge.request = async (path: string) => {
+      if (path === "/api/approvals") {
+        heads++;
+        return {
+          approvals: [heads > 1 ? latest : x.approval],
+          has_more: true,
+          next_cursor: "cursor",
+        };
+      }
+      entered();
+      await gate;
+      return { approvals: [], has_more: false, next_cursor: null };
+    };
+    await x.bridge.refreshAttention();
+    const more = x.f.runtime.loadMorePlatformApprovals();
+    await started;
+    const invalidated = x.bridge.refreshAttention();
+    resolve();
+    await Promise.all([more, invalidated]);
+    assert.equal(heads, 2);
+    assert.equal(
+      x.bridge.attention.approvals[0].approval.request.justification,
+      "Updated native request",
+    );
+    assert.equal(x.bridge.attention.hasMore, true);
+  } finally {
+    await x.f.close();
+  }
 });

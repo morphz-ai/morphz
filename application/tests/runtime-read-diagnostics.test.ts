@@ -72,7 +72,11 @@ test("a Session delta timeout preserves healthy transport, exact cursor and read
     await runtime.tick();
     assert.equal(runtime.state.connected, true);
     assert.equal(session.cursor, cursor);
-    assert.equal(runtime.state.activity.available, true);
+    assert.equal(
+      runtime.state.activity,
+      undefined,
+      "a Session delta failure must not acquire a hidden activity reader",
+    );
     const details = await runtime.inspectConnection();
     assert.equal(details.state, "connected");
     assert.equal(details.lastReadFailure.operation, "session-events");

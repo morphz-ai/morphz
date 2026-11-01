@@ -9,6 +9,16 @@ export function executionRecordsPeer(
 ): RuntimeRequest {
   return async (path, method, body) => {
     const url = new URL(path, "http://controlled.invalid");
+    if (url.pathname.startsWith("/api/approvals/") && !method) {
+      const inventory = (await peer("/api/approvals")) as {
+        approvals: { request: { approval_id: string } }[];
+      };
+      return inventory.approvals.find(
+        (a) =>
+          a.request.approval_id ===
+          decodeURIComponent(url.pathname.split("/").at(-1)!),
+      );
+    }
     if (!url.pathname.endsWith("/execution-records"))
       return peer(path, method, body);
     const sessionId = decodeURIComponent(url.pathname.split("/").at(-2)!);

@@ -129,9 +129,9 @@ test("legal Client counterfactuals fail real import, captures, placement, hooks,
   const removed = changed(client, executionRegistration, "");
   const moved = changed(
     removed,
-    "  function refresh(options?: { refreshActivity?: boolean }) {",
+    "  const [activityPage, setActivityPage] = useState<",
     executionRegistration +
-      "  function refresh(options?: { refreshActivity?: boolean }) {",
+      "  const [activityPage, setActivityPage] = useState<",
   );
   assert.throws(() => validate(moved), {
     name: "AssertionError",
@@ -234,7 +234,22 @@ test("legal owner counterfactuals fail complete original timeout, signal, parse,
   ];
   for (const [before, after, rule] of variants)
     assert.throws(
-      () => validate(client, changed(executionOwnerText, before, after)),
+      () => {
+        // Counterexamples mutate the original algorithm, rather than a new
+        // read-only method which deliberately uses the same request tuple.
+        if (before === "{ scope, jobId }") {
+          const start = executionOwnerText.indexOf(
+            "  async function executionResult(",
+          );
+          const tail = executionOwnerText.slice(start);
+          assert.equal(tail.split(before).length, 2, "one result tuple");
+          const mutated =
+            executionOwnerText.slice(0, start) + tail.replace(before, after);
+          parseReaderSources({ Mutation: mutated });
+          return validate(client, mutated);
+        }
+        return validate(client, changed(executionOwnerText, before, after));
+      },
       {
         name: "AssertionError",
         message: new RegExp(rule),

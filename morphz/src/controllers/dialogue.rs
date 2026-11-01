@@ -81,21 +81,40 @@ impl DialogueController {
         reason: impl Into<String>,
         actor: &str,
     ) -> KernelCommand {
+        Self::control_thread_fence(
+            &thread.id,
+            thread.revision,
+            thread.generation,
+            context_id,
+            action,
+            reason,
+            actor,
+        )
+    }
+    pub(crate) fn control_thread_fence(
+        thread_id: &str,
+        revision: u64,
+        generation: u64,
+        context_id: &str,
+        action: ThreadControlAction,
+        reason: impl Into<String>,
+        actor: &str,
+    ) -> KernelCommand {
         let reason = reason.into();
         let material = format!(
             "control-thread\0{}\0{}\0{}\0{action:?}\0{reason}",
-            thread.id, thread.revision, thread.generation
+            thread_id, revision, generation
         );
         KernelCommand {
             header: KernelCommandHeader::new(
                 crate::scheduler::stable_command_id("thread-control", &material),
-                &thread.id,
+                thread_id,
                 context_id,
                 actor,
             )
-            .with_fence(thread.revision, Some(thread.generation)),
+            .with_fence(revision, Some(generation)),
             payload: KernelCommandPayload::ControlThread(ControlThreadCommand {
-                thread_id: thread.id.clone(),
+                thread_id: thread_id.to_string(),
                 action,
                 reason: Some(reason),
             }),

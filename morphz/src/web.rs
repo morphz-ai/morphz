@@ -11,11 +11,10 @@ use crate::execution_target::EdgeArtifactDataDirection;
 use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
-    CapabilityLeaseRestriction, ContextUpdate, DelegationFilter, DelegationStatus,
-    ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession,
-    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, QueryFilter, ScheduleMutation,
-    SessionMountKind, SessionStatus, SessionTimelineCursor, SessionUpdate, ThreadControlAction,
-    ThreadMutation,
+    CapabilityLeaseRestriction, ContextUpdate, DelegationStatus, ExecutionTargetRegistration,
+    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind,
+    SessionStatus, SessionTimelineCursor, SessionUpdate, ThreadControlAction, ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::provider::auth::{
@@ -76,13 +75,52 @@ const DASHBOARD_WEBSOCKET_HEARTBEAT_INTERVAL: std::time::Duration =
 const DASHBOARD_DURABLE_EVENT_BATCH_SIZE: usize = 256;
 const DASHBOARD_RECENT_EVENT_IDS: usize = 16_384;
 
-#[derive(Default)]
 struct RecentDashboardEventIds {
+    pending: HashSet<String>,
+    changed: tokio::sync::watch::Sender<u64>,
     ids: HashSet<String>,
     order: VecDeque<String>,
 }
 
+impl Default for RecentDashboardEventIds {
+    fn default() -> Self {
+        Self {
+            ids: HashSet::new(),
+            order: VecDeque::new(),
+            pending: HashSet::new(),
+            changed: tokio::sync::watch::channel(0).0,
+        }
+    }
+}
+async fn claim_dashboard_event(recent: &Arc<Mutex<RecentDashboardEventIds>>, id: &str) -> bool {
+    loop {
+        let mut changed = {
+            let mut state = recent.lock().await;
+            if state.ids.contains(id) {
+                return false;
+            }
+            if state.pending.insert(id.to_owned()) {
+                return true;
+            }
+            state.changed.subscribe()
+        };
+        if changed.changed().await.is_err() {
+            return false;
+        }
+    }
+}
 impl RecentDashboardEventIds {
+    fn completed(&mut self, id: &str) {
+        self.pending.remove(id);
+        self.insert(id);
+        self.changed
+            .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+    }
+    fn failed(&mut self, id: &str) {
+        self.pending.remove(id);
+        self.changed
+            .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+    }
     fn insert(&mut self, event_id: &str) -> bool {
         if !self.ids.insert(event_id.to_string()) {
             return false;
@@ -96,6 +134,7 @@ impl RecentDashboardEventIds {
         true
     }
 
+    #[cfg(test)]
     fn remove(&mut self, event_id: &str) {
         self.ids.remove(event_id);
         self.order.retain(|candidate| candidate != event_id);
@@ -168,6 +207,8 @@ struct ExecutionRecordsHttpQuery {
     #[serde(default)]
     metadata_only: bool,
     limit: Option<usize>,
+    headers_only: Option<bool>,
+    cursor: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -782,6 +823,10 @@ struct SchedulerSnapshotHttpQuery {
     #[serde(default)]
     history_only: bool,
     history_cursor: Option<String>,
+    thread_cursor: Option<String>,
+    objective_cursor: Option<String>,
+    schedule_cursor: Option<String>,
+    collection: Option<crate::memory::activity_page::ActivityCollection>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -804,6 +849,7 @@ struct RuntimeOverviewHttpQuery {
 #[derive(Default, serde::Deserialize)]
 struct DelegationHttpQuery {
     token: Option<String>,
+    cursor: Option<String>,
     context_id: Option<String>,
     session_id: Option<String>,
     #[serde(default)]
@@ -971,15 +1017,8 @@ impl Server {
         // in either the bootstrap or a busy read window retains a wakeup.
         let durable_changes = self.runtime.subscribe_event_changes()?;
         let durable_after_sequence = loop {
-            match self
-                .runtime
-                .query_events(QueryFilter {
-                    latest_k: Some(1),
-                    ..Default::default()
-                })
-                .await
-            {
-                Ok(events) => break events.last().and_then(|event| event.sequence).unwrap_or(0),
+            match self.runtime.event_tail_checkpoint().await {
+                Ok(cursor) => break cursor,
                 Err(error) => {
                     tracing::warn!(
                         event_code = "web.websocket.durable_tail_initialize_failed",
@@ -995,7 +1034,7 @@ impl Server {
         let local_recent_event_ids = Arc::clone(&recent_event_ids);
         tokio::spawn(async move {
             while let Some(ev) = events.recv().await {
-                if !local_recent_event_ids.lock().await.insert(&ev.id) {
+                if !claim_dashboard_event(&local_recent_event_ids, &ev.id).await {
                     continue;
                 }
                 let event_id = ev.id.clone();
@@ -1009,8 +1048,10 @@ impl Server {
                 )
                 .await;
                 if let Err(error) = result {
-                    local_recent_event_ids.lock().await.remove(&event_id);
+                    local_recent_event_ids.lock().await.failed(&event_id);
                     tracing::warn!(event_code = "web.websocket.event_mirror_failed", error = %error, "WebSocket Event mirroring failed");
+                } else {
+                    local_recent_event_ids.lock().await.completed(&event_id);
                 }
             }
         });
@@ -1670,7 +1711,9 @@ impl Server {
             )
             .route(
                 "/api/objectives/:objective_id",
-                patch(handle_edit_objective).delete(handle_delete_objective),
+                get(handle_read_objective)
+                    .patch(handle_edit_objective)
+                    .delete(handle_delete_objective),
             )
             .route(
                 "/api/delegations/:delegation_id",
@@ -4012,6 +4055,10 @@ async fn handle_session_approval_decision(
 
 #[derive(Default, serde::Deserialize)]
 struct PendingApprovalQuery {
+    context_id: Option<String>,
+    session_id: Option<String>,
+    thread_id: Option<String>,
+    root_ids: Option<String>,
     #[serde(flatten)]
     auth: AuthQuery,
     cursor: Option<String>,
@@ -4024,6 +4071,49 @@ async fn handle_list_approvals(
 ) -> impl IntoResponse {
     if !is_operator_authorized(&state, &headers, query.auth.token.as_deref()) {
         return unauthorized_response();
+    }
+    if query.session_id.is_none() && (query.thread_id.is_some() || query.root_ids.is_some()) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Approval Thread or roots require their Session",
+        );
+    }
+    if let Some(session_id) = query.session_id {
+        let Some(context_id) = query.context_id else {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Approval Session requires its Context",
+            );
+        };
+        let root_ids = match query
+            .root_ids
+            .map(|raw| serde_json::from_str::<Vec<String>>(&raw))
+            .transpose()
+        {
+            Ok(ids) => ids.unwrap_or_default(),
+            Err(_) => return error_response(StatusCode::BAD_REQUEST, "Invalid Approval roots"),
+        };
+        let scope = crate::memory::approval_page::ExecutionApprovalScope {
+            context_id,
+            session_id,
+            thread_id: query.thread_id,
+            root_ids,
+        };
+        if let Err(error) = scope.cursor(query.cursor.as_deref()) {
+            return error_response(StatusCode::BAD_REQUEST, error.to_string());
+        }
+        return match state
+            .runtime
+            .execution_pending_approvals_page(
+                &scope,
+                query.cursor.as_deref(),
+                query.limit.unwrap_or(50),
+            )
+            .await
+        {
+            Ok(page) => Json(json!(page)).into_response(),
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
     }
     if let Err(error) = crate::memory::approval_page::key(query.cursor.as_deref()) {
         return error_response(StatusCode::BAD_REQUEST, error.to_string());
@@ -4366,21 +4456,46 @@ async fn authorize_objective_request(
     operator_token: Option<&str>,
     objective_id: &str,
 ) -> Result<ObjectiveRecord, Response> {
+    let operator = is_operator_authorized(state, headers, operator_token);
+    let principal = if operator {
+        None
+    } else {
+        Some(request_principal(state, headers, None).map_err(sdk_error_response)?)
+    };
+    let route = state
+        .runtime
+        .get_objective_preview(objective_id)
+        .await
+        .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Objective does not exist"))?;
+    if let Some(principal) = &principal {
+        state
+            .sdk
+            .get_session(&principal.principal_id, &route.coordinator_session_id)
+            .await
+            .map_err(sdk_error_response)?;
+    }
     let objective = state
         .runtime
         .get_objective(objective_id)
         .await
         .map_err(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or_else(|| error_response(StatusCode::NOT_FOUND, "Objective does not exist"))?;
-    if is_operator_authorized(state, headers, operator_token) {
-        return Ok(objective);
+    if objective.context_id != route.context_id
+        || objective.coordinator_session_id != route.coordinator_session_id
+    {
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "Objective scope changed",
+        ));
     }
-    let principal = request_principal(state, headers, None).map_err(sdk_error_response)?;
-    state
-        .sdk
-        .get_session(&principal.principal_id, &objective.coordinator_session_id)
-        .await
-        .map_err(sdk_error_response)?;
+    if let Some(principal) = &principal {
+        state
+            .sdk
+            .get_session(&principal.principal_id, &objective.coordinator_session_id)
+            .await
+            .map_err(sdk_error_response)?;
+    }
     Ok(objective)
 }
 
@@ -6699,12 +6814,44 @@ async fn handle_get_scheduler_snapshot(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
+    use crate::memory::activity_page::{ActivityCollection as K, ActivityPageQuery as Q};
+    for (collection, cursor, include_terminal) in [
+        (K::Threads, query.thread_cursor.clone(), false),
+        (
+            K::Objectives,
+            query.objective_cursor.clone(),
+            query.include_terminal,
+        ),
+        (
+            K::Schedules,
+            query.schedule_cursor.clone(),
+            query.include_terminal,
+        ),
+    ] {
+        if (Q {
+            context_id: context_id.clone(),
+            collection,
+            cursor,
+            include_terminal,
+            limit: query.limit.unwrap_or(200),
+            metadata_only: !query.include_job_details.unwrap_or(true),
+        })
+        .key()
+        .is_err()
+        {
+            return error_response(StatusCode::BAD_REQUEST, "invalid activity cursor or scope");
+        }
+    }
     match state
         .sdk
         .scheduler_snapshot(
             &context_id,
             SchedulerQuery {
                 include_job_details: query.include_job_details.unwrap_or(true),
+                thread_cursor: query.thread_cursor,
+                objective_cursor: query.objective_cursor,
+                schedule_cursor: query.schedule_cursor,
+                collection: query.collection,
                 include_terminal: query.include_terminal,
                 history_only: query.history_only,
                 history_cursor: query.history_cursor,
@@ -9414,6 +9561,8 @@ async fn handle_get_session_execution_records(
                 root_turn_ids: roots,
                 include_descendants: query.include_descendants,
                 metadata_only: query.metadata_only,
+                headers_only: query.headers_only.unwrap_or(true),
+                cursor: query.cursor,
                 limit: query.limit,
             },
         )
@@ -10032,25 +10181,32 @@ async fn handle_list_delegations(
     if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
     }
-    let limit = query.limit.unwrap_or(200).clamp(1, 500);
-    match state
-        .runtime
-        .query_delegations(DelegationFilter {
-            related_context_id: query.context_id,
-            related_session_id: query.session_id,
-            include_terminal: query.include_terminal,
-            newest_first: true,
-            limit: Some(limit.saturating_add(1)),
-            ..Default::default()
-        })
-        .await
-    {
-        Ok(mut delegations) => {
-            let has_more = delegations.len() > limit;
-            delegations.truncate(limit);
-            Json(json!({ "delegations": delegations, "has_more": has_more })).into_response()
-        }
+    let request = crate::memory::delegation_page::DelegationPageQuery {
+        context_id: query.context_id,
+        session_id: query.session_id,
+        include_terminal: query.include_terminal,
+        cursor: query.cursor,
+        limit: query.limit.unwrap_or(50),
+    };
+    if let Err(error) = request.validate() {
+        return error_response(StatusCode::BAD_REQUEST, error.to_string());
+    }
+    match state.runtime.delegation_page(&request).await {
+        Ok(page) => Json(json!(page)).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_read_objective(
+    State(state): State<Arc<AppState>>,
+    Path(objective_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    match authorize_objective_request(&state, &headers, query.token.as_deref(), &objective_id).await
+    {
+        Ok(objective) => Json(objective).into_response(),
+        Err(response) => response,
     }
 }
 
@@ -10649,9 +10805,10 @@ async fn mirror_durable_dashboard_events(
     default_context_id: String,
     identity_mode: ServerIdentityMode,
     recent_event_ids: Arc<Mutex<RecentDashboardEventIds>>,
-    mut after_sequence: u64,
+    after_sequence: impl Into<crate::memory::event_tail::EventTailCursor>,
     mut changes: tokio::sync::watch::Receiver<u64>,
 ) {
+    let mut cursor = after_sequence.into();
     let mut wait_before_query = true;
     let mut failed = false;
     loop {
@@ -10668,15 +10825,11 @@ async fn mirror_durable_dashboard_events(
             return;
         }
         changes.borrow_and_update();
-        let events = match runtime
-            .query_events(QueryFilter {
-                after_sequence: Some(after_sequence),
-                top_k: Some(DASHBOARD_DURABLE_EVENT_BATCH_SIZE),
-                ..Default::default()
-            })
+        let page = match runtime
+            .read_event_tail_page(&cursor, DASHBOARD_DURABLE_EVENT_BATCH_SIZE)
             .await
         {
-            Ok(events) => events,
+            Ok(page) => page,
             Err(error) => {
                 tracing::warn!(
                     event_code = "web.websocket.durable_tail_failed",
@@ -10687,19 +10840,37 @@ async fn mirror_durable_dashboard_events(
                 continue;
             }
         };
-        wait_before_query = events.len() < DASHBOARD_DURABLE_EVENT_BATCH_SIZE;
-        for event in events {
-            let Some(sequence) = event.sequence else {
-                tracing::warn!(
-                    event_id = %event.id,
-                    event_code = "web.websocket.durable_event_missing_sequence",
-                    "Persisted Dashboard Event has no physical sequence; retaining the current tail cursor"
-                );
+        wait_before_query = !page.has_more;
+        for locator in &page.records {
+            if !claim_dashboard_event(&recent_event_ids, &locator.id).await {
                 continue;
+            }
+            let event = match runtime
+                .query_events(QueryFilter {
+                    event_id: Some(locator.id.clone()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(mut events) if events.len() == 1 => events.remove(0),
+                Ok(_) => {
+                    tracing::error!(event_code="web.websocket.durable_locator_missing",event_id=%locator.id,"Committed Event locator lost its original body");
+                    recent_event_ids.lock().await.failed(&locator.id);
+                    failed = true;
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(%error,event_code="web.websocket.durable_locator_read_failed","Retaining Event cursor for retry");
+                    recent_event_ids.lock().await.failed(&locator.id);
+                    failed = true;
+                    break;
+                }
             };
-            if !recent_event_ids.lock().await.insert(&event.id) {
-                after_sequence = after_sequence.max(sequence);
-                continue;
+            if event.sequence != Some(locator.sequence) {
+                recent_event_ids.lock().await.failed(&locator.id);
+                failed = true;
+                break;
             }
             let event_id = event.id.clone();
             if let Err(error) = mirror_dashboard_event(
@@ -10712,7 +10883,7 @@ async fn mirror_durable_dashboard_events(
             )
             .await
             {
-                recent_event_ids.lock().await.remove(&event_id);
+                recent_event_ids.lock().await.failed(&event_id);
                 tracing::warn!(
                     event_code = "web.websocket.durable_event_mirror_failed",
                     %error,
@@ -10721,7 +10892,10 @@ async fn mirror_durable_dashboard_events(
                 failed = true;
                 break;
             }
-            after_sequence = after_sequence.max(sequence);
+            recent_event_ids.lock().await.completed(&event_id);
+        }
+        if !failed {
+            cursor = page.next;
         }
     }
 }
@@ -10988,6 +11162,29 @@ fn fold_active_model_attempts(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn an_inflight_local_mirror_cannot_advance_the_durable_cursor_before_acceptance() {
+        let recent = std::sync::Arc::new(tokio::sync::Mutex::new(
+            super::RecentDashboardEventIds::default(),
+        ));
+        assert!(super::claim_dashboard_event(&recent, "TEST-native-event").await);
+        let waiting = super::claim_dashboard_event(&recent, "TEST-native-event");
+        tokio::pin!(waiting);
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                std::future::Future::poll(waiting.as_mut(), cx).is_pending()
+            ))
+            .await
+        );
+        recent.lock().await.failed("TEST-native-event");
+        assert!(
+            waiting.await,
+            "the original immutable Event can recover after a rejected mirror"
+        );
+        recent.lock().await.completed("TEST-native-event");
+        assert!(!super::claim_dashboard_event(&recent, "TEST-native-event").await);
+    }
+
     mod multi_target_physical;
 
     use super::*;

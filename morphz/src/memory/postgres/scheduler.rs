@@ -373,26 +373,70 @@ impl SchedulerDependencyStore for PostgresStore {
 
     async fn list_pending_user_input_dependencies(
         &self,
-        thread_ids: &[String],
-    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
-        if thread_ids.is_empty() {
-            return Ok(Vec::new());
+        ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if ids.len() > 1000 {
+            return Err("question owner scope exceeds 1000".into());
         }
-        let rows = sqlx::query("SELECT q.* FROM scheduler_dependencies q JOIN threads t ON t.id=q.owner_id AND t.generation=q.owner_generation WHERE q.owner_kind='thread' AND q.dependency_kind='user_input' AND q.status='pending' AND q.required AND t.status='open' AND q.owner_id=ANY($1) ORDER BY q.owner_id,q.id")
-            .bind(thread_ids).fetch_all(&self.pool).await?;
-        rows.iter().map(dependency_from_row).collect()
+        let mut result = Vec::new();
+        for chunk in ids.chunks(50) {
+            let mut q = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (i, id) in chunk.iter().enumerate() {
+                if i > 0 {
+                    q.push(" UNION ALL ");
+                }
+                q.push("SELECT * FROM (SELECT d.* FROM scheduler_dependencies d WHERE d.owner_kind='thread' AND d.owner_id=").push_bind(id.clone()).push(" AND d.dependency_kind='user_input' AND d.status='pending' AND d.required=TRUE AND EXISTS(SELECT 1 FROM threads p WHERE p.id=d.owner_id AND p.generation=d.owner_generation AND p.status='open') ORDER BY d.id LIMIT 2) question_owner");
+            }
+            let records = q
+                .build()
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(dependency_from_row)
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut owners = std::collections::HashSet::new();
+            for record in records {
+                if !owners.insert(record.owner_id.clone()) {
+                    return Err("More than one pending question exists for an owner".into());
+                }
+                result.push(record);
+            }
+        }
+        Ok(result)
     }
 
     async fn list_active_objective_user_input_dependencies(
         &self,
-        objective_ids: &[String],
-    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
-        if objective_ids.is_empty() {
-            return Ok(Vec::new());
+        ids: &[String],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if ids.len() > 1000 {
+            return Err("question owner scope exceeds 1000".into());
         }
-        let rows = sqlx::query("SELECT q.* FROM scheduler_dependencies q JOIN objectives o ON o.id=q.owner_id AND o.generation=q.owner_generation WHERE q.owner_kind='objective' AND q.dependency_kind='user_input' AND q.status='pending' AND q.required AND o.status='active' AND q.owner_id=ANY($1) ORDER BY q.owner_id,q.id")
-            .bind(objective_ids).fetch_all(&self.pool).await?;
-        rows.iter().map(dependency_from_row).collect()
+        let mut result = Vec::new();
+        for chunk in ids.chunks(50) {
+            let mut q = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (i, id) in chunk.iter().enumerate() {
+                if i > 0 {
+                    q.push(" UNION ALL ");
+                }
+                q.push("SELECT * FROM (SELECT d.* FROM scheduler_dependencies d WHERE d.owner_kind='objective' AND d.owner_id=").push_bind(id.clone()).push(" AND d.dependency_kind='user_input' AND d.status='pending' AND d.required=TRUE AND EXISTS(SELECT 1 FROM objectives p WHERE p.id=d.owner_id AND p.generation=d.owner_generation AND p.status='active') ORDER BY d.id LIMIT 2) question_owner");
+            }
+            let records = q
+                .build()
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(dependency_from_row)
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut owners = std::collections::HashSet::new();
+            for record in records {
+                if !owners.insert(record.owner_id.clone()) {
+                    return Err("More than one pending question exists for an owner".into());
+                }
+                result.push(record);
+            }
+        }
+        Ok(result)
     }
 
     async fn satisfy_scheduler_dependency(

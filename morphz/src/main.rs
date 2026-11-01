@@ -3617,13 +3617,22 @@ async fn create_session_command(
 }
 
 async fn list_agents(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
-    let records = runtime
-        .list_agents(switch_enabled(invocation, "include-archived")?)
+    let page = runtime
+        .read_runtime_directory_page(morphz::memory::RuntimeDirectoryQuery {
+            kind: morphz::memory::RuntimeDirectoryKind::Agents,
+            include_archived: switch_enabled(invocation, "include-archived")?,
+            cursor: option_value(invocation, "cursor").map(str::to_owned),
+            limit: option_value(invocation, "limit")
+                .map(str::parse)
+                .transpose()?
+                .unwrap_or(50),
+            ..Default::default()
+        })
         .await?;
     if json_output(invocation) {
-        println!("{}", serde_json::to_string_pretty(&records)?);
+        println!("{}", serde_json::to_string_pretty(&page)?);
     } else {
-        for record in records {
+        for record in page.agents {
             println!(
                 "{}  [{}]  root_context={}  {}",
                 record.id,
@@ -3631,6 +3640,9 @@ async fn list_agents(runtime: &MorphzRuntime, invocation: &Invocation) -> Result
                 record.root_context_id,
                 record.title
             );
+        }
+        if let Some(cursor) = page.next_cursor {
+            println!("next_cursor={cursor}");
         }
     }
     Ok(())
@@ -3698,25 +3710,34 @@ async fn list_objectives(
     default_context_id: &str,
 ) -> Result<(), AppError> {
     let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
-    let records = runtime
-        .list_context_objectives(context_id, switch_enabled(invocation, "include-terminal")?)
+    let page = runtime
+        .activity_collection_page(&morphz::memory::activity_page::ActivityPageQuery {
+            context_id: context_id.to_owned(),
+            collection: morphz::memory::activity_page::ActivityCollection::Objectives,
+            include_terminal: switch_enabled(invocation, "include-terminal")?,
+            cursor: option_value(invocation, "cursor").map(str::to_owned),
+            limit: option_value(invocation, "limit")
+                .map(str::parse)
+                .transpose()?
+                .unwrap_or(50),
+            metadata_only: true,
+        })
         .await?;
     if json_output(invocation) {
-        println!("{}", serde_json::to_string_pretty(&records)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &serde_json::json!({"objectives":page.objectives,"bodies_loaded":false,"has_more":page.has_more,"next_cursor":page.next_cursor})
+            )?
+        );
     } else {
-        for record in records {
-            let wait = record
-                .wait_condition
-                .as_ref()
-                .map(|wait| serde_json::to_string(wait).unwrap_or_else(|_| "invalid".to_string()))
-                .unwrap_or_else(|| "none".to_string());
+        for record in page.objectives {
             println!(
-                "{}  [{}]  rev={}  session={}  wait={}  {}",
+                "{}  [{}]  rev={}  session={}  {}",
                 record.id,
                 record.status.as_str(),
                 record.revision,
                 record.coordinator_session_id,
-                wait,
                 record
                     .stated_objective
                     .replace('\n', " ")
@@ -3724,6 +3745,9 @@ async fn list_objectives(
                     .take(120)
                     .collect::<String>()
             );
+        }
+        if let Some(cursor) = page.next_cursor {
+            println!("next_cursor={cursor}");
         }
     }
     Ok(())

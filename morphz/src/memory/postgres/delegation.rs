@@ -84,6 +84,17 @@ fn delegation_from_row(row: &PgRow) -> Result<DelegationRecord, StoreError> {
 
 #[async_trait::async_trait]
 impl DelegationStore for PostgresStore {
+    async fn read_delegation_page(
+        &self,
+        request: &crate::memory::delegation_page::DelegationPageQuery,
+    ) -> Result<crate::memory::delegation_page::DelegationPage, StoreError> {
+        let rows = crate::memory::delegation_page::page_query!(sqlx::Postgres, request)?
+            .build()
+            .fetch_all(&self.pool)
+            .await?;
+        crate::memory::delegation_page::finish_page!(rows, request, delegation_from_row)
+    }
+
     async fn create_delegation_scaffold(
         &self,
         context: NewCognitiveContext,

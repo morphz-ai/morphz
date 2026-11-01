@@ -74,6 +74,8 @@ const returnedNames = [
   "refresh",
   "control",
   "readResult",
+  "readRequest",
+  "loadMore",
 ] as const;
 const clientFields = [
   "boot",
@@ -81,6 +83,7 @@ const clientFields = [
   "workspaceChangeRevision",
   "executionSnapshot",
   "executionResult",
+  "executionRequest",
   "controlExecution",
   "contentCatalog",
 ];
@@ -708,7 +711,48 @@ function validate(contents: Sources) {
     "synchronous-inspection-renderer-declaration",
   );
   inputs(owner, hook, names);
-  const body = hook.body!.statements,
+  const extensionSources = {
+    loadMore:
+      'async function loadMore() {\n    const approval = !!snapshot?.nextApprovalCursor;\n    const cursor = snapshot?.nextApprovalCursor ?? snapshot?.nextJobCursor;\n    if (!cursor || pageBusy.current) return;\n    const origin = observationScope,\n      head = snapshot;\n    pageBusy.current = true;\n    setBusy("page");\n    try {\n      const next = await api.current.executionSnapshot({\n        ...scope,\n        ...(approval\n          ? { approvalCursor: cursor, jobCursor: undefined }\n          : { jobCursor: cursor, approvalCursor: undefined }),\n      });\n      if (mounted.current && currentScope.current === origin)\n        setObservation((previous) => {\n          if (previous?.scope !== origin || previous.snapshot !== head)\n            return previous;\n          const rows = new Map(next.jobs.map((job) => [job.id, job]));\n          for (const job of head.jobs) {\n            const old = rows.get(job.id);\n            if (!old || job.revision >= old.revision) rows.set(job.id, job);\n          }\n          const threads = new Map(\n            (next.threads ?? []).map((thread) => [thread.id, thread]),\n          );\n          for (const thread of head.threads ?? []) {\n            const old = threads.get(thread.id);\n            if (!old || thread.revision >= old.revision)\n              threads.set(thread.id, thread);\n          }\n          return {\n            ...previous,\n            snapshot: {\n              ...head,\n              jobs: [...rows.values()],\n              threads: [...threads.values()],\n              approvals: [\n                ...new Map(\n                  [...head.approvals, ...next.approvals].map((row) => [\n                    row.request.approval_id,\n                    row,\n                  ]),\n                ).values(),\n              ],\n              nextJobCursor: approval ? head.nextJobCursor : next.nextJobCursor,\n              nextApprovalCursor: approval ? next.nextApprovalCursor : head.nextApprovalCursor,\n            },\n          };\n        });\n    } catch (cause) {\n      if (mounted.current && currentScope.current === origin)\n        setNotice(\n          cause instanceof Error ? cause.message : "无法载入更多执行记录。",\n        );\n    } finally {\n      pageBusy.current = false;\n      if (mounted.current && currentScope.current === origin) setBusy("");\n    }\n  }',
+    readRequest:
+      'async function readRequest(id: string) {\n    const origin = observationScope;\n    try {\n      const job = await api.current.executionRequest(scope, id);\n      if (mounted.current && currentScope.current === origin)\n        setObservation((previous) =>\n          previous?.scope === origin\n            ? {\n                ...previous,\n                snapshot: {\n                  ...previous.snapshot,\n                  jobs: previous.snapshot.jobs.map((old) =>\n                    old.id === id &&\n                    old.session_id === job.session_id &&\n                    old.thread_id === job.thread_id\n                      ? { ...old, request: job.request, request_loaded: true }\n                      : old,\n                  ),\n                },\n              }\n            : previous,\n        );\n    } catch (cause) {\n      if (mounted.current && currentScope.current === origin)\n        setNotice(\n          cause instanceof Error ? cause.message : "无法读取工具参数。",\n        );\n    }\n  }',
+  };
+  for (const [name, raw] of Object.entries(extensionSources)) {
+    const expected = parse({ Extension: raw }).get("Extension")!;
+    compare(
+      owner.nodes
+        .filter(isFunctionDeclaration)
+        .find((node) => node.name?.text === name)!,
+      fn(expected, name),
+      "bounded-lazy-inspection-extension-" + name,
+      owner,
+      names,
+    );
+  }
+  const gate = hook.body!.statements.find(
+    (node) =>
+      isVariableStatement(node) &&
+      node.declarationList.declarations.some(
+        (decl) => decl.name.getText() === "pageBusy",
+      ),
+  );
+  assert.ok(gate, "one bounded continuation in-flight gate");
+  compare(
+    gate,
+    parse({ Gate: "const pageBusy = useRef(false);" }).get("Gate")!.source
+      .statements[0]!,
+    "bounded-page-gate",
+    owner,
+    names,
+  );
+  const body = hook.body!.statements.filter(
+      (node) =>
+        node !== gate &&
+        !(
+          isFunctionDeclaration(node) &&
+          ["loadMore", "readRequest"].includes(node.name?.text ?? "")
+        ),
+    ),
     expected = fn(templates.get("Controller")!, "useExecutionInspection").body!
       .statements;
   assert.equal(
@@ -962,8 +1006,18 @@ function validate(contents: Sources) {
   );
   assert.deepEqual(
     flattened(dialog, owner, parsed.get("Observed")!, parsed.get("Modal")!),
-    originalRegistrations,
-    "original-seventeen-primitive-registration-order-deps",
+    originalRegistrations.toSpliced(
+      7,
+      0,
+      registration(
+        parse({ Gate: "const pageBusy = useRef(false);" })
+          .get("Gate")!
+          .nodes.find(isCallExpression)!,
+        parse({ Gate: "const pageBusy = useRef(false);" }).get("Gate")!,
+        new Map(),
+      ),
+    ),
+    "original-seventeen-primitive-registration-order-deps-and-one-page-gate",
   );
   // The original renderer has no second modal/read/state/effect lifecycle; other
   // unrelated components and JSX remain outside this finite original consumer.

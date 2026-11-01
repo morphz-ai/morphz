@@ -175,7 +175,9 @@ function peer(values: ReturnType<typeof rawThread>[]) {
         threads: values,
         detail_bounds: { limit: 200, has_more_threads: false },
       };
-    const id = decodeURIComponent(path.split("/").at(-1)!);
+    const id = decodeURIComponent(
+      new URL(path, "http://test.invalid").pathname.split("/").at(-1)!,
+    );
     const snapshot = values.find((value) => value.thread.id === id);
     assert.ok(snapshot, "Unexpected missing controlled Thread " + id);
     return { snapshot };
@@ -434,7 +436,8 @@ test("聚合read不扩展cancel/approval：明确选child scope才能控制它�
         if (path.includes("/api/approvals/")) return { accepted: true };
         return { ...jobs[1], revision: 2, cancel_requested_at: stamp };
       }
-      if (path === "/api/approvals") return { approvals: [approval] };
+      if (path.split("?")[0] === "/api/approvals")
+        return { approvals: [approval] };
       if (path.includes("/threads/")) return f.request(path);
       if (path.includes("?"))
         return {
@@ -595,7 +598,7 @@ test("真实Platform read grant＋Host原始Input：child独立root可打开，�
           threads: values,
           detail_bounds: { limit: 200, has_more_threads: false },
         };
-      if (path === "/api/approvals") return { approvals: [] };
+      if (path.split("?")[0] === "/api/approvals") return { approvals: [] };
       if (path.includes("/threads/"))
         return { snapshot: values.find((v) => path.endsWith(v.thread.id)) };
       if (path.startsWith("/api/execution-jobs?")) {

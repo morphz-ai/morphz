@@ -76,7 +76,10 @@ function json(res: ServerResponse, status: number, value: unknown) {
 function executionScope(url: URL) {
   if (url.searchParams.has("runtime")) {
     const unexpected = [...url.searchParams.keys()].some(
-      (key) => !["runtime", "threadId", "artifactId", "jobId"].includes(key),
+      (key) =>
+        !["runtime", "threadId", "artifactId", "jobId", "jobCursor"].includes(
+          key,
+        ),
     );
     if (unexpected) throw new DomainError("invalid", "执行读取范围无效。");
     let runtime: unknown;
@@ -88,6 +91,9 @@ function executionScope(url: URL) {
     return {
       runtime,
       threadId: url.searchParams.get("threadId"),
+      ...(url.searchParams.has("jobCursor")
+        ? { jobCursor: url.searchParams.get("jobCursor") }
+        : {}),
       artifactId: url.searchParams.get("artifactId") || null,
     };
   }
@@ -95,7 +101,7 @@ function executionScope(url: URL) {
     projectId: url.searchParams.get("projectId"),
     artifactId: url.searchParams.get("artifactId") || null,
     ...Object.fromEntries(
-      ["conversationId", "inputId", "threadId"].flatMap((key) =>
+      ["conversationId", "inputId", "threadId", "jobCursor"].flatMap((key) =>
         url.searchParams.get(key) ? [[key, url.searchParams.get(key)]] : [],
       ),
     ),
@@ -535,11 +541,13 @@ export function createAppServer(
             "projectId",
             "conversationId",
             "refreshActivity",
+            "activityCursor",
             "loadMoreApprovals",
           ]);
           const projectId = query.value("projectId");
           const conversationId = query.value("conversationId");
           const refreshActivity = query.boolean("refreshActivity");
+          const activityCursor = query.value("activityCursor");
           const loadMoreApprovals = query.boolean("loadMoreApprovals");
           if (!!projectId !== !!conversationId)
             throw new DomainError("invalid", "对话范围参数不完整。");
@@ -550,6 +558,7 @@ export function createAppServer(
               projectId,
               conversationId,
               refreshActivity,
+              activityCursor,
               loadMoreApprovals,
             }),
           );
@@ -1259,6 +1268,25 @@ export function createAppServer(
               scope: executionScope(url),
               terminalId: url.searchParams.get("terminalId"),
               scrollback: Number(url.searchParams.get("scrollback") ?? 0),
+            }),
+          );
+          return;
+        }
+        if (url.pathname === "/api/objectives/detail") {
+          json(
+            res,
+            200,
+            await business.objectiveRead(Object.fromEntries(url.searchParams)),
+          );
+          return;
+        }
+        if (url.pathname === "/api/executions/request") {
+          json(
+            res,
+            200,
+            await business.executionRequest({
+              scope: executionScope(url),
+              jobId: url.searchParams.get("jobId"),
             }),
           );
           return;

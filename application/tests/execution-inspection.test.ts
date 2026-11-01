@@ -60,7 +60,20 @@ function render(
   function Probe() {
     // Original first native-dialog ref, followed by the actual controller hook.
     const dialog = useRef<HTMLDialogElement>(null);
-    captured = factory({ client, scope, dialog, embedded: true });
+    const currentClient = Object.assign(
+      Object.create(client) as typeof client,
+      {
+        executionRequest: async () => {
+          throw new Error("SSR must not open Job parameters");
+        },
+      },
+    );
+    captured = factory({
+      client: currentClient,
+      scope,
+      dialog,
+      embedded: true,
+    });
     return createElement("span", { "data-inspection": "initial" });
   }
   assert.equal(
@@ -71,7 +84,7 @@ function render(
   return captured;
 }
 
-test("actual React SSR initial state and unavailable observer refresh keep the original nine-value contract without IO", async () => {
+test("actual React SSR initial state keeps read actions inert and preserves unavailable refresh without IO", async () => {
   for (const online of [true, false]) {
     const values = [];
     for (const factory of factories) {
@@ -111,8 +124,22 @@ test("actual React SSR initial state and unavailable observer refresh keep the o
         "refresh",
         "control",
         "readResult",
+        ...(factory === useExecutionInspection
+          ? ["readRequest", "loadMore"]
+          : []),
       ]);
-      const { refresh, control, readResult, ...initial } = view;
+      const {
+        refresh,
+        control,
+        readResult,
+        readRequest: unusedReadRequest,
+        loadMore: unusedLoadMore,
+        ...initial
+      } = view as ReturnType<typeof useExecutionInspection>;
+      if (factory === useExecutionInspection) {
+        assert.equal(typeof unusedReadRequest, "function");
+        assert.equal(typeof unusedLoadMore, "function");
+      }
       assert.deepEqual(initial, {
         snapshot: null,
         error: "",

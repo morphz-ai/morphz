@@ -193,8 +193,12 @@ for (const history of [false, true])
           : view(path);
       await x.internal.refreshActivity();
       let entered!: () => void, release!: () => void;
-      const started = new Promise<void>((resolve) => { entered = resolve; });
-      const held = new Promise<void>((resolve) => { release = resolve; });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
       const calls: string[] = [];
       let blocked = false;
       x.internal.request = async (path: string) => {
@@ -208,16 +212,26 @@ for (const history of [false, true])
         }
         return view(path);
       };
-      const first = x.internal.refreshActivity(history, new Set([x.delivery.sessionId]));
+      const first = x.internal.refreshActivity(
+        history,
+        new Set([x.delivery.sessionId]),
+      );
       await started;
-      const second = x.internal.refreshActivity(history, new Set([other.sessionId]));
+      const second = x.internal.refreshActivity(
+        history,
+        new Set([other.sessionId]),
+      );
       release();
       await Promise.all([first, second]);
       const reads = calls.filter((path) => path.includes("/scheduler?"));
       for (const contextId of [x.contextId, other.contextId]) {
         const scoped = reads.filter((path) => path.includes(contextId));
         assert.equal(scoped.length, history ? 2 : 1, JSON.stringify(reads));
-        assert.equal(scoped.filter((path) => path.includes("include_terminal=true")).length, history ? 1 : 0);
+        assert.equal(
+          scoped.filter((path) => path.includes("include_terminal=true"))
+            .length,
+          history ? 1 : 0,
+        );
       }
     } finally {
       await x.f.close();
@@ -1096,6 +1110,114 @@ test("navigation and conversation history disclose freshness only inside each Pr
       (error: unknown) =>
         error instanceof DomainError && error.code === "forbidden",
     );
+  } finally {
+    await x.f.close();
+  }
+});
+
+test("the public Activity head reads one Context and its explicit continuation retains independently accepted facts", async () => {
+  const x = await fixture();
+  try {
+    const other = addContext(x, 991);
+    const calls: string[] = [];
+    x.internal.request = async (path: string) => {
+      calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      return path.includes(other.contextId)
+        ? other.view()
+        : x.view([x.thread("first-page")]);
+    };
+    const page = await x.f.runtime.refreshPlatformActivity();
+    const reads = calls.filter((path) => path.includes("/scheduler?"));
+    assert.equal(reads.length, 2);
+    const initial = reads[0]!.match(/contexts\/([^/]+)\/scheduler/)![1]!;
+    assert.ok(reads.every((path) => path.includes(initial)));
+    assert.ok(reads.every((path) => path.includes("limit=50")));
+    assert.equal(page.hasMore, true);
+    assert.equal(
+      x.read().openWorkComplete,
+      false,
+      "unread registered Contexts are not a complete empty domain",
+    );
+    const initialIds = x.read().threads.map((thread) => thread.id);
+    calls.length = 0;
+    const next = await x.f.runtime.refreshPlatformActivity(
+      undefined,
+      undefined,
+      page.nextCursor!,
+    );
+    const following = calls.filter((path) => path.includes("/scheduler?"));
+    assert.equal(following.length, 2);
+    assert.ok(following.every((path) => !path.includes(initial)));
+    assert.equal(next.hasMore, false);
+    assert.ok(
+      initialIds.every((id) =>
+        x.read().threads.some((thread) => thread.id === id),
+      ),
+    );
+    assert.ok(x.read().threads.some((thread) => thread.id === "first-page"));
+    assert.ok(
+      x.read().threads.some((thread) => thread.id === other.thread().thread.id),
+    );
+  } finally {
+    await x.f.close();
+  }
+});
+
+test("a history continuation cannot replace a confirmed current receipt or reopen current collections", async () => {
+  const x = await fixture();
+  try {
+    let history = 0;
+    const calls: string[] = [];
+    x.internal.request = async (path: string) => {
+      calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      if (path.includes("include_terminal=true")) {
+        history++;
+        return {
+          ...x.view([
+            x.thread(history === 1 ? "old-final" : "next-final", "completed"),
+          ]),
+          detail_bounds: {
+            ...bounds,
+            has_more_threads: history === 1,
+            next_history_cursor: history === 1 ? "TEST-history-next" : null,
+          },
+        };
+      }
+      return x.view([x.thread("retained-current")]);
+    };
+    const page = await x.f.runtime.refreshPlatformActivity();
+    const current = x.internal.state.activity.threads.find(
+      (thread: { id: string }) => thread.id === "retained-current",
+    )!;
+    current.controlState = "paused";
+    current.revision = 200;
+    calls.length = 0;
+    await x.f.runtime.refreshPlatformActivity(
+      undefined,
+      undefined,
+      page.nextCursor!,
+    );
+    assert.equal(
+      calls.filter((path) => path.includes("include_terminal=false")).length,
+      0,
+      JSON.stringify({ page, calls, diagnostics: x.diagnostics }),
+    );
+    assert.equal(
+      x.read().threads.find((thread) => thread.id === "retained-current")
+        ?.revision,
+      200,
+    );
+    assert.equal(
+      x.read().threads.find((thread) => thread.id === "retained-current")
+        ?.controlState,
+      "paused",
+    );
+    assert.ok(x.read().threads.some((thread) => thread.id === "old-final"));
+    assert.ok(x.read().threads.some((thread) => thread.id === "next-final"));
   } finally {
     await x.f.close();
   }

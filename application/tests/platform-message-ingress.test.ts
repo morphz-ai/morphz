@@ -738,6 +738,25 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           },
         })),
       });
+    if (path.startsWith("/api/approvals/") && request.method === "GET") {
+      const inputId = decodeURIComponent(path.split("/").at(-1)!).replace(
+        /^approval-/,
+        "",
+      );
+      const scopedSessionId = sentSessions.get(inputId);
+      return send(200, {
+        requested_at: "2030-01-01T00:00:00.000Z",
+        request: {
+          approval_id: `approval-${inputId}`,
+          session_id: scopedSessionId,
+          context_id: sessions.get(scopedSessionId!)?.context_id,
+          root_turn_id: `root-${inputId}`,
+          justification: "测试审批归属",
+          action: {},
+          requested: {},
+        },
+      });
+    }
     if (path.startsWith("/api/approvals/") && request.method === "POST") {
       approvalDecisions.push(decodeURIComponent(path.split("/").at(-1)!));
       return send(200, { accepted: true });
@@ -1411,7 +1430,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         conversationId: "other-platform-project",
         artifactId: null,
       }),
-      { jobs: [], approvals: [], limit: 100 },
+      { jobs: [], approvals: [], limit: 100, nextJobCursor: null },
       "another Platform project cannot see this execution",
     );
     await assert.rejects(
@@ -1867,13 +1886,59 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       sharedBHistory.runtime.attention?.approvals,
       sharedAHistory.runtime.attention?.approvals,
     );
+    const sharedScope = {
+      projectId: "new-platform-project",
+      conversationId: spaces.dialogueId,
+      artifactId: null,
+    };
     const sharedExecution = await session().executionSnapshot({
       projectId: "new-platform-project",
       conversationId: spaces.dialogueId,
       artifactId: null,
     });
+    assert.ok(
+      sharedExecution.nextJobCursor,
+      "the first demand exposes a continuation for the next physical source",
+    );
+    const allSharedJobs = [...sharedExecution.jobs];
+    const allSharedApprovals = [...sharedExecution.approvals];
+    let sharedCursor: string | null | undefined = sharedExecution.nextJobCursor;
+    for (let pages = 0; sharedCursor && pages < 4; pages++) {
+      const page = await session().executionSnapshot({
+        ...sharedScope,
+        jobCursor: sharedCursor!,
+      });
+      allSharedJobs.push(...page.jobs);
+      allSharedApprovals.push(...page.approvals);
+      sharedCursor = page.nextJobCursor;
+    }
+    assert.equal(
+      sharedCursor,
+      null,
+      "the explicit source pages finish within the known fixture bounds",
+    );
+    let approvalCursor: string | null | undefined =
+      sharedExecution.nextApprovalCursor;
+    for (let pages = 0; approvalCursor && pages < 4; pages++) {
+      const next = await session().executionSnapshot({
+        ...sharedScope,
+        approvalCursor,
+      });
+      assert.equal(
+        next.jobs.length,
+        0,
+        "an Approval continuation cannot reopen Jobs",
+      );
+      allSharedApprovals.push(...next.approvals);
+      approvalCursor = next.nextApprovalCursor;
+    }
+    assert.ok(
+      !approvalCursor,
+      "explicit Approval source pages finish independently",
+    );
+
     assert.deepEqual(
-      sharedExecution.jobs.map((job) => job.id).sort(),
+      [...new Set(allSharedJobs.map((job) => job.id))].sort(),
       [command.commandId, sharedA.commandId, sharedB.commandId]
         .map((id) => `job-${id}`)
         .sort(),
@@ -2297,8 +2362,19 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       conversationId: spaces.dialogueId,
       artifactId: null,
     });
+    const remainingJobs = [...remainingExecution.jobs];
+    let remainingCursor = remainingExecution.nextJobCursor;
+    for (let pages = 0; remainingCursor && pages < 4; pages++) {
+      const next = await session().executionSnapshot({
+        ...sharedScope,
+        jobCursor: remainingCursor!,
+      });
+      remainingJobs.push(...next.jobs);
+      remainingCursor = next.nextJobCursor;
+    }
+    assert.equal(remainingCursor, null);
     assert.deepEqual(
-      remainingExecution.jobs.map((job) => job.id).sort(),
+      [...new Set(remainingJobs.map((job) => job.id))].sort(),
       [command.commandId, sharedA.commandId].map((id) => `job-${id}`).sort(),
       "the execution inspector removes the revoked project's roots from a shared Session",
     );
@@ -2313,7 +2389,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       }),
       /执行不属于/,
     );
-    const revokedApproval = sharedExecution.approvals.find(
+    const revokedApproval = allSharedApprovals.find(
       (approval) =>
         approval.request.approval_id === `approval-${sharedB.commandId}`,
     )!;
@@ -2330,7 +2406,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           fingerprint: revokedApproval.fingerprint,
         },
       }),
-      /审批已结束或内容已变化|执行不属于/,
+      /审批已结束或内容已变化|执行不属于|审批不属于/,
     );
     assert.deepEqual(approvalDecisions, [`approval-${command.commandId}`]);
     const revokeDeadline = Date.now() + 4000;

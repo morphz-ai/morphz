@@ -139,3 +139,41 @@ test("Human input, approval, tasks, timer and unknown are distinct; terminal/run
     "状态待核对",
   );
 });
+
+test("bounded native Goal wait heads keep complete kinds without loading every dependency", () => {
+  const value = {
+    objective: { id: "goal", generation: 2, revision: 9 },
+    readiness: { state: "waiting", dependency_ids: [] },
+    dependencies: [],
+    wait_head: {
+      owner_kind: "objective",
+      owner_id: "goal",
+      generation: 2,
+      revision: 9,
+      pending: true,
+      kinds: ["resource"],
+      resources: ["model-route:kimi"],
+      resources_truncated: true,
+      question: null,
+    },
+  };
+  assert.deepEqual(objectiveWaitKinds(value), ["resource"]);
+  assert.deepEqual(objectiveWaitResources(value), ["model-route:kimi"]);
+  for (const patch of [
+    { owner_id: "foreign" },
+    { generation: 3 },
+    { revision: 10 },
+    { owner_kind: "thread" },
+  ]) {
+    const wrong = { ...value, wait_head: { ...value.wait_head, ...patch } };
+    assert.deepEqual(objectiveWaitKinds(wrong), []);
+    assert.equal(objectiveWaitResources(wrong), undefined);
+  }
+  assert.equal(
+    objectiveWaitKinds({
+      ...value,
+      readiness: { state: "leased", dependency_ids: [] },
+    }),
+    undefined,
+  );
+});

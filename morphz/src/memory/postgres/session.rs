@@ -370,20 +370,51 @@ impl SessionDirectoryStore for PostgresStore {
     async fn list_session_principal_bindings_bounded(
         &self,
         session_ids: &[String],
-    ) -> Result<Vec<SessionPrincipalBinding>, StoreError> {
-        if session_ids.is_empty() {
-            return Ok(Vec::new());
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>> {
+        if session_ids.len() > 1000 {
+            return Err("participant head scope exceeds 1000".into());
         }
-        let rows = sqlx::query(
-            r#"SELECT session_id, principal_id, bound_at, unbound_at
-               FROM session_principal_bindings
-               WHERE unbound_at IS NULL AND session_id = ANY($1)
-               ORDER BY session_id, principal_id"#,
-        )
-        .bind(session_ids)
-        .fetch_all(&self.pool)
-        .await?;
-        rows.iter().map(binding_from_row).collect()
+        let mut result = Vec::new();
+        for ids in session_ids.chunks(50) {
+            let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new("");
+            for (index, id) in ids.iter().enumerate() {
+                if index > 0 {
+                    query.push(" UNION ALL ");
+                }
+                query.push("SELECT * FROM (SELECT session_id,principal_id,bound_at,unbound_at FROM session_principal_bindings WHERE session_id=").push_bind(id.clone()).push(" AND unbound_at IS NULL ORDER BY principal_id LIMIT 2) participant_head");
+            }
+            let rows = query.build().fetch_all(&self.pool).await?;
+            for row in &rows {
+                result.push(binding_from_row(row)?);
+            }
+        }
+        Ok(result)
+    }
+    async fn count_session_principals(
+        &self,
+        session_ids: &[String],
+    ) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error + Send + Sync>> {
+        if session_ids.len() > 1000 {
+            return Err("participant count scope exceeds 1000".into());
+        }
+        let mut result = Vec::new();
+        for ids in session_ids.chunks(50) {
+            let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT session_id,COUNT(*) AS count FROM session_principal_bindings WHERE unbound_at IS NULL AND session_id IN (");
+            {
+                let mut values = query.separated(",");
+                for id in ids {
+                    values.push_bind(id.clone());
+                }
+            }
+            query.push(") GROUP BY session_id");
+            for row in query.build().fetch_all(&self.pool).await? {
+                result.push((
+                    row.get("session_id"),
+                    usize::try_from(row.get::<i64, _>("count"))?,
+                ));
+            }
+        }
+        Ok(result)
     }
 
     async fn verify_session_principal(

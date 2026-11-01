@@ -464,7 +464,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
             };
             return new ExecutionControls(
               async (path, method) => {
-                assert.equal(path, "/api/approvals");
+                assert.equal(path.split("?")[0], "/api/approvals");
                 assert.equal(method, undefined);
                 paths.push(path);
                 if (offline)

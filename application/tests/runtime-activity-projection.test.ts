@@ -318,6 +318,15 @@ async function assertDelegatedSource(rootKind: "event" | "logical-turn") {
               ...child.thread,
               parent_thread_id: null,
               phase: child.phase,
+              wait_head: {
+                thread_id: child.thread.id,
+                generation: child.thread.generation,
+                revision: child.thread.revision,
+                kinds: child.phase === "idle" ? ["timer"] : [],
+                resources: [],
+                resources_truncated: false,
+                until: child.phase === "idle" ? "2099-10-24T02:00:00Z" : null,
+              },
               intent: child.intent,
               initiating_principal_id: wrongOwner ? "foreign" : principal,
             },
@@ -1401,7 +1410,7 @@ test("unassociated inspector reads bounded real commands and receipts, rejects f
           },
         };
       if (path.endsWith("/record-job")) return job;
-      if (path.endsWith("/threads/unassociated"))
+      if (path.endsWith("/threads/unassociated?metadata_only=true"))
         return { snapshot: { thread: raw.thread } };
       throw new Error(`Unexpected read: ${path}`);
     };

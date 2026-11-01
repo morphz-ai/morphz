@@ -132,6 +132,8 @@ mod tests {
     fn snapshot() -> SchedulerThreadSnapshot {
         let now = chrono::Utc::now();
         SchedulerThreadSnapshot {
+            dependencies_loaded: false,
+            wait_head: None,
             dependencies: None,
             user_input_request: None,
             execution_model: None,

@@ -815,6 +815,7 @@ export function useWorkspace() {
     > | null>(null),
     epoch = useRef(0),
     snapshotText = useRef(""),
+    activityCursorRequested = useRef<string | undefined>(undefined),
     activityRefreshRequested = useRef(false),
     approvalPageRequested = useRef(false),
     refreshing = useRef<Promise<boolean> | null>(null),
@@ -957,6 +958,8 @@ export function useWorkspace() {
     if (navigationReadController.current !== keepRead)
       navigationReadController.current?.abort();
     scriptOverviews.current.clear();
+    setActivityPage(undefined);
+    activityCursorRequested.current = undefined;
     pendingScriptOverviews.current.clear();
     scriptEditorReads.clear();
     navigationCacheKey.current = "";
@@ -976,11 +979,18 @@ export function useWorkspace() {
     pending: applicationViewWrites.current,
     execute: operationDelivery.execute,
   });
+  const [activityPage, setActivityPage] = useState<
+    { hasMore: boolean; nextCursor: string | null; retry?: boolean } | undefined
+  >(undefined);
   function refresh(options?: {
     refreshActivity?: boolean;
+    activityCursor?: string;
     loadMoreApprovals?: boolean;
   }) {
-    if (options?.refreshActivity) activityRefreshRequested.current = true;
+    if (options?.refreshActivity) {
+      activityRefreshRequested.current = true;
+      activityCursorRequested.current = options.activityCursor;
+    }
     if (options?.loadMoreApprovals) approvalPageRequested.current = true;
     refreshDrain.current ??= createRefreshDrain(refreshOnce);
     const pending = refreshDrain.current.request();
@@ -1001,6 +1011,8 @@ export function useWorkspace() {
     if (!projectionMounted.current) return false;
     const refreshActivity = activityRefreshRequested.current;
     activityRefreshRequested.current = false;
+    const activityCursor = activityCursorRequested.current;
+    activityCursorRequested.current = undefined;
     const loadMoreApprovals = approvalPageRequested.current;
     approvalPageRequested.current = false;
     const version = epoch.current;
@@ -1071,7 +1083,7 @@ export function useWorkspace() {
         const navigation = await source.navigationRuntime(
           signal,
           requestedScope,
-          { refreshActivity, loadMoreApprovals },
+          { refreshActivity, activityCursor, loadMoreApprovals },
         );
         if (
           catalogCache.current &&
@@ -1354,6 +1366,12 @@ export function useWorkspace() {
           navigationCacheKey.current = historyUnavailable ? "" : navigationKey;
           publishHistoryScope(resolvedScope);
         }
+        if (
+          navigation.activityPage &&
+          version === epoch.current &&
+          !controller.signal.aborted
+        )
+          setActivityPage(navigation.activityPage);
         setHistoryError(
           historyUnavailable && resolvedScope
             ? { ...resolvedScope, message: runtime.error! }
@@ -1845,6 +1863,7 @@ export function useWorkspace() {
     error,
     workspaceConnection,
     workspaceChangeRevision,
+    activityPage,
     refresh,
     refreshView: refreshAfterMutation,
     selectHistoryScope: conversationHistory.selectScope,
@@ -1920,6 +1939,7 @@ export function useWorkspace() {
     terminalCommand: terminalInteractions.terminalCommand,
     terminalOpen: terminalInteractions.terminalOpen,
     executionResult: executionInteractions.executionResult,
+    executionRequest: executionInteractions.executionRequest,
     controlExecution: executionInteractions.controlExecution,
     approvalSubmitted: executionInteractions.approvalSubmitted,
   };

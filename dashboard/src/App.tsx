@@ -87,6 +87,7 @@ import {
   attentionJobKey,
   actionableSchedulerJobs,
   mergeSchedulerCurrentAndHistory,
+  appendSchedulerCollectionPage,
   appendSchedulerHistoryPage,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
@@ -3399,6 +3400,7 @@ export default function App() {
   const [contexts, setContexts] = useState<ContextRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [delegations, setDelegations] = useState<DelegationRecord[]>([])
+  const [delegationPage, setDelegationPage] = useState<{contextId:string;cursor:string|null}>({contextId:'',cursor:null})
   const [executionTargets, setExecutionTargets] = useState<ExecutionTargetSummary[]>([])
   const [executionNodes, setExecutionNodes] = useState<ExecutionNodeSummary[]>([])
   const [capabilityLeases, setCapabilityLeases] = useState<CapabilityLeaseSummary[]>([])
@@ -3593,6 +3595,7 @@ export default function App() {
   const schedulerHistoryCacheRef = useRef<{
     contextId: string; principalId: string; pages: number; version: number; snapshot: SchedulerSnapshot
   } | null>(null)
+  const schedulerCurrentPageRef = useRef<{contextId:string;principalId:string;snapshot:SchedulerSnapshot}|null>(null)
   const schedulerOpenIdsRef = useRef<{ contextId: string; ids: Set<string> }>({contextId: '', ids: new Set()})
 
   useEffect(() => {
@@ -4166,9 +4169,10 @@ export default function App() {
         applySchedulerSnapshot(scheduler)
       }))
       const activityRequest = async () => {
-        const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200&include_job_details=false`
+        const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=50&include_job_details=false`
         const current = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
         if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
+        schedulerCurrentPageRef.current = {contextId,principalId:readPrincipalId,snapshot:current}
         const previousOpen = schedulerOpenIdsRef.current
         const ids = new Set(current.threads.map(value => value.thread.id))
         if (previousOpen.contextId === contextId && [...previousOpen.ids].some(id => !ids.has(id)))
@@ -4188,12 +4192,11 @@ export default function App() {
             has_more_history: matching.snapshot.detail_bounds.has_more_history,
             next_history_cursor: matching.snapshot.detail_bounds.next_history_cursor}} : history
         schedulerHistoryCacheRef.current = {contextId, principalId: readPrincipalId, pages: matching?.pages ?? 1, version, snapshot: retained}
-        // History can take longer than current state. Re-read the small live
-        // inventory so a late historical page never restores old approvals,
-        // terminal phase or a question that has already been answered.
-        const latest = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
-        if ((principalScopeRef.current?.principal.id ?? '') === readPrincipalId)
-          applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(latest, schedulerHistoryCacheRef.current?.snapshot))
+        // A historical page owns no new current read. Use the latest accepted
+        // current receipt/window; scope and control-version fences still apply.
+        const latest = schedulerCurrentPageRef.current
+        if (latest?.contextId === contextId && latest.principalId === readPrincipalId)
+          applySchedulerSnapshot(mergeSchedulerCurrentAndHistory(latest.snapshot, schedulerHistoryCacheRef.current?.snapshot))
       }
       const requests = [
         own(readPlan.attention, () => DASHBOARD_API.tryGet<AttentionAcknowledgementsPage>(
@@ -4276,13 +4279,14 @@ export default function App() {
         ...(includeTerminal && readPlan.work
           ? [activityRequest()]
           : []),
-        own(readPlan.delegations, () => DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>(
-          `/api/delegations?context_id=${encodeURIComponent(contextId)}&include_terminal=true&limit=200`,
+        own(readPlan.delegations, () => DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[];has_more:boolean;next_cursor:string|null }>(
+          `/api/delegations?context_id=${encodeURIComponent(contextId)}&include_terminal=true&limit=50`,
         )
           .then(delegationsResult => {
             if (delegationsResult && isCurrentScope()) {
               const nextDelegations = delegationsResult.delegations ?? []
               setDelegations(nextDelegations)
+              setDelegationPage({contextId,cursor:delegationsResult.has_more?delegationsResult.next_cursor:null})
 
             }
           })),
@@ -4803,6 +4807,7 @@ export default function App() {
       setSexprReader(null)
       setSchedulerHistoryDisplayLimit(SCHEDULER_HISTORY_PAGE_SIZE)
       schedulerHistoryCacheRef.current = null
+      schedulerCurrentPageRef.current = null
       setExpandedDialogueThreadId('')
       setDialogueThreadDetail(null)
     }, 0)
@@ -6058,30 +6063,41 @@ export default function App() {
     && (!selectedSupervisorFilterId || snapshot.thread.supervision.supervisor_id === selectedSupervisorFilterId)
   )).length
   const hiddenSchedulerThreadCount = schedulerFilteredThreadCount - visibleSchedulerThreads.length
-  const schedulerHistoryPageFull = view === 'scheduler'
-    && !!schedulerSnapshot?.detail_bounds.next_history_cursor
+  const schedulerHistoryPageFull = view === 'scheduler' && !!(
+    schedulerSnapshot?.detail_bounds.next_thread_cursor || schedulerSnapshot?.detail_bounds.next_objective_cursor || schedulerSnapshot?.detail_bounds.next_schedule_cursor || schedulerSnapshot?.detail_bounds.next_objective_history_cursor || schedulerSnapshot?.detail_bounds.next_history_cursor || (delegationPage.contextId===selectedContextId && delegationPage.cursor))
   const loadMoreSchedulerHistory = async () => {
-    const cached = schedulerHistoryCacheRef.current
-    const cursor = cached?.snapshot.detail_bounds.next_history_cursor
-    if (!cached || !cursor || schedulerHistoryBusy) return
-    const scope = {...selectedScopeRef.current}
-    const principalId = principalScopeRef.current?.principal.id ?? ''
-    const isCurrent = () => scope.contextId === selectedScopeRef.current.contextId
-      && scope.sessionId === selectedScopeRef.current.sessionId
-      && principalId === (principalScopeRef.current?.principal.id ?? '')
-      && schedulerHistoryCacheRef.current === cached
+    const current=schedulerCurrentPageRef.current, history=schedulerHistoryCacheRef.current
+    const currentBounds=current?.snapshot.detail_bounds, historyBounds=history?.snapshot.detail_bounds
+    const demand = currentBounds?.next_thread_cursor ? {collection:'threads' as const,field:'thread_cursor',cursor:currentBounds.next_thread_cursor,history:false}
+      : currentBounds?.next_objective_cursor ? {collection:'objectives' as const,field:'objective_cursor',cursor:currentBounds.next_objective_cursor,history:false}
+      : currentBounds?.next_schedule_cursor ? {collection:'schedules' as const,field:'schedule_cursor',cursor:currentBounds.next_schedule_cursor,history:false}
+      : historyBounds?.next_objective_cursor ? {collection:'objectives' as const,field:'objective_cursor',cursor:historyBounds.next_objective_cursor,history:true}
+      : historyBounds?.next_history_cursor ? {collection:'threads' as const,field:'history_cursor',cursor:historyBounds.next_history_cursor,history:true}:null
+    const delegationCursor=delegationPage.contextId===selectedContextId?delegationPage.cursor:null
+    if ((!demand && !delegationCursor) || !current || schedulerHistoryBusy) return
+    const scope={...selectedScopeRef.current},principalId=principalScopeRef.current?.principal.id ?? '', version=workControlVersion.current
+    const isCurrent=()=>scope.contextId===selectedScopeRef.current.contextId && scope.sessionId===selectedScopeRef.current.sessionId && principalId===(principalScopeRef.current?.principal.id??'') && version===workControlVersion.current && schedulerCurrentPageRef.current===current && schedulerHistoryCacheRef.current===history
     setSchedulerHistoryBusy(true)
     try {
-      const page = await DASHBOARD_API.get<SchedulerSnapshot>(`/api/contexts/${encodeURIComponent(scope.contextId)}/scheduler?include_terminal=true&history_only=true&limit=${SCHEDULER_HISTORY_PAGE_SIZE}&history_cursor=${encodeURIComponent(cursor)}&include_job_details=false`)
+      if(!demand && delegationCursor) {
+        const page=await DASHBOARD_API.get<{delegations:DelegationRecord[];has_more:boolean;next_cursor:string|null}>(`/api/delegations?${new URLSearchParams({context_id:scope.contextId,include_terminal:'true',limit:'50',cursor:delegationCursor})}`)
+        if(!isCurrent()) return
+        if(page.has_more && (!page.next_cursor || page.next_cursor===delegationCursor)) throw new Error('Delegation continuation did not advance')
+        setDelegations(previous=>[...new Map([...previous,...page.delegations].map(row=>[row.id,row])).values()])
+        setDelegationPage({contextId:scope.contextId,cursor:page.has_more?page.next_cursor:null})
+        return
+      }
+      if(!demand) return
+      const page=await DASHBOARD_API.get<SchedulerSnapshot>(`/api/contexts/${encodeURIComponent(scope.contextId)}/scheduler?${new URLSearchParams({include_terminal:String(demand.history),...(demand.history?{history_only:'true'}:{}),collection:demand.collection,limit:String(SCHEDULER_HISTORY_PAGE_SIZE),[demand.field]:demand.cursor,include_job_details:'false'})}`)
       if (!isCurrent()) return
-      if (page.detail_bounds.next_history_cursor === cursor) throw new Error('Scheduler continuation did not advance')
-      const snapshot = appendSchedulerHistoryPage(cached.snapshot, page)
-      schedulerHistoryCacheRef.current = {...cached, snapshot, pages: cached.pages + 1}
-      setSchedulerHistoryDisplayLimit(count => count + SCHEDULER_HISTORY_PAGE_SIZE)
-      setSchedulerSnapshot(current => current ? mergeSchedulerCurrentAndHistory(current, snapshot) : current)
-    } catch (reason) {
-      if (isCurrent()) setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {setSchedulerHistoryBusy(false)}
+      const nextField=demand.field==='history_cursor'?'next_history_cursor':`next_${demand.field}` as 'next_thread_cursor'|'next_objective_cursor'|'next_schedule_cursor'
+      if (page.detail_bounds[nextField]===demand.cursor) throw new Error('Scheduler continuation did not advance')
+      if (demand.history && history) schedulerHistoryCacheRef.current={...history,snapshot:appendSchedulerCollectionPage(history.snapshot,page,demand.collection,true),pages:history.pages+1}
+      else schedulerCurrentPageRef.current={...current,snapshot:appendSchedulerCollectionPage(current.snapshot,page,demand.collection)}
+      setSchedulerHistoryDisplayLimit(count=>count+SCHEDULER_HISTORY_PAGE_SIZE)
+      setSchedulerSnapshot(mergeSchedulerCurrentAndHistory(schedulerCurrentPageRef.current!.snapshot,schedulerHistoryCacheRef.current?.snapshot))
+    } catch(reason) {if(isCurrent())setError(reason instanceof Error?reason.message:String(reason))}
+    finally {setSchedulerHistoryBusy(false)}
   }
 
   const schedulerThreadGroups = useMemo(() => {
@@ -7242,6 +7258,13 @@ export default function App() {
 
   const editObjective = async (objective: ObjectiveRecord) => {
     if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
+    const scope={...selectedScopeRef.current};const principal=principalScopeRef.current?.principal.id??''
+    try {
+      const full=await DASHBOARD_API.get<ObjectiveRecord>(`/api/objectives/${encodeURIComponent(objective.id)}`)
+      if(scope.contextId!==selectedScopeRef.current.contextId||scope.sessionId!==selectedScopeRef.current.sessionId||principal!==(principalScopeRef.current?.principal.id??''))return
+      if(full.id!==objective.id||full.context_id!==objective.context_id||full.coordinator_session_id!==objective.coordinator_session_id||full.source_event_id!==objective.source_event_id)throw Error('Objective source changed')
+      objective=full
+    }catch(cause){setError(cause instanceof Error?cause.message:String(cause));return}
     const requested = await requestText({
       title: t('work.objectives.edit'),
       description: t('dialog.editObjective'),
@@ -9585,7 +9608,7 @@ export default function App() {
                       disabled={schedulerHistoryBusy}
                       onClick={() => void loadMoreSchedulerHistory()}
                     >
-                      {t('work.causal.loadMore')}
+                      {t('header.loadMorePrincipals')}
                     </button>
                   )}
                 </div>

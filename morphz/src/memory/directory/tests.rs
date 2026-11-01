@@ -46,6 +46,10 @@ macro_rules! related_pages {
         assert_eq!(store.event_session_points("dir-a",&["metadata-legacy".into(),"missing".into()]).await.unwrap(),vec!["s-0004".to_string()]);
         assert!(store.event_session_points("dir-b",&["metadata-legacy".into()]).await.unwrap().is_empty());
         assert!(store.event_session_points("dir-a",&vec!["metadata-legacy".to_string();501]).await.is_err());
+        let mut preview=sqlx::QueryBuilder::<$db>::new("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('metadata-preview','2026-11-01T00:00:00Z','TEST','test','chat/user_message',");
+        preview.push_bind(sqlx::types::Json(serde_json::json!({"context_id":"dir-a","text":"x".repeat(1024*1024)}))).push(")");preview.build().execute(&store.pool).await.unwrap();
+        let previews=store.event_input_previews("dir-a",&["metadata-preview".into()]).await.unwrap();assert_eq!(previews[0].1.len(),1000);assert!(store.event_input_previews("dir-b",&["metadata-preview".into()]).await.unwrap().is_empty());
+
         let mut tx=store.pool.begin().await.unwrap();
         for i in 0..85 {
             let id=format!("group-page-thread-{i:04}");
@@ -387,6 +391,65 @@ macro_rules! schedule_pages {
 }
 pub(crate) use schedule_pages;
 
+macro_rules! activity_pages {
+ ($db:ty,$store:expr)=>{{
+    use crate::memory::ThreadStore;
+    use crate::memory::activity_page::{ActivityCollection as K,ActivityPageQuery as Q};
+    let store=$store;
+    for (status,prefix,count) in [("active","activity-goal-",55),("completed","activity-old-goal-",10000)] {
+        let mut q=sqlx::QueryBuilder::<$db>::new("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<");
+        q.push_bind(count as i64).push(") INSERT INTO objectives(id,agent_id,context_id,coordinator_session_id,delivery_session_id,source_event_id,stated_objective,revision,status,created_at,updated_at) SELECT ").push_bind(prefix).push("||CAST(i AS TEXT),'dir-agent','dir-a','s-0004','s-0004','TEST-activity-source','TEST bounded goal',1,").push_bind(status).push(",'2026-11-01T00:00:00.100Z','2026-11-01T00:00:00.100Z' FROM n");
+        q.build().execute(&store.pool).await.unwrap();
+    }
+    for collection in [K::Objectives,K::Schedules,K::Threads] {
+        let mut query=Q{context_id:"dir-a".into(),collection,include_terminal:false,cursor:None,limit:7,metadata_only:true};
+        let mut seen=std::collections::HashSet::new();
+        loop {
+            let page=store.read_activity_page(&query).await.unwrap();
+            let ids=page.objectives.iter().map(|r|r.id.clone()).chain(page.schedules.iter().map(|r|r.id.clone())).chain(page.threads.iter().map(|r|r.id.clone())).collect::<Vec<_>>();
+            assert!(ids.len()<=7);for id in ids {assert!(seen.insert(id),"a raw equal-clock cursor repeated a row");}
+            if !page.has_more {assert!(page.next_cursor.is_none());break;}
+            assert_ne!(query.cursor,page.next_cursor);
+            let mut foreign=query.clone();foreign.context_id="dir-b".into();foreign.cursor=page.next_cursor.clone();assert!(store.read_activity_page(&foreign).await.is_err());
+            let mut other=query.clone();other.collection=if collection==K::Threads{K::Objectives}else{K::Threads};other.cursor=page.next_cursor.clone();assert!(store.read_activity_page(&other).await.is_err());
+            query.cursor=page.next_cursor;
+        }
+        if collection==K::Objectives {assert_eq!(seen.len(),55);}
+        if collection==K::Schedules {assert_eq!(seen.len(),55);}
+    }
+ }};
+}
+pub(crate) use activity_pages;
+
+macro_rules! job_header_pages {
+ ($db:ty,$store:expr)=>{{
+    use crate::memory::{ExecutionJobStore,ExecutionJobFilter,ThreadStore};
+    let store=$store;
+    let payload=sqlx::types::Json(serde_json::json!({"command":"TEST","large":"x".repeat(2*1024*1024)}));
+    let mut update=sqlx::QueryBuilder::<$db>::new("UPDATE execution_jobs SET request_json=");update.push_bind(payload).push(" WHERE id='approval-page-job-0000'");update.build().execute(&store.pool).await.unwrap();
+    let filter=ExecutionJobFilter{context_id:Some("dir-a".into()),session_id:Some("s-0004".into()),thread_id:Some("approval-page-thread".into()),visible_principal_id:Some("dir-human-a".into()),include_terminal:true,newest_first:true,..Default::default()};
+    let mut cursor=None;let mut seen=std::collections::HashSet::new();
+    loop {
+        let page=store.read_job_header_page(filter.clone(),cursor.as_deref(),7).await.unwrap();
+        assert!(page.items.len()<=7);assert!(serde_json::to_vec(&page.items).unwrap().len()<16384,"a header cannot hydrate a 2MiB tool request");
+        for job in page.items {assert!(!job.request_loaded);assert!(seen.insert(job.id));}
+        if !page.has_more {assert!(page.next_cursor.is_none());break;}
+        assert_ne!(page.next_cursor,cursor);
+        let foreign=ExecutionJobFilter{visible_principal_id:Some("dir-human-b".into()),..filter.clone()};
+        assert!(store.read_job_header_page(foreign,page.next_cursor.as_deref(),7).await.is_err());
+        cursor=page.next_cursor;
+    }
+    let thread=store.get_thread("approval-page-thread").await.unwrap().unwrap();
+    let head=store.thread_wait_heads("dir-a",&[(thread.id.clone(),thread.generation,thread.revision)]).await.unwrap();
+    assert_eq!(head.len(),1);assert!(head[0].kinds.iter().any(|kind|kind=="permission"));
+    assert!(store.thread_wait_heads("dir-b",&[(thread.id.clone(),thread.generation,thread.revision)]).await.unwrap().is_empty());
+    assert!(store.thread_wait_heads("dir-a",&[(thread.id.clone(),thread.generation+1,thread.revision)]).await.unwrap().is_empty());
+    assert_eq!(seen.len(),55);
+    assert_eq!(store.get_execution_job("approval-page-job-0000").await.unwrap().unwrap().request["large"].as_str().unwrap().len(),2*1024*1024,"physical request remains intact for explicit detail/control reads");
+ }};
+}
+pub(crate) use job_header_pages;
+
 macro_rules! terminal_catalog_pages {
  ($db:ty,$store:expr)=>{{
     use crate::memory::terminal::{TerminalSessionFilter,TerminalSessionRecord,TerminalCatalogCursor,TerminalStore};
@@ -440,6 +503,17 @@ macro_rules! plan_cases {
           "created_at":"2026-11-01T01:00:00.100Z","updated_at":"2026-11-01T01:00:00.100Z"
         })).unwrap());
         vec![
+            ("Job header continuation",crate::memory::job_header::header_query!($db,crate::memory::ExecutionJobFilter {
+                context_id:Some("dir-a".into()),session_id:Some("s-0004".into()),thread_id:Some("approval-page-thread".into()),visible_principal_id:Some("dir-human-a".into()),include_terminal:true,newest_first:true,limit:Some(8),..Default::default()
+            },Some(("2099-01-01T00:00:00Z".to_string(),"zzzz".to_string())))),
+            ("current Goal continuation",crate::memory::activity_page::activity_page_query!($db,&crate::memory::activity_page::ActivityPageQuery {
+                context_id:"dir-a".into(),collection:crate::memory::activity_page::ActivityCollection::Objectives,metadata_only:true,include_terminal:false,
+                cursor:Some(crate::memory::activity_page::ActivityPageQuery{context_id:"dir-a".into(),collection:crate::memory::activity_page::ActivityCollection::Objectives,metadata_only:true,include_terminal:false,cursor:None,limit:7}.cursor_for("2026-11-01T00:00:00.100Z".into(),"activity-goal-30".into(),0)),limit:7,
+            }).unwrap()),
+            ("current Schedule continuation",crate::memory::activity_page::activity_page_query!($db,&crate::memory::activity_page::ActivityPageQuery {
+                context_id:"dir-a".into(),collection:crate::memory::activity_page::ActivityCollection::Schedules,metadata_only:true,include_terminal:false,
+                cursor:Some(crate::memory::activity_page::ActivityPageQuery{context_id:"dir-a".into(),collection:crate::memory::activity_page::ActivityCollection::Schedules,metadata_only:true,include_terminal:false,cursor:None,limit:7}.cursor_for("2026-11-01T00:00:00.100Z".into(),"live-page-schedule-30".into(),0)),limit:7,
+            }).unwrap()),
             ("live Activation recovery",crate::memory::recovery::scheduler_query!($db,crate::memory::SchedulerRecoverySource::LiveActivations,"dir-a","recovery-act-0100",7usize)),
             ("pending mailbox recovery",crate::memory::recovery::scheduler_query!($db,crate::memory::SchedulerRecoverySource::PendingSignalThreads,"dir-a","recovery-thread-0100",7usize)),
             ("open Thread recovery",crate::memory::recovery::scheduler_query!($db,crate::memory::SchedulerRecoverySource::OpenThreads,"dir-a","recovery-thread-0100",7usize)),
@@ -499,3 +573,67 @@ macro_rules! plan_cases {
     }};
 }
 pub(crate) use plan_cases;
+
+macro_rules! scalar_authority_heads {
+ ($db:ty,$store:expr)=>{{
+    use crate::memory::{ThreadStore,ObjectiveStore,ApprovalStore};
+    use crate::memory::audit_page::{AuditQuery,AuditSource as S,AuditWitness as W};
+    let store=$store;
+    let large="x".repeat(2*1024*1024);
+    let mut q=sqlx::QueryBuilder::<$db>::new("UPDATE objectives SET stated_objective=");q.push_bind(large).push(" WHERE id='activity-goal-1'");q.build().execute(&store.pool).await.unwrap();
+    let preview=store.get_objective_preview("activity-goal-1").await.unwrap().unwrap();assert_eq!(preview.stated_objective.len(),1000);
+    assert_eq!(store.get_objective("activity-goal-1").await.unwrap().unwrap().stated_objective.len(),2*1024*1024);
+    let mut q=sqlx::QueryBuilder::<$db>::new("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,metadata_json,created_at,updated_at) SELECT 'head-resource-'||CAST(i AS TEXT),'objective','activity-goal-1',1,'resource','resource-'||CAST(i AS TEXT),1,TRUE,'pending','{}','2026-11-01T00:00:00.100Z','2026-11-01T00:00:00.100Z' FROM n");q.build().execute(&store.pool).await.unwrap();
+    let owners=vec![("objective".to_owned(),preview.id.clone(),preview.generation,preview.revision)];
+    let heads=store.scheduler_dependency_heads("dir-a",&owners).await.unwrap();assert_eq!(heads.len(),1);let head=&heads[0];assert!(head.pending);assert_eq!(head.kinds,vec!["resource"]);assert_eq!(head.resources.len(),32);assert!(head.resources_truncated);assert!(serde_json::to_vec(&heads).unwrap().len()<16384);
+    assert!(store.scheduler_dependency_heads("dir-b",&owners).await.unwrap().is_empty());
+    let mut stale=owners.clone();stale[0].3+=1;assert!(store.scheduler_dependency_heads("dir-a",&stale).await.unwrap().is_empty());
+    assert_eq!(store.scheduler_authority_witnesses("dir-a",W::PendingObjectives,&[preview.id.clone()]).await.unwrap(),vec![(preview.id.clone(),preview.generation)]);
+    for source in [S::Objectives,S::Threads,S::Activations,S::Groups] {
+      let mut after=String::new();let mut seen=std::collections::HashSet::new();
+      loop{let page=store.scheduler_authority_page(&AuditQuery{context_id:"dir-a".into(),source,after:after.clone(),ids:None,roots:None,include_terminal:false,limit:7}).await.unwrap();
+        let ids=page.facts.objectives.iter().map(|v|v.id.clone()).chain(page.facts.threads.iter().map(|v|v.id.clone())).chain(page.facts.groups.iter().map(|v|v.id.clone())).chain(page.activations.iter().map(|v|v.id.clone())).collect::<Vec<_>>();assert!(ids.len()<=7);for id in ids{assert!(seen.insert(id));}
+        if !page.has_more {break;}let next=page.next_id.unwrap();assert!(next>after);after=next;
+      }if source==S::Objectives{assert_eq!(seen.len(),55);}
+    }
+    let scope=crate::memory::approval_page::ExecutionApprovalScope{context_id:"dir-a".into(),session_id:"s-0004".into(),thread_id:Some("approval-page-thread".into()),root_ids:vec![]};
+    let first=store.read_execution_pending_approval_page(&scope,None,7).await.unwrap();assert_eq!(first.records.len(),7);assert!(first.has_more);
+    let next=store.read_execution_pending_approval_page(&scope,first.next_cursor.as_deref(),7).await.unwrap();assert_eq!(next.records.len(),7);assert!(!next.records.iter().any(|n|first.records.iter().any(|p|p.id==n.id)));
+    let mut foreign=scope.clone();foreign.session_id="s-0003".into();assert!(store.read_execution_pending_approval_page(&foreign,first.next_cursor.as_deref(),7).await.is_err());
+    let tail=scope.wrap(crate::memory::directory::DirectoryCursor{sort_at:"2026-11-02T00:00:00.100Z".into(),id:"large-pending-9999".into()}.encode());let end=store.read_execution_pending_approval_page(&scope,Some(&tail),7).await.unwrap();assert!(end.records.is_empty());assert!(!end.has_more);
+    let before=store.count_session_principals(&["s-0004".into()]).await.unwrap()[0].1;
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO principals(id,provider_id,assurance,created_at,updated_at) SELECT 'head-principal-'||CAST(i AS TEXT),'TEST','verified','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM n").execute(&store.pool).await.unwrap();
+    sqlx::query("INSERT INTO session_principal_bindings(session_id,principal_id,bound_at) SELECT 's-0004',id,'2026-11-01T00:00:00Z' FROM principals WHERE id LIKE 'head-principal-%'").execute(&store.pool).await.unwrap();
+    assert_eq!(store.list_session_principal_bindings_bounded(&["s-0004".into()]).await.unwrap().len(),2);
+    assert_eq!(store.count_session_principals(&["s-0004".into()]).await.unwrap()[0].1,before+10000);
+ }};
+}
+pub(crate) use scalar_authority_heads;
+
+macro_rules! delegation_pages {
+ ($db:ty,$store:expr)=>{{
+  use crate::memory::DelegationStore;
+  use crate::memory::delegation_page::DelegationPageQuery as Q;
+  let store=$store;
+  let mut tx=store.pool.begin().await.unwrap();
+  // One child Session per edge, mixed terminal/live states and mixed raw clocks.
+  for i in 5..105 {
+   let child=format!("s-{i:04}");let id=format!("delegation-page-{i:04}");
+   let mut q=sqlx::QueryBuilder::<$db>::new("INSERT INTO delegations(id,agent_id,parent_context_id,parent_session_id,child_context_id,child_session_id,task,context_scope,status,created_at,updated_at) VALUES (");
+   q.push_bind(id).push(",'dir-agent','dir-a','s-0004','dir-b',").push_bind(child).push(",").push_bind("x".repeat(32768)).push(",'isolated',").push_bind(if i%3==0{"completed"}else{"running"}).push(",'2026-11-01T00:00:00Z',").push_bind(if i%2==0{"2026-11-01T00:00:00.100Z"}else{"2026-11-01T00:00:00.200Z"}).push(")");q.build().execute(&mut *tx).await.unwrap();
+  }
+  tx.commit().await.unwrap();
+  let mut request=Q{context_id:Some("dir-a".into()),session_id:Some("s-0004".into()),include_terminal:true,limit:7,cursor:None};
+  let mut seen=std::collections::HashSet::new();
+  loop {
+   let page=store.read_delegation_page(&request).await.unwrap();assert!(page.delegations.len()<=7);assert!(!page.bodies_loaded);
+   for row in &page.delegations {assert_eq!(row.task.len(),1000);assert!(seen.insert(row.id.clone()));}
+   if !page.has_more {break;}assert_ne!(page.next_cursor,request.cursor);
+   let mut foreign=request.clone();foreign.context_id=Some("dir-b".into());foreign.cursor=page.next_cursor.clone();assert!(store.read_delegation_page(&foreign).await.is_err());
+   request.cursor=page.next_cursor;
+  }
+  assert_eq!(seen.len(),100);
+  let live=store.read_delegation_page(&Q{include_terminal:false,cursor:None,..request.clone()}).await.unwrap();assert!(live.delegations.iter().all(|r|r.status==crate::memory::DelegationStatus::Running));
+ }};
+}
+pub(crate) use delegation_pages;

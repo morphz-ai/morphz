@@ -8,7 +8,7 @@ import { ExecutionRequestDetails } from "./ExecutionDataView.js";
 import { ExecutionCommandPreview } from "./ExecutionCommandPreview.js";
 
 /** Display only. The inspection controller/caller owns scope, authorization,
- * requests and receipts; opening technical details is local view state. */
+ * requests and receipts. Only explicit disclosure opens physical arguments. */
 export function ExecutionJobCard({
   job,
   presentation,
@@ -18,6 +18,7 @@ export function ExecutionJobCard({
   readOnly = false,
   resultAvailable,
   onReadResult,
+  onReadRequest,
   onStop,
   children,
 }: {
@@ -29,6 +30,7 @@ export function ExecutionJobCard({
   readOnly?: boolean;
   resultAvailable: boolean;
   onReadResult: () => void;
+  onReadRequest?: () => void;
   onStop: () => void;
   children?: ReactNode;
 }) {
@@ -91,7 +93,11 @@ export function ExecutionJobCard({
               aria-label="技术详情"
               aria-expanded={technical}
               aria-controls={technicalId}
-              onClick={() => setTechnical(!technical)}
+              onClick={() => {
+                setTechnical(!technical);
+                if (!technical && job.request_loaded === false)
+                  onReadRequest?.();
+              }}
             >
               <Code2 size={16} aria-hidden="true" />
             </button>
@@ -138,7 +144,13 @@ export function ExecutionJobCard({
       )}
       {technical && (
         <div className="execution-technical" id={technicalId}>
-          <ExecutionRequestDetails job={job} />
+          {job.request_loaded === false ? (
+            <p role="status" className="muted">
+              正在读取参数…
+            </p>
+          ) : (
+            <ExecutionRequestDetails job={job} />
+          )}
         </div>
       )}
       {resultVisible && (

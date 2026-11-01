@@ -1,9 +1,9 @@
 import type { SchedulerThreadSnapshot, SchedulerActivationSnapshot, SchedulerJobSnapshot, ThreadDetailResponse, ThreadRecord, ScheduleRecord, ThreadSignalRecord } from '../scheduler/types.ts'
-export type InspectionKind = 'activations' | 'jobs' | 'pending_signals' | 'activation_signals' | 'schedules' | 'model_events'
+export type InspectionKind = 'dependencies' | 'activations' | 'jobs' | 'pending_signals' | 'activation_signals' | 'schedules' | 'model_events'
 export interface InspectionContinuation {kind:InspectionKind; activation_id?:string|null; next_cursor:string}
 export interface InspectionResponse {
  thread:ThreadRecord
- page:{activations:SchedulerActivationSnapshot['activation'][]; signals:ThreadSignalRecord[]; schedules:ScheduleRecord[]; events:ThreadDetailResponse['model_attempt_events']; has_more:boolean; next_cursor:string|null}
+ page:{dependencies?:NonNullable<SchedulerThreadSnapshot['dependencies']>;activations:SchedulerActivationSnapshot['activation'][]; signals:ThreadSignalRecord[]; schedules:ScheduleRecord[]; events:ThreadDetailResponse['model_attempt_events']; has_more:boolean; next_cursor:string|null}
  jobs:SchedulerJobSnapshot[]
  activation_snapshots:SchedulerActivationSnapshot[]
  continuations:InspectionContinuation[]
@@ -21,8 +21,9 @@ export function mergeInspectionPage(snapshot:SchedulerThreadSnapshot,events:Thre
  const t=snapshot.thread, next=response.thread
  if(t.id!==next.id||t.context_id!==next.context_id||t.session_id!==next.session_id||t.root_turn_id!==next.root_turn_id||t.generation!==next.generation)throw Error('Thread inspection scope changed')
  const p=response.page
- if([p.activations,p.signals,p.schedules,p.events,response.jobs].some(items=>items.length>64)|| (p.has_more&&(!p.next_cursor||p.next_cursor===request.next_cursor)))throw Error('Thread inspection page boundary changed')
+ if([p.dependencies??[],p.activations,p.signals,p.schedules,p.events,response.jobs].some(items=>items.length>64)|| (p.has_more&&(!p.next_cursor||p.next_cursor===request.next_cursor)))throw Error('Thread inspection page boundary changed')
  if(p.activations.some(a=>a.context_id!==t.context_id||a.root_turn_id!==t.root_turn_id)||response.jobs.some(j=>j.job.thread_id!==t.id||j.job.context_id!==t.context_id||j.job.activation_id!==request.activation_id)||p.signals.some(s=>s.thread_id!==t.id)||p.schedules.some(s=>s.thread_id!==t.id))throw Error('Foreign inspection child')
+ if(p.dependencies?.some(d=>d.owner_kind!=="thread"||d.owner_id!==t.id||d.owner_generation!==t.generation))throw Error('Foreign inspection dependency')
  const currentActivations=new Set(snapshot.activations.map(a=>a.activation.id))
  const pageActivations=new Set(p.activations.map(a=>a.id))
  const inScope=(a:SchedulerActivationSnapshot['activation'])=>a.context_id===t.context_id&&a.session_id===t.session_id&&a.root_turn_id===t.root_turn_id
@@ -39,7 +40,8 @@ export function mergeInspectionPage(snapshot:SchedulerThreadSnapshot,events:Thre
   if(seenSlots.has(slot)||!['jobs','activation_signals'].includes(c.kind)||!c.activation_id||!pageActivations.has(c.activation_id)||!c.next_cursor||c.next_cursor.length>4096)throw Error('Foreign inspection continuation')
   seenSlots.add(slot)
  }
- if((request.kind!=='activations'&&(p.activations.length||response.activation_snapshots.length))
+ if((request.kind!=='dependencies'&&(p.dependencies?.length??0))
+   ||(request.kind!=='activations'&&(p.activations.length||response.activation_snapshots.length))
    ||(request.kind!=='jobs'&&response.jobs.length)
    ||(!['pending_signals','activation_signals'].includes(request.kind)&&p.signals.length)
    ||(request.kind!=='schedules'&&p.schedules.length)
@@ -54,7 +56,7 @@ export function mergeInspectionPage(snapshot:SchedulerThreadSnapshot,events:Thre
  for(const c of response.continuations)if(!replacement.some(current=>inspectionSlot(current)===inspectionSlot(c)))replacement.push(c)
  if(p.has_more)replacement.push({...request,next_cursor:p.next_cursor!})
  return {
-  snapshot:{...snapshot,activations,pending_signals:request.kind==='pending_signals'?merge(snapshot.pending_signals,p.signals,s=>s.id):snapshot.pending_signals,schedules:request.kind==='schedules'?merge(snapshot.schedules,p.schedules,s=>s.id):snapshot.schedules},
+  snapshot:{...snapshot,dependencies_loaded:request.kind==='dependencies'?!p.has_more:snapshot.dependencies_loaded,dependencies:request.kind==='dependencies'?merge(snapshot.dependencies??[],p.dependencies??[],d=>d.id):snapshot.dependencies,activations,pending_signals:request.kind==='pending_signals'?merge(snapshot.pending_signals,p.signals,s=>s.id):snapshot.pending_signals,schedules:request.kind==='schedules'?merge(snapshot.schedules,p.schedules,s=>s.id):snapshot.schedules},
   events:merge(events,p.events,e=>e.id).sort((a,b)=>(a.sequence??0)-(b.sequence??0)),
   continuations:replacement,
  }

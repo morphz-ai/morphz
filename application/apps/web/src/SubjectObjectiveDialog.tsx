@@ -37,7 +37,7 @@ type Thread = ExecutionActivity["threads"][number];
 type View = "reading" | "edit" | "records" | "delete";
 
 export function SubjectObjectiveDialog({
-  goal,
+  goal: head,
   threads,
   client,
   fresh,
@@ -71,7 +71,72 @@ export function SubjectObjectiveDialog({
   const titleId = useId(),
     descriptionId = useId();
   const [view, setView] = useState<View>("reading");
+  const [loadedBody, setLoadedBody] = useState<{
+    key: string;
+    title: string;
+    revision: number;
+    updatedAt: string;
+  } | null>(null);
+  const bodyKey = JSON.stringify([
+    client.boot?.centerId,
+    client.boot?.principalId,
+    head.id,
+    head.projectId,
+    head.conversationId,
+    head.revision,
+  ]);
+  const goal =
+    loadedBody?.key === bodyKey
+      ? { ...head, ...loadedBody, bodyLoaded: true }
+      : head;
+  const bodyReady = goal.bodyLoaded !== false;
+  const [bodyError, setBodyError] = useState("");
   const [selected, setSelected] = useState(goal);
+  useEffect(() => {
+    if (head.bodyLoaded !== false) return;
+    const abort = new AbortController();
+    let current = true;
+    setBodyError("");
+    void applicationCall(
+      "objective.read",
+      {
+        objectiveId: head.id,
+        projectId: head.projectId,
+        conversationId: head.conversationId,
+      },
+      { signal: abort.signal },
+    )
+      .then((value) => {
+        const result = value as {
+          id: string;
+          title: string;
+          revision: number;
+          updatedAt: string;
+        };
+        if (
+          current &&
+          result.id === head.id &&
+          typeof result.title === "string" &&
+          Number.isSafeInteger(result.revision)
+        )
+          setLoadedBody({
+            key: bodyKey,
+            title: result.title,
+            revision: result.revision,
+            updatedAt: result.updatedAt,
+          });
+      })
+      .catch((cause) => {
+        if (current)
+          setBodyError(
+            cause instanceof Error ? cause.message : "无法读取完整目标。",
+          );
+      });
+    return () => {
+      current = false;
+      abort.abort();
+    };
+  }, [bodyKey, head.bodyLoaded, head.id, head.projectId, head.conversationId]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState<
     ObjectiveControl["action"] | "supplement" | ""
@@ -391,6 +456,7 @@ export function SubjectObjectiveDialog({
                 <button
                   className="icon-button"
                   aria-label="复制完整目标"
+                  disabled={!bodyReady}
                   onClick={() => void copy()}
                 >
                   <Copy />
@@ -424,7 +490,7 @@ export function SubjectObjectiveDialog({
                   {
                     label: "编辑目标",
                     icon: <Pencil />,
-                    disabled: disabled || !editable,
+                    disabled: disabled || !editable || !bodyReady,
                     onSelect: () => changeView("edit"),
                   },
                   {
@@ -475,6 +541,16 @@ export function SubjectObjectiveDialog({
           aria-label="完整目标"
           tabIndex={0}
         >
+          {bodyError && (
+            <p role="alert" className="delivery-error">
+              {bodyError}
+            </p>
+          )}
+          {!bodyReady && !bodyError && (
+            <p role="status" className="muted">
+              正在读取完整目标…
+            </p>
+          )}
           {goal.title
             .split(/(\r?\n+)/)
             .map((part, index) =>

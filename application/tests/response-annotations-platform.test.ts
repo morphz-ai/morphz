@@ -557,7 +557,7 @@ test("actual inspector enriches only proven roots; optional endpoint failure/Off
   const controls = new ExecutionControls(
     executionRecordsPeer(async (path) => {
       reads.push(path);
-      if (path === "/api/approvals") return { approvals: [] };
+      if (path.split("?")[0] === "/api/approvals") return { approvals: [] };
       if (path.endsWith("/annotations")) {
         if (fail) throw new Error("old Runtime 404");
         return metadata;
@@ -623,7 +623,7 @@ test("Platform rechecks read authority after annotation fetch, not just before t
       };
     });
     internal.request = executionRecordsPeer(async (path) => {
-      if (path === "/api/approvals") return { approvals: [] };
+      if (path.split("?")[0] === "/api/approvals") return { approvals: [] };
       if (path.endsWith("/annotations")) {
         allowed = false;
         return annotations();

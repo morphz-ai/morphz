@@ -339,6 +339,7 @@ test("constructor borrows ports without current, Set, callback, transport or ref
       "cancelInput",
       "executionSnapshot",
       "executionResult",
+      ...(factory === createExecutionInteractions ? ["executionRequest"] : []),
       "controlExecution",
       "approvalSubmitted",
     ]);

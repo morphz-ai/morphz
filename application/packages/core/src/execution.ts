@@ -9,6 +9,8 @@ export const executionScopeSchema = z
     conversationId: id.optional(),
     inputId: id.optional(),
     threadId: id.optional(),
+    jobCursor: z.string().min(1).max(8192).optional(),
+    approvalCursor: z.string().min(1).max(8192).optional(),
     taskRun: z.literal(true).optional(),
   })
   .strict();
@@ -37,6 +39,8 @@ export const runtimeExecutionReadScopeSchema = z
       })
       .strict(),
     threadId: id,
+    jobCursor: z.string().min(1).max(8192).optional(),
+    approvalCursor: z.string().min(1).max(8192).optional(),
     artifactId: z.null(),
     projectId: z.undefined().optional(),
     conversationId: z.undefined().optional(),
@@ -71,7 +75,8 @@ export const jobSchema = z.object({
   cancel_requested_at: z.string().nullable().default(null),
   error: z.string().nullable().default(null),
   exit_code: z.number().nullable().default(null),
-  request: z.unknown(),
+  request: z.unknown().optional(),
+  request_loaded: z.boolean().optional(),
   result_event_id: z.string().nullable().default(null),
   approval_ref: z.string().nullable().optional(),
   /** Runtime-verified display metadata; actual Job facts remain unchanged. */
@@ -138,6 +143,8 @@ export const executionSnapshotSchema = z.object({
   jobs: z.array(jobSchema),
   approvals: z.array(approvalSchema.extend({ fingerprint: z.string() })),
   limit: z.number(),
+  nextJobCursor: z.string().max(8192).nullish(),
+  nextApprovalCursor: z.string().max(8192).nullish(),
   threads: z.array(executionThreadSchema).optional(),
   threadsTruncated: z.boolean().optional(),
 });

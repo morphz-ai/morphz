@@ -512,10 +512,12 @@ impl MorphzRuntime {
         if thread.response_annotations.is_off() {
             return Ok(Some(None));
         }
-        Ok(self
-            .thread_detail(context_id, thread_id)
-            .await?
-            .map(|detail| detail.snapshot.response_annotations))
+        let Some(mut detail) = self.thread_detail_metadata(context_id, thread_id).await? else {
+            return Ok(None);
+        };
+        self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot))
+            .await?;
+        Ok(Some(detail.snapshot.response_annotations))
     }
 }
 

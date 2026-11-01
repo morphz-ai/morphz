@@ -1,3 +1,8 @@
+import {
+  ActivityReadPages,
+  type ActivityReadDemand,
+} from "./activity-read-page.js";
+import { boundedSourcePage } from "./bounded-source-page.js";
 import { terminalCatalogPage } from "./terminal-catalog-page.js";
 import { createHash } from "node:crypto";
 import {
@@ -12,6 +17,8 @@ import {
 import {
   threadWaitProjection,
   threadWaitDependenciesSchema,
+  threadWaitHeadSchema,
+  dependencyHeadSchema,
 } from "./thread-wait-projection.js";
 import {
   delegationRecordSchema,
@@ -160,6 +167,7 @@ import {
   approvalSchema,
   jobSchema,
   executionControlSchema,
+  executionSnapshotSchema,
   isExecutionThreadControl,
   type ExecutionControl,
   type ExecutionScope,
@@ -2793,7 +2801,21 @@ export class RuntimeBridge {
               (this.executionChangeVersions.get(sessionId) ?? 0) + 1,
             );
             this.changedSessions.add(sessionId);
-            if (plan.activity) this.activityHintSessions.add(sessionId);
+            if (
+              plan.activity &&
+              (topic !== "runtime/observer_scope_added" ||
+                this.activityPublishedScopes.has(
+                  this.contextId(
+                    this.state.sessions[sessionId]?.projectId ?? "",
+                  ),
+                ) ||
+                this.activeDeliveries().some(
+                  (delivery) =>
+                    delivery.sessionId === sessionId &&
+                    ["queued", "sending", "running"].includes(delivery.state),
+                ))
+            )
+              this.activityHintSessions.add(sessionId);
           }
           this.scheduleChangedSessions();
           this.publishWorkspaceChange();
@@ -3355,6 +3377,12 @@ export class RuntimeBridge {
         await recheck();
         return { ...value, approvals: [] };
       },
+      requestDetail: async (jobId: string) => {
+        await recheck();
+        const value = await viewer.requestDetail(scope, jobId);
+        await recheck();
+        return value;
+      },
       result: async (jobId: string) => {
         await recheck();
         const value = await viewer.result(scope, jobId);
@@ -3409,6 +3437,7 @@ export class RuntimeBridge {
       threadId: scope.threadId,
       includeDescendants,
       metadataOnly,
+      cursor: scope.jobCursor,
     });
     if (records.threads.some((t) => t.initiating_principal_id !== owner))
       throw new DomainError("forbidden", "执行记录的所属身份已变化。");
@@ -3528,7 +3557,7 @@ export class RuntimeBridge {
       true,
     );
     const readPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/threads/${encodeURIComponent(scope.threadId)}`;
-    const recordsPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/execution-records?${new URLSearchParams({ limit: "100", thread_id: scope.threadId, metadata_only: "true" })}`;
+    const recordsPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/execution-records?${new URLSearchParams({ limit: "100", headers_only: "true", thread_id: scope.threadId, metadata_only: "true" })}`;
     const writePath = `/api/contexts/${encodeURIComponent(scope.runtime.contextId)}/threads/${encodeURIComponent(scope.threadId)}${action.type === "supersede-thread" ? "/supersede" : ""}`;
     let mutation: unknown;
     const request: RuntimeRequest = async (path, method = "GET", body) => {
@@ -3782,6 +3811,7 @@ export class RuntimeBridge {
       contextId: scope.runtime.contextId,
       threadId: scope.threadId,
       includeDescendants: true,
+      cursor: scope.jobCursor,
     });
     if (
       records.threads.some(
@@ -3811,6 +3841,12 @@ export class RuntimeBridge {
           ...value,
           approvals: [],
         };
+      },
+      requestDetail: async (jobId: string) => {
+        await verify();
+        const value = await viewer.requestDetail(scope, jobId);
+        await verify();
+        return value;
       },
       result: async (jobId: string) => {
         await verify();
@@ -3927,6 +3963,86 @@ export class RuntimeBridge {
         proof.record.child_session_id,
       ]);
     }
+  }
+
+  async platformObjectiveRead(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const input = z
+      .object({
+        objectiveId: z.string().min(1).max(200),
+        projectId: z.string().min(1).max(200),
+        conversationId: z.string().min(1).max(200),
+      })
+      .strict()
+      .parse(raw);
+    const authorize = this.authorizePlatformRead;
+    if (!authorize) throw new DomainError("forbidden", "目标读取尚未接入。");
+    const scope = {
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+    };
+    const verify = async () => {
+      active();
+      const grant = await authorize(scope, access);
+      active();
+      const goal = this.state.activity?.objectives?.find(
+        (goal) =>
+          goal.id === input.objectiveId &&
+          goal.projectId === scope.projectId &&
+          goal.conversationId === scope.conversationId,
+      );
+      const source = goal && this.activitySources.get(goal.inputId);
+      if (
+        !goal ||
+        !source ||
+        !goal.sourceEventId ||
+        !this.platformSourceReadable(source, scope, access, grant) ||
+        source.projectId !== goal.projectId ||
+        source.conversationId !== goal.conversationId ||
+        this.objectSessionId(
+          source.projectId,
+          source.conversationId,
+          source.sharedDefault,
+        ) !== goal.sessionId
+      )
+        throw new DomainError("forbidden", "目标不在当前可读取范围。");
+      return goal;
+    };
+    const goal = await verify();
+    const value = z
+      .object({
+        id: z.literal(goal.id),
+        context_id: z.literal(goal.contextId ?? this.contextId(goal.projectId)),
+        coordinator_session_id: z.literal(goal.sessionId),
+        source_event_id: z.literal(goal.sourceEventId!),
+        revision: z.number().int().positive(),
+        stated_objective: z.string().max(1000000),
+        updated_at: z.string(),
+      })
+      .parse(
+        await this.request(
+          `/api/objectives/${encodeURIComponent(goal.id)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+    const current = await verify();
+    if (
+      current.sourceEventId !== value.source_event_id ||
+      (current.revision ?? 0) > value.revision
+    )
+      throw new DomainError("conflict", "目标在读取期间已更新，请重新打开。");
+    return {
+      id: value.id,
+      title: value.stated_objective,
+      revision: value.revision,
+      updatedAt: value.updated_at,
+    };
   }
 
   async platformObjectiveControl(
@@ -4387,6 +4503,8 @@ export class RuntimeBridge {
               threadId: scope.threadId,
             },
             true,
+            undefined,
+            true,
           )
         : undefined;
     const controls = [...grouped.values()].map((entry) => ({
@@ -4405,6 +4523,7 @@ export class RuntimeBridge {
         ...(selectedTree
           ? {
               records: selectedTree.records,
+              recordsMetadataOnly: true,
               threadIds: async () =>
                 selectedTree.threads.map((thread) => thread.id),
               additionalRoot: async (rootId: string, threadId: string) =>
@@ -4432,38 +4551,72 @@ export class RuntimeBridge {
         throw new DomainError("forbidden", "当前对话的读取权限已变化。");
     };
     const snapshot = async (): Promise<ExecutionSnapshot> => {
-      const views = await Promise.all(
-        controls.map((entry) => entry.viewer.snapshot(scope)),
-      );
+      const sources = controls.map((entry) => ({
+        key: `${entry.sessionId}:${entry.contextId}`,
+        sessionId: entry.sessionId,
+        contextId: entry.contextId,
+        roots: [...entry.roots],
+      }));
+      const result = await boundedSourcePage({
+        owner: [
+          "execution",
+          access.principalId,
+          access.actantId,
+          scope.projectId,
+          scope.artifactId,
+          scope.inputId,
+          scope.threadId,
+          sources,
+        ],
+        sources,
+        cursor: scope.approvalCursor ?? scope.jobCursor,
+        parse: (value: unknown) =>
+          z
+            .object({
+              view: executionSnapshotSchema,
+              has_more: z.boolean(),
+              next_cursor: z.string().nullable(),
+            })
+            .parse(value),
+        read: async (source, roots, cursor) => {
+          const entry = controls.find(
+            (entry) =>
+              entry.sessionId === source.sessionId &&
+              entry.contextId === source.contextId,
+          )!;
+          const view = await entry.viewer.snapshot(scope, true, {
+            sessionId: source.sessionId,
+            roots,
+            cursor: cursor ?? undefined,
+            approvalOnly: !!scope.approvalCursor,
+          });
+          return {
+            view,
+            has_more: !!(scope.approvalCursor
+              ? view.nextApprovalCursor
+              : view.nextJobCursor),
+            next_cursor:
+              (scope.approvalCursor
+                ? view.nextApprovalCursor
+                : view.nextJobCursor) ?? null,
+          };
+        },
+      });
       await recheck();
       return {
-        jobs: [
-          ...new Map(
-            views.flatMap((view) => view.jobs).map((job) => [job.id, job]),
-          ).values(),
-        ]
-          .sort(
-            (a, b) =>
-              b.created_at.localeCompare(a.created_at) ||
-              b.id.localeCompare(a.id),
-          )
-          .slice(0, 100),
-        approvals: [
-          ...new Map(
-            views
-              .flatMap((view) => view.approvals)
-              .map((approval) => [approval.request.approval_id, approval]),
-          ).values(),
-        ]
-          .sort((a, b) => b.requested_at.localeCompare(a.requested_at))
-          .slice(0, 100),
-        limit: 100,
-        ...(selectedTree
-          ? {
-              threads: views.flatMap((view) => view.threads ?? []),
-              threadsTruncated: selectedTree.truncated,
-            }
-          : {}),
+        ...(result.page?.view ?? { jobs: [], approvals: [], limit: 100 }),
+        nextJobCursor: scope.approvalCursor ? null : result.next_cursor,
+        ...(() => {
+          if (scope.jobCursor && !scope.approvalCursor) return {};
+          const cursor = scope.approvalCursor
+            ? result.next_cursor
+            : result.continuationFor?.({
+                has_more: !!result.page?.view.nextApprovalCursor,
+                next_cursor: result.page?.view.nextApprovalCursor,
+              });
+          return cursor ? { nextApprovalCursor: cursor } : {};
+        })(),
+        ...(selectedTree ? { threadsTruncated: selectedTree.truncated } : {}),
       };
     };
     const viewerFor = async (target: {
@@ -4591,6 +4744,13 @@ export class RuntimeBridge {
           return view;
         }
         throw new DomainError("not_found", "终端不属于当前获授权的工作。");
+      },
+      requestDetail: async (jobId: string) => {
+        const value = await (
+          await viewerFor({ jobId })
+        ).requestDetail(scope, jobId);
+        await recheck();
+        return value;
       },
       result: async (jobId: string) => {
         const result = await (await viewerFor({ jobId })).result(scope, jobId);
@@ -6711,6 +6871,13 @@ export class RuntimeBridge {
         this.state.sessions[delivery.sessionId]?.platform,
     );
   }
+  private activityReadPages = new ActivityReadPages();
+  private activityPageReads = new Map<
+    string,
+    Promise<
+      Parameters<NonNullable<ActivityReadDemand["observed"]>>[0] | undefined
+    >
+  >();
   private activityRefresh: Promise<void> | null = null;
   private activityRefreshIncludesHistory = true;
   private activityRefreshContexts = new Set<string>();
@@ -6833,10 +7000,17 @@ export class RuntimeBridge {
   private refreshActivity(
     includeHistory = true,
     changedSessions?: ReadonlySet<string>,
+    demand?: ActivityReadDemand,
   ): Promise<void> {
+    if (demand && this.activityRefresh)
+      return this.activityRefresh.then(() =>
+        this.refreshActivity(includeHistory, changedSessions, demand),
+      );
     const contexts = new Set(
       this.activeSessions()
-        .filter((session) => !changedSessions || changedSessions.has(session.id))
+        .filter(
+          (session) => !changedSessions || changedSessions.has(session.id),
+        )
         .map((session) => this.contextId(session.projectId)),
     );
     if (
@@ -6855,6 +7029,7 @@ export class RuntimeBridge {
       this.activityRefresh = this.refreshActivityNow(
         includeHistory,
         changedSessions,
+        demand,
       ).finally(() => {
         this.activityRefresh = null;
       });
@@ -6862,17 +7037,111 @@ export class RuntimeBridge {
     return this.activityRefresh;
   }
   /** An explicit inventory read never dispatches the outbox or creates work. */
-  async refreshPlatformActivity() {
-    await this.as(
-      this.teamIdentity
-        ? { principalId: "morphz-service", actantId: "morphz-agent" }
-        : localAccess,
-      () => this.refreshActivity(),
+  async refreshPlatformActivity(
+    access: AccessContext = localAccess,
+    projectIds?: readonly string[],
+    cursor?: string,
+  ) {
+    const readable = projectIds && new Set(projectIds);
+    const permitted = () =>
+      this.activeSessions().filter(
+        (session) =>
+          !readable ||
+          readable.has(session.projectId) ||
+          (!this.teamIdentity &&
+            session.sharedDefault &&
+            access.principalId === localAccess.principalId),
+      );
+    const contexts = [
+      ...new Set(
+        permitted().map((session) => this.contextId(session.projectId)),
+      ),
+    ].sort();
+    const canonicalSession = permitted().find(
+      (session) => session.sharedDefault,
     );
+    const canonical = canonicalSession
+      ? contexts.indexOf(this.contextId(canonicalSession.projectId))
+      : -1;
+    if (canonical > 0) contexts.unshift(...contexts.splice(canonical, 1));
+    const owner = () => [
+      this.config.url,
+      this.config.namespace,
+      createHash("sha256").update(this.config.token).digest("hex"),
+      access.principalId,
+      access.actantId,
+      projectIds ? [...projectIds].sort() : null,
+      permitted()
+        .map((session) => [
+          session.id,
+          session.projectId,
+          session.conversationId ?? null,
+          this.contextId(session.projectId),
+          session.runtimePrincipalId,
+        ])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    ];
+    return this.activityReadPages.read({
+      owner,
+      contexts,
+      cursor,
+      read: async (contextId, demand) => {
+        const key = createHash("sha256")
+          .update(
+            JSON.stringify([
+              owner(),
+              contextId,
+              { ...demand, observed: undefined },
+            ]),
+          )
+          .digest("hex");
+        let pending = this.activityPageReads.get(key);
+        if (!pending) {
+          if (this.activityPageReads.size >= 128)
+            throw new DomainError("conflict", "活动读取繁忙，请稍后重试。");
+          const request = this.as(
+            this.teamIdentity
+              ? { principalId: "morphz-service", actantId: "morphz-agent" }
+              : localAccess,
+            async () => {
+              let observation:
+                | Parameters<NonNullable<ActivityReadDemand["observed"]>>[0]
+                | undefined;
+              await this.refreshActivity(
+                demand.history,
+                new Set(
+                  permitted()
+                    .filter(
+                      (session) =>
+                        this.contextId(session.projectId) === contextId,
+                    )
+                    .map((session) => session.id),
+                ),
+                {
+                  ...demand,
+                  observed: (value) => {
+                    observation = value;
+                  },
+                },
+              );
+              return observation;
+            },
+          );
+          pending = request.finally(() => {
+            if (this.activityPageReads.get(key) === pending)
+              this.activityPageReads.delete(key);
+          });
+          this.activityPageReads.set(key, pending);
+        }
+        const observation = await pending;
+        if (observation) demand.observed?.(observation);
+      },
+    });
   }
   private async refreshActivityNow(
     includeHistory = true,
     changedSessions?: ReadonlySet<string>,
+    demand?: ActivityReadDemand,
   ) {
     const controlVersion = this.activityControlVersion;
     const activity: z.infer<typeof activitySchema> = {
@@ -6880,7 +7149,7 @@ export class RuntimeBridge {
       historyVersion: this.activityHistoryVersion,
       truncated: false,
       openWorkComplete: false,
-      limit: 200,
+      limit: demand?.limit ?? 200,
       objectivesTruncated: false,
       objectives: [],
       schedulesAvailable: false,
@@ -6905,6 +7174,26 @@ export class RuntimeBridge {
     const previousActivity = this.state.activity;
     const previousSources = this.activitySources;
     const invalidOpenScopes = new Set<string>();
+    // Hash each registered domain once, rather than re-filtering the entire
+    // registry for every Context before a single visible page can paint.
+    const domains = new WeakMap<
+      typeof sessions,
+      Map<string, typeof sessions>
+    >();
+    const contextDomain = (contextId: string, domain: typeof sessions) => {
+      let grouped = domains.get(domain);
+      if (!grouped) {
+        grouped = new Map();
+        for (const session of domain) {
+          const id = this.contextId(session.projectId);
+          const rows = grouped.get(id) ?? [];
+          rows.push(session);
+          grouped.set(id, rows);
+        }
+        domains.set(domain, grouped);
+      }
+      return grouped.get(contextId) ?? [];
+    };
     const readScopeKey = (contextId: string, domain = sessions) =>
       createHash("sha256")
         .update(
@@ -6914,10 +7203,7 @@ export class RuntimeBridge {
             this.actor().principalId,
             this.actor().actantId,
             contextId,
-            domain
-              .filter(
-                (session) => this.contextId(session.projectId) === contextId,
-              )
+            contextDomain(contextId, domain)
               .map((session) => [
                 session.id,
                 session.projectId,
@@ -7002,31 +7288,45 @@ export class RuntimeBridge {
       const retained = new Set(
         registeredContextIds.filter(
           (contextId) =>
-            !initialKeys.has(contextId) &&
+            (!initialKeys.has(contextId) || demand?.append) &&
             this.activityPublishedScopes.get(contextId)?.key ===
               readScopeKey(contextId, currentSessions),
         ),
       );
       if (previousActivity && retained.size) {
         projection.threads.push(
-          ...previousActivity.threads.filter((thread) =>
-            retained.has(
-              thread.delegation?.parentContextId ?? thread.contextId ?? "",
-            ),
+          ...previousActivity.threads.filter(
+            (thread) =>
+              !projection.threads.some(
+                (value) =>
+                  value.id === thread.id &&
+                  value.sessionId === thread.sessionId,
+              ) &&
+              retained.has(
+                thread.delegation?.parentContextId ?? thread.contextId ?? "",
+              ),
           ),
         );
         projection.objectives!.push(
-          ...(previousActivity.objectives ?? []).filter((objective) =>
-            retained.has(objective.contextId ?? ""),
+          ...(previousActivity.objectives ?? []).filter(
+            (objective) =>
+              !projection.objectives!.some(
+                (value) =>
+                  value.id === objective.id &&
+                  value.sessionId === objective.sessionId,
+              ) && retained.has(objective.contextId ?? ""),
           ),
         );
         projection.schedules!.push(
-          ...(previousActivity.schedules ?? []).filter((schedule) =>
-            retained.has(schedule.contextId),
+          ...(previousActivity.schedules ?? []).filter(
+            (schedule) =>
+              !projection.schedules!.some(
+                (value) => value.scheduleId === schedule.scheduleId,
+              ) && retained.has(schedule.contextId),
           ),
         );
         projection.readScopes = projection.readScopes!.map((scope) =>
-          retained.has(scope.contextId)
+          retained.has(scope.contextId) && !initialKeys.has(scope.contextId)
             ? (previousActivity.readScopes?.find(
                 (previous) => previous.contextId === scope.contextId,
               ) ?? scope)
@@ -7228,11 +7528,17 @@ export class RuntimeBridge {
             has_more_threads: z.boolean(),
             has_more_objectives: z.boolean().optional(),
             has_more_schedules: z.boolean().optional(),
+            next_thread_cursor: z.string().max(4096).nullish(),
+            next_objective_cursor: z.string().max(4096).nullish(),
+            next_schedule_cursor: z.string().max(4096).nullish(),
+            next_history_cursor: z.string().max(4096).nullish(),
           })
           .optional(),
         objectives: z
           .array(
             z.object({
+              body_loaded: z.boolean().optional(),
+              wait_head: dependencyHeadSchema,
               readiness: z.object({
                 state: z.string(),
                 dependency_ids: z.array(z.string()).optional(),
@@ -7279,6 +7585,7 @@ export class RuntimeBridge {
         threads: z.array(
           z.object({
             dependencies: threadWaitDependenciesSchema,
+            wait_head: threadWaitHeadSchema,
             source: runtimeSchedulerSourceSchema,
             response_annotations: z.unknown().optional(),
             user_input_request: pendingUserInputRequestSchema.nullish(),
@@ -7390,21 +7697,60 @@ export class RuntimeBridge {
         // reader explicitly asks after a relevant generation changes.
         const readHistory = includeHistory;
         const readCurrent =
-          !changedSessions ||
-          sessions.some(
-            (session) =>
-              changedSessions.has(session.id) &&
-              this.contextId(session.projectId) === contextId,
-          );
+          demand?.current ??
+          (!changedSessions ||
+            sessions.some(
+              (session) =>
+                changedSessions.has(session.id) &&
+                this.contextId(session.projectId) === contextId,
+            ));
         const read = async (terminal: boolean) => {
           try {
             const value = schema.parse(
               await this.request(
-                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=${terminal ? 50 : 200}&include_job_details=false`,
+                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=${demand?.limit ?? (terminal ? 50 : 200)}&include_job_details=false` +
+                  (demand
+                    ? "&" +
+                      new URLSearchParams({
+                        ...(terminal ? { history_only: "true" } : {}),
+                        ...(demand.append
+                          ? {
+                              collection: demand.cursors?.objective_cursor
+                                ? "objectives"
+                                : demand.cursors?.schedule_cursor
+                                  ? "schedules"
+                                  : "threads",
+                            }
+                          : {}),
+                        ...Object.fromEntries(
+                          Object.entries(demand.cursors ?? {}).filter(
+                            ([key]) =>
+                              terminal
+                                ? [
+                                    "history_cursor",
+                                    "objective_cursor",
+                                  ].includes(key)
+                                : key !== "history_cursor",
+                          ),
+                        ),
+                      }).toString()
+                    : ""),
               ),
             );
             if (value.context_id !== undefined)
               z.literal(contextId).parse(value.context_id);
+            if (
+              demand &&
+              [
+                value.threads,
+                value.objectives ?? [],
+                value.schedules ?? [],
+              ].some((rows) => rows.length > demand.limit)
+            )
+              throw new DomainError(
+                "invalid",
+                "Runtime 返回的活动页超过读取上限。",
+              );
             this.readRecovered(
               terminal ? "activity-history" : "activity-current",
             );
@@ -7449,7 +7795,15 @@ export class RuntimeBridge {
           );
         const currentAvailable =
           !denied &&
-          (!!currentRead.value || (!readCurrent && !!cached?.active));
+          (!!currentRead.value ||
+            (!readCurrent &&
+              (demand
+                ? this.activityPublishedScopes.get(contextId)?.key === key &&
+                  !!previousActivity?.readScopes?.some(
+                    (scope) =>
+                      scope.contextId === contextId && scope.currentAvailable,
+                  )
+                : !!cached?.active)));
         const historyAvailable = !denied && !!historyRead.value;
         if (denied) this.activitySnapshotCache.delete(key);
         else {
@@ -7474,10 +7828,17 @@ export class RuntimeBridge {
         };
         const previousActive = schema.safeParse(cached?.active);
         const previousHistory = schema.safeParse(cached?.history);
-        const active = denied
-          ? empty
-          : (currentRead.value ??
-            (previousActive.success ? previousActive.data : empty));
+        demand?.observed?.({
+          currentAvailable,
+          historyAvailable,
+          current: currentRead.value?.detail_bounds,
+          history: historyRead.value?.detail_bounds,
+        });
+        const active =
+          denied || (demand && !readCurrent)
+            ? empty
+            : (currentRead.value ??
+              (previousActive.success ? previousActive.data : empty));
         // A failed historical read may retain known terminal facts, never a
         // previous open Thread/timer/goal that current inventory did not read.
         const history = denied
@@ -7828,27 +8189,53 @@ export class RuntimeBridge {
               questionEdge.dependency_id &&
             typeof questionEdge.metadata.thread_id === "string" &&
             typeof questionEdge.metadata.thread_generation === "number";
-          const pendingUserInput =
-            questionEdge &&
-            objective.generation &&
-            (savedQuestion || objective.wait_condition?.kind === "user_input")
-              ? {
-                  requestId: savedQuestion
-                    ? questionEdge.dependency_id!
-                    : (objective.wait_condition?.request_id ??
-                      `legacy:${objective.id}:${objective.generation}:${objective.revision}`),
-                  kind: savedQuestion
-                    ? ("question" as const)
-                    : ("legacy" as const),
-                  ...(savedQuestion
-                    ? {
-                        threadId: questionEdge.metadata!.thread_id as string,
-                        threadGeneration: questionEdge.metadata!
-                          .thread_generation as number,
-                      }
-                    : {}),
-                }
+          const head = value.wait_head;
+          const headQuestion =
+            head?.owner_kind === "objective" &&
+            head.owner_id === objective.id &&
+            head.generation === objective.generation &&
+            head.revision === objective.revision &&
+            value.readiness.state === "waiting"
+              ? head.question
               : undefined;
+          const pendingUserInput =
+            !headQuestion &&
+            head?.pending &&
+            head.kinds.includes("user_input") &&
+            objective.generation
+              ? {
+                  requestId: `legacy:${objective.id}:${objective.generation}:${objective.revision}`,
+                  kind: "legacy" as const,
+                }
+              : headQuestion
+                ? {
+                    requestId: headQuestion.request_id,
+                    kind: "question" as const,
+                    threadId: headQuestion.thread_id,
+                    threadGeneration: headQuestion.thread_generation,
+                  }
+                : questionEdge &&
+                    objective.generation &&
+                    (savedQuestion ||
+                      objective.wait_condition?.kind === "user_input")
+                  ? {
+                      requestId: savedQuestion
+                        ? questionEdge.dependency_id!
+                        : (objective.wait_condition?.request_id ??
+                          `legacy:${objective.id}:${objective.generation}:${objective.revision}`),
+                      kind: savedQuestion
+                        ? ("question" as const)
+                        : ("legacy" as const),
+                      ...(savedQuestion
+                        ? {
+                            threadId: questionEdge.metadata!
+                              .thread_id as string,
+                            threadGeneration: questionEdge.metadata!
+                              .thread_generation as number,
+                          }
+                        : {}),
+                    }
+                  : undefined;
           for (const thread of activity.threads)
             if (
               primaryObjectives.get(thread.id)?.id === objective.id &&
@@ -7870,6 +8257,8 @@ export class RuntimeBridge {
             rootId: route.rootId,
             sessionId: objective.coordinator_session_id,
             title: objective.stated_objective,
+            bodyLoaded: value.body_loaded ?? true,
+            sourceEventId: objective.source_event_id,
             status: objective.status,
             revision: objective.revision,
             generation: objective.generation,
@@ -7987,12 +8376,13 @@ export class RuntimeBridge {
           });
         }
       }
-      await this.appendDelegatedActivity(
-        activity,
-        sources,
-        initialKeys,
-        delegatedHistoryDemand,
-      );
+      if (!demand?.append)
+        await this.appendDelegatedActivity(
+          activity,
+          sources,
+          initialKeys,
+          delegatedHistoryDemand,
+        );
       activity.schedulesAvailable = snapshots.every(
         ({ active, currentAvailable }) =>
           currentAvailable && active.schedules !== undefined,
@@ -8055,7 +8445,7 @@ export class RuntimeBridge {
       activity.available =
         changedContexts.size === 0 &&
         activity.readScopes!.every((scope) => scope.currentAvailable);
-      activity.openWorkComplete &&= activity.available;
+      activity.openWorkComplete &&= activity.available && !demand?.append;
       activity.schedulesAvailable &&= activity.available;
       // An inventory started before a confirmed control cannot replace its
       // newer receipt. The coalesced post-control read closes this exact gap.
@@ -8093,6 +8483,7 @@ export class RuntimeBridge {
             inputId: thread.inputId,
           };
     } catch (error) {
+      demand?.observed?.({ currentAvailable: false, historyAvailable: false });
       if (controlVersion !== this.activityControlVersion) return;
       this.reportActivityReadFailure(
         createHash("sha256")
@@ -10502,6 +10893,8 @@ export class RuntimeBridge {
               payloadString(event, "session_id") !== session.id
             )
               throw new Error("Runtime 返回了不属于当前会话的事件。");
+            if (runtimeHintReadPlan(event.topic).activity)
+              activityHintSessions.add(session.id);
             if (event.topic === "runtime/thread_cancelled") {
               const root = payloadString(event, "root_turn_id");
               if (root) this.queueRootCancellationChecks(session.id, root);
@@ -10619,11 +11012,25 @@ export class RuntimeBridge {
         }
       }
       await this.processRootCancellationChecks();
-      if (!changedSessions || activityHintSessions.size)
-        await this.refreshActivity(
-          false,
-          changedSessions ? activityHintSessions : undefined,
-        );
+      const activityOwners = new Set(
+        this.activeSessions()
+          .filter((session) => {
+            const loaded = this.activityPublishedScopes.has(
+              this.contextId(session.projectId),
+            );
+            const live = currentDeliveries.some(
+              (delivery) =>
+                delivery.sessionId === session.id &&
+                ["queued", "sending", "running"].includes(delivery.state),
+            );
+            return changedSessions
+              ? activityHintSessions.has(session.id)
+              : loaded || live || activityHintSessions.has(session.id);
+          })
+          .map((session) => session.id),
+      );
+      if (activityOwners.size)
+        await this.refreshActivity(false, activityOwners);
       if (!changedSessions || attentionHintPending)
         await this.refreshAttention();
     } catch (error) {

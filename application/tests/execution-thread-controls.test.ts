@@ -16,7 +16,7 @@ const binding = {
   threadId: scope.threadId,
 };
 const statePath =
-  "/api/sessions/original-session/execution-records?limit=100&thread_id=selected-thread&metadata_only=true";
+  "/api/sessions/original-session/execution-records?limit=100&headers_only=true&thread_id=selected-thread&metadata_only=true";
 function records(thread: Record<string, unknown>) {
   return {
     session_id: binding.sessionId,

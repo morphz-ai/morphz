@@ -85,3 +85,76 @@ macro_rules! scoped_query {
     }};
 }
 pub(crate) use scoped_query;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExecutionApprovalScope {
+    pub context_id: String,
+    pub session_id: String,
+    pub thread_id: Option<String>,
+    pub root_ids: Vec<String>,
+}
+impl ExecutionApprovalScope {
+    pub fn cursor(
+        &self,
+        raw: Option<&str>,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        use base64::Engine;
+        if self.context_id.is_empty()
+            || self.session_id.is_empty()
+            || self.root_ids.len() > 32
+            || std::iter::once(&self.context_id)
+                .chain(std::iter::once(&self.session_id))
+                .chain(self.thread_id.iter())
+                .chain(self.root_ids.iter())
+                .any(|id| id.is_empty() || id.len() > 512)
+        {
+            return Err("invalid Approval collection scope".into());
+        }
+        let scope = self.scope_key();
+        raw.map(|raw| {
+            if raw.len() > 8192 {
+                return Err("invalid scoped Approval cursor".into());
+            }
+            let v: serde_json::Value = serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw)?,
+            )?;
+            if v.get("scope").and_then(|v| v.as_str()) != Some(scope.as_str()) {
+                return Err("Approval cursor scope changed".into());
+            }
+            Ok(v.get("native")
+                .and_then(|n| n.as_str())
+                .ok_or("missing Approval cursor")?
+                .to_owned())
+        })
+        .transpose()
+    }
+    fn scope_key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(self).expect("scalar Approval scope"))
+        )
+    }
+    pub fn wrap(&self, native: String) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&serde_json::json!({"scope":self.scope_key(),"native":native}))
+                .unwrap(),
+        )
+    }
+}
+macro_rules! execution_query {($db:ty,$scope:expr,$cursor:expr,$limit:expr)=>{{
+ (||->Result<sqlx::QueryBuilder<'static,$db>,Box<dyn std::error::Error+Send+Sync>> {
+  let scope=$scope;let native=scope.cursor($cursor)?;let key=crate::memory::approval_page::key(native.as_deref())?;
+  let mut q=sqlx::QueryBuilder::<$db>::new("SELECT * FROM (");
+  for (i,status) in ["pending_auto","pending_human"].into_iter().enumerate(){
+   if i>0{q.push(" UNION ALL ");}
+   q.push("SELECT * FROM (SELECT a.* FROM approval_requests a WHERE a.directory_context_id=").push_bind(scope.context_id.clone()).push(" AND a.directory_session_id=").push_bind(scope.session_id.clone()).push(" AND a.status=").push_bind(status).push(" AND EXISTS(SELECT 1 FROM execution_jobs j WHERE j.id=a.job_id AND j.context_id=").push_bind(scope.context_id.clone()).push(" AND j.session_id=").push_bind(scope.session_id.clone());
+   if let Some(id)=&scope.thread_id{q.push(" AND j.thread_id=").push_bind(id.clone());}
+   if !scope.root_ids.is_empty(){q.push(" AND EXISTS(SELECT 1 FROM threads t WHERE t.id=j.thread_id AND t.root_turn_id IN (");{let mut v=q.separated(",");for id in &scope.root_ids{v.push_bind(id.clone());}}q.push("))");}
+   q.push(")");if let Some(id)=&scope.thread_id{q.push(" AND a.directory_thread_id=").push_bind(id.clone());}if let Some(key)=&key{q.push(" AND (a.created_at,a.id)>(").push_bind(key.sort_at.clone()).push(",").push_bind(key.id.clone()).push(")");}
+   q.push(" ORDER BY a.created_at,a.id LIMIT ").push_bind(($limit.clamp(1,200)+1) as i64).push(") exact_approval_range");
+  }q.push(") exact_approval_page ORDER BY created_at,id LIMIT ").push_bind(($limit.clamp(1,200)+1) as i64);Ok(q)
+ })()
+}};}
+pub(crate) use execution_query;

@@ -1,5 +1,12 @@
 # Product read audit — 2026-11-01
 
+> Latest authorization (2026-11-01): finish first-page, detail and collection
+> demand boundaries, update and inspect the existing application while preserving
+> live work, then commit and push. This supersedes the earlier no-push scope.
+> Earlier failed runs and unfinished checkpoints below are retained as history;
+> current acceptance is recorded in the final follow-up section.
+
+
 Status: **in progress, candidate not deployed**. Validated local read-model
 commits are `0c710e2b`, `66756062` and `96962e2a`. Startup recovery pagination
 has also passed the focused validation recorded below. Remaining read owners
@@ -77,7 +84,7 @@ array is not evidence of completion, absence or a broken approval route.
   lease. No audit candidate was installed, pushed or released, and no user work
   was cancelled for this audit.
 
-## Remaining work before closing this audit
+## Historical remaining work before the final follow-up
 
 1. Finish per-reader Activity/current-work paging without querying every
    historically registered Context or hiding older live work. An arbitrary
@@ -106,7 +113,7 @@ array is not evidence of completion, absence or a broken approval route.
    records and live work. Commit the focused validated result locally; no
    GitHub push or release is part of this request.
 
-## Follow-up validation / still not deployed
+## Earlier follow-up validation / not deployed at that checkpoint
 
 The fresh Application run 30 passed **88/88**, zero skips, including mounted
 terminal continuation, URL-byte budgets, 1200-source bounded demand, 23-Context
@@ -182,3 +189,47 @@ Runtime latency or end-to-end acceptance.
 
 No original Runtime, profile, draft, model or task was changed, and no GitHub
 run is claimed.
+
+
+## Final follow-up: implemented boundaries
+
+- Each Activity reader owns immutable scope-bound coordinates. The visible head
+  reads one authorized Context at a time; explicit More reads one selected
+  Thread, Goal, Schedule or retained-history page. Sibling cursors, accepted
+  summaries and newer control receipts survive partial pages. Native
+  continuations omit Context-wide directory heads and mark that omission.
+- Directory text is a preview. Goal statements, Thread contracts/results, input
+  text, Job requests, dependencies and Group members do not expand merely
+  because a parent row was selected. Exact requested bodies remain native
+  records. Job headers omit arguments; opening technical detail authorizes one
+  exact scoped request. No synthetic `{}` is used as a physical Job request.
+- Current waits use revision/generation-fenced scalar heads with complete native
+  EXISTS checks and explicit resource bounds. Detail dependency pages have an
+  independent cursor. Missing coverage never means runnable, absent or complete.
+- Jobs, approvals and terminals have independent raw-clock/native continuations
+  within one authorized physical source/root window. Approval commands use an
+  exact current approval point and its original fingerprint, independent of
+  whether that row happens to be on a page. Native Delegation pages seek bounded
+  status/role index ranges; directory payloads are explicitly previews.
+- Session participants use exact counts and bounded samples. CLI Agent/Goal
+  inventories expose continuations. Integrity/recovery page scalar witnesses and
+  use indexed counters/EXISTS for complete checks, instead of materializing a
+  whole Context graph. Unsupported Store fallbacks fail explicitly.
+- UI reads wake from relevant commits, reconnect gaps, reader demand and explicit
+  retry. In-memory Kernel commits wake the native subscription after acceptance.
+  PostgreSQL tails remember exact invisible transaction identities so a late
+  commit below an observed insertion sequence is not lost. A mirror claim is
+  confirmed only after acceptance; a failed/in-flight mirror cannot consume a
+  durable cursor. No healthy-period database or HTTP scanner was introduced.
+- Existing CAS, command identities, grant/source rechecks, durable receipts,
+  annotation argument matching and the scheduler's independent background
+  ownership remain in force. Control receipts do not await list reconciliation.
+
+### Current validation and application acceptance
+
+The final code is under frozen-source validation. Dashboard build/lint and all
+298 tests passed. The Application production build passed; the focused page,
+request, approval, inspection and permission regressions passed. Complete Node
+inventory, final SQLite/PostgreSQL pressure repeats, Rust library/lint and
+original-profile deployment/inspection are recorded below when complete.
+No original task has been cancelled, paused, re-sent or answered by this audit.

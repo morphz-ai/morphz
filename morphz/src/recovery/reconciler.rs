@@ -32,6 +32,21 @@ impl SchedulerReconciler {
         groups: &[ThreadGroupRecord],
         existing_barrier_event_ids: &HashSet<String>,
     ) -> Vec<SchedulerInvariantViolation> {
+        Self::audit_supervision_authority(
+            &objectives.iter().map(Into::into).collect::<Vec<_>>(),
+            &threads.iter().map(Into::into).collect::<Vec<_>>(),
+            activations,
+            &groups.iter().map(Into::into).collect::<Vec<_>>(),
+            existing_barrier_event_ids,
+        )
+    }
+    pub fn audit_supervision_authority(
+        objectives: &[crate::scheduler::authority::ObjectiveAuthority],
+        threads: &[crate::scheduler::authority::ThreadAuthority],
+        activations: &[ThreadActivationRecord],
+        groups: &[crate::scheduler::authority::GroupAuthority],
+        existing_barrier_event_ids: &HashSet<String>,
+    ) -> Vec<SchedulerInvariantViolation> {
         let objective_ids = objectives
             .iter()
             .filter(|objective| !objective.status.is_terminal())
@@ -103,6 +118,17 @@ impl SchedulerReconciler {
     pub fn plan(
         violations: &[SchedulerInvariantViolation],
         threads: &[ThreadRecord],
+        thread_ids_by_entity: &HashMap<(String, String), Vec<String>>,
+    ) -> ReconcilerPlan {
+        Self::plan_authority(
+            violations,
+            &threads.iter().map(Into::into).collect::<Vec<_>>(),
+            thread_ids_by_entity,
+        )
+    }
+    pub fn plan_authority(
+        violations: &[SchedulerInvariantViolation],
+        threads: &[crate::scheduler::authority::ThreadAuthority],
         thread_ids_by_entity: &HashMap<(String, String), Vec<String>>,
     ) -> ReconcilerPlan {
         let threads_by_id = threads

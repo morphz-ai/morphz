@@ -664,6 +664,56 @@ impl ExecutionJobStore for PostgresStore {
             .transpose()
     }
 
+    async fn read_job_header_page(
+        &self,
+        mut filter: ExecutionJobFilter,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::memory::job_header::JobHeaderPage, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let limit = limit.clamp(1, 100);
+        let before = crate::memory::job_header::key(&filter, cursor)?;
+        filter.newest_first = true;
+        filter.limit = Some(limit + 1);
+        let original = filter.clone();
+        if filter.thread_id.is_none()
+            && filter.thread_ids.is_empty()
+            && !filter.root_turn_ids.is_empty()
+        {
+            let mut points = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+                "SELECT id FROM threads WHERE context_id=",
+            );
+            points
+                .push_bind(filter.context_id.clone().unwrap())
+                .push(" AND session_id=")
+                .push_bind(filter.session_id.clone().unwrap())
+                .push(" AND root_turn_id IN (");
+            {
+                let mut roots = points.separated(",");
+                for root in &filter.root_turn_ids {
+                    roots.push_bind(root.clone());
+                }
+            }
+            points.push(") LIMIT 32");
+            filter.thread_ids = points
+                .build()
+                .fetch_all(&self.pool)
+                .await?
+                .iter()
+                .map(|row| row.get("id"))
+                .collect();
+            if filter.thread_ids.is_empty() {
+                return Ok(Default::default());
+            }
+        }
+
+        let mut query = crate::memory::job_header::header_query!(sqlx::Postgres, filter, before);
+        let mut items = Vec::new();
+        for row in query.build().fetch_all(&self.pool).await? {
+            items.push(crate::memory::job_header::header_from_row!(&row));
+        }
+        Ok(crate::memory::job_header::finish(&original, items, limit))
+    }
     async fn list_execution_jobs(
         &self,
         filter: ExecutionJobFilter,
@@ -671,63 +721,12 @@ impl ExecutionJobStore for PostgresStore {
         if filter.limit == Some(0) {
             return Ok(Vec::new());
         }
-        let mut query = QueryBuilder::<Postgres>::new("SELECT * FROM execution_jobs WHERE TRUE");
-        if let Some(context_id) = filter.context_id {
-            query.push(" AND context_id = ").push_bind(context_id);
-        }
-        if let Some(session_id) = filter.session_id {
-            query.push(" AND session_id = ").push_bind(session_id);
-        }
-        if let Some(thread_id) = filter.thread_id {
-            query.push(" AND thread_id = ").push_bind(thread_id);
-        }
-        if !filter.thread_ids.is_empty() {
-            query.push(" AND thread_id IN (");
-            let mut values = query.separated(", ");
-            for id in filter.thread_ids {
-                values.push_bind(id);
-            }
-            values.push_unseparated(")");
-        }
-        if !filter.root_turn_ids.is_empty() {
-            query.push(" AND thread_id IN (SELECT id FROM threads WHERE root_turn_id IN (");
-            let mut values = query.separated(", ");
-            for id in filter.root_turn_ids {
-                values.push_bind(id);
-            }
-            values.push_unseparated("))");
-        }
-        if let Some(principal) = filter.visible_principal_id {
-            query
-                .push(" AND (initiating_principal_id = ")
-                .push_bind(principal);
-            if filter.include_legacy_principal {
-                query.push(" OR initiating_principal_id IS NULL");
-            }
-            query.push(")");
-        }
-        if let Some(activation_id) = filter.activation_id {
-            query.push(" AND activation_id = ").push_bind(activation_id);
-        }
-        if let Some(target_id) = filter.target_id {
-            query.push(" AND target_id = ").push_bind(target_id);
-        }
-        if let Some(tool_name) = filter.tool_name {
-            query.push(" AND tool_name = ").push_bind(tool_name);
-        }
-        if let Some(status) = filter.status {
-            query.push(" AND status = ").push_bind(status.as_str());
-        } else if !filter.include_terminal {
-            query.push(" AND status IN ('queued', 'waiting_approval', 'running')");
-        }
-        if filter.newest_first {
-            query.push(" ORDER BY created_at DESC, id DESC");
-        } else {
-            query.push(" ORDER BY created_at, id");
-        }
-        if let Some(limit) = filter.limit {
-            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
-        }
+        let mut query = crate::memory::job_header::job_query!(
+            sqlx::Postgres,
+            filter,
+            "*",
+            None::<(String, String)>
+        );
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(execution_job_from_row).collect()
     }

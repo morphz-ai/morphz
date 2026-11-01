@@ -81,7 +81,7 @@ const expected = parseReaderSources({
     refreshAfterMutation(): Promise<boolean>;
   };
   function createExecutionInteractions({ current, approvalSubmissions, updateApprovalSubmissions, call: applicationCall, refreshAfterMutation }: ExecutionInteractionPorts) {
-    return { cancelInput, executionSnapshot, executionResult, controlExecution, approvalSubmitted };
+    return { cancelInput, executionSnapshot, executionResult, executionRequest, controlExecution, approvalSubmitted };
   }
   ${executionRegistration}
   const current = useRef<Boot | null>(null);
@@ -125,11 +125,18 @@ export function verifyExecutionInteractionOwner(
   const functions = factory.body!.statements.filter(isFunctionDeclaration);
   assert.deepEqual(
     functions.map((node) => node.name?.text),
-    executionNames,
+    [
+      "cancelInput",
+      "executionSnapshot",
+      "executionRequest",
+      "executionResult",
+      "controlExecution",
+      "approvalSubmitted",
+    ],
   );
   assert.equal(
     factory.body!.statements.length,
-    executionNames.length + 1,
+    executionNames.length + 2,
     "only five commands and direct return, no construction work",
   );
   same(
@@ -171,6 +178,11 @@ export function verifyExecutionInteractionOwner(
         ),
       "complete original execution algorithm " + name,
     );
+  assert.equal(
+    readerFunction(owner, "executionRequest").getText(),
+    'async function executionRequest(scope: ExecutionReadScope, jobId: string) {\n    return jobSchema.parse(\n      await applicationCall(\n        "execution.request",\n        { scope, jobId },\n        { signal: AbortSignal.timeout(12000) },\n      ),\n    );\n  }',
+    "exact lazy physical request read without command authority",
+  );
   for (const statement of owner.source.statements)
     assert.ok(
       isImportDeclaration(statement) ||
@@ -194,7 +206,7 @@ export function verifyExecutionInteractionOwner(
       .map((node) => node.getText()),
     [
       'import { z } from "zod";',
-      'import {\n  executionSnapshotSchema,\n  type ExecutionReadScope,\n  type ExecutionControl,\n} from "../../../../packages/core/src/execution.js";',
+      'import {\n  executionSnapshotSchema,\n  jobSchema,\n  type ExecutionReadScope,\n  type ExecutionControl,\n} from "../../../../packages/core/src/execution.js";',
     ],
     "only original execution schemas at runtime",
   );
@@ -412,14 +424,14 @@ export function verifyExecutionInteractionConsumption(
     );
   assert.deepEqual(
     uses.map((node) => node.name.text).sort(),
-    [...executionNames].sort(),
+    [...executionNames, "executionRequest"].sort(),
     "only five actual Client execution consumers",
   );
   const returns = workspace.body!.statements.filter(isReturnStatement);
   assert.equal(returns.length, 1);
   const result = returns[0]!.expression;
   assert.ok(result && isObjectLiteralExpression(result));
-  for (const name of executionNames) {
+  for (const name of [...executionNames, "executionRequest"]) {
     const properties: Node[] = result.properties.filter(
       (node) =>
         isPropertyAssignment(node) &&

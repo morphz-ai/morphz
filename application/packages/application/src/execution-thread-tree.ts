@@ -6,39 +6,64 @@ import type { RuntimeRequest } from "./execution.js";
 import { activityAnnotationFields } from "./response-annotations.js";
 import { pendingUserInputRequestSchema } from "../../core/src/user-input.js";
 
-export const runtimeExecutionRecordsSchema = z.object({
-  session_id: z.string().min(1),
-  context_id: z.string().min(1),
-  selected_thread_id: z.string().nullable(),
-  source_root_id: z.string().nullable(),
-  limit: z.number().int().min(1).max(100),
-  has_more_jobs: z.boolean(),
-  threads_truncated: z.boolean(),
-  jobs: z.array(jobSchema.omit({ annotation: true })).max(100),
-  threads: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        session_id: z.string().min(1),
-        context_id: z.string().min(1),
-        root_turn_id: z.string().min(1),
-        initiating_principal_id: z.string().nullable().optional(),
-        parent_thread_id: z.string().nullable(),
-        generation: z.number().int().nonnegative().safe(),
-        revision: z.number().int().positive().safe(),
-        lifecycle: z.string(),
-        control_state: z.string(),
-        phase: z.string(),
-        created_at: z.string(),
-        updated_at: z.string(),
-        intent: z.string().nullable(),
-        response_annotations: z.unknown().optional(),
-        user_input_request: pendingUserInputRequestSchema.nullish(),
-        execution_model: executionModelSchema.nullish(),
-      }),
-    )
-    .max(100),
-});
+export const runtimeExecutionRecordsSchema = z
+  .object({
+    session_id: z.string().min(1),
+    context_id: z.string().min(1),
+    selected_thread_id: z.string().nullable(),
+    source_root_id: z.string().nullable(),
+    limit: z.number().int().min(1).max(100),
+    has_more_jobs: z.boolean(),
+    threads_truncated: z.boolean(),
+    jobs: z.array(jobSchema.omit({ annotation: true })).max(100),
+    job_headers: z
+      .array(jobSchema.omit({ annotation: true }))
+      .max(100)
+      .default([]),
+    next_job_cursor: z.string().max(4096).nullish(),
+    threads: z
+      .array(
+        z.object({
+          id: z.string().min(1),
+          session_id: z.string().min(1),
+          context_id: z.string().min(1),
+          root_turn_id: z.string().min(1),
+          initiating_principal_id: z.string().nullable().optional(),
+          parent_thread_id: z.string().nullable(),
+          generation: z.number().int().nonnegative().safe(),
+          revision: z.number().int().positive().safe(),
+          lifecycle: z.string(),
+          control_state: z.string(),
+          phase: z.string(),
+          created_at: z.string(),
+          updated_at: z.string(),
+          intent: z.string().nullable(),
+          response_annotations: z.unknown().optional(),
+          wait_head: z
+            .object({
+              thread_id: z.string(),
+              generation: z.number().int().nonnegative().safe(),
+              revision: z.number().int().positive().safe(),
+              kinds: z.array(z.string()).max(12),
+              resources: z.array(z.string().max(512)).max(32),
+              resources_truncated: z.boolean(),
+              until: z.string().nullish(),
+            })
+            .nullish(),
+          user_input_request: pendingUserInputRequestSchema.nullish(),
+          execution_model: executionModelSchema.nullish(),
+        }),
+      )
+      .max(100),
+  })
+  .superRefine((value, ctx) => {
+    if (value.jobs.length && value.job_headers.length)
+      ctx.addIssue({ code: "custom", message: "Mixed Job body/header page" });
+  })
+  .transform(({ job_headers, ...value }) => ({
+    ...value,
+    jobs: job_headers.length ? job_headers : value.jobs,
+  }));
 export type RuntimeExecutionRecords = z.infer<
   typeof runtimeExecutionRecordsSchema
 >;
@@ -55,6 +80,21 @@ export function executionRecordThread(
     parentThreadId: t.parent_thread_id,
     title: annotation?.title ?? t.intent?.trim() ?? "",
     ...(t.execution_model ? { executionModel: t.execution_model } : {}),
+    ...(t.wait_head &&
+    t.wait_head.thread_id === t.id &&
+    t.wait_head.generation === t.generation &&
+    t.wait_head.revision === t.revision &&
+    t.lifecycle === "open" &&
+    t.control_state === "active" &&
+    ["waiting", "idle"].includes(t.phase)
+      ? {
+          waitKinds: t.wait_head.kinds,
+          ...(t.wait_head.resources.length
+            ? { waitResources: t.wait_head.resources }
+            : {}),
+          ...(t.wait_head.until ? { waitUntil: t.wait_head.until } : {}),
+        }
+      : {}),
     ...(t.user_input_request &&
     t.user_input_request.thread_id === t.id &&
     t.user_input_request.thread_generation === t.generation &&
@@ -83,9 +123,11 @@ export async function readExecutionRecords(
     threadIds?: string[];
     includeDescendants?: boolean;
     metadataOnly?: boolean;
+    cursor?: string;
   },
 ): Promise<RuntimeExecutionRecords> {
-  const query = new URLSearchParams({ limit: "100" });
+  const query = new URLSearchParams({ limit: "100", headers_only: "true" });
+  if (binding.cursor) query.set("cursor", binding.cursor);
   if (binding.threadId) query.set("thread_id", binding.threadId);
   if (binding.rootIds?.length)
     query.set("root_turn_ids", JSON.stringify(binding.rootIds));
@@ -163,12 +205,15 @@ export async function authorizedExecutionThreadTree(
     threadId: string;
   },
   includeDescendants: boolean,
+  cursor?: string,
+  metadataOnly = false,
 ): Promise<AuthorizedThreadTree> {
   const records = await readExecutionRecords(request, {
     ...binding,
     rootIds: [binding.inputRootId],
     includeDescendants,
-    metadataOnly: !includeDescendants,
+    metadataOnly: metadataOnly || !includeDescendants,
+    cursor,
   });
   const threads = records.threads.map(executionRecordThread);
   return {

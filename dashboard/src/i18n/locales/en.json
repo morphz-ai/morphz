@@ -1321,6 +1321,7 @@
         "pending_signals": "More pending signals",
         "activation_signals": "More input signals",
         "schedules": "More schedules",
+        "dependencies": "More wait dependencies",
         "model_events": "Earlier model records"
       }
     }

@@ -86,6 +86,8 @@ export const activitySchema = z.object({
         sessionId: z.string(),
         contextId: z.string().optional(),
         title: z.string(),
+        bodyLoaded: z.boolean().optional(),
+        sourceEventId: z.string().optional(),
         status: z.string(),
         /** Missing control metadata cannot authorize an action. */
         revision: z.number().int().positive().optional(),

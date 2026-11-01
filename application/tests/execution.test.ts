@@ -17,7 +17,7 @@ test("单个分支的查看和停止不包含同根的其他分支，停止须�
           thread: { id: "thread-1", lifecycle: "cancelled" },
         };
       }
-      if (path === "/api/approvals")
+      if (path.split("?")[0] === "/api/approvals")
         return {
           approvals: ["thread-1", "thread-2"].map((thread_id) => ({
             ...approval,
@@ -88,7 +88,7 @@ test("共享 Session 的执行详情、结果与审批必须限定到原始工�
   const controls = new ExecutionControls(
     executionRecordsPeer(async (path, method) => {
       if (method === "POST") writes++;
-      if (path === "/api/approvals")
+      if (path.split("?")[0] === "/api/approvals")
         return {
           approvals: ["a", "b"].map((key) => ({
             requested_at: "2026-09-09T00:00:00Z",
@@ -175,7 +175,7 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
   const controls = new ExecutionControls(
     executionRecordsPeer(async (path, method) => {
       queries.push(path);
-      if (path === "/api/approvals")
+      if (path.split("?")[0] === "/api/approvals")
         return {
           approvals: [
             approval,
@@ -235,9 +235,25 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
     }),
   );
   const view = await controls.snapshot(scope);
-  assert.equal(view.jobs.length, 2);
-  assert.equal(view.approvals.length, 2);
-  assert.equal(queries.filter((p) => p.includes("?")).length, 2);
+  assert.equal(view.jobs.length, 1, "one demand reads one physical Session");
+  assert.equal(view.approvals.length, 1);
+  assert.equal(
+    queries.filter((p) => p.includes("?")).length,
+    2,
+    "one Jobs page and its scoped approvals",
+  );
+  assert.ok(view.nextJobCursor);
+  const next = await controls.snapshot({
+    ...scope,
+    jobCursor: view.nextJobCursor!,
+  });
+  assert.equal(
+    new Set([...view.jobs, ...next.jobs].map((job) => job.id)).size,
+    2,
+    "explicit continuation reaches the retained Session without duplicates",
+  );
+  assert.equal(next.approvals.length, 1);
+  assert.equal(next.nextJobCursor, null);
   assert.equal((await controls.result(scope, legacy.id)).text, "历史结果");
   assert.equal(
     (
@@ -254,7 +270,7 @@ test("执行投影限定对话；移除 worker 凭据，空对话不查询全局
   const controls = new ExecutionControls(
     executionRecordsPeer(async (path) => {
       queries++;
-      if (path === "/api/approvals")
+      if (path.split("?")[0] === "/api/approvals")
         return {
           approvals: [
             approval,
@@ -357,7 +373,9 @@ test("审批重新核对原文指纹，只允许单次授权，不能提升到�
         decisions.push(body);
         return { accepted: true };
       }
-      return path === "/api/approvals" ? { approvals: pending } : { jobs: [] };
+      return path.split("?")[0] === "/api/approvals"
+        ? { approvals: pending }
+        : { jobs: [] };
     }, binding.contextId),
     () => binding,
   );
@@ -426,7 +444,10 @@ test("事项审批计数只读取精确会话、上下文、根和线程，不�
   const controls = new ExecutionControls(
     executionRecordsPeer(async (path, method) => {
       assert.equal(method, undefined);
-      assert.equal(path, "/api/approvals");
+      assert.equal(path.split("?")[0], "/api/approvals");
+      const scoped = new URL(path, "http://fixture").searchParams;
+      assert.equal(scoped.get("context_id"), binding.contextId);
+      assert.equal(scoped.get("session_id"), binding.sessionId);
       paths.push(path);
       return { approvals: pending };
     }, binding.contextId),
@@ -435,7 +456,10 @@ test("事项审批计数只读取精确会话、上下文、根和线程，不�
   assert.equal(await controls.pendingApprovalCount(taskScope), 1);
   pending = [];
   assert.equal(await controls.pendingApprovalCount(taskScope), 0);
-  assert.deepEqual(paths, ["/api/approvals", "/api/approvals"]);
+  assert.deepEqual(
+    paths.map((path) => path.split("?")[0]),
+    ["/api/approvals", "/api/approvals"],
+  );
   const unavailable = new ExecutionControls(
     executionRecordsPeer(async () => {
       throw new Error("Runtime offline");

@@ -1,3 +1,5 @@
+#[path = "supervision_audit.rs"]
+mod supervision_audit;
 use crate::activation_admission::{
     ActivationAdmissionController, ActivationAdmissionError, ActivationAdmissionLimits,
     ActivationAdmissionPermit, RestoreQueuedOutcome, SuspendedActivationAdmission,
@@ -85,6 +87,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+use supervision_audit::SupervisionAuditReport;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -6038,8 +6041,7 @@ impl Orchestrator {
     fn start_supervision_invariant_auditor(self: &Arc<Self>) {
         let orchestrator = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut previous_violations =
-                HashMap::<String, Vec<SchedulerInvariantViolation>>::new();
+            let mut previous_violations = HashMap::<String, SupervisionAuditReport>::new();
             let mut previous_errors = HashMap::<String, String>::new();
             loop {
                 tokio::time::sleep(SUPERVISION_RECONCILE_INTERVAL).await;
@@ -6134,514 +6136,34 @@ impl Orchestrator {
     /// but it must never block Runtime startup or make restart O(lifetime).
     async fn audit_active_supervision_invariants(
         &self,
-    ) -> Result<Vec<SchedulerInvariantViolation>, DynError> {
+    ) -> Result<SupervisionAuditReport, DynError> {
         let Some(store) = self.plan_store.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(Default::default());
         };
-        let Some(kernel) = self.scheduler_kernel.as_ref() else {
-            tracing::warn!(event_code = "orchestrator.scheduler_kernel.unavailable", "Scheduler Kernel is unavailable; skipping invariant quarantine for this cycle without writing directly to the Store");
-            return Ok(Vec::new());
-        };
-        let mut all_violations = Vec::new();
-        let mut context_pages = crate::memory::recovery::ContextRecoveryPages::default();
-        while let Some(contexts) = context_pages.next(store.as_ref()).await? {
+        let mut pages = crate::memory::recovery::ContextRecoveryPages::default();
+        let mut result = SupervisionAuditReport::default();
+        while let Some(contexts) = pages.next(store.as_ref()).await? {
             for context in contexts {
-                let objectives = store.list_context_objectives(&context.id, false).await?;
-                let threads = store.list_context_threads(&context.id, false).await?;
-                let activations = store
-                    .list_context_thread_activations(&context.id, false)
+                let report = self
+                    .audit_supervision_context_paged(&context.id, false)
                     .await?;
-                let groups = store
-                    .list_thread_groups(ThreadGroupFilter {
-                        context_id: Some(context.id.clone()),
-                        include_terminal: false,
-                        newest_first: false,
-                        limit: None,
-                        ..Default::default()
-                    })
-                    .await?;
-                let group_ids = groups
-                    .iter()
-                    .map(|group| group.id.clone())
-                    .collect::<Vec<_>>();
-                let mut grouped_members = Vec::new();
-                for group_ids in group_ids.chunks(500) {
-                    grouped_members.extend(
-                        store
-                            .list_thread_group_members_for_groups(group_ids)
-                            .await?,
-                    );
-                }
-                let members = grouped_members
-                    .iter()
-                    .map(|(_, member)| member.clone())
-                    .collect::<Vec<_>>();
-                let mut thread_ids_by_entity = HashMap::new();
-                for group in &groups {
-                    let group_members = grouped_members
-                        .iter()
-                        .filter(|(group_id, _)| group_id == &group.id)
-                        .map(|(_, member)| member);
-                    thread_ids_by_entity.insert(
-                        ("thread_group".to_string(), group.id.clone()),
-                        group_members
-                            .map(|member| member.thread_id.clone())
-                            .collect(),
-                    );
-                }
-                let thread_by_root = threads
-                    .iter()
-                    .map(|thread| (thread.root_turn_id.as_str(), thread.id.clone()))
-                    .collect::<HashMap<_, _>>();
-                for activation in &activations {
-                    if let Some(thread_id) = thread_by_root.get(activation.root_turn_id.as_str()) {
-                        thread_ids_by_entity.insert(
-                            ("activation".to_string(), activation.id.clone()),
-                            vec![thread_id.clone()],
-                        );
-                    }
-                }
-                let thread_ids = threads
-                    .iter()
-                    .map(|thread| thread.id.clone())
-                    .collect::<Vec<_>>();
-                let mut outcomes = Vec::new();
-                for thread_ids in thread_ids.chunks(500) {
-                    outcomes.extend(store.list_thread_outcomes(thread_ids).await?);
-                }
-                let objective_ids = objectives
-                    .iter()
-                    .map(|objective| objective.id.clone())
-                    .collect::<Vec<_>>();
-                let mut dependencies = Vec::new();
-                for objective_ids in objective_ids.chunks(500) {
-                    dependencies.extend(
-                        store
-                            .list_scheduler_dependencies_for_owners(
-                                SchedulerDependencyOwnerKind::Objective,
-                                objective_ids,
-                            )
-                            .await?,
-                    );
-                }
-                for thread_ids in thread_ids.chunks(500) {
-                    dependencies.extend(
-                        store
-                            .list_scheduler_dependencies_for_owners(
-                                SchedulerDependencyOwnerKind::Thread,
-                                thread_ids,
-                            )
-                            .await?,
-                    );
-                }
-                dependencies.sort_by(|left, right| left.id.cmp(&right.id));
-                dependencies.dedup_by(|left, right| left.id == right.id);
-
-                let candidate_barrier_event_ids = groups
-                    .iter()
-                    .filter_map(|group| group.barrier_event_id.as_ref())
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let barrier_event_ids = if candidate_barrier_event_ids.is_empty() {
-                    HashSet::new()
-                } else {
-                    let mut existing = HashSet::new();
-                    for event_ids in candidate_barrier_event_ids.chunks(500) {
-                        existing.extend(
-                            self.store
-                                .query(QueryFilter {
-                                    event_ids: event_ids.to_vec(),
-                                    ..Default::default()
-                                })
-                                .await?
-                                .into_iter()
-                                .map(|event| event.id),
-                        );
-                    }
-                    existing
-                };
-
-                let mut violations = crate::scheduler::audit_scheduler_invariants(
-                    crate::scheduler::SchedulerInvariantInput {
-                        objectives: &objectives,
-                        threads: &threads,
-                        activations: &activations,
-                        outcomes: &outcomes,
-                        groups: &groups,
-                        group_members: &members,
-                        dependencies: &dependencies,
-                    },
-                );
-                violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
-                    &objectives,
-                    &threads,
-                    &activations,
-                    &groups,
-                    &barrier_event_ids,
-                ));
-                let plan = crate::recovery::SchedulerReconciler::plan(
-                    &violations,
-                    &threads,
-                    &thread_ids_by_entity,
-                );
-                for action in plan.actions {
-                    let crate::recovery::ReconcilerAction::QuarantineThread { thread_id, reason } =
-                        action;
-                    let Some(thread) = threads.iter().find(|thread| thread.id == thread_id) else {
-                        continue;
-                    };
-                    let command = crate::controllers::DialogueController::control_thread(
-                        thread,
-                        &context.id,
-                        ThreadControlAction::Pause,
-                        reason.clone(),
-                        "Runtime-Reconciler",
-                    );
-                    match kernel.execute(command).await {
-                        Ok(crate::scheduler::KernelResult::ThreadControlled(
-                            ThreadMutation::Updated(_),
-                        )) => tracing::warn!(
-                            thread_id = %thread.id,
-                            reason = %reason,
-                            event_code = "orchestrator.scheduler_reconciler.thread_quarantined",
-                            "Scheduler Reconciler quarantined a Thread violating invariants without inferring a business terminal state"
-                        ),
-                        Ok(crate::scheduler::KernelResult::ThreadControlled(
-                            ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
-                        )) => {}
-                        Ok(_) => unreachable!("ControlThread must return ThreadControlled"),
-                        Err(error) => tracing::warn!(
-                            thread_id = %thread.id,
-                            %error,
-                            event_code = "orchestrator.scheduler_reconciler.quarantine_failed",
-                            "Scheduler Reconciler quarantine command failed; retaining authoritative state for the next cycle"
-                        ),
-                    }
-                }
-                all_violations.extend(violations);
+                result.total += report.total;
+                let remaining = 200usize.saturating_sub(result.violations.len());
+                result
+                    .violations
+                    .extend(report.violations.into_iter().take(remaining));
+                tokio::task::yield_now().await;
             }
         }
-        all_violations.sort();
-        Ok(all_violations)
+        Ok(result)
     }
-
-    /// Audit only live scheduler authority for one Context, plus exact parent
-    /// rows required to validate those live records. Historical terminal rows
-    /// are immutable after their Kernel transaction; repeatedly deserializing
-    /// them cannot make an idle Runtime safer.
     async fn audit_supervision_context(
         &self,
         context_id: &str,
         include_terminal: bool,
-    ) -> Result<Vec<SchedulerInvariantViolation>, DynError> {
-        let Some(store) = self.plan_store.as_ref() else {
-            return Ok(Vec::new());
-        };
-        let Some(kernel) = self.scheduler_kernel.as_ref() else {
-            tracing::warn!(event_code = "orchestrator.scheduler_kernel.unavailable", "Scheduler Kernel is unavailable; skipping invariant quarantine for this cycle without writing directly to the Store");
-            return Ok(Vec::new());
-        };
-
-        let mut objectives = store
-            .list_context_objectives(context_id, include_terminal)
-            .await?;
-        let mut threads = store
-            .list_context_threads(context_id, include_terminal)
-            .await?;
-        let mut activations = store
-            .list_context_thread_activations(context_id, include_terminal)
-            .await?;
-        let mut groups = store
-            .list_thread_groups(ThreadGroupFilter {
-                context_id: Some(context_id.to_string()),
-                include_terminal,
-                newest_first: false,
-                limit: None,
-                ..Default::default()
-            })
-            .await?;
-
-        let objective_ids = objectives
-            .iter()
-            .map(|objective| objective.id.clone())
-            .collect::<Vec<_>>();
-        let thread_ids = threads
-            .iter()
-            .map(|thread| thread.id.clone())
-            .collect::<Vec<_>>();
-        let mut dependencies = Vec::new();
-        for objective_ids in objective_ids.chunks(500) {
-            dependencies.extend(
-                store
-                    .list_scheduler_dependencies_for_owners(
-                        SchedulerDependencyOwnerKind::Objective,
-                        objective_ids,
-                    )
-                    .await?,
-            );
-        }
-        for thread_ids in thread_ids.chunks(500) {
-            dependencies.extend(
-                store
-                    .list_scheduler_dependencies_for_owners(
-                        SchedulerDependencyOwnerKind::Thread,
-                        thread_ids,
-                    )
-                    .await?,
-            );
-        }
-        dependencies.sort_by(|left, right| left.id.cmp(&right.id));
-        dependencies.dedup_by(|left, right| left.id == right.id);
-
-        // A live Activation can expose the exact terminal Thread invariant
-        // without requiring every unrelated terminal Thread in the Context.
-        let missing_activation_roots = activations
-            .iter()
-            .map(|activation| activation.root_turn_id.clone())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .filter(|root_turn_id| {
-                !threads
-                    .iter()
-                    .any(|thread| thread.root_turn_id == *root_turn_id)
-            })
-            .collect::<Vec<_>>();
-        threads.extend(
-            store
-                .list_threads_by_roots(context_id, &missing_activation_roots)
-                .await?,
-        );
-
-        // A pending dependency targeting a newly terminal Group is an online
-        // violation. Retrieve that exact Group rather than all closed Groups.
-        let dependency_group_ids = dependencies
-            .iter()
-            .filter(|dependency| {
-                dependency.status == SchedulerDependencyStatus::Pending
-                    && dependency.dependency_kind == SchedulerDependencyKind::ThreadGroup
-            })
-            .map(|dependency| dependency.dependency_id.clone())
-            .filter(|group_id| !groups.iter().any(|group| group.id == *group_id))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        if !dependency_group_ids.is_empty() {
-            for group_ids in dependency_group_ids.chunks(500) {
-                groups.extend(
-                    store
-                        .list_thread_groups_by_ids(context_id, group_ids)
-                        .await?,
-                );
-            }
-        }
-
-        // Open Groups may be owned by an exact terminal/missing authority.
-        // Include existing owners so the pure audit can distinguish a valid
-        // live generation from an orphan without a Context-wide history scan.
-        let known_thread_ids = threads
-            .iter()
-            .map(|thread| thread.id.as_str())
-            .collect::<HashSet<_>>();
-        let known_activation_ids = activations
-            .iter()
-            .map(|activation| activation.id.as_str())
-            .collect::<HashSet<_>>();
-        let known_objective_ids = objectives
-            .iter()
-            .map(|objective| objective.id.as_str())
-            .collect::<HashSet<_>>();
-        let missing_supervisor_threads = groups
-            .iter()
-            .filter(|group| group.supervisor_kind == ThreadSupervisorKind::Thread)
-            .map(|group| group.supervisor_id.clone())
-            .filter(|id| !known_thread_ids.contains(id.as_str()))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let missing_supervisor_activations = groups
-            .iter()
-            .filter(|group| group.supervisor_kind == ThreadSupervisorKind::Evaluation)
-            .map(|group| group.supervisor_id.clone())
-            .filter(|id| !known_activation_ids.contains(id.as_str()))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let missing_supervisor_objectives = groups
-            .iter()
-            .filter(|group| group.supervisor_kind == ThreadSupervisorKind::Objective)
-            .map(|group| group.supervisor_id.clone())
-            .filter(|id| !known_objective_ids.contains(id.as_str()))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        drop((known_thread_ids, known_activation_ids, known_objective_ids));
-        threads.extend(
-            store
-                .list_threads_by_ids(context_id, &missing_supervisor_threads)
-                .await?,
-        );
-        activations.extend(
-            store
-                .list_thread_activations_by_ids(context_id, &missing_supervisor_activations)
-                .await?,
-        );
-        objectives.extend(
-            store
-                .list_objectives_by_ids(context_id, &missing_supervisor_objectives)
-                .await?,
-        );
-
-        let group_ids = groups
-            .iter()
-            .map(|group| group.id.clone())
-            .collect::<Vec<_>>();
-        let mut grouped_members = Vec::new();
-        for group_ids in group_ids.chunks(500) {
-            grouped_members.extend(
-                store
-                    .list_thread_group_members_for_groups(group_ids)
-                    .await?,
-            );
-        }
-        let members = grouped_members
-            .iter()
-            .map(|(_, member)| member.clone())
-            .collect::<Vec<_>>();
-        let known_thread_ids = threads
-            .iter()
-            .map(|thread| thread.id.clone())
-            .collect::<HashSet<_>>();
-        let missing_member_thread_ids = members
-            .iter()
-            .map(|member| member.thread_id.clone())
-            .filter(|thread_id| !known_thread_ids.contains(thread_id))
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
-        threads.extend(
-            store
-                .list_threads_by_ids(context_id, &missing_member_thread_ids)
-                .await?,
-        );
-        let mut thread_ids_by_entity = HashMap::new();
-        for group in &groups {
-            let group_members = grouped_members
-                .iter()
-                .filter(|(group_id, _)| group_id == &group.id)
-                .map(|(_, member)| member)
-                .collect::<Vec<_>>();
-            thread_ids_by_entity.insert(
-                ("thread_group".to_string(), group.id.clone()),
-                group_members
-                    .iter()
-                    .map(|member| member.thread_id.clone())
-                    .collect(),
-            );
-        }
-
-        let thread_by_root = threads
-            .iter()
-            .map(|thread| (thread.root_turn_id.as_str(), thread.id.clone()))
-            .collect::<HashMap<_, _>>();
-        for activation in &activations {
-            if let Some(thread_id) = thread_by_root.get(activation.root_turn_id.as_str()) {
-                thread_ids_by_entity.insert(
-                    ("activation".to_string(), activation.id.clone()),
-                    vec![thread_id.clone()],
-                );
-            }
-        }
-
-        let outcome_thread_ids = threads
-            .iter()
-            .map(|thread| thread.id.clone())
-            .collect::<Vec<_>>();
-        let mut outcomes = Vec::new();
-        for thread_ids in outcome_thread_ids.chunks(500) {
-            outcomes.extend(store.list_thread_outcomes(thread_ids).await?);
-        }
-        let candidate_barrier_event_ids = groups
-            .iter()
-            .filter_map(|group| group.barrier_event_id.as_ref())
-            .cloned()
-            .collect::<Vec<_>>();
-        let barrier_event_ids = if candidate_barrier_event_ids.is_empty() {
-            HashSet::new()
-        } else {
-            let mut existing = HashSet::new();
-            for event_ids in candidate_barrier_event_ids.chunks(500) {
-                existing.extend(
-                    self.store
-                        .query(QueryFilter {
-                            event_ids: event_ids.to_vec(),
-                            ..Default::default()
-                        })
-                        .await?
-                        .into_iter()
-                        .map(|event| event.id),
-                );
-            }
-            existing
-        };
-
-        let mut violations = crate::scheduler::audit_scheduler_invariants(
-            crate::scheduler::SchedulerInvariantInput {
-                objectives: &objectives,
-                threads: &threads,
-                activations: &activations,
-                outcomes: &outcomes,
-                groups: &groups,
-                group_members: &members,
-                dependencies: &dependencies,
-            },
-        );
-        violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
-            &objectives,
-            &threads,
-            &activations,
-            &groups,
-            &barrier_event_ids,
-        ));
-        let plan = crate::recovery::SchedulerReconciler::plan(
-            &violations,
-            &threads,
-            &thread_ids_by_entity,
-        );
-        for action in plan.actions {
-            let crate::recovery::ReconcilerAction::QuarantineThread { thread_id, reason } = action;
-            let Some(thread) = threads.iter().find(|thread| thread.id == thread_id) else {
-                continue;
-            };
-            let command = crate::controllers::DialogueController::control_thread(
-                thread,
-                context_id,
-                ThreadControlAction::Pause,
-                reason.clone(),
-                "Runtime-Reconciler",
-            );
-            match kernel.execute(command).await {
-                Ok(crate::scheduler::KernelResult::ThreadControlled(ThreadMutation::Updated(
-                    _,
-                ))) => tracing::warn!(
-                    thread_id = %thread.id,
-                    reason = %reason,
-                    event_code = "orchestrator.scheduler_reconciler.thread_quarantined",
-                    "Scheduler Reconciler quarantined a Thread violating invariants without inferring a business terminal state"
-                ),
-                Ok(crate::scheduler::KernelResult::ThreadControlled(
-                    ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
-                )) => {}
-                Ok(_) => unreachable!("ControlThread must return ThreadControlled"),
-                Err(error) => tracing::warn!(
-                    thread_id = %thread.id,
-                    %error,
-                    event_code = "orchestrator.scheduler_reconciler.quarantine_failed",
-                    "Scheduler Reconciler quarantine command failed; retaining authoritative state for the next cycle"
-                ),
-            }
-        }
-        violations.sort();
-        Ok(violations)
+    ) -> Result<SupervisionAuditReport, DynError> {
+        self.audit_supervision_context_paged(context_id, include_terminal)
+            .await
     }
 
     pub(crate) async fn reconcile_durable_plans(&self) -> Result<(), DynError> {

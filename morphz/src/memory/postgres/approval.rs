@@ -392,6 +392,44 @@ impl ApprovalStore for PostgresStore {
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(approval_from_row).collect()
     }
+    async fn read_execution_pending_approval_page(
+        &self,
+        scope: &crate::memory::approval_page::ExecutionApprovalScope,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<
+        crate::memory::approval_page::PendingApprovalRecordsPage,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let limit = limit.clamp(1, 200);
+        let mut q =
+            crate::memory::approval_page::execution_query!(sqlx::Postgres, scope, cursor, limit)?;
+        let mut rows = q.build().fetch_all(&self.pool).await?;
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = if has_more {
+            rows.last().map(|r| {
+                scope.wrap(
+                    crate::memory::directory::DirectoryCursor {
+                        sort_at: r.get("created_at"),
+                        id: r.get("id"),
+                    }
+                    .encode(),
+                )
+            })
+        } else {
+            None
+        };
+        let records = rows
+            .iter()
+            .map(approval_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::memory::approval_page::PendingApprovalRecordsPage {
+            records,
+            has_more,
+            next_cursor,
+        })
+    }
     async fn read_principal_pending_approval_page(
         &self,
         authority: &crate::memory::ApprovalDecisionAuthority,

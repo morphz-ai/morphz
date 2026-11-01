@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   executionSnapshotSchema,
+  jobSchema,
   type ExecutionReadScope,
   type ExecutionControl,
 } from "../../../../packages/core/src/execution.js";
@@ -48,6 +49,15 @@ export function createExecutionInteractions({
       }),
     );
   }
+  async function executionRequest(scope: ExecutionReadScope, jobId: string) {
+    return jobSchema.parse(
+      await applicationCall(
+        "execution.request",
+        { scope, jobId },
+        { signal: AbortSignal.timeout(12000) },
+      ),
+    );
+  }
   async function executionResult(scope: ExecutionReadScope, jobId: string) {
     return z
       .object({
@@ -90,6 +100,7 @@ export function createExecutionInteractions({
     cancelInput,
     executionSnapshot,
     executionResult,
+    executionRequest,
     controlExecution,
     approvalSubmitted,
   };

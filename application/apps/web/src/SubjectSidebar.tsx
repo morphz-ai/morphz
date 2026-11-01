@@ -80,6 +80,8 @@ export function SubjectSidebar({
   allowMotion?: boolean;
   presence?: SubjectLogoState;
 }) {
+  const [activityPageLoading, setActivityPageLoading] = useState(false);
+  const [activityPageError, setActivityPageError] = useState("");
   const [approvalPageLoading, setApprovalPageLoading] = useState(false);
   const [approvalPageError, setApprovalPageError] = useState("");
   const bar = useRef<HTMLDivElement>(null),
@@ -90,16 +92,24 @@ export function SubjectSidebar({
   );
   // Only the mounted Activity surface owns retained-history reads. Keep this
   // read owner through ordinary renders and do not fetch for a hidden tab.
-  const visibleReader = useRef(client); visibleReader.current = client;
+  const visibleReader = useRef(client);
+  visibleReader.current = client;
   const historyOwner = useRef("");
   const historyKey = `${boot.centerId}:${boot.principalId}:${runtime.activity?.historyVersion ?? 0}`;
   useEffect(() => {
-    if (view !== "activity" || detail || !client.online || !runtime.connected || historyOwner.current === historyKey) return;
+    if (
+      view !== "activity" ||
+      detail ||
+      !client.online ||
+      !runtime.connected ||
+      historyOwner.current === historyKey
+    )
+      return;
     historyOwner.current = historyKey;
-    void visibleReader.current.refresh({refreshActivity:true}).catch(() => {
+    void visibleReader.current.refresh({ refreshActivity: true }).catch(() => {
       if (historyOwner.current === historyKey) historyOwner.current = "";
     });
-  },[view,detail,client.online,runtime.connected,historyKey]);
+  }, [view, detail, client.online, runtime.connected, historyKey]);
   const attention = runtime.attention;
   const pendingApprovals = attention?.approvals.length ?? 0;
   const approvalHint = pendingApprovals
@@ -215,6 +225,52 @@ export function SubjectSidebar({
               </button>
             ) : null,
           )}
+        {view === "activity" && !detail && client.activityPage?.hasMore && (
+          <div className="subject-section">
+            <button
+              type="button"
+              className="outline"
+              data-size="sm"
+              disabled={
+                activityPageLoading || !client.online || !runtime.connected
+              }
+              aria-busy={activityPageLoading}
+              onClick={() => {
+                setActivityPageLoading(true);
+                const cursor = activityPageError
+                  ? undefined
+                  : (client.activityPage?.nextCursor ?? undefined);
+                setActivityPageError("");
+                void client
+                  .refresh({
+                    refreshActivity: true,
+                    ...(cursor ? { activityCursor: cursor } : {}),
+                  })
+                  .catch((error) =>
+                    setActivityPageError(
+                      error instanceof Error
+                        ? error.message
+                        : "未能载入活动，请重试。",
+                    ),
+                  )
+                  .finally(() => setActivityPageLoading(false));
+              }}
+            >
+              {activityPageLoading
+                ? "载入中…"
+                : activityPageError
+                  ? "重新载入活动"
+                  : client.activityPage.retry
+                    ? "重试载入"
+                    : "载入更多活动"}
+            </button>
+            {activityPageError && (
+              <p role="alert" className="muted">
+                {activityPageError}
+              </p>
+            )}
+          </div>
+        )}
         {view === "permissions" && (
           <section className="subject-section">
             <h3>授权</h3>
@@ -238,23 +294,40 @@ export function SubjectSidebar({
                   onInspect={() => onInspect(entry.scope)}
                 />
               ))
-            ) : client.online && runtime.connected && attention?.available && !attention.hasMore ? (
+            ) : client.online &&
+              runtime.connected &&
+              attention?.available &&
+              !attention.hasMore ? (
               <p className="muted">没有待审批请求</p>
             ) : null}
             {attention?.hasMore && (
-              <button type="button" className="outline" data-size="sm"
-                disabled={approvalPageLoading || !client.online || !runtime.connected}
+              <button
+                type="button"
+                className="outline"
+                data-size="sm"
+                disabled={
+                  approvalPageLoading || !client.online || !runtime.connected
+                }
                 aria-busy={approvalPageLoading}
                 onClick={() => {
-                  setApprovalPageLoading(true); setApprovalPageError("");
-                  void client.refresh({loadMoreApprovals:true})
-                    .catch(() => setApprovalPageError("未能载入更多审批，请重试。"))
+                  setApprovalPageLoading(true);
+                  setApprovalPageError("");
+                  void client
+                    .refresh({ loadMoreApprovals: true })
+                    .catch(() =>
+                      setApprovalPageError("未能载入更多审批，请重试。"),
+                    )
                     .finally(() => setApprovalPageLoading(false));
-                }}>
+                }}
+              >
                 {approvalPageLoading ? "载入中…" : "载入更多审批"}
               </button>
             )}
-            {approvalPageError && <p role="alert" className="muted">{approvalPageError}</p>}
+            {approvalPageError && (
+              <p role="alert" className="muted">
+                {approvalPageError}
+              </p>
+            )}
             {directoryAvailable && (
               <div className="subject-permissions">
                 <h4>

@@ -269,12 +269,13 @@ macro_rules! recent_contexts_query {
 pub(crate) use recent_contexts_query;
 
 macro_rules! terminal_thread_query {
- ($db:ty,$context:expr,$cursor:expr,$limit:expr)=>{{(||->Result<sqlx::QueryBuilder<'static,$db>,Box<dyn std::error::Error+Send+Sync>>{
+ ($db:ty,$context:expr,$cursor:expr,$limit:expr)=>{crate::memory::directory::terminal_thread_query!($db,$context,$cursor,$limit,false)};
+ ($db:ty,$context:expr,$cursor:expr,$limit:expr,$metadata:expr)=>{{(||->Result<sqlx::QueryBuilder<'static,$db>,Box<dyn std::error::Error+Send+Sync>>{
   let request=crate::memory::RuntimeDirectoryQuery{cursor:$cursor.clone(),..Default::default()};let key=request.decoded_cursor()?;let limit=$limit.clamp(1,200);
   let mut query=sqlx::QueryBuilder::<$db>::new("SELECT * FROM (");
   for range in 0..if key.is_some(){2}else{1} {
    if range>0 {query.push(" UNION ALL ");}
-   query.push("SELECT * FROM (SELECT * FROM threads WHERE context_id=").push_bind($context.to_string()).push(" AND status IN ('completed','failed','cancelled')");
+   query.push("SELECT * FROM (SELECT ");if $metadata{query.push(crate::memory::activity_page::metadata_columns(crate::memory::activity_page::ActivityCollection::Threads,stringify!($db).contains("Postgres")));}else{query.push("source.*");}query.push(" FROM threads source WHERE context_id=").push_bind($context.to_string()).push(" AND status IN ('completed','failed','cancelled')");
    if let Some(key)=&key {if range==0 {query.push(" AND updated_at=").push_bind(key.sort_at.clone()).push(" AND id>").push_bind(key.id.clone());}else{query.push(" AND updated_at<").push_bind(key.sort_at.clone());}}
    query.push(" ORDER BY updated_at DESC,id LIMIT ").push_bind((limit+1) as i64).push(") terminal_range");
   }

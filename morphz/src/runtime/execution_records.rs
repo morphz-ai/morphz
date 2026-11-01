@@ -34,6 +34,9 @@ pub struct ExecutionRecordsQuery {
     pub include_descendants: bool,
     #[serde(default)]
     pub metadata_only: bool,
+    #[serde(default)]
+    pub headers_only: bool,
+    pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -67,6 +70,7 @@ impl ExecutionRecordsQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionRecordThread {
+    pub wait_head: Option<crate::memory::wait_head::ThreadWaitHead>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_input_request: Option<crate::user_input::PendingUserInputRequest>,
     pub execution_model: Option<super::ExecutionModel>,
@@ -97,6 +101,8 @@ pub struct ExecutionRecords {
     pub threads: Vec<ExecutionRecordThread>,
     pub threads_truncated: bool,
     pub jobs: Vec<ExecutionJobRecord>,
+    pub job_headers: Vec<crate::memory::job_header::JobHeader>,
+    pub next_job_cursor: Option<String>,
     pub has_more_jobs: bool,
     pub limit: usize,
 }
@@ -146,7 +152,7 @@ impl MorphzRuntime {
             threads = self
                 .inner
                 .store
-                .list_threads_by_ids(context_id, &query.thread_ids)
+                .read_thread_headers(context_id, &query.thread_ids)
                 .await?;
             if threads.len() != query.thread_ids.iter().collect::<HashSet<_>>().len()
                 || threads.iter().any(|thread| thread.session_id != session_id)
@@ -158,40 +164,49 @@ impl MorphzRuntime {
             .iter()
             .map(|thread| thread.id.clone())
             .collect::<Vec<_>>();
-        let mut jobs = if query.metadata_only {
-            Vec::new()
-        } else {
+        let filter = ExecutionJobFilter {
+            context_id: Some(context_id.to_owned()),
+            session_id: Some(session_id.to_owned()),
+            thread_ids: selected_ids,
+            root_turn_ids: if query.thread_id.is_some() {
+                Vec::new()
+            } else {
+                query.root_turn_ids.clone()
+            },
+            visible_principal_id: Some(principal_id.to_owned()),
+            include_legacy_principal: self.identity().principal_id == principal_id,
+            include_terminal: true,
+            newest_first: true,
+            limit: Some(limit + 1),
+            ..Default::default()
+        };
+        let header_page = if query.headers_only && !query.metadata_only {
             self.inner
                 .store
-                .list_execution_jobs(ExecutionJobFilter {
-                    context_id: Some(context_id.to_owned()),
-                    session_id: Some(session_id.to_owned()),
-                    thread_ids: selected_ids,
-                    root_turn_ids: if query.thread_id.is_some() {
-                        Vec::new()
-                    } else {
-                        query.root_turn_ids
-                    },
-                    visible_principal_id: Some(principal_id.to_owned()),
-                    include_legacy_principal: self.identity().principal_id == principal_id,
-                    include_terminal: true,
-                    newest_first: true,
-                    limit: Some(limit + 1),
-                    ..Default::default()
-                })
+                .read_job_header_page(filter.clone(), query.cursor.as_deref(), limit)
                 .await?
+        } else {
+            Default::default()
         };
-        let has_more_jobs = jobs.len() > limit;
+        let job_headers = header_page.items;
+        let mut jobs = if query.metadata_only || query.headers_only {
+            Vec::new()
+        } else {
+            self.inner.store.list_execution_jobs(filter).await?
+        };
+        let has_more_jobs = header_page.has_more || jobs.len() > limit;
+        let next_job_cursor = header_page.next_cursor;
         jobs.truncate(limit);
         if query.thread_id.is_none() && query.thread_ids.is_empty() {
             let ids = jobs
                 .iter()
                 .map(|job| job.thread_id.clone())
+                .chain(job_headers.iter().map(|job| job.thread_id.clone()))
                 .collect::<HashSet<_>>();
             threads = self
                 .inner
                 .store
-                .list_threads_by_ids(context_id, &ids.into_iter().collect::<Vec<_>>())
+                .read_thread_headers(context_id, &ids.into_iter().collect::<Vec<_>>())
                 .await?;
             threads.retain(|thread| thread.session_id == session_id);
         }
@@ -207,14 +222,17 @@ impl MorphzRuntime {
             .into_iter()
             .map(|flags| (flags.thread_id.clone(), flags))
             .collect::<HashMap<_, _>>();
-        let outcomes = self
-            .inner
-            .store
-            .list_thread_outcomes(&ids)
-            .await?
-            .into_iter()
-            .map(|outcome| (outcome.thread_id.clone(), outcome))
-            .collect::<HashMap<_, _>>();
+        let outcomes = if query.headers_only || query.metadata_only {
+            HashMap::new()
+        } else {
+            self.inner
+                .store
+                .list_thread_outcomes(&ids)
+                .await?
+                .into_iter()
+                .map(|outcome| (outcome.thread_id.clone(), outcome))
+                .collect::<HashMap<_, _>>()
+        };
         let roots = threads
             .iter()
             .map(|thread| thread.root_turn_id.clone())
@@ -222,17 +240,12 @@ impl MorphzRuntime {
         let intents = if query.metadata_only || ids.is_empty() {
             HashMap::new()
         } else {
-            self.query_events(QueryFilter {
-                context_id: Some(context_id.to_owned()),
-                session_id: Some(session_id.to_owned()),
-                event_ids: roots,
-                top_k: Some(ids.len()),
-                ..Default::default()
-            })
-            .await?
-            .into_iter()
-            .filter_map(|event| thread_input_intent(&event).map(|intent| (event.id, intent)))
-            .collect::<HashMap<_, _>>()
+            self.inner
+                .store
+                .event_input_previews(context_id, &roots)
+                .await?
+                .into_iter()
+                .collect::<HashMap<_, _>>()
         };
         // Keep the authoritative Goal-primary fallback, bounded by returned
         // Thread IDs rather than a Context objective/history scan.
@@ -248,7 +261,7 @@ impl MorphzRuntime {
                             let intent = self
                                 .inner
                                 .store
-                                .get_objective(id)
+                                .get_objective_preview(id)
                                 .await?
                                 .filter(|objective| objective.context_id == context_id)
                                 .map(|objective| {
@@ -267,6 +280,7 @@ impl MorphzRuntime {
         let activation_ids = jobs
             .iter()
             .map(|job| job.activation_id.clone())
+            .chain(job_headers.iter().map(|job| job.activation_id.clone()))
             .collect::<HashSet<_>>();
         let activations = self
             .inner
@@ -276,6 +290,22 @@ impl MorphzRuntime {
                 &activation_ids.into_iter().collect::<Vec<_>>(),
             )
             .await?;
+        let owners = threads
+            .iter()
+            .filter(|thread| {
+                thread.lifecycle == ThreadLifecycle::Open
+                    && thread.control_state == ThreadControlState::Active
+            })
+            .map(|thread| (thread.id.clone(), thread.generation, thread.revision))
+            .collect::<Vec<_>>();
+        let mut wait_heads = self
+            .inner
+            .store
+            .thread_wait_heads(context_id, &owners)
+            .await?
+            .into_iter()
+            .map(|head| (head.thread_id.clone(), head))
+            .collect::<HashMap<_, _>>();
         let mut snapshots = threads
             .into_iter()
             .map(|thread| {
@@ -307,6 +337,8 @@ impl MorphzRuntime {
                     })
                     .collect();
                 SchedulerThreadSnapshot {
+                    dependencies_loaded: false,
+                    wait_head: None,
                     dependencies: None,
                     user_input_request: None,
                     execution_model: None,
@@ -347,7 +379,7 @@ impl MorphzRuntime {
         let current = self
             .inner
             .store
-            .list_threads_by_ids(context_id, &ids)
+            .read_thread_headers(context_id, &ids)
             .await?
             .into_iter()
             .map(|thread| (thread.id.clone(), thread))
@@ -371,12 +403,15 @@ impl MorphzRuntime {
             threads_truncated,
             jobs,
             has_more_jobs,
+            job_headers,
+            next_job_cursor,
             limit,
             threads: snapshots
                 .into_iter()
                 .map(|snapshot| {
                     let thread = snapshot.thread;
                     ExecutionRecordThread {
+                        wait_head: wait_heads.remove(&thread.id),
                         user_input_request: snapshot.user_input_request,
                         execution_model: snapshot.execution_model,
                         id: thread.id,

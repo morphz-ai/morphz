@@ -10,6 +10,7 @@ use crate::approval::{
 mod execution_model;
 mod execution_records;
 mod execution_workspace;
+mod scheduler_directory_audit;
 mod user_input;
 pub use execution_workspace::{ExecutionWorkspaceFile, ExecutionWorkspaceRead};
 mod response_annotation_projection;
@@ -611,6 +612,8 @@ pub struct RuntimeOverviewObjective {
 pub struct RuntimeOverviewSession {
     pub session: SessionRecord,
     pub principal_ids: Vec<String>,
+    #[serde(default)]
+    pub principal_count: usize,
     pub state: RuntimeSessionState,
     pub attention_required: bool,
     pub pending_dialogue_turns: usize,
@@ -6857,6 +6860,13 @@ impl MorphzRuntime {
         self.inner.store.list_delegations(filter).await
     }
 
+    pub async fn delegation_page(
+        &self,
+        query: &crate::memory::delegation_page::DelegationPageQuery,
+    ) -> Result<crate::memory::delegation_page::DelegationPage, RuntimeError> {
+        self.inner.store.read_delegation_page(query).await
+    }
+
     pub async fn update_delegation_status(
         &self,
         id: &str,
@@ -7043,10 +7053,24 @@ impl MorphzRuntime {
         load_evaluation_harness_binding(self.inner.store.as_ref(), evaluation_id).await
     }
 
+    pub async fn get_objective_preview(
+        &self,
+        id: &str,
+    ) -> Result<Option<ObjectiveRecord>, RuntimeError> {
+        self.inner.store.get_objective_preview(id).await
+    }
+
     pub async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, RuntimeError> {
         self.inner.objective_supervisor.get(id).await
     }
 
+    /// One operator-owned directory page; no sibling or child expansion.
+    pub async fn activity_collection_page(
+        &self,
+        query: &crate::memory::activity_page::ActivityPageQuery,
+    ) -> Result<crate::memory::activity_page::ActivityPage, RuntimeError> {
+        self.inner.store.read_activity_page(query).await
+    }
     pub async fn list_context_objectives(
         &self,
         context_id: &str,
@@ -7313,6 +7337,18 @@ impl MorphzRuntime {
         Ok(cancelled)
     }
 
+    pub async fn event_tail_checkpoint(
+        &self,
+    ) -> Result<crate::memory::event_tail::EventTailCursor, RuntimeError> {
+        self.inner.store.event_tail_checkpoint().await
+    }
+    pub async fn read_event_tail_page(
+        &self,
+        cursor: &crate::memory::event_tail::EventTailCursor,
+        limit: usize,
+    ) -> Result<crate::memory::event_tail::EventTailPage, RuntimeError> {
+        self.inner.store.read_event_tail_page(cursor, limit).await
+    }
     pub fn subscribe_event_changes(
         &self,
     ) -> Result<tokio::sync::watch::Receiver<u64>, RuntimeError> {
@@ -7836,6 +7872,27 @@ impl MorphzRuntime {
             .read_pending_approval_page(cursor, limit)
             .await?;
         let mut approvals = Vec::with_capacity(page.records.len());
+        for record in page.records {
+            approvals.push(self.pending_approval_view(record).await?);
+        }
+        Ok(crate::approval::PendingHumanApprovalPage {
+            approvals,
+            has_more: page.has_more,
+            next_cursor: page.next_cursor,
+        })
+    }
+    pub async fn execution_pending_approvals_page(
+        &self,
+        scope: &crate::memory::approval_page::ExecutionApprovalScope,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<crate::approval::PendingHumanApprovalPage, RuntimeError> {
+        let page = self
+            .inner
+            .store
+            .read_execution_pending_approval_page(scope, cursor, limit)
+            .await?;
+        let mut approvals = Vec::new();
         for record in page.records {
             approvals.push(self.pending_approval_view(record).await?);
         }
@@ -8689,7 +8746,7 @@ impl MorphzRuntime {
                     break;
                 }
                 if !goals.contains_key(goal_id) {
-                    let goal = self.inner.store.get_objective(goal_id).await?;
+                    let goal = self.inner.store.get_objective_preview(goal_id).await?;
                     let source = if let Some(goal) = goal {
                         self.scheduler_objective_creation_sources(
                             context_id,
@@ -8934,6 +8991,9 @@ impl MorphzRuntime {
             .into_iter()
             .next()
             .ok_or_else(|| format!("Context '{context_id}' does not exist"))?;
+        // A continuation owns only its selected collection. Context-wide
+        // diagnostics/counters belong to the initial or invalidated directory head.
+        let directory_head_loaded = query.collection.is_none();
         let include_terminal = query.include_terminal;
         let limit = query.limit.clamp(1, 200);
         let detail_fetch_limit = limit.saturating_add(1);
@@ -8946,72 +9006,111 @@ impl MorphzRuntime {
             exact_active_schedules,
             exact_objective_counts,
             exact_active_thread_groups,
-        ) = tokio::try_join!(
-            self.inner.store.count_context_open_threads(context_id),
+        ) = if directory_head_loaded {
+            tokio::try_join!(
+                self.inner.store.count_context_open_threads(context_id),
+                self.inner
+                    .store
+                    .count_context_activation_authority(context_id),
+                self.inner
+                    .store
+                    .count_context_active_execution_jobs(context_id),
+                self.inner.store.count_context_pending_approvals(context_id),
+                self.inner.store.count_context_active_schedules(context_id),
+                self.inner
+                    .store
+                    .count_context_objective_readiness(context_id, count_at),
+                self.inner
+                    .store
+                    .count_context_active_thread_groups(context_id),
+            )?
+        } else {
+            Default::default()
+        };
+        let mut sessions = if directory_head_loaded {
             self.inner
                 .store
-                .count_context_activation_authority(context_id),
-            self.inner
-                .store
-                .count_context_active_execution_jobs(context_id),
-            self.inner.store.count_context_pending_approvals(context_id),
-            self.inner.store.count_context_active_schedules(context_id),
-            self.inner
-                .store
-                .count_context_objective_readiness(context_id, count_at),
-            self.inner
-                .store
-                .count_context_active_thread_groups(context_id),
-        )?;
-        let mut sessions = self
-            .inner
-            .store
-            .list_context_sessions_bounded(&[context_id.to_string()], true, detail_fetch_limit)
-            .await?;
+                .list_context_sessions_bounded(&[context_id.to_string()], true, detail_fetch_limit)
+                .await?
+        } else {
+            Vec::new()
+        };
         let has_more_sessions = sessions.len() > limit;
         sessions.truncate(limit);
-        let mut authority_objectives = self
-            .inner
-            .store
-            .list_context_objectives_bounded(context_id, include_terminal, detail_fetch_limit)
-            .await?;
-        let has_more_objectives =
-            authority_objectives.len() > limit || exact_objective_counts.live_objectives > limit;
-        authority_objectives.truncate(limit);
-        authority_objectives.sort_by(|left, right| {
-            left.created_at
-                .cmp(&right.created_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        let mut schedules = self
-            .inner
-            .store
-            .list_context_schedule_inventory_bounded(
-                context_id,
-                include_terminal,
-                detail_fetch_limit,
-            )
-            .await?;
-        let has_more_schedules = schedules.len() > limit || exact_active_schedules > limit;
-        schedules.truncate(limit);
-        let mut context_threads = if query.history_only {
-            Vec::new()
-        } else {
+        use crate::memory::activity_page::{ActivityCollection as K, ActivityPageQuery as Q};
+        let page_query = |collection, cursor, include_terminal| Q {
+            context_id: context_id.to_string(),
+            collection,
+            cursor,
+            include_terminal,
+            limit,
+            metadata_only: !query.include_job_details,
+        };
+        let objective_page = if query.collection.is_none_or(|kind| kind == K::Objectives) {
             self.inner
                 .store
-                .list_context_threads_bounded(context_id, false, detail_fetch_limit)
+                .read_activity_page(&page_query(
+                    K::Objectives,
+                    query.objective_cursor.clone(),
+                    include_terminal,
+                ))
                 .await?
+        } else {
+            Default::default()
         };
-        let mut has_more_threads =
-            context_threads.len() > limit || (!query.history_only && exact_open_threads > limit);
-        context_threads.truncate(limit);
+        let mut authority_objectives = objective_page.objectives;
+        let has_more_objectives = objective_page.has_more;
+        let next_objective_cursor = objective_page.next_cursor;
+        authority_objectives.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let schedule_page = if query.collection.is_none_or(|kind| kind == K::Schedules)
+            && (!query.history_only || query.collection == Some(K::Schedules))
+        {
+            self.inner
+                .store
+                .read_activity_page(&page_query(
+                    K::Schedules,
+                    query.schedule_cursor.clone(),
+                    include_terminal,
+                ))
+                .await?
+        } else {
+            Default::default()
+        };
+        let schedules = schedule_page.schedules;
+        let has_more_schedules = schedule_page.has_more;
+        let next_schedule_cursor = schedule_page.next_cursor;
+        let thread_page =
+            if query.history_only || query.collection.is_some_and(|kind| kind != K::Threads) {
+                crate::memory::activity_page::ActivityPage::default()
+            } else {
+                self.inner
+                    .store
+                    .read_activity_page(&page_query(
+                        K::Threads,
+                        query.thread_cursor.clone(),
+                        include_terminal,
+                    ))
+                    .await?
+            };
+        let mut context_threads = thread_page.threads;
+        let mut has_more_threads = thread_page.has_more;
+        let next_thread_cursor = thread_page.next_cursor;
         let mut has_more_history = false;
         let mut next_history_cursor = None;
-        if include_terminal || query.history_only {
+        if query.history_only && query.collection.is_none_or(|kind| kind == K::Threads) {
             let history = self
                 .inner
                 .store
-                .read_terminal_thread_page(context_id, query.history_cursor, limit)
+                .read_terminal_thread_page(
+                    context_id,
+                    query.history_cursor,
+                    limit,
+                    !query.include_job_details,
+                )
                 .await?;
             has_more_history = history.has_more;
             next_history_cursor = history.next_cursor;
@@ -9087,14 +9186,17 @@ impl MorphzRuntime {
         let active_activation_count = exact_activation_counts
             .queued_activations
             .saturating_add(exact_activation_counts.running_activations);
-        let active_activation_candidates = self
-            .inner
-            .store
-            .list_active_thread_activations_for_contexts(
-                &[context_id.to_string()],
-                detail_fetch_limit,
-            )
-            .await?;
+        let active_activation_candidates = if directory_head_loaded {
+            self.inner
+                .store
+                .list_active_thread_activations_for_contexts(
+                    &[context_id.to_string()],
+                    detail_fetch_limit,
+                )
+                .await?
+        } else {
+            Vec::new()
+        };
         let has_more_activations =
             active_activation_candidates.len() > limit || active_activation_count > limit;
         let candidate_parent_roots = active_activation_candidates
@@ -9139,15 +9241,18 @@ impl MorphzRuntime {
         });
 
         let selected_thread_ids = thread_ids.iter().cloned().collect::<Vec<_>>();
-        let mut all_signals = self
-            .inner
-            .store
-            .list_context_thread_signals_bounded(
-                context_id,
-                Some(ThreadSignalStatus::Pending),
-                detail_fetch_limit,
-            )
-            .await?;
+        let mut all_signals = if directory_head_loaded {
+            self.inner
+                .store
+                .list_context_thread_signals_bounded(
+                    context_id,
+                    Some(ThreadSignalStatus::Pending),
+                    detail_fetch_limit,
+                )
+                .await?
+        } else {
+            Vec::new()
+        };
         let has_more_signals =
             all_signals.len() > limit || exact_activation_counts.pending_signals > limit;
         all_signals.truncate(limit);
@@ -9191,7 +9296,9 @@ impl MorphzRuntime {
             .iter()
             .map(|job| job.id.clone())
             .collect::<HashSet<_>>();
-        let live_job_candidates = if query.include_job_details {
+        let live_job_candidates = if !directory_head_loaded {
+            Vec::new()
+        } else if query.include_job_details {
             self.inner
                 .store
                 .list_execution_jobs(ExecutionJobFilter {
@@ -9300,11 +9407,14 @@ impl MorphzRuntime {
             .map(|approval| (approval.job_id.clone(), approval))
             .collect::<HashMap<_, _>>();
         let mut orphan_approvals = Vec::new();
-        let pending_approval_candidates = self
-            .inner
-            .store
-            .list_context_pending_approvals_bounded(context_id, detail_fetch_limit)
-            .await?;
+        let pending_approval_candidates = if directory_head_loaded {
+            self.inner
+                .store
+                .list_context_pending_approvals_bounded(context_id, detail_fetch_limit)
+                .await?
+        } else {
+            Vec::new()
+        };
         let has_more_approvals =
             pending_approval_candidates.len() > limit || exact_pending_approvals > limit;
         let unchecked_job_ids = pending_approval_candidates
@@ -9434,21 +9544,24 @@ impl MorphzRuntime {
             }
         }
 
-        let mut authority_groups = self
-            .inner
-            .store
-            .list_thread_groups(ThreadGroupFilter {
-                context_id: Some(context_id.to_string()),
-                include_terminal: false,
-                newest_first: false,
-                limit: Some(detail_fetch_limit),
-                ..ThreadGroupFilter::default()
-            })
-            .await?;
+        let mut authority_groups = if directory_head_loaded {
+            self.inner
+                .store
+                .list_thread_groups(ThreadGroupFilter {
+                    context_id: Some(context_id.to_string()),
+                    include_terminal: false,
+                    newest_first: false,
+                    limit: Some(detail_fetch_limit),
+                    ..ThreadGroupFilter::default()
+                })
+                .await?
+        } else {
+            Vec::new()
+        };
         let mut has_more_thread_groups =
             authority_groups.len() > limit || exact_active_thread_groups > limit;
         authority_groups.truncate(limit);
-        if include_terminal {
+        if include_terminal && directory_head_loaded {
             let active_ids = authority_groups
                 .iter()
                 .map(|group| group.id.clone())
@@ -9504,16 +9617,19 @@ impl MorphzRuntime {
             .iter()
             .map(|thread| thread.id.clone())
             .collect::<Vec<_>>();
-        let thread_dependencies = self
-            .inner
-            .store
-            .list_thread_projection_dependencies(
-                &authority_threads
-                    .iter()
-                    .map(|thread| (thread.id.clone(), thread.generation))
-                    .collect::<Vec<_>>(),
-            )
-            .await?;
+        let thread_dependencies = if query.include_job_details {
+            self.inner
+                .store
+                .list_thread_projection_dependencies(
+                    &authority_threads
+                        .iter()
+                        .map(|thread| (thread.id.clone(), thread.generation))
+                        .collect::<Vec<_>>(),
+                )
+                .await?
+        } else {
+            Vec::new()
+        };
         let mut dependencies_by_thread = HashMap::<String, Vec<_>>::new();
         for dependency in &thread_dependencies {
             dependencies_by_thread
@@ -9522,31 +9638,43 @@ impl MorphzRuntime {
                 .push(dependency.clone());
         }
 
-        let mut outcomes_by_thread = self
+        let mut outcomes_by_thread = if query.include_job_details {
+            self.inner
+                .store
+                .list_thread_outcomes(&selected_thread_ids)
+                .await?
+        } else {
+            Vec::new()
+        }
+        .into_iter()
+        .map(|v| (v.thread_id.clone(), v))
+        .collect::<HashMap<_, _>>();
+        let owners = authority_threads
+            .iter()
+            .filter(|t| !t.lifecycle.is_terminal())
+            .map(|t| (t.id.clone(), t.generation, t.revision))
+            .collect::<Vec<_>>();
+        let mut wait_heads = HashMap::new();
+        for owners in owners.chunks(100) {
+            for head in self
+                .inner
+                .store
+                .thread_wait_heads(context_id, owners)
+                .await?
+            {
+                wait_heads.insert(head.thread_id.clone(), head);
+            }
+        }
+        let root_ids = all_threads
+            .iter()
+            .map(|thread| thread.root_turn_id.clone())
+            .collect::<Vec<_>>();
+        let root_intents = self
             .inner
             .store
-            .list_thread_outcomes(&selected_thread_ids)
+            .event_input_previews(context_id, &root_ids)
             .await?
             .into_iter()
-            .map(|outcome| (outcome.thread_id.clone(), outcome))
-            .collect::<HashMap<_, _>>();
-        let roots = if all_threads.is_empty() {
-            Vec::new()
-        } else {
-            self.query_events(QueryFilter {
-                context_id: Some(context_id.to_string()),
-                event_ids: all_threads
-                    .iter()
-                    .map(|thread| thread.root_turn_id.clone())
-                    .collect(),
-                top_k: Some(all_threads.len()),
-                ..Default::default()
-            })
-            .await?
-        };
-        let root_intents = roots
-            .iter()
-            .filter_map(|event| thread_input_intent(event).map(|intent| (event.id.clone(), intent)))
             .collect::<HashMap<_, _>>();
         let mut phase_flags = HashMap::new();
         for ids in selected_thread_ids.chunks(100) {
@@ -9583,10 +9711,11 @@ impl MorphzRuntime {
                 flag.waiting,
             );
             threads.push(SchedulerThreadSnapshot {
-                dependencies: Some(crate::scheduler::snapshot::current_thread_dependencies(
-                    &thread,
-                    dependencies,
-                )),
+                dependencies_loaded: query.include_job_details,
+                wait_head: wait_heads.remove(&thread.id),
+                dependencies: query.include_job_details.then(|| {
+                    crate::scheduler::snapshot::current_thread_dependencies(&thread, dependencies)
+                }),
                 user_input_request: None,
                 execution_model: None,
                 source: thread_sources.get(&thread.id).cloned(),
@@ -9641,11 +9770,14 @@ impl MorphzRuntime {
             .chain(process_admission.in_flight_activation_ids.iter())
             .cloned()
             .collect::<Vec<_>>();
-        let process_context_activations = self
-            .inner
-            .store
-            .list_thread_activations_by_ids(context_id, &process_activation_ids)
-            .await?;
+        let process_context_activations = if directory_head_loaded {
+            self.inner
+                .store
+                .list_thread_activations_by_ids(context_id, &process_activation_ids)
+                .await?
+        } else {
+            Vec::new()
+        };
         let process_context_activation_ids = process_context_activations
             .iter()
             .map(|activation| activation.id.as_str())
@@ -9664,17 +9796,19 @@ impl MorphzRuntime {
             .queued_activations
             .saturating_sub(context_loaded_queued);
         let mut dependencies = thread_dependencies;
-        dependencies.extend(
-            self.inner
-                .store
-                .list_objective_projection_dependencies(
-                    &authority_objectives
-                        .iter()
-                        .map(|goal| (goal.id.clone(), goal.generation))
-                        .collect::<Vec<_>>(),
-                )
-                .await?,
-        );
+        if query.include_job_details {
+            dependencies.extend(
+                self.inner
+                    .store
+                    .list_objective_projection_dependencies(
+                        &authority_objectives
+                            .iter()
+                            .map(|goal| (goal.id.clone(), goal.generation))
+                            .collect::<Vec<_>>(),
+                    )
+                    .await?,
+            );
+        }
         dependencies.sort_by(|left, right| left.id.cmp(&right.id));
         dependencies.dedup_by(|left, right| left.id == right.id);
 
@@ -9682,6 +9816,55 @@ impl MorphzRuntime {
             .scheduler_objective_sources(context_id, &authority_objectives)
             .await?;
         let now = chrono::Utc::now();
+        let owners = authority_objectives
+            .iter()
+            .map(|o| {
+                (
+                    "objective".to_owned(),
+                    o.id.clone(),
+                    o.generation,
+                    o.revision,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut objective_heads = if query.include_job_details {
+            HashMap::new()
+        } else {
+            self.inner
+                .store
+                .scheduler_dependency_heads(context_id, &owners)
+                .await?
+                .into_iter()
+                .map(|head| (head.owner_id.clone(), head))
+                .collect::<HashMap<_, _>>()
+        };
+        if !query.include_job_details && objective_heads.len() != owners.len() {
+            return Err("Objective directory scope changed".into());
+        }
+        let evaluation_ids = authority_objectives
+            .iter()
+            .filter_map(|o| o.active_evaluation_id.clone())
+            .filter(|id| {
+                !all_context_activations
+                    .iter()
+                    .any(|a| a.id == *id || a.root_turn_id == *id)
+            })
+            .collect::<Vec<_>>();
+        let mut objective_activations = all_context_activations.clone();
+        if !evaluation_ids.is_empty() {
+            objective_activations.extend(
+                self.inner
+                    .store
+                    .list_thread_activations_by_ids(context_id, &evaluation_ids)
+                    .await?,
+            );
+            objective_activations.extend(
+                self.inner
+                    .store
+                    .list_scheduler_thread_activations_by_roots(context_id, &evaluation_ids, 0)
+                    .await?,
+            );
+        }
         let objective_snapshots = authority_objectives
             .iter()
             .filter(|objective| include_terminal || !objective.status.is_terminal())
@@ -9697,65 +9880,115 @@ impl MorphzRuntime {
                     .cloned()
                     .collect::<Vec<_>>();
                 let active_evaluation = objective.active_evaluation_id.as_ref().and_then(|id| {
-                    all_context_activations
+                    objective_activations
                         .iter()
                         .find(|activation| activation.id == *id || activation.root_turn_id == *id)
                         .cloned()
                 });
+                let head = objective_heads.remove(&objective.id);
+                let mut readiness =
+                    derive_objective_readiness(objective, &objective_dependencies, now);
+                if head.as_ref().is_some_and(|head| head.pending)
+                    && readiness == crate::scheduler::ObjectiveReadiness::Runnable
+                {
+                    readiness = crate::scheduler::ObjectiveReadiness::Waiting {
+                        dependency_ids: Vec::new(),
+                    };
+                }
                 SchedulerObjectiveSnapshot {
+                    dependencies_loaded: query.include_job_details,
+                    wait_head: head,
+                    body_loaded: query.include_job_details,
                     objective: objective.clone(),
                     source: objective_sources.get(&objective.id).cloned(),
-                    readiness: derive_objective_readiness(objective, &objective_dependencies, now),
+                    readiness,
                     dependencies: objective_dependencies,
                     active_evaluation,
                 }
             })
             .collect::<Vec<_>>();
 
-        let authority_outcomes = self
-            .inner
-            .store
-            .list_thread_outcomes(&authority_thread_ids)
-            .await?;
-        let mut invariant_violations =
-            crate::scheduler::domain::audit_scheduler_invariants_with_group_counts(
-                SchedulerInvariantInput {
-                    objectives: &authority_objectives,
-                    threads: &authority_threads,
-                    activations: &all_context_activations,
-                    outcomes: &authority_outcomes,
-                    groups: &authority_groups,
-                    group_members: &authority_group_members,
-                    dependencies: &dependencies,
-                },
+        let mut invariant_violations = if !query.include_job_details {
+            self.scheduler_directory_invariants(
+                context_id,
+                &authority_objectives,
+                &authority_threads,
+                &all_context_activations,
+                &authority_groups,
                 &group_counts,
-            );
-        let requested_barrier_event_ids = authority_groups
-            .iter()
-            .filter_map(|group| group.barrier_event_id.as_ref())
-            .cloned()
-            .collect::<Vec<_>>();
-        let barrier_event_ids = if requested_barrier_event_ids.is_empty() {
-            HashSet::new()
+            )
+            .await?
         } else {
-            self.inner
+            let authority_outcomes = self
+                .inner
                 .store
-                .query(QueryFilter {
-                    event_ids: requested_barrier_event_ids,
-                    ..QueryFilter::default()
-                })
-                .await?
-                .into_iter()
-                .map(|event| event.id)
-                .collect::<HashSet<_>>()
+                .list_thread_outcomes(&authority_thread_ids)
+                .await?;
+            let mut invariant_objectives = authority_objectives.clone();
+            let mut objective_ids = invariant_objectives
+                .iter()
+                .map(|goal| goal.id.clone())
+                .collect::<HashSet<_>>();
+            for thread in &authority_threads {
+                if thread.supervision.supervisor_kind
+                    == crate::memory::ThreadSupervisorKind::Objective
+                {
+                    if let Some(id) = &thread.supervision.supervisor_id {
+                        if objective_ids.insert(id.clone()) {
+                            if let Some(goal) = self
+                                .inner
+                                .store
+                                .get_objective(id)
+                                .await?
+                                .filter(|goal| goal.context_id == context_id)
+                            {
+                                invariant_objectives.push(goal);
+                            }
+                        }
+                    }
+                }
+            }
+            let mut invariant_violations =
+                crate::scheduler::domain::audit_scheduler_invariants_with_group_counts(
+                    SchedulerInvariantInput {
+                        objectives: &invariant_objectives,
+                        threads: &authority_threads,
+                        activations: &all_context_activations,
+                        outcomes: &authority_outcomes,
+                        groups: &authority_groups,
+                        group_members: &authority_group_members,
+                        dependencies: &dependencies,
+                    },
+                    &group_counts,
+                );
+            let requested_barrier_event_ids = authority_groups
+                .iter()
+                .filter_map(|group| group.barrier_event_id.as_ref())
+                .cloned()
+                .collect::<Vec<_>>();
+            let barrier_event_ids = if requested_barrier_event_ids.is_empty() {
+                HashSet::new()
+            } else {
+                self.inner
+                    .store
+                    .query(QueryFilter {
+                        event_ids: requested_barrier_event_ids,
+                        ..QueryFilter::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .map(|event| event.id)
+                    .collect::<HashSet<_>>()
+            };
+            invariant_violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
+                &invariant_objectives,
+                &authority_threads,
+                &all_context_activations,
+                &authority_groups,
+                &barrier_event_ids,
+            ));
+            invariant_violations
         };
-        invariant_violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
-            &authority_objectives,
-            &authority_threads,
-            &all_context_activations,
-            &authority_groups,
-            &barrier_event_ids,
-        ));
         invariant_violations.extend(orphan_activations.iter().map(|snapshot| {
             SchedulerInvariantViolation {
                 severity: SchedulerInvariantSeverity::Error,
@@ -9837,12 +10070,19 @@ impl MorphzRuntime {
             generated_at: chrono::Utc::now(),
             summary,
             detail_bounds: SchedulerDetailBounds {
+                directory_head_loaded,
+                collection: query.collection,
+                invariant_details_complete: query.include_job_details,
+                bodies_loaded: query.include_job_details,
                 limit,
                 has_more_sessions,
                 has_more_objectives,
                 has_more_threads,
                 has_more_history,
                 next_history_cursor,
+                next_thread_cursor,
+                next_objective_cursor,
+                next_schedule_cursor,
                 has_more_activations,
                 has_more_signals: has_more_signals
                     || threads
@@ -10043,7 +10283,7 @@ impl MorphzRuntime {
         // product-facing card limit. Storage ranks attention and active work
         // ahead of mere recency; the Runtime then applies the same semantic
         // ordering after joining authoritative scheduler state.
-        let session_candidate_limit = MAX_SESSIONS_PER_CONTEXT;
+        let session_candidate_limit = sessions_per_context.min((1000 / context_limit).max(1));
         let requested_context_rows = context_limit.saturating_add(1);
         let mut contexts = if let Some(context_id) = query.context_id.as_deref() {
             self.inner
@@ -10204,6 +10444,13 @@ impl MorphzRuntime {
             .map(|head| (head.context_id.clone(), head))
             .collect::<HashMap<String, ContextStateSummary>>();
         let bindings_by_session = runtime_overview_principals_by_session(principal_bindings);
+        let principal_counts = self
+            .inner
+            .store
+            .count_session_principals(&displayed_session_ids)
+            .await?
+            .into_iter()
+            .collect::<HashMap<_, _>>();
 
         let mut threads_by_session: HashMap<String, Vec<ThreadRecord>> = HashMap::new();
         let mut thread_by_root = HashMap::new();
@@ -10352,23 +10599,23 @@ impl MorphzRuntime {
         }
 
         let mut projected_contexts = Vec::with_capacity(contexts.len());
-        let overview_roots = if thread_by_root.is_empty() {
-            Vec::new()
-        } else {
-            self.query_events(QueryFilter {
-                event_ids: thread_by_root.keys().cloned().collect(),
-                top_k: Some(thread_by_root.len()),
-                ..Default::default()
-            })
-            .await?
-        };
-        let overview_intents = overview_roots
-            .iter()
-            .filter_map(|event| {
-                let thread = thread_by_root.get(&event.id)?;
-                thread_input_intent(event).map(|intent| (thread.id.clone(), intent))
-            })
-            .collect::<HashMap<_, _>>();
+        let mut overview_intents = HashMap::new();
+        let mut roots_by_context = HashMap::<String, Vec<String>>::new();
+        for (root, thread) in &thread_by_root {
+            roots_by_context
+                .entry(thread.context_id.clone())
+                .or_default()
+                .push(root.clone());
+        }
+        for (context, roots) in roots_by_context {
+            for ids in roots.chunks(200) {
+                for (root, intent) in self.inner.store.event_input_previews(&context, ids).await? {
+                    if let Some(thread) = thread_by_root.get(&root) {
+                        overview_intents.insert(thread.id.clone(), intent);
+                    }
+                }
+            }
+        }
         for context in contexts {
             let count = counts_by_context.get(&context.id);
             let mut projected_sessions = sessions_by_context
@@ -10396,6 +10643,10 @@ impl MorphzRuntime {
                         .get(&session.id)
                         .cloned()
                         .unwrap_or_default();
+                    let principal_count = principal_counts
+                        .get(&session.id)
+                        .copied()
+                        .unwrap_or_default();
                     let mut projected = runtime_overview_session(
                         session,
                         principal_ids,
@@ -10405,6 +10656,7 @@ impl MorphzRuntime {
                         objectives,
                         &thread_by_root,
                     );
+                    projected.principal_count = principal_count;
                     for thread in &mut projected.threads {
                         if question_threads.contains(&thread.id)
                             && !matches!(
@@ -11007,69 +11259,51 @@ impl MorphzRuntime {
             ThreadInspectionQuery as Q,
         };
         let mut continuations = Vec::new();
-        let query = Q {
-            kind: K::Jobs,
-            activation_id: Some(activation.id.clone()),
-            cursor: None,
-            limit: Some(32),
-        };
-        let job_page = self
-            .inner
-            .store
-            .read_thread_inspection_page(thread, &query)
-            .await?;
-        if let Some(next_cursor) = job_page.next_cursor {
-            continuations.push(C {
-                kind: query.kind,
-                activation_id: query.activation_id.clone(),
-                next_cursor,
-            });
-        }
-        let ids = job_page
-            .jobs
-            .iter()
-            .map(|j| j.id.clone())
-            .collect::<Vec<_>>();
-        let mut approvals = self
-            .inner
-            .store
-            .list_job_approvals(&thread.context_id, &ids)
-            .await?
-            .into_iter()
-            .map(|a| (a.job_id.clone(), a))
-            .collect();
-        let jobs = job_page
-            .jobs
-            .into_iter()
-            .map(|j| crate::scheduler::job_snapshot(j, &mut approvals))
-            .collect();
-        let query = Q {
-            kind: K::ActivationSignals,
-            activation_id: Some(activation.id.clone()),
-            cursor: None,
-            limit: Some(32),
-        };
-        let signal_page = self
-            .inner
-            .store
-            .read_thread_inspection_page(thread, &query)
-            .await?;
-        if let Some(next_cursor) = signal_page.next_cursor {
-            continuations.push(C {
-                kind: query.kind,
-                activation_id: query.activation_id.clone(),
-                next_cursor,
-            });
+        for kind in [K::Jobs, K::ActivationSignals] {
+            let query = Q {
+                kind,
+                activation_id: Some(activation.id.clone()),
+                cursor: None,
+                limit: Some(32),
+            };
+            // No recursive child hydration. Existence is independent of the
+            // row budget; a click owns the first child page below this head.
+            let exists = if kind == K::Jobs {
+                self.inner
+                    .store
+                    .activation_jobs_exist(&thread.context_id, &[activation.id.clone()])
+                    .await?
+            } else {
+                let probe = Q {
+                    limit: Some(1),
+                    ..query.clone()
+                };
+                !self
+                    .inner
+                    .store
+                    .read_thread_inspection_page(thread, &probe)
+                    .await?
+                    .signals
+                    .is_empty()
+            };
+            if exists {
+                continuations.push(C {
+                    kind,
+                    activation_id: query.activation_id.clone(),
+                    next_cursor: query.head_cursor(&thread.id),
+                });
+            }
         }
         Ok((
             SchedulerActivationSnapshot {
                 activation,
-                signals: signal_page.signals,
-                jobs,
+                signals: Vec::new(),
+                jobs: Vec::new(),
             },
             continuations,
         ))
     }
+
     async fn inspection_page(
         &self,
         thread: &ThreadRecord,
@@ -11144,9 +11378,10 @@ impl MorphzRuntime {
         let Some(thread) = self
             .inner
             .store
-            .get_thread(thread_id)
+            .read_thread_headers(context_id, &[thread_id.to_owned()])
             .await?
-            .filter(|t| t.context_id == context_id)
+            .into_iter()
+            .next()
         else {
             return Ok(None);
         };
@@ -11174,7 +11409,14 @@ impl MorphzRuntime {
             .cloned()
             .map(|j| crate::scheduler::job_snapshot(j, &mut approvals))
             .collect();
-        let Some(current) = self.inner.store.get_thread(thread_id).await? else {
+        let Some(current) = self
+            .inner
+            .store
+            .read_thread_headers(context_id, &[thread_id.to_owned()])
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(None);
         };
         if current.context_id != thread.context_id
@@ -11203,9 +11445,10 @@ impl MorphzRuntime {
         let Some(thread) = self
             .inner
             .store
-            .get_thread(thread_id)
+            .read_thread_headers(context_id, &[thread_id.to_owned()])
             .await?
-            .filter(|t| t.context_id == context_id)
+            .into_iter()
+            .next()
         else {
             return Ok(None);
         };
@@ -11230,6 +11473,8 @@ impl MorphzRuntime {
             generated_at: chrono::Utc::now(),
             model_attempt_events: Vec::new(),
             snapshot: SchedulerThreadSnapshot {
+                dependencies_loaded: false,
+                wait_head: None,
                 thread,
                 phase,
                 dependencies: None,
@@ -11319,11 +11564,17 @@ impl MorphzRuntime {
             });
         }
         let schedules = schedule_page.schedules;
-        let dependencies = self
-            .inner
-            .store
-            .list_thread_projection_dependencies(&[(thread_id.to_string(), thread.generation)])
-            .await?;
+        let query = read_page(K::Dependencies, None);
+        let page = self.inspection_page(&thread, &query).await?;
+        if let Some(next_cursor) = page.next_cursor {
+            continuations.push(C {
+                kind: K::Dependencies,
+                activation_id: None,
+                next_cursor,
+            });
+        }
+        let dependencies_loaded = !page.has_more;
+        let dependencies = page.dependencies;
         let flags = self
             .inner
             .store
@@ -11357,7 +11608,7 @@ impl MorphzRuntime {
             if let Some(objective_id) = thread.supervision.supervisor_id.as_deref() {
                 self.inner
                     .store
-                    .get_objective(objective_id)
+                    .get_objective_preview(objective_id)
                     .await?
                     .filter(|objective| objective.context_id == context_id)
                     .map(|objective| objective.stated_objective.chars().take(1000).collect())
@@ -11374,6 +11625,17 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                dependencies_loaded,
+                wait_head: self
+                    .inner
+                    .store
+                    .thread_wait_heads(
+                        context_id,
+                        &[(thread.id.clone(), thread.generation, thread.revision)],
+                    )
+                    .await?
+                    .into_iter()
+                    .next(),
                 dependencies: Some(crate::scheduler::snapshot::current_thread_dependencies(
                     &thread,
                     dependencies,
@@ -11386,14 +11648,13 @@ impl MorphzRuntime {
                     .remove(&thread.id),
                 response_annotations: None,
                 intent: self
-                    .query_events(QueryFilter {
-                        context_id: Some(context_id.to_string()),
-                        event_id: Some(thread.root_turn_id.clone()),
-                        ..Default::default()
-                    })
+                    .inner
+                    .store
+                    .event_input_previews(context_id, &[thread.root_turn_id.clone()])
                     .await?
-                    .first()
-                    .and_then(thread_input_intent)
+                    .into_iter()
+                    .next()
+                    .map(|(_, text)| text)
                     .or_else(|| {
                         schedules
                             .first()
@@ -12017,13 +12278,6 @@ fn runtime_overview_principals_by_session(
     by_session
 }
 
-fn thread_input_intent(event: &Event) -> Option<String> {
-    ["intent", "task", "text"]
-        .iter()
-        .find_map(|key| event.payload.get(*key).and_then(Value::as_str))
-        .map(|text| text.chars().take(1000).collect())
-}
-
 fn runtime_overview_session(
     session: SessionRecord,
     principal_ids: Vec<String>,
@@ -12156,6 +12410,7 @@ fn runtime_overview_session(
 
     RuntimeOverviewSession {
         session,
+        principal_count: principal_ids.len(),
         principal_ids,
         state,
         attention_required,

@@ -68,6 +68,10 @@ impl SchedulerKernel {
 
     pub async fn execute(&self, command: KernelCommand) -> Result<KernelResult, KernelError> {
         validate_header(&command.header)?;
+        let is_lease_renewal = matches!(
+            &command.payload,
+            KernelCommandPayload::RenewObjectiveEvaluation(_)
+        );
         const MAX_CONTENTION_RETRIES: u64 = 4;
         let mut contention_retries = 0u64;
         let mut delay = std::time::Duration::from_millis(25);
@@ -93,7 +97,41 @@ impl SchedulerKernel {
                     tokio::time::sleep(delay).await;
                     delay = (delay * 2).min(std::time::Duration::from_millis(400));
                 }
-                result => return result,
+                result => {
+                    use crate::memory::*;
+                    let committed = matches!(
+                        &result,
+                        Ok(KernelResult::ThreadControlled(ThreadMutation::Updated(_)))
+                            | Ok(KernelResult::ThreadPromoted(
+                                ThreadPromotionMutation::Updated(_)
+                            ))
+                            | Ok(KernelResult::ObjectiveControlled(
+                                ObjectiveMutation::Updated(_)
+                            ))
+                            | Ok(KernelResult::ObjectiveEvaluationMutated(
+                                ObjectiveMutation::Updated(_)
+                            ))
+                            | Ok(KernelResult::ActivationTransitioned(
+                                ThreadActivationMutation::Updated(_)
+                            ))
+                            | Ok(KernelResult::ExecutionJobOutcomeCommitted(
+                                ExecutionJobMutation::Updated(_)
+                            ))
+                            | Ok(KernelResult::DialogueTurnRestarted(
+                                DialogueTurnRetryMutation::Accepted { .. }
+                            ))
+                            | Ok(KernelResult::DeliveryOutcomeCommitted(
+                                DeliveryFlushCommit::Committed
+                            ))
+                            | Ok(KernelResult::ThreadOutcomeCommitted(
+                                ActivationOutcomeCommit::Committed { .. }
+                            ))
+                    );
+                    if committed && !is_lease_renewal {
+                        self.store.committed_event_hint();
+                    }
+                    return result;
+                }
             }
         }
     }

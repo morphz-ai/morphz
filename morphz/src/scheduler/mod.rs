@@ -5,6 +5,7 @@
 //! backends implement the transactional commands in [`kernel`]; controllers
 //! must not rebuild these rules from persisted Events.
 
+pub mod authority;
 #[path = "command.rs"]
 pub mod commands;
 pub mod domain;

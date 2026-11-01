@@ -22,6 +22,7 @@ export function mergeSchedulerCurrentAndHistory(current: SchedulerSnapshot, hist
       has_more_threads: current.detail_bounds.has_more_threads || history.detail_bounds.has_more_threads,
       has_more_history: history.detail_bounds.has_more_history,
       next_history_cursor: history.detail_bounds.next_history_cursor,
+      next_objective_history_cursor: history.detail_bounds.next_objective_cursor,
       has_more_objectives: current.detail_bounds.has_more_objectives || history.detail_bounds.has_more_objectives,
     },
   }
@@ -37,15 +38,30 @@ export function appendSchedulerHistoryPage(previous: SchedulerSnapshot, page: Sc
     if (!old || row.thread.updated_at >= old.thread.updated_at) threads.set(row.thread.id, row)
   }
   const objectives = new Map(previous.objectives.map(row => [row.objective.id, row]))
-  for (const row of page.objectives) objectives.set(row.objective.id, row)
+  for (const row of page.objectives) {const old=objectives.get(row.objective.id);if(!old || row.objective.revision >= old.objective.revision) objectives.set(row.objective.id,row)}
   return {...page, threads: [...threads.values()], objectives: [...objectives.values()]}
+}
+
+/** One explicit directory continuation. Sibling cursors and current summary
+ * stay with the accepted owner rather than being reset by a partial page. */
+export function appendSchedulerCollectionPage(previous: SchedulerSnapshot, page: SchedulerSnapshot, collection: 'threads' | 'objectives' | 'schedules', history = false): SchedulerSnapshot {
+  if (previous.context_id !== page.context_id) throw new Error('Scheduler page scope changed')
+  const merged = appendSchedulerHistoryPage(previous, page)
+  const schedules = new Map((previous.schedules ?? []).map(row => [row.id, row]))
+  for (const row of page.schedules ?? []) {
+    const old = schedules.get(row.id)
+    if (!old || row.revision >= old.revision) schedules.set(row.id, row)
+  }
+  const cursor = history && collection === 'threads' ? 'next_history_cursor' : `next_${collection === 'objectives' ? 'objective' : collection === 'schedules' ? 'schedule' : 'thread'}_cursor` as const
+  const flag = `has_more_${collection}` as const
+  return {...previous, threads: merged.threads, objectives: merged.objectives, schedules: [...schedules.values()], detail_bounds: {...previous.detail_bounds, [cursor]: page.detail_bounds[cursor], [flag]: page.detail_bounds[flag], ...(history && collection === 'threads' ? {has_more_history: page.detail_bounds.has_more_history} : {})}}
 }
 
 export function schedulerDetailsTruncated(
   detailBounds: SchedulerDetailBounds | null | undefined,
 ): boolean {
   if (!detailBounds) return false
-  return Object.entries(detailBounds).some(([key, value]) => key !== 'limit' && value === true)
+  return Object.entries(detailBounds).some(([key, value]) => key.startsWith('has_more_') && value === true)
 }
 
 export function schedulerJobs(snapshot: SchedulerSnapshot | null): SchedulerJobSnapshot[] {

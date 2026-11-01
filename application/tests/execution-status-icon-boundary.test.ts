@@ -236,7 +236,7 @@ const templates = parse({
     "thread={currentThread}",
     "disabled={!client.online || !runtime.connected || !activityAvailable || !executionActivityThreadAvailable(currentThread, runtime)}",
     "onNotice={setControlNotice}",
-    "onControl={async (action) => { try { await client.controlExecution({ scope, action }); } catch (cause) { void client.refreshView().catch(() => {}); throw cause; } await client.refreshView(); }}",
+    "onControl={async (action) => { try { await client.controlExecution({ scope, action }); } catch (cause) { void client.refreshView().catch(() => {}); throw cause; } void client.refreshView().catch(() => false); }}",
     "/>;",
   ].join("\n"),
   SidebarCurrentControlState:
@@ -939,7 +939,7 @@ test("new Thread controls retain exact source, revision owner, freshness and acc
       "await client.controlExecution({ scope, action });",
       "void client.controlExecution({ scope, action });",
     ],
-    ["await client.refreshView();", "onRefresh?.();"],
+    ["void client.refreshView().catch(() => false);", "onRefresh?.();"],
   ]) {
     assert.equal(control.getText().split(before!).length, 2);
     const variant = source.Sidebar.replace(
