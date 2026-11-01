@@ -22,7 +22,7 @@ const {
   ClipboardItem,
 } = require("electron");
 const { join, isAbsolute } = require("node:path");
-const { writeFileSync } = require("node:fs");
+const { lstatSync, writeFileSync } = require("node:fs");
 const {
   trustedMainURL,
   webPreferences,
@@ -74,7 +74,13 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
-app.setPath("userData", desktopProfile(app.getPath("appData")));
+const profilePath = desktopProfile(app.getPath("appData"));
+// Capture this before Electron creates the profile/partition or singleton lock.
+// A new profile has no old origin storage to recover. Existing paths (including
+// links) retain the complete authenticated recovery flow; other I/O errors fail.
+const profileWasPresent =
+  lstatSync(profilePath, { throwIfNoEntry: false }) !== undefined;
+app.setPath("userData", profilePath);
 const appPartition = persistentPartition(app.getPath("userData"), "app");
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -370,7 +376,7 @@ else {
           ? emptyPage()
           : resources(request);
       });
-      if (!hot && connection.mode === "local") {
+      if (!hot && connection.mode === "local" && profileWasPresent) {
         try {
           const identity = await application.call("platform.bootstrap");
           preferences = await collectLegacyPreferences(
