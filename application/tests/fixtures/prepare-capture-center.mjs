@@ -1,6 +1,5 @@
 import { isAbsolute, basename, join } from "node:path";
 import { lstatSync } from "node:fs";
-import { openEmbeddedApplication } from "../../dist/service/apps/desktop/application-host.js";
 
 const directory = process.argv[2];
 if (
@@ -10,6 +9,11 @@ if (
   !lstatSync(directory).isDirectory()
 )
   throw new Error("A generated isolated capture fixture is required");
+process.env.MORPHZ_APP_ENV_FILE = "";
+process.env.MORPHZ_APP_DATA_DIR = join(directory, "data");
+process.env.MORPHZ_APP_PROFILE = join(directory, "fixture-preparation-profile");
+const { openEmbeddedApplication } =
+  await import("../../dist/service/apps/desktop/application-host.js");
 // Prepare the real empty center through its production owner. The Electron
 // profile remains new; no application service, fake data, schema bypass or
 // persistent user profile is involved. Both phases remain inside the test's
