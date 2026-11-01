@@ -584,7 +584,11 @@ export function executionActivityOverviewSummary(
 ): string {
   const activitySummary = !activityAvailable
     ? "工作状态待核对"
-    : runtime.activity?.truncated
+    : (
+          runtime.activity?.openWorkComplete === undefined
+            ? runtime.activity?.truncated
+            : !runtime.activity.openWorkComplete
+        )
       ? activeCount
         ? `至少 ${activeCount} 项进行中`
         : "工作状态待核对"

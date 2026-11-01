@@ -448,7 +448,9 @@ const expected = parse({
       )}
     return {activityThreads,active,recent,activeCount,activityAvailable,activityComplete};
   }`,
-  Summary: `export function executionActivityOverviewSummary(runtime:ConversationRuntime,activityAvailable:boolean,activeCount:number):string{${fixed.recipes.activitySummary.raw} return activitySummary;}`,
+  // Current coverage has its own authoritative bound. Preserve the historical
+  // recipe/hash above and its fallback for older Runtimes without that field.
+  Summary: `export function executionActivityOverviewSummary(runtime:ConversationRuntime,activityAvailable:boolean,activeCount:number):string{${fixed.recipes.activitySummary.raw.replace("runtime.activity?.truncated", "(runtime.activity?.openWorkComplete === undefined ? runtime.activity?.truncated : !runtime.activity.openWorkComplete)")} return activitySummary;}`,
   // The a1acc archive above stays immutable. Current detail freshness is
   // independently scoped, rather than depending on every history scope.
   Prose:
@@ -1125,6 +1127,10 @@ test("overview roots, active descendants, date/read ordering and bounded quality
   );
   rejected(
     changed("Owner", "至少 ${activeCount} 项进行中", "${activeCount} 项进行中"),
+    "overview-bounded-quality-summary",
+  );
+  rejected(
+    changed("Owner", "!runtime.activity.openWorkComplete", "false"),
     "overview-bounded-quality-summary",
   );
   rejected(

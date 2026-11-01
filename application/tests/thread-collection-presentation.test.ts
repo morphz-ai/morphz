@@ -589,6 +589,28 @@ test("overview date quality uses matching terminal time and keeps first group or
     );
   }));
 
+test("complete current work remains known when only terminal history is truncated", () => {
+  const rt = runtime([], {
+    activity: {
+      available: true,
+      threads: [],
+      truncated: true,
+      objectivesTruncated: true,
+      openWorkComplete: true,
+    },
+  });
+  assert.equal(executionActivityOverviewSummary(rt, true, 0), "0 项进行中");
+  assert.equal(executionActivityOverviewSummary(rt, true, 2), "2 项进行中");
+  rt.activity!.openWorkComplete = false;
+  assert.equal(executionActivityOverviewSummary(rt, true, 0), "工作状态待核对");
+  assert.equal(
+    executionActivityOverviewSummary(rt, true, 2),
+    "至少 2 项进行中",
+  );
+  delete rt.activity!.openWorkComplete;
+  assert.equal(executionActivityOverviewSummary(rt, true, 0), "工作状态待核对");
+});
+
 test("two original overview phases keep date construction before availability, prose between phases and lazy summary quality reads", () => {
   function lane(
     collect:
