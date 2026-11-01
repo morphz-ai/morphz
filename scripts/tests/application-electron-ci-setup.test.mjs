@@ -121,7 +121,7 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
     assert.doesNotMatch(entry, /^    if:|continue-on-error|github\.event_name|github\.ref/m);
     assert.match(candidate, /^  workflow_call:/m);
     for (const name of ["remaining-browser-regressions", "macos-reader-regressions",
-      "linux-native-regressions", "macos-compose-regressions", "macos-intel-publication-regressions", "macos-mounted-resource-regressions"]) {
+      "linux-native-regressions", "macos-compose-regressions", "macos-intel-publication-regressions", "macos-mounted-resource-passes"]) {
       const job = jobSource(candidate, name);
       assert.doesNotMatch(job, /^    if:|github\.event_name|github\.ref/m,
         `${name}: native coverage cannot silently skip for its caller event`);
@@ -260,29 +260,41 @@ test("Intel mounted resource and view regression keeps five complete passes and 
   const source = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
   const files = ["cognitive-document-view-mounted", "create-dialog-mounted", "exchange-reference-preparation-mounted", "object-annotations-mounted"];
   function verify(candidate) {
-    const job = jobSource(candidate, "macos-mounted-resource-regressions");
+    const job = jobSource(candidate, "macos-mounted-resource-passes");
     assert.match(job, /runs-on: macos-26-intel/);
-    assert.match(job, /timeout-minutes: 60/);
+    assert.match(job, /timeout-minutes: 20/);
+    assert.match(job, /fail-fast: false/);
+    assert.match(job, /pass: \[1, 2, 3, 4, 5\]/);
     assert.doesNotMatch(job, /^    if:|continue-on-error/m);
-    const step = job.split("\n      - ").find(part => part.includes("name: Require five complete mounted resource and view passes without retries"));
+    const step = job.split("\n      - ").find(part => part.includes("name: Require this complete mounted resource and view pass without retries"));
     assert.ok(step);
     assert.match(step, /set -euo pipefail/);
-    assert.match(step, /for round in 1 2 3 4 5; do/);
     assert.match(step, /MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres/);
     assert.match(step, /MORPHZ_TEST_POSTGRES_BIN_DIR="\$\(brew --prefix postgresql@16\)\/bin" npm test -- --test-concurrency=1/);
-    assert.ok(step.includes('MORPHZ_TEST_COVERAGE_LOG="$RUNNER_TEMP/mounted-resource-pass-$round.log"'));
+    assert.ok(step.includes('log="$RUNNER_TEMP/mounted-resource-pass-${{ matrix.pass }}.log"'));
+    assert.ok(step.includes('MORPHZ_TEST_COVERAGE_LOG="$log"'));
+    assert.match(step, /receipt\["unexpectedSkips"\] == \[\] and receipt\["optionalNotExecuted"\] == \[\]/);
+    assert.match(step, /assert len\(selected\) == 4/);
+    assert.match(step, /counts\["passed"\] == counts\["tests"\]/);
+    assert.ok(step.includes('["failed", "cancelled", "skipped", "todo"]'));
     assert.doesNotMatch(step, /\|\s*tee/);
     for (const file of files) assert.ok(step.includes(`tests/${file}.test.ts \\\n`));
     for (const prerequisite of ["npm ci --prefix ../dashboard", "node node_modules/electron/install.js", "brew install postgresql@16", "npx playwright install chromium"])
       assert.ok(job.indexOf(prerequisite) >= 0 && job.indexOf(prerequisite) < job.indexOf("npm test"));
     assert.doesNotMatch(step, /--test-name-pattern|--test-skip-pattern|--grep|--shard|--retries|continue-on-error|\bif:|\|\||\buntil\b/);
+    const gate = jobSource(candidate, "macos-mounted-resource-regressions");
+    assert.match(gate, /needs: macos-mounted-resource-passes/);
+    assert.ok(gate.includes("if: ${{ always() }}"));
+    assert.ok(gate.includes('run: test "${{ needs.macos-mounted-resource-passes.result }}" = "success"'));
+    assert.doesNotMatch(gate, /continue-on-error|\|\|/);
   }
   verify(source);
-  const job = jobSource(source, "macos-mounted-resource-regressions");
+  const job = jobSource(source, "macos-mounted-resource-passes");
   for (const changed of [
-    job.replace("timeout-minutes: 60", "timeout-minutes: 30"),
-    job.replace("timeout-minutes: 60", "timeout-minutes: 360"),
-    job.replace("for round in 1 2 3 4 5; do", "for round in 1; do"),
+    job.replace("timeout-minutes: 20", "timeout-minutes: 10"),
+    job.replace("timeout-minutes: 20", "timeout-minutes: 360"),
+    job.replace("pass: [1, 2, 3, 4, 5]", "pass: [1]"),
+    job.replace("fail-fast: false", "fail-fast: true"),
     ...files.map(file => job.replace(`tests/${file}.test.ts \\\n`, "")),
     job.replace("set -euo pipefail", "set -eu"),
     job.replace("--test-concurrency=1", "--test-concurrency=1 --test-name-pattern=fast"),
@@ -290,6 +302,11 @@ test("Intel mounted resource and view regression keeps five complete passes and 
     job.replace("npx playwright install chromium", "echo missing-browser"),
     job.replace("MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres", "MORPHZ_TEST_REQUIRED_CAPABILITIES: none"),
     job.replace("MORPHZ_TEST_COVERAGE_LOG=", "OMITTED_LOG="),
-    job.replace("              2>&1\n", "              | tee ignored.log\n"),
+    job.replace('> "$output" 2>&1', '| tee ignored.log'),
   ]) assert.throws(() => verify(source.replace(job, changed)));
+  const gate = jobSource(source, "macos-mounted-resource-regressions");
+  for (const changed of [gate.replace("needs: macos-mounted-resource-passes", "needs: omitted"),
+    gate.replace("if: ${{ always() }}", "if: ${{ success() }}"),
+    gate.replace('= "success"', '= "failure"'), gate.replace('run: test', 'run: echo')])
+    assert.throws(() => verify(source.replace(gate, changed)));
 });
