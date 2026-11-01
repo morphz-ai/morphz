@@ -1668,19 +1668,61 @@ async fn sqlite_execution_reader_index_is_added_after_legacy_principal_column_on
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
         .await
         .unwrap();
-    sqlx::query("DROP INDEX idx_execution_jobs_reader_history")
-        .execute(&pool)
+    // A pre-principal database also predates every index/trigger that uses the
+    // column. Remove those current schema objects before constructing that
+    // legacy fixture, then require cold reopening to recreate all of them.
+    let dependencies = sqlx::query("SELECT type,name FROM sqlite_master WHERE type IN ('index','trigger','view') AND sql LIKE '%execution_jobs%' AND sql LIKE '%initiating_principal_id%' ORDER BY type,name LIMIT 65")
+        .fetch_all(&pool)
         .await
-        .unwrap();
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.get::<String, _>("type"), row.get::<String, _>("name")))
+        .collect::<Vec<_>>();
+    assert!(
+        dependencies.len() < 65,
+        "legacy schema dependencies must be bounded"
+    );
+    assert!(dependencies
+        .iter()
+        .any(|(kind, name)| kind == "index" && name == "idx_execution_jobs_reader_history"));
+    assert!(dependencies
+        .iter()
+        .any(|(kind, name)| kind == "index" && name == "idx_job_thread_reader_page"));
+    for (kind, name) in &dependencies {
+        let name = name.replace('"', "\"\"");
+        sqlx::query(&format!("DROP {kind} \"{name}\""))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
     sqlx::query("ALTER TABLE execution_jobs DROP COLUMN initiating_principal_id")
         .execute(&pool)
         .await
         .unwrap();
+    let absent: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('execution_jobs') WHERE name='initiating_principal_id'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        absent, 0,
+        "the fixture must actually have the legacy schema"
+    );
     pool.close().await;
     drop(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
         .await
         .unwrap();
+    let restored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('execution_jobs') WHERE name='initiating_principal_id'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(restored, 1);
+    for (kind, name) in &dependencies {
+        let installed: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type=? AND name=?")
+                .bind(kind)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(installed, 1, "cold reopening must restore {kind} {name}");
+    }
     let index = sqlx::query("PRAGMA index_info(idx_execution_jobs_reader_history)")
         .fetch_all(&pool)
         .await

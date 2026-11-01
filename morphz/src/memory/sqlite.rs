@@ -28787,9 +28787,13 @@ fn sqlite_thread_source_query<'a>(
 
 fn sqlite_event_query_source(filter: &QueryFilter) -> &'static str {
     // Recovery for one Activation must never walk the whole Session's append
-    // index just to avoid sorting its two topic ranges. Exact event identities
-    // retain the primary-key path, and ordinary Session tails keep their seek.
-    if filter.activation_id.is_some() && filter.event_id.is_none() && filter.event_ids.is_empty() {
+    // index just to avoid sorting its two topic ranges. A point set must also
+    // seek by identity: SQLite can otherwise prefer Context/time order and
+    // walk its entire history to prove that a requested synthetic root is absent.
+    // Sorting the returned point set is bounded by the requested identities.
+    if filter.event_id.is_some() || !filter.event_ids.is_empty() {
+        "events INDEXED BY sqlite_autoindex_events_1"
+    } else if filter.activation_id.is_some() {
         "events INDEXED BY idx_events_activation_topic"
     } else {
         "events"
@@ -32774,9 +32778,139 @@ mod tests {
                 event_id: Some("exact-event".into()),
                 ..filter.clone()
             }),
-            "events",
+            "events INDEXED BY sqlite_autoindex_events_1",
             "exact event lookup must retain its primary-key path"
         );
+    }
+
+    #[tokio::test]
+    async fn exact_event_points_bound_vm_work_with_missing_roots_and_retained_history() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let tmp_file = TempSqliteDb::new().unwrap();
+        // One owned connection lets the instruction budget observe the actual
+        // EventStore::query implementation, rather than a hand-written SQL copy.
+        let store = SqliteStore::new_with_config(
+            tmp_file.path().to_str().unwrap(),
+            &SqliteStorageConfig {
+                max_connections: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(r#"WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<20000)
+            INSERT INTO events(id,timestamp,actor,type,topic,context_id,payload)
+            SELECT 'retained-point-noise-'||n,'2026-11-01T00:00:00Z','fixture','fixture','fixture/noise','point-context','{}' FROM counter"#)
+            .execute(&store.pool).await.unwrap();
+        for (id, context, seconds) in [
+            ("point-later", "point-context", 2),
+            ("point-first", "point-context", 1),
+            ("point-same-clock", "point-context", 1),
+            ("point-foreign", "foreign-context", 3),
+        ] {
+            let mut event = Event::new(
+                id.into(),
+                "fixture".into(),
+                "fixture".into(),
+                "fixture/point".into(),
+                [("context_id".into(), serde_json::json!(context))]
+                    .into_iter()
+                    .collect(),
+            );
+            event.timestamp = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+                + chrono::Duration::seconds(seconds);
+            store.append(event).await.unwrap();
+        }
+        let mut ids = (0..46)
+            .map(|n| format!("missing-synthetic-root-{n}"))
+            .collect::<Vec<_>>();
+        ids.extend([
+            "point-later".into(),
+            "point-first".into(),
+            "point-same-clock".into(),
+            "point-foreign".into(),
+        ]);
+        let base = QueryFilter {
+            context_id: Some("point-context".into()),
+            event_ids: ids,
+            top_k: Some(50),
+            ..Default::default()
+        };
+        for (filter, expected) in [
+            (
+                base.clone(),
+                vec!["point-first", "point-same-clock", "point-later"],
+            ),
+            (
+                QueryFilter {
+                    top_k: Some(2),
+                    ..base.clone()
+                },
+                vec!["point-first", "point-same-clock"],
+            ),
+            (
+                QueryFilter {
+                    latest_k: Some(2),
+                    ..base.clone()
+                },
+                vec!["point-first", "point-same-clock"],
+            ),
+            (
+                QueryFilter {
+                    event_id: Some("point-first".into()),
+                    ..base.clone()
+                },
+                vec!["point-first"],
+            ),
+            (
+                QueryFilter {
+                    event_id: Some("missing-synthetic-root-0".into()),
+                    ..base.clone()
+                },
+                vec![],
+            ),
+            (
+                QueryFilter {
+                    event_id: Some("point-foreign".into()),
+                    ..base
+                },
+                vec![],
+            ),
+        ] {
+            let operations = std::sync::Arc::new(AtomicUsize::new(0));
+            let observed = operations.clone();
+            let mut connection = store.pool.acquire().await.unwrap();
+            connection
+                .lock_handle()
+                .await
+                .unwrap()
+                .set_progress_handler(100, move || {
+                    observed.fetch_add(100, Ordering::Relaxed) < 20000
+                });
+            drop(connection);
+            let result = store.query(filter).await;
+            let mut connection = store.pool.acquire().await.unwrap();
+            connection
+                .lock_handle()
+                .await
+                .unwrap()
+                .remove_progress_handler();
+            assert!(
+                result.is_ok(),
+                "exact points must not scan retained Context history: {:?}",
+                result.as_ref().err()
+            );
+            assert!(operations.load(Ordering::Relaxed) < 20000);
+            assert_eq!(
+                result
+                    .unwrap()
+                    .into_iter()
+                    .map(|event| event.id)
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        store.pool.close().await;
     }
 
     #[tokio::test]

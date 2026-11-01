@@ -20,7 +20,10 @@ use morphz::{
         normalize_response, records_from_authorized_event, AnnotationKind, ExecutionScope,
         NormalizationContext, PersistedAnnotations, Producer, Protocol, BUNDLE_PAYLOAD_KEY,
     },
-    runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle},
+    runtime::{
+        ExecutionRecordsQuery, MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle,
+        ThreadResponseAnnotations,
+    },
     session_io::{Limits, Request},
     tool::Tool,
 };
@@ -1439,6 +1442,36 @@ impl Fixture {
             .await
             .unwrap()
     }
+
+    async fn step_annotations(&self, thread_id: &str) -> ThreadResponseAnnotations {
+        let sdk = morphz::sdk::MorphzSdk::new(self.runtime.clone());
+        let page = sdk
+            .session_execution_records(
+                "principal-default",
+                "annotations-session",
+                ExecutionRecordsQuery {
+                    thread_id: Some(thread_id.to_owned()),
+                    headers_only: true,
+                    limit: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.limit, 1);
+        assert!(!page.threads_truncated);
+        assert!(!page.has_more_jobs);
+        assert!(page.next_job_cursor.is_none());
+        assert!(
+            page.jobs.is_empty(),
+            "step inspection must not hydrate Job bodies"
+        );
+        assert_eq!(page.job_headers.len(), 1);
+        assert_eq!(page.threads.len(), 1);
+        let thread = page.threads.into_iter().next().unwrap();
+        assert_eq!(thread.id, thread_id);
+        thread.response_annotations.unwrap()
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1566,10 +1599,15 @@ async fn enabled_uses_native_work_original_handshake_and_durable_annotations() {
         projected.result.is_none(),
         "final ordinary body does not require a second summary"
     );
-    assert_eq!(projected.steps.len(), 1);
-    assert_eq!(projected.steps[0].job_id, jobs[0].id);
-    assert_eq!(projected.steps[0].intent.as_deref(), Some("读取合成系统"));
-    assert!(projected.steps[0].result.is_none());
+    assert!(
+        projected.steps.is_empty(),
+        "metadata must not implicitly read steps"
+    );
+    let steps = fixture.step_annotations(&thread.id).await;
+    assert_eq!(steps.steps.len(), 1);
+    assert_eq!(steps.steps[0].job_id, jobs[0].id);
+    assert_eq!(steps.steps[0].intent.as_deref(), Some("读取合成系统"));
+    assert!(steps.steps[0].result.is_none());
     assert_eq!(projected.source_count, 2);
     assert!(!projected.truncated);
     let public_projection = serde_json::to_value(&projected).unwrap();
@@ -1583,6 +1621,7 @@ async fn enabled_uses_native_work_original_handshake_and_durable_annotations() {
             "annotations-context",
             morphz::runtime::SchedulerQuery {
                 include_terminal: true,
+                include_job_details: true,
                 limit: 200,
                 ..Default::default()
             },
@@ -1597,7 +1636,7 @@ async fn enabled_uses_native_work_original_handshake_and_durable_annotations() {
             .unwrap()
             .response_annotations
             .as_ref(),
-        Some(&projected)
+        Some(&steps)
     );
     let forbidden = sdk
         .session_thread_annotations("foreign-principal", "annotations-session", &thread.id)
@@ -4187,8 +4226,13 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
         display.result.is_none(),
         "a delivered candidate while waiting cannot establish a terminal result"
     );
-    assert_eq!(display.steps.len(), 1);
-    assert_eq!(display.steps[0].job_id, jobs[0].id);
+    assert!(
+        display.steps.is_empty(),
+        "detail metadata must not implicitly read steps"
+    );
+    let steps = fixture.step_annotations(&thread.id).await;
+    assert_eq!(steps.steps.len(), 1);
+    assert_eq!(steps.steps[0].job_id, jobs[0].id);
     assert_eq!(detail.snapshot.thread.generation, thread.generation);
     assert!(detail.snapshot.outcome.is_none());
     assert!(
@@ -4719,8 +4763,13 @@ async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requ
         .unwrap();
     assert_eq!(projected.title.as_deref(), Some("读取合成系统"));
     assert!(projected.result.is_none());
-    assert_eq!(projected.steps.len(), 1);
-    assert_eq!(projected.steps[0].intent.as_deref(), Some("核对系统名称"));
+    assert!(
+        projected.steps.is_empty(),
+        "metadata must not implicitly read steps"
+    );
+    let steps = fixture.step_annotations(&child.id).await;
+    assert_eq!(steps.steps.len(), 1);
+    assert_eq!(steps.steps[0].intent.as_deref(), Some("核对系统名称"));
     assert!(fixture
         .runtime
         .session_thread_annotations("annotations-context", "foreign-session", &child.id)

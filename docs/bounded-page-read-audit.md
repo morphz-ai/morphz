@@ -7,12 +7,12 @@
 > current acceptance is recorded in the final follow-up section.
 
 
-Status: **in progress, candidate not deployed**. Validated local read-model
-commits are `0c710e2b`, `66756062` and `96962e2a`. Startup recovery pagination
-has also passed the focused validation recorded below. Remaining read owners
-and original-app acceptance are still open.
-This document is not whole-product acceptance. The root `AGENTS.md` is the
-read contract for Runtime, Dashboard and Desktop.
+The earlier sections retain the implementation and validation history, including
+failures and undeployed checkpoints. The follow-up sections record later source
+changes and original-application observations. The final operator report must
+identify its exact checked commit and complete CI result; this document alone is
+not whole-product acceptance. The root `AGENTS.md` is the read contract for
+Runtime, Dashboard and Desktop.
 
 ## Failure being corrected
 
@@ -269,3 +269,34 @@ The final operator report and CI runs must identify their exact source commits
 and distinguish complete inventories, explicit optional omissions, pressure
 repeats and original-profile acceptance. No original task has been cancelled,
 paused, re-sent or answered by this audit.
+
+### Original application and late regression checks, 2026-11-02
+
+The original Desktop frontend and its retained Runtime profile were updated to
+`0f53d3f5` through a normal shutdown/recovery. Native records, model settings and
+73 retained Schedules were preserved; there were no in-flight Jobs to interrupt.
+Original Desktop history loading, return to latest, and explicit parameter/result
+inspection were checked without sending messages or controlling business work.
+Original Dashboard startup requested 250 conversation Events. One upward read
+made exactly one older-page request; the retained reading anchor moved 0.17 px.
+A separate 15-second idle observation recorded no HTTP requests. The staged
+attachment and composer content were preserved.
+
+Complete CI exposed three annotation fixtures still reading step metadata from
+a task-summary endpoint, plus a legacy-schema fixture which removed a column
+while leaving new dependent indexes/triggers installed. The fixtures now use an
+explicit one-Job header page for steps and recreate the genuine legacy schema.
+The original step/provenance and migration/index assertions remain. Both complete
+files (29 annotation cases and 6 SQLite/PostgreSQL source cases) passed three
+times, including the explicitly required PostgreSQL cases, with no ignored cases.
+
+The original Activity continuation also exposed a real SQLite access-path defect.
+An exact Event-ID set containing missing synthetic roots could select the Context
+time index, walking retained history to prove absence. In the read-only original
+database diagnostic, that path exceeded 250000 VM instructions without finishing;
+the primary-key point path returned the four present Events in fewer than 1000.
+The follow-up fixes exact-ID index selection rather than increasing the 8-second
+request timeout. Its native regression runs the actual EventStore query against
+20000 retained Events with a fixed 20000-instruction budget, checking absent and
+foreign IDs, timestamp ties, result limits and append-order tails. Fresh validation
+and original-profile acceptance of this follow-up are required before closing.
