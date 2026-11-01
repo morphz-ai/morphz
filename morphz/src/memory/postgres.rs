@@ -9913,6 +9913,12 @@ mod tests {
         sqlx::query(r#"WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000)
             INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,metadata_json,created_at,updated_at)
             SELECT 'history-'||n,'thread','selected',1,'resource','history-'||n,1,TRUE,'satisfied','{}','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter"#).execute(&store.pool).await.unwrap();
+        // A tiny pending-group inventory legitimately favors a global partial
+        // index. Exercise the real adversarial boundary instead: thousands of
+        // unrelated pending groups must still seek this exact owner's index.
+        sqlx::query(r#"WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000)
+            INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,metadata_json,created_at,updated_at)
+            SELECT 'unrelated-pending-'||n,'thread','unrelated-owner-'||n,1,'thread_group','unrelated-group-'||n,1,TRUE,'pending','{}','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter"#).execute(&store.pool).await.unwrap();
         for (id, owner, generation, kind, status, required) in [
             (
                 "current-resource",

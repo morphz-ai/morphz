@@ -20741,7 +20741,35 @@ mod tests {
             thread_dependency_id
         );
         assert_eq!(detail.snapshot.activations.len(), 1);
-        assert_eq!(detail.snapshot.activations[0].jobs.len(), 1);
+        assert_eq!(
+            detail.snapshot.activations[0].jobs.len(),
+            0,
+            "opening the Thread must not recursively open Job payloads"
+        );
+        let job_cursor = detail
+            .continuations
+            .iter()
+            .find(|page| {
+                page.kind == crate::memory::inspection_page::ThreadInspectionKind::Jobs
+                    && page.activation_id.as_deref() == Some(activation.id.as_str())
+            })
+            .expect("the actual Job collection remains explicitly readable");
+        let job_page = runtime
+            .thread_inspection_page(
+                runtime.identity().context_id.as_str(),
+                &thread.id,
+                crate::memory::inspection_page::ThreadInspectionQuery {
+                    kind: crate::memory::inspection_page::ThreadInspectionKind::Jobs,
+                    activation_id: Some(activation.id.clone()),
+                    cursor: Some(job_cursor.next_cursor.clone()),
+                    limit: Some(1),
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job_page.jobs.len(), 1);
+        assert_eq!(job_page.jobs[0].job.id, job.id);
         assert_eq!(detail.snapshot.schedules[0].id, schedule.id);
         assert_eq!(detail.model_attempt_events.len(), 1);
         assert_eq!(
