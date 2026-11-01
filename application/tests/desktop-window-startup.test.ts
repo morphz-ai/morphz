@@ -1,8 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext, type Context } from "node:vm";
 
@@ -30,6 +38,117 @@ const { rendererURL } = require("../apps/desktop/development.cjs") as {
 const restoreURL = "morphz://app/__desktop_restore";
 const mainURL = "morphz://app/";
 const failureURL = "morphz://app" + failurePath;
+
+test("only profiles present before Electron initialization read old origins; new profiles have no recovery I/O", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "morphz-startup-profile-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const profileSelection = sourceSection(
+    mainSource,
+    /^const profilePath =/m,
+    "if (!app.requestSingleInstanceLock())",
+  );
+  const preferenceRecovery = sourceSection(
+    mainSource,
+    /      if \(!hot && connection.mode === "local"(?: && profileWasPresent)?\) \{/,
+    "      registerApplicationBridge(",
+  );
+  const { persistentPartition } = require("../apps/desktop/configuration.cjs");
+  for (const state of ["new", "existing", "linked"] as const) {
+    const profile = join(root, state);
+    if (state === "existing") mkdirSync(profile);
+    if (state === "linked")
+      symlinkSync(
+        join(root, "existing"),
+        profile,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    for (const mode of ["local", "remote"])
+      for (const hot of [false, true]) {
+        const calls: string[] = [];
+        const context = createContext({
+          desktopProfile: () => profile,
+          persistentPartition,
+          lstatSync,
+          app: {
+            getPath: (name: string) => (name === "userData" ? profile : root),
+            // Creating the profile later must not change the startup snapshot.
+            setPath: (name: string, selected: string) => {
+              assert.equal(name, "userData");
+              assert.equal(selected, profile);
+              mkdirSync(selected, { recursive: true });
+            },
+          },
+          hot,
+          connection: { mode },
+          preferences: undefined,
+          process: { argv: [] },
+          BrowserWindow: {},
+          appSession: {},
+          legacyOrigins: () => [],
+          application: {
+            call: async (method: string) => {
+              assert.equal(method, "platform.bootstrap");
+              calls.push(method);
+              return { centerId: "center", principalId: "human" };
+            },
+          },
+          collectLegacyPreferences: async () => {
+            calls.push("collect-old-origins");
+            return { prefix: "fixture-only:" };
+          },
+        });
+        runInContext(profileSelection, context);
+        await runInContext(
+          "(async () => {" + preferenceRecovery + "})()",
+          context,
+        );
+        const needsRecovery = state !== "new" && mode === "local" && !hot;
+        assert.deepEqual(
+          calls,
+          needsRecovery ? ["platform.bootstrap", "collect-old-origins"] : [],
+        );
+        const recovered = fixture({ preferences: !!context.preferences, hot });
+        await recovered.createWindow();
+        assert.equal(recovered.restores, needsRecovery ? 1 : 0);
+        assert.equal(recovered.windows[0]!.url, mainURL);
+        if (!needsRecovery)
+          assert.deepEqual(
+            recovered.events.filter(([kind]) => kind === "load"),
+            [["load", 1, mainURL]],
+          );
+        if (state === "new") rmSync(profile, { recursive: true });
+      }
+  }
+});
+
+test("profile inspection errors must not be mistaken for an empty profile", () => {
+  const denied = Object.assign(new Error("fixture profile inspection denied"), {
+    code: "EACCES",
+  });
+  const context = createContext({
+    desktopProfile: () => "/fixture-only",
+    app: {
+      getPath: () => "/fixture-only",
+      setPath: () =>
+        assert.fail("failed inspection must not initialize the profile"),
+    },
+    lstatSync: () => {
+      throw denied;
+    },
+  });
+  assert.throws(
+    () =>
+      runInContext(
+        sourceSection(
+          mainSource,
+          /^const profilePath =/m,
+          "if (!app.requestSingleInstanceLock())",
+        ),
+        context,
+      ),
+    (error) => error === denied,
+  );
+});
 
 function deferred() {
   let resolve!: () => void, reject!: (reason?: unknown) => void;
@@ -291,7 +410,9 @@ function fixture({
       fileWrites.push([path, body, options]),
     app: {
       getPath: () => "/fixture-only-not-created",
-      quit: () => { quits++; },
+      quit: () => {
+        quits++;
+      },
       on: (name: string, handler: () => void) => {
         assert.equal(name, "window-all-closed");
         allClosed = handler;
@@ -329,9 +450,19 @@ function fixture({
       "\nglobalThis.api = { createWindow, reopenMainWindow };",
     context,
   );
-  runInContext(sourceSection(mainSource, /  app\.on\("window-all-closed", \(\) => \{/, "  registerDesktopShutdown({"), context);
+  runInContext(
+    sourceSection(
+      mainSource,
+      /  app\.on\("window-all-closed", \(\) => \{/,
+      "  registerDesktopShutdown({",
+    ),
+    context,
+  );
   return {
-    allClosed: () => { assert.ok(allClosed); allClosed(); },
+    allClosed: () => {
+      assert.ok(allClosed);
+      allClosed();
+    },
     quits: () => quits,
     context,
     windows,
