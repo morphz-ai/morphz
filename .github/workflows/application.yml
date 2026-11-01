@@ -5,7 +5,7 @@ permissions:
   contents: read
 jobs:
   capture-startup-diagnostic:
-    name: Isolated production startup phase diagnostic
+    name: Isolated complete capture startup phase diagnostic
     runs-on: macos-26-intel
     timeout-minutes: 25
     defaults:
@@ -28,14 +28,15 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm run build
       - run: npx playwright install chromium
-      - name: Record twenty production startup phase journeys without retries
+      - name: Record twenty complete capture journeys without retries
         env:
+          MORPHZ_TEST_SOFTWARE_RENDERING: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/native-startup-report.json
-        run: npx playwright test tests/diagnostic-startup-phases.spec.ts --repeat-each=20 --forbid-only --reporter=list,json
+        run: npx playwright test tests/capture-window.spec.ts --repeat-each=20 --forbid-only --reporter=list,json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: native-startup-phases
+          name: native-capture-prepared-phases
           path: application/test-results/
           if-no-files-found: error
           retention-days: 3

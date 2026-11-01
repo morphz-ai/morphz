@@ -39,6 +39,19 @@ test("diagnostic: observe the complete production startup phases", async ({}, in
         await new Promise((resolve) => setTimeout(resolve, 5000));
         throw error;
       });
+    // A navigation URL can be published before its hidden startup window has
+    // finished loading. Close only the real visible main window, like the user.
+    await expect
+      .poll(() =>
+        app!.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows().some(
+            (window) =>
+              window.webContents.getURL() === "morphz://app/" &&
+              window.isVisible(),
+          ),
+        ),
+      )
+      .toBe(true);
   } finally {
     const journal = await readFile(
       join(directory, "native-startup.jsonl"),
