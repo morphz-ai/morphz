@@ -4,6 +4,8 @@ const { writeFile } = require("node:fs/promises");
 const { appendFileSync, lstatSync } = require("node:fs");
 const { join, basename, isAbsolute } = require("node:path");
 const { app, dialog } = require("electron");
+if (process.env.MORPHZ_TEST_SOFTWARE_RENDERING === "1")
+  app.disableHardwareAcceleration();
 const fixture = process.env.MORPHZ_APP_EMBEDDED_FIXTURE;
 if (
   !fixture ||
@@ -25,6 +27,9 @@ function record(stage, details = {}) {
   } catch {}
 }
 record("fixture-entry", { pid: process.pid });
+app.on("gpu-info-update", () =>
+  record("gpu-info", { features: app.getGPUFeatureStatus() }),
+);
 for (const name of [
   "ready",
   "before-quit",
