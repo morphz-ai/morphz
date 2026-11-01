@@ -353,3 +353,19 @@ budget, below GitHub's 1 MiB job budget; missing, oversized or mismatched output
 are fatal. The exact same source/count/capability/file-union validator remains
 mandatory. Coverage no longer depends on a separate artifact upload/download;
 tests, rounds, deadlines and failure verdicts are unchanged.
+
+The installed-service job subsequently exposed a genuine PostgreSQL Schedule
+access-path regression after its Runtime/PTY and five Harness passes succeeded.
+Fresh statistics underestimate the correlated native status and derived bucket;
+the planner intersects two bitmap indexes and sorts all 55 current rows for an
+eight-row page. Without Schedule statistics, the same fixture takes the ordered
+range, explaining the intermittent earlier result. Owned PostgreSQL 15.14 and
+16.15 reproductions confirm both plans. An ordered partial index for native
+`queued`/`paused` Schedules keeps that lookup at eight source rows, with the
+original native Thread scope proof before LIMIT. The native regression now
+explicitly analyzes Schedules and enforces the eight-row source budget as well
+as the unchanged sixteen-row sort ceiling. SQLite and live task control are
+unchanged. The release-native PostgreSQL 16 fixture passed three fresh-schema
+rounds, all nine required PostgreSQL library contracts passed, and the unchanged
+SQLite directory case and release Clippy passed. Exact-current complete CI
+remains a separate completion requirement.

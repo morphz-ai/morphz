@@ -47,6 +47,11 @@ pub(crate) async fn postgres(pool: &sqlx::PgPool) -> Result<(), Error> {
   "ALTER TABLE schedules ADD COLUMN IF NOT EXISTS directory_bucket INTEGER",
   "CREATE INDEX IF NOT EXISTS idx_schedule_directory_missing ON schedules(id) WHERE directory_context_id IS NULL OR directory_bucket IS NULL",
   "CREATE INDEX IF NOT EXISTS idx_schedule_directory ON schedules(directory_context_id,directory_bucket,updated_at DESC,id)",
+  // Status and the derived bucket are correlated. With current statistics,
+  // PostgreSQL can underestimate their intersection and bitmap both general
+  // indexes before sorting every live Schedule. This ordered partial range
+  // retains the native status predicate without reading retained history.
+  "CREATE INDEX IF NOT EXISTS idx_schedule_directory_live ON schedules(directory_context_id,directory_bucket,updated_at DESC,id) WHERE status IN ('queued','paused')",
   "CREATE OR REPLACE FUNCTION morphz_schedule_directory() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE schedules SET directory_context_id=(SELECT context_id FROM threads WHERE id=NEW.thread_id),directory_bucket=CASE WHEN status IN ('queued','paused') THEN 0 ELSE 1 END WHERE id=NEW.id; RETURN NULL; END $$",
   "DO $morphz_trigger$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='schedules'::regclass AND tgname='morphz_schedule_directory_insert') THEN CREATE TRIGGER morphz_schedule_directory_insert AFTER INSERT ON schedules FOR EACH ROW EXECUTE FUNCTION morphz_schedule_directory(); END IF; END $morphz_trigger$",
   "DO $morphz_trigger$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid='schedules'::regclass AND tgname='morphz_schedule_directory_update') THEN CREATE TRIGGER morphz_schedule_directory_update AFTER UPDATE OF thread_id,status ON schedules FOR EACH ROW WHEN (OLD.thread_id IS DISTINCT FROM NEW.thread_id OR OLD.status IS DISTINCT FROM NEW.status) EXECUTE FUNCTION morphz_schedule_directory(); END IF; END $morphz_trigger$",

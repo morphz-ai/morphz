@@ -10556,7 +10556,10 @@ mod tests {
         // changes their native principals. Do not let the plan contract depend
         // on whether autovacuum sampled a half-built fixture on this runner.
         // Keep the same row/sort bounds and use the planner's normal settings.
-        sqlx::query("ANALYZE approval_requests, execution_jobs, sessions, session_principal_bindings, threads, thread_activations")
+        // Include Schedules explicitly: fresh status/bucket statistics exposed
+        // a bitmap intersection and an unbounded live-row sort. Depending on
+        // autovacuum to reach this state made that regression intermittent.
+        sqlx::query("ANALYZE approval_requests, execution_jobs, sessions, session_principal_bindings, threads, thread_activations, schedules")
             .execute(&store.pool)
             .await
             .unwrap();
@@ -10582,6 +10585,12 @@ mod tests {
                     Some("approval_requests" | "schedules" | "threads" | "sessions")
                 ) {
                     assert_ne!(node["Node Type"], "Seq Scan", "{name}: {node}");
+                }
+                if node["Relation Name"] == "schedules" {
+                    assert!(
+                        node["Actual Rows"].as_u64().unwrap() <= 8,
+                        "{name} read beyond the Schedule page: {node}"
+                    );
                 }
                 if let Some(children) = node["Plans"].as_array() {
                     for child in children {
