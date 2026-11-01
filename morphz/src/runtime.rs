@@ -11271,7 +11271,7 @@ impl MorphzRuntime {
             let exists = if kind == K::Jobs {
                 self.inner
                     .store
-                    .activation_jobs_exist(&thread.context_id, &[activation.id.clone()])
+                    .activation_jobs_exist(&thread.context_id, std::slice::from_ref(&activation.id))
                     .await?
             } else {
                 let probe = Q {
@@ -11311,11 +11311,11 @@ impl MorphzRuntime {
     ) -> Result<crate::memory::inspection_page::ThreadInspectionPage, RuntimeError> {
         use crate::memory::inspection_page::{ThreadInspectionKind as K, ThreadInspectionPage};
         if query.kind != K::ModelEvents {
-            return Ok(self
+            return self
                 .inner
                 .store
                 .read_thread_inspection_page(thread, query)
-                .await?);
+                .await;
         }
         let key = query.key(&thread.id)?;
         let before = key
@@ -11650,7 +11650,7 @@ impl MorphzRuntime {
                 intent: self
                     .inner
                     .store
-                    .event_input_previews(context_id, &[thread.root_turn_id.clone()])
+                    .event_input_previews(context_id, std::slice::from_ref(&thread.root_turn_id))
                     .await?
                     .into_iter()
                     .next()

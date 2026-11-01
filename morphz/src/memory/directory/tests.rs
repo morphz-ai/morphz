@@ -588,7 +588,7 @@ macro_rules! scalar_authority_heads {
     let heads=store.scheduler_dependency_heads("dir-a",&owners).await.unwrap();assert_eq!(heads.len(),1);let head=&heads[0];assert!(head.pending);assert_eq!(head.kinds,vec!["resource"]);assert_eq!(head.resources.len(),32);assert!(head.resources_truncated);assert!(serde_json::to_vec(&heads).unwrap().len()<16384);
     assert!(store.scheduler_dependency_heads("dir-b",&owners).await.unwrap().is_empty());
     let mut stale=owners.clone();stale[0].3+=1;assert!(store.scheduler_dependency_heads("dir-a",&stale).await.unwrap().is_empty());
-    assert_eq!(store.scheduler_authority_witnesses("dir-a",W::PendingObjectives,&[preview.id.clone()]).await.unwrap(),vec![(preview.id.clone(),preview.generation)]);
+    assert_eq!(store.scheduler_authority_witnesses("dir-a",W::PendingObjectives,std::slice::from_ref(&preview.id)).await.unwrap(),vec![(preview.id.clone(),preview.generation)]);
     for source in [S::Objectives,S::Threads,S::Activations,S::Groups] {
       let mut after=String::new();let mut seen=std::collections::HashSet::new();
       loop{let page=store.scheduler_authority_page(&AuditQuery{context_id:"dir-a".into(),source,after:after.clone(),ids:None,roots:None,include_terminal:false,limit:7}).await.unwrap();

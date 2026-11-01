@@ -1065,8 +1065,10 @@ impl Server {
             mirror_durable_dashboard_events(
                 durable_runtime,
                 durable_broadcast_tx,
-                durable_default_agent_id,
-                durable_default_context_id,
+                ServerDefaults {
+                    agent_id: durable_default_agent_id,
+                    context_id: durable_default_context_id,
+                },
                 durable_identity_mode,
                 recent_event_ids,
                 durable_after_sequence,
@@ -10801,13 +10803,16 @@ async fn mirror_dashboard_event(
 async fn mirror_durable_dashboard_events(
     runtime: MorphzRuntime,
     broadcast_tx: broadcast::Sender<Event>,
-    default_agent_id: String,
-    default_context_id: String,
+    defaults: ServerDefaults,
     identity_mode: ServerIdentityMode,
     recent_event_ids: Arc<Mutex<RecentDashboardEventIds>>,
     after_sequence: impl Into<crate::memory::event_tail::EventTailCursor>,
     mut changes: tokio::sync::watch::Receiver<u64>,
 ) {
+    let ServerDefaults {
+        agent_id: default_agent_id,
+        context_id: default_context_id,
+    } = defaults;
     let mut cursor = after_sequence.into();
     let mut wait_before_query = true;
     let mut failed = false;
