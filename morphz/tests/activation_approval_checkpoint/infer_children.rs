@@ -428,6 +428,11 @@ async fn contract(store: Arc<dyn RuntimeStore>, prefix: &str) {
         let mut parent = seed(store.as_ref(), &label).await;
         let leaf = child(store.clone(), &mut parent, &format!("{label}-leaf"), false).await;
         checkpoint(store.as_ref(), &leaf).await;
+        let before = store
+            .get_thread_activation(&parent.request.activation_id)
+            .await
+            .unwrap()
+            .unwrap();
         let child_thread = store
             .get_thread(&leaf.jobs[0].thread_id)
             .await
@@ -467,6 +472,18 @@ async fn contract(store: Arc<dyn RuntimeStore>, prefix: &str) {
                 .dialogue_turn_activation_runnable(&parent.request.activation_id)
                 .await
                 .unwrap()),
+            Err(error) if error.downcast_ref::<ApprovalOwnershipContended>().is_some() => {
+                assert_checkpoint_rolled_back(store.as_ref(), &parent, &before).await;
+                // The competing decision is now committed. One explicit
+                // revalidation must reject the obsolete wait set; this is not
+                // a retry loop that waits for a favorable race ordering.
+                assert_wait_set_changed(store.as_ref(), &parent).await;
+                assert_checkpoint_rolled_back(store.as_ref(), &parent, &before).await;
+                assert!(store
+                    .dialogue_turn_activation_runnable(&parent.request.activation_id)
+                    .await
+                    .unwrap());
+            }
             Err(error) => assert!(
                 error
                     .downcast_ref::<ActivationApprovalWaitChanged>()
@@ -476,6 +493,40 @@ async fn contract(store: Arc<dyn RuntimeStore>, prefix: &str) {
             other => panic!("{other:?}"),
         }
     }
+}
+
+async fn assert_checkpoint_rolled_back(
+    store: &dyn RuntimeStore,
+    batch: &Batch,
+    before: &ThreadActivationRecord,
+) {
+    assert_eq!(
+        store
+            .get_thread_activation(&batch.request.activation_id)
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(before),
+        "a contended checkpoint must retain the exact physical owner and revision"
+    );
+    assert!(store
+        .get_thread_activation_approval_wait(&batch.request.activation_id)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+async fn assert_wait_set_changed(store: &dyn RuntimeStore, batch: &Batch) {
+    let error = store
+        .suspend_thread_activation_for_approval(batch.request.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<ActivationApprovalWaitChanged>()
+            .is_some(),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -498,9 +549,61 @@ async fn postgres_infer_approval_dependencies_wake_ancestors() {
             .await
             .unwrap(),
     );
-    contract(
-        store,
-        &format!("pg-infer-{}", Utc::now().timestamp_nanos_opt().unwrap()),
+    let prefix = format!("pg-infer-{}", Utc::now().timestamp_nanos_opt().unwrap());
+    contract(store.clone(), &prefix).await;
+
+    // Force the exact native collision on every run. Random concurrent
+    // decisions alone may never select PostgreSQL's NOWAIT rollback branch.
+    let mut parent = seed(store.as_ref(), &format!("{prefix}-held-owner")).await;
+    let leaf = child(
+        store.clone(),
+        &mut parent,
+        &format!("{prefix}-held-leaf"),
+        false,
     )
     .await;
+    checkpoint(store.as_ref(), &leaf).await;
+    let before = store
+        .get_thread_activation(&parent.request.activation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let mut held = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM threads WHERE root_turn_id = $1 FOR UPDATE")
+        .bind(&before.root_turn_id)
+        .fetch_one(&mut *held)
+        .await
+        .unwrap();
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        store.suspend_thread_activation_for_approval(parent.request.clone()),
+    )
+    .await
+    .expect("a held owner must not deadlock the checkpoint")
+    .unwrap_err();
+    assert!(
+        error.downcast_ref::<ApprovalOwnershipContended>().is_some(),
+        "{error}"
+    );
+    assert_checkpoint_rolled_back(store.as_ref(), &parent, &before).await;
+    held.rollback().await.unwrap();
+    store
+        .commit_approval_decision(
+            &leaf.approvals[0].id,
+            leaf.approvals[0].revision,
+            ApprovalResolution::Deny {
+                rationale: "decision after the forced rollback".into(),
+                risk_tags: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert_wait_set_changed(store.as_ref(), &parent).await;
+    assert_checkpoint_rolled_back(store.as_ref(), &parent, &before).await;
+    assert!(store
+        .dialogue_turn_activation_runnable(&parent.request.activation_id)
+        .await
+        .unwrap());
+    pool.close().await;
 }

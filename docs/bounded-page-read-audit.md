@@ -256,6 +256,15 @@ Terminal annotation fences read only the exact outcome sequence. Original
 body assertions use an explicit authorized Thread read rather than restoring
 full bodies to Activity lists.
 
+Approval pages retain exact native authorization as correlated point lookups
+with `LIMIT 1 OFFSET 0`. PostgreSQL cannot flatten that proof into a Job-led
+join that sorts the authorized inventory before the page limit. The plan
+fixture explicitly analyzes the completed native ownership relations instead
+of depending on autovacuum timing; its row and sort bounds are unchanged.
+The concurrent Approval checkpoint contract also forces a held-owner collision
+and verifies the typed contention result, exact ownership rollback and one
+explicit revalidation after the competing decision commits.
+
 The final operator report and CI runs must identify their exact source commits
 and distinguish complete inventories, explicit optional omissions, pressure
 repeats and original-profile acceptance. No original task has been cancelled,

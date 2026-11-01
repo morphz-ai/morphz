@@ -10552,6 +10552,14 @@ mod tests {
             &store,
             crate::memory::recovery::postgres_scheduler_indexes
         );
+        // The fixture inserts large current/retained inventories and then
+        // changes their native principals. Do not let the plan contract depend
+        // on whether autovacuum sampled a half-built fixture on this runner.
+        // Keep the same row/sort bounds and use the planner's normal settings.
+        sqlx::query("ANALYZE approval_requests, execution_jobs, sessions, session_principal_bindings, threads, thread_activations")
+            .execute(&store.pool)
+            .await
+            .unwrap();
         for (name, mut query) in crate::memory::directory::tests::plan_cases!(sqlx::Postgres) {
             use sqlx::{Execute, Row};
             let mut built = query.build();

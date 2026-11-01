@@ -56,6 +56,9 @@ pub(crate) use pending_query;
 /// Each pending status owns an independently limited index range. Permission
 /// predicates are native relations, evaluated before LIMIT; derived keys are
 /// only the path into that range.
+/// LIMIT 1 OFFSET 0 preserves each exact Job authorization lookup as a
+/// correlated subquery. PostgreSQL must not pull it into a Job-led join that
+/// sorts the whole authorized inventory before applying the Approval limit.
 macro_rules! scoped_query {
     ($db:ty,$context:expr,$authority:expr,$cursor:expr,$fetch:expr) => {{
         (|| -> Result<sqlx::QueryBuilder<'static,$db>,Box<dyn std::error::Error+Send+Sync>> {
@@ -71,11 +74,11 @@ macro_rules! scoped_query {
                 query.push("SELECT * FROM (SELECT a.* FROM approval_requests a WHERE a.status=").push_bind(status);
                 if let Some(context)=context{
                     query.push(" AND a.directory_context_id=").push_bind(context.to_owned());
-                    query.push(" AND EXISTS(SELECT 1 FROM execution_jobs j WHERE j.id=a.job_id AND j.context_id=").push_bind(context.to_owned()).push(")");
+                    query.push(" AND EXISTS(SELECT 1 FROM execution_jobs j WHERE j.id=a.job_id AND j.context_id=").push_bind(context.to_owned()).push(" LIMIT 1 OFFSET 0)");
                 }
                 if let Some(authority)=authority{
                     query.push(" AND a.directory_session_id=").push_bind(authority.session_id.clone()).push(" AND a.directory_principal_id=").push_bind(authority.principal_id.clone());
-                    query.push(" AND EXISTS(SELECT 1 FROM execution_jobs j JOIN sessions s ON s.id=j.session_id JOIN session_principal_bindings b ON b.session_id=s.id JOIN threads t ON t.id=j.thread_id JOIN thread_activations activation ON activation.id=j.activation_id WHERE j.id=a.job_id AND s.id=").push_bind(authority.session_id.clone()).push(" AND b.principal_id=").push_bind(authority.principal_id.clone()).push(" AND b.unbound_at IS NULL AND j.initiating_principal_id=b.principal_id AND s.status='active' AND j.status='waiting_approval' AND t.status='open' AND activation.status IN ('queued','running'))");
+                    query.push(" AND EXISTS(SELECT 1 FROM execution_jobs j JOIN sessions s ON s.id=j.session_id JOIN session_principal_bindings b ON b.session_id=s.id JOIN threads t ON t.id=j.thread_id JOIN thread_activations activation ON activation.id=j.activation_id WHERE j.id=a.job_id AND s.id=").push_bind(authority.session_id.clone()).push(" AND b.principal_id=").push_bind(authority.principal_id.clone()).push(" AND b.unbound_at IS NULL AND j.initiating_principal_id=b.principal_id AND s.status='active' AND j.status='waiting_approval' AND t.status='open' AND activation.status IN ('queued','running') LIMIT 1 OFFSET 0)");
                 }
                 if let Some(key)=&key{query.push(" AND (a.created_at,a.id)>(").push_bind(key.sort_at.clone()).push(",").push_bind(key.id.clone()).push(")");}
                 query.push(" ORDER BY a.created_at,a.id LIMIT ").push_bind(fetch).push(") scope_status_page");
@@ -151,8 +154,8 @@ macro_rules! execution_query {($db:ty,$scope:expr,$cursor:expr,$limit:expr)=>{{
    if i>0{q.push(" UNION ALL ");}
    q.push("SELECT * FROM (SELECT a.* FROM approval_requests a WHERE a.directory_context_id=").push_bind(scope.context_id.clone()).push(" AND a.directory_session_id=").push_bind(scope.session_id.clone()).push(" AND a.status=").push_bind(status).push(" AND EXISTS(SELECT 1 FROM execution_jobs j WHERE j.id=a.job_id AND j.context_id=").push_bind(scope.context_id.clone()).push(" AND j.session_id=").push_bind(scope.session_id.clone());
    if let Some(id)=&scope.thread_id{q.push(" AND j.thread_id=").push_bind(id.clone());}
-   if !scope.root_ids.is_empty(){q.push(" AND EXISTS(SELECT 1 FROM threads t WHERE t.id=j.thread_id AND t.root_turn_id IN (");{let mut v=q.separated(",");for id in &scope.root_ids{v.push_bind(id.clone());}}q.push("))");}
-   q.push(")");if let Some(id)=&scope.thread_id{q.push(" AND a.directory_thread_id=").push_bind(id.clone());}if let Some(key)=&key{q.push(" AND (a.created_at,a.id)>(").push_bind(key.sort_at.clone()).push(",").push_bind(key.id.clone()).push(")");}
+   if !scope.root_ids.is_empty(){q.push(" AND EXISTS(SELECT 1 FROM threads t WHERE t.id=j.thread_id AND t.root_turn_id IN (");{let mut v=q.separated(",");for id in &scope.root_ids{v.push_bind(id.clone());}}q.push(") LIMIT 1 OFFSET 0)");}
+   q.push(" LIMIT 1 OFFSET 0)");if let Some(id)=&scope.thread_id{q.push(" AND a.directory_thread_id=").push_bind(id.clone());}if let Some(key)=&key{q.push(" AND (a.created_at,a.id)>(").push_bind(key.sort_at.clone()).push(",").push_bind(key.id.clone()).push(")");}
    q.push(" ORDER BY a.created_at,a.id LIMIT ").push_bind(($limit.clamp(1,200)+1) as i64).push(") exact_approval_range");
   }q.push(") exact_approval_page ORDER BY created_at,id LIMIT ").push_bind(($limit.clamp(1,200)+1) as i64);Ok(q)
  })()
