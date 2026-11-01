@@ -602,7 +602,9 @@ function ReadingBook({
   useEffect(() => {
     if (!active) return;
     const abort = new AbortController();
-    void progressQueue.current
+    // Reconciliation and saves share one order. A late foreground/state read
+    // must not replace a newer receipt or let the next save use an old revision.
+    progressQueue.current = progressQueue.current
       .then(() =>
         client.readingState(artifact.id, version.revision, abort.signal),
       )
