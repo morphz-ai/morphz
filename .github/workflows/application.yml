@@ -91,6 +91,22 @@ jobs:
           set -euo pipefail
           mkdir "$RUNNER_TEMP/event-notification-evidence"
           LD_PRELOAD="$RUNNER_TEMP/notification-wal-write-delay.so" cargo test --locked -p morphz --lib memory::event_changes::tests::sqlite_peer_commits_wake_without_a_database_poll -- --exact --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/event-notification-evidence/delayed-wal.log"
+      - name: Verify native notification and OS-lock contracts, then twenty guarded latency passes
+        if: ${{ inputs.delay_wal }}
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          set -euo pipefail
+          cargo test --locked -p morphz --lib memory::event_changes::tests:: -- --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/event-notification-evidence/module.log"
+          gcc -shared -fPIC -O2 -Wall -Wextra -Werror morphz/tests/fixtures/sqlite-wal-write-delay.c -o "$RUNNER_TEMP/sqlite-wal-write-delay.so"
+          for round in $(seq 1 20); do
+            log="$RUNNER_TEMP/event-notification-evidence/committed-$round.log"
+            receipt="$RUNNER_TEMP/event-notification-evidence/morphz-sqlite-wal-probe-$round.json"
+            MORPHZ_NOTIFICATION_TEST_WAL_PROBE_RECEIPT="$receipt" LD_PRELOAD="$RUNNER_TEMP/sqlite-wal-write-delay.so" cargo test --locked -p morphz --lib memory::event_changes::tests::sqlite_peer_commits_wake_without_a_database_poll -- --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            python3 -c 'import pathlib,re,sys; text=re.sub(r"\x1b\[[0-9;]*[mK]", "", pathlib.Path(sys.argv[1]).read_text()); assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in text' "$log"
+            python3 -c 'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["delayed_writes"] > 0' "$receipt"
+          done
       - name: Diagnose five original-order prefixes through the notification case
         if: ${{ inputs.prefix_only }}
         shell: bash
