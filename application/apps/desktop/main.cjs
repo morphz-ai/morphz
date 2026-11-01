@@ -56,6 +56,7 @@ const {
   failurePage,
   errorSummary,
 } = require("./startup-page.cjs");
+const { prepareApplicationModules } = require("./startup-modules.cjs");
 const developmentBundle =
   app.isPackaged &&
   require(join(app.getAppPath(), "package.json")).morphzDevelopmentBundle ===
@@ -84,6 +85,7 @@ app.setPath("userData", profilePath);
 const appPartition = persistentPartition(app.getPath("userData"), "app");
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
+  const startupModules = prepareApplicationModules();
   let window;
   let windowStartup;
   let windowReady = false;
@@ -298,10 +300,12 @@ else {
   app
     .whenReady()
     .then(async () => {
-      const { dataDirectory } =
-        await import("../../dist/service/packages/application/src/paths.js");
-      const { openEmbeddedApplication, embeddedResources } =
-        await import("../../dist/service/apps/desktop/application-host.js");
+      const prepared = await startupModules;
+      if ("error" in prepared) throw prepared.error;
+      const [
+        { dataDirectory },
+        { openEmbeddedApplication, embeddedResources },
+      ] = prepared.modules;
       connection = connectionFromArgs(process.argv, dataDirectory);
       if (hot) {
         if (connection.mode !== "remote")
