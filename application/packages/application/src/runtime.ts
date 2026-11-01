@@ -6713,6 +6713,7 @@ export class RuntimeBridge {
   }
   private activityRefresh: Promise<void> | null = null;
   private activityRefreshIncludesHistory = true;
+  private activityRefreshContexts = new Set<string>();
   private activityControlVersion = 0;
   private activityControlRefreshSessions = new Set<string>();
   private activityControlRefresh: Promise<void> | null = null;
@@ -6833,14 +6834,24 @@ export class RuntimeBridge {
     includeHistory = true,
     changedSessions?: ReadonlySet<string>,
   ): Promise<void> {
+    const contexts = new Set(
+      this.activeSessions()
+        .filter((session) => !changedSessions || changedSessions.has(session.id))
+        .map((session) => this.contextId(session.projectId)),
+    );
     if (
       this.activityRefresh &&
-      includeHistory &&
-      !this.activityRefreshIncludesHistory
+      ((includeHistory && !this.activityRefreshIncludesHistory) ||
+        [...contexts].some(
+          (context) => !this.activityRefreshContexts.has(context),
+        ))
     )
-      return this.activityRefresh.then(() => this.refreshActivity(true));
+      return this.activityRefresh.then(() =>
+        this.refreshActivity(includeHistory, changedSessions),
+      );
     if (!this.activityRefresh) {
       this.activityRefreshIncludesHistory = includeHistory;
+      this.activityRefreshContexts = contexts;
       this.activityRefresh = this.refreshActivityNow(
         includeHistory,
         changedSessions,

@@ -119,6 +119,111 @@ test("an explicit history refresh queued behind a background read still performs
   }
 });
 
+test("a queued history reader keeps its requested Context scope after a busy background read", async () => {
+  const x = await fixture();
+  try {
+    const other = addContext(x, 405);
+    const view = (path: string) =>
+      path.includes(other.contextId)
+        ? other.view()
+        : x.view([x.thread("first-owner")]);
+    x.internal.request = async (path: string) =>
+      path.startsWith("/api/delegations?")
+        ? { delegations: [], has_more: false }
+        : view(path);
+    await x.internal.refreshActivity();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: string[] = [];
+    let blocked = false;
+    x.internal.request = async (path: string) => {
+      calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      if (
+        !blocked &&
+        path.includes(x.contextId) &&
+        path.includes("include_terminal=false")
+      ) {
+        blocked = true;
+        entered();
+        await held;
+      }
+      return view(path);
+    };
+    const background = x.internal.refreshActivity(
+      false,
+      new Set([x.delivery.sessionId]),
+    );
+    await started;
+    const visible = x.internal.refreshActivity(
+      true,
+      new Set([other.sessionId]),
+    );
+    release();
+    await Promise.all([background, visible]);
+    const history = calls.filter(
+      (path) =>
+        path.includes("/scheduler?") && path.includes("include_terminal=true"),
+    );
+    assert.equal(history.length, 1);
+    assert.ok(history[0]!.includes(other.contextId), JSON.stringify(history));
+  } finally {
+    await x.f.close();
+  }
+});
+
+for (const history of [false, true])
+  test(`a busy ${history ? "history" : "current"} page cannot absorb another Context's demand`, async () => {
+    const x = await fixture();
+    try {
+      const other = addContext(x, 406);
+      const view = (path: string) =>
+        path.includes(other.contextId)
+          ? other.view()
+          : x.view([x.thread("original-owner")]);
+      x.internal.request = async (path: string) =>
+        path.startsWith("/api/delegations?")
+          ? { delegations: [], has_more: false }
+          : view(path);
+      await x.internal.refreshActivity();
+      let entered!: () => void, release!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      const calls: string[] = [];
+      let blocked = false;
+      x.internal.request = async (path: string) => {
+        calls.push(path);
+        if (path.startsWith("/api/delegations?"))
+          return { delegations: [], has_more: false };
+        if (!blocked && path.includes(x.contextId)) {
+          blocked = true;
+          entered();
+          await held;
+        }
+        return view(path);
+      };
+      const first = x.internal.refreshActivity(history, new Set([x.delivery.sessionId]));
+      await started;
+      const second = x.internal.refreshActivity(history, new Set([other.sessionId]));
+      release();
+      await Promise.all([first, second]);
+      const reads = calls.filter((path) => path.includes("/scheduler?"));
+      for (const contextId of [x.contextId, other.contextId]) {
+        const scoped = reads.filter((path) => path.includes(contextId));
+        assert.equal(scoped.length, history ? 2 : 1, JSON.stringify(reads));
+        assert.equal(scoped.filter((path) => path.includes("include_terminal=true")).length, history ? 1 : 0);
+      }
+    } finally {
+      await x.f.close();
+    }
+  });
+
 test("a terminal invalidation arriving during a history read is not lost when that older read completes", async () => {
   const x = await fixture();
   try {
