@@ -7283,7 +7283,12 @@ export class RuntimeBridge {
       const retained = new Set(
         registeredContextIds.filter(
           (contextId) =>
-            (!initialKeys.has(contextId) || demand?.append) &&
+            (!initialKeys.has(contextId) ||
+              (demand?.append &&
+                projection.readScopes!.some(
+                  (scope) =>
+                    scope.contextId === contextId && scope.currentAvailable,
+                ))) &&
             this.activityPublishedScopes.get(contextId)?.key ===
               readScopeKey(contextId, currentSessions),
         ),
@@ -7644,6 +7649,8 @@ export class RuntimeBridge {
       const snapshots: {
         contextId: string;
         currentAvailable: boolean;
+        currentComplete: boolean;
+        currentSchedulesAvailable: boolean;
         historyAvailable: boolean;
         historyRetained?: boolean;
         active: z.infer<typeof schema>;
@@ -7860,6 +7867,23 @@ export class RuntimeBridge {
         snapshots.push({
           contextId,
           currentAvailable,
+          // A terminal continuation deliberately does not reread current
+          // collections. Keep their accepted, same-domain coverage witness;
+          // an empty page projection is not a new current observation.
+          currentComplete:
+            currentAvailable &&
+            (demand && !readCurrent
+              ? !!this.activityPublishedScopes.get(contextId)?.complete
+              : !!active.objectives &&
+                !!active.detail_bounds &&
+                active.detail_bounds.has_more_threads === false &&
+                active.detail_bounds.has_more_objectives === false),
+          currentSchedulesAvailable:
+            currentAvailable &&
+            (demand && !readCurrent
+              ? !!this.activityPublishedScopes.get(contextId)
+                  ?.schedulesAvailable
+              : active.schedules !== undefined),
           historyAvailable,
           ...(!readHistory && !denied ? { historyRetained: true } : {}),
           active,
@@ -7945,14 +7969,8 @@ export class RuntimeBridge {
       // unrelated Runtime Sessions; connection/availability remain separate.
       activity.openWorkComplete =
         activity.available && (snapshots.length > 0 || sessions.length === 0);
-      for (const { active, currentAvailable } of snapshots) {
-        activity.openWorkComplete &&=
-          currentAvailable &&
-          !!active.detail_bounds &&
-          !active.detail_bounds.has_more_threads &&
-          active.detail_bounds.has_more_objectives === false &&
-          !!active.objectives;
-      }
+      for (const { currentComplete } of snapshots)
+        activity.openWorkComplete &&= currentComplete;
       // Reserve the existing source-lookup budget for current work in every
       // Context before any terminal history. History must not starve an open
       // Thread or an Objective of its exact persisted initiating-input route.
@@ -8379,8 +8397,7 @@ export class RuntimeBridge {
           delegatedHistoryDemand,
         );
       activity.schedulesAvailable = snapshots.every(
-        ({ active, currentAvailable }) =>
-          currentAvailable && active.schedules !== undefined,
+        ({ currentSchedulesAvailable }) => currentSchedulesAvailable,
       );
       // Other Context/event reads can await after an earlier scope succeeded.
       // Recheck the exact registered domain once more at publication: removal
@@ -8440,23 +8457,23 @@ export class RuntimeBridge {
       activity.available =
         changedContexts.size === 0 &&
         activity.readScopes!.every((scope) => scope.currentAvailable);
-      activity.openWorkComplete &&= activity.available && !demand?.append;
+      activity.openWorkComplete &&= activity.available;
       activity.schedulesAvailable &&= activity.available;
       // An inventory started before a confirmed control cannot replace its
       // newer receipt. The coalesced post-control read closes this exact gap.
       if (controlVersion !== this.activityControlVersion) return;
-      for (const { contextId, currentAvailable, active } of snapshots) {
+      for (const {
+        contextId,
+        currentAvailable,
+        currentComplete,
+        currentSchedulesAvailable,
+      } of snapshots) {
         const valid = !changedContexts.has(contextId) && currentAvailable;
         this.activityPublishedScopes.set(contextId, {
           key: initialKeys.get(contextId)!,
           complete:
-            valid &&
-            !invalidOpenScopes.has(contextId) &&
-            !!active.objectives &&
-            !!active.detail_bounds &&
-            active.detail_bounds.has_more_threads === false &&
-            active.detail_bounds.has_more_objectives === false,
-          schedulesAvailable: valid && active.schedules !== undefined,
+            valid && !invalidOpenScopes.has(contextId) && currentComplete,
+          schedulesAvailable: valid && currentSchedulesAvailable,
         });
       }
       for (const contextId of this.activityPublishedScopes.keys())

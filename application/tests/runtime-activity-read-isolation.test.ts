@@ -1231,25 +1231,38 @@ test("a history continuation cannot replace a confirmed current receipt or reope
           ]),
           detail_bounds: {
             ...bounds,
-            has_more_threads: history === 1,
-            next_history_cursor: history === 1 ? "TEST-history-next" : null,
+            has_more_threads: history < 3,
+            next_history_cursor: history < 3 ? `TEST-history-${history}` : null,
           },
         };
       }
       return x.view([x.thread("retained-current")]);
     };
     const page = await x.f.runtime.refreshPlatformActivity();
+    assert.equal(x.read().openWorkComplete, true);
     const current = x.internal.state.activity.threads.find(
       (thread: { id: string }) => thread.id === "retained-current",
     )!;
     current.controlState = "paused";
     current.revision = 200;
-    calls.length = 0;
-    await x.f.runtime.refreshPlatformActivity(
-      undefined,
-      undefined,
-      page.nextCursor!,
-    );
+    let cursor = page.nextCursor;
+    for (let round = 0; round < 2; round++) {
+      calls.length = 0;
+      if (round) x.internal.activitySnapshotCache.clear();
+      const next = await x.f.runtime.refreshPlatformActivity(
+        undefined,
+        undefined,
+        cursor!,
+      );
+      cursor = next.nextCursor;
+      assert.equal(
+        calls.filter((path) => path.includes("include_terminal=false")).length,
+        0,
+        JSON.stringify({ round, calls, diagnostics: x.diagnostics }),
+      );
+      assert.equal(x.read().openWorkComplete, true);
+      assert.equal(x.read().schedulesAvailable, true);
+    }
     assert.equal(
       calls.filter((path) => path.includes("include_terminal=false")).length,
       0,
@@ -1267,7 +1280,58 @@ test("a history continuation cannot replace a confirmed current receipt or reope
     );
     assert.ok(x.read().threads.some((thread) => thread.id === "old-final"));
     assert.ok(x.read().threads.some((thread) => thread.id === "next-final"));
+    assert.equal(
+      x.read().openWorkComplete,
+      true,
+      "reading terminal history preserves accepted current-work coverage",
+    );
   } finally {
     await x.f.close();
   }
 });
+
+for (const current of ["incomplete", "unavailable", "revoked"] as const)
+  test(`terminal continuation cannot promote ${current} current-work evidence`, async () => {
+    const x = await fixture();
+    try {
+      const active = x.view([x.thread("known-current")]);
+      x.route(
+        current === "unavailable"
+          ? new Error("TEST current unavailable")
+          : current === "incomplete"
+            ? {
+                ...active,
+                detail_bounds: { ...bounds, has_more_threads: true },
+              }
+            : active,
+        x.view([x.thread("old-final", "completed")]),
+      );
+      await x.internal.refreshActivity();
+      assert.equal(x.read().openWorkComplete, current === "revoked");
+      const calls: string[] = [];
+      x.internal.request = x.request;
+      x.internal.host.request = async (input: string) => {
+        calls.push(String(input));
+        return current === "revoked"
+          ? new Response("TEST denied", { status: 403 })
+          : Response.json(x.view([x.thread("next-final", "completed")]));
+      };
+      await x.internal.refreshActivity(true, new Set([x.delivery.sessionId]), {
+        current: false,
+        history: true,
+        append: true,
+        limit: 50,
+        cursors: { history_cursor: "TEST-next" },
+      });
+      assert.equal(x.read().openWorkComplete, false);
+      assert.equal(x.read().available, current === "incomplete");
+      assert.equal(
+        calls.filter((path) => path.includes("include_terminal=false")).length,
+        0,
+      );
+      if (current === "revoked")
+        assert.deepEqual(x.read().threads, [], "denied facts cannot reappear");
+    } finally {
+      await x.f.close();
+    }
+  });

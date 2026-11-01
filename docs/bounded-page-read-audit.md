@@ -300,3 +300,22 @@ request timeout. Its native regression runs the actual EventStore query against
 20000 retained Events with a fixed 20000-instruction budget, checking absent and
 foreign IDs, timestamp ties, result limits and append-order tails. Fresh validation
 and original-profile acceptance of this follow-up are required before closing.
+
+The exact-ID follow-up `7176a1f4` passed the complete native library inventory
+(1766 passed, 19 explicit ignored cases), mandatory PostgreSQL coverage, strict
+all-target/all-feature Clippy and all 29 actual-Runtime application cases. The
+annotation/source suites and timing/storage budgets passed three full repeats.
+It was deployed to the original profile: Activity continuation grew from 42 to
+91 retained executions without a timeout, and a separate 15-second Dashboard
+idle observation issued no HTTP requests. Settings and all 73 Schedules remained.
+
+That manual continuation exposed a separate Host projection defect: a history-only
+page cleared current-work completeness and Schedule availability despite making
+no current-inventory request. Keep the already accepted witness only for the same
+Principal/Session domain, independently of the raw-response cache. Failed,
+incomplete or denied current evidence must not become complete; denied facts
+must not be retained while appending. The behavioral regression covers successive
+continuations, raw-cache eviction, the newer confirmed receipt, zero additional
+current-collection requests, and incomplete/unavailable/revoked evidence. The full
+83-case Activity/authority/projection group passed three times. Original-window
+follow-up and exact-latest-commit CI remain separate completion requirements.
