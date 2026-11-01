@@ -307,6 +307,7 @@ impl MorphzRuntime {
                     })
                     .collect();
                 SchedulerThreadSnapshot {
+                    dependencies: None,
                     user_input_request: None,
                     execution_model: None,
                     source: None,

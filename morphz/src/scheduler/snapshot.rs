@@ -60,6 +60,10 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    /// Pending required edges for this exact open Thread generation. None on
+    /// views which did not read dependencies; an empty list means verified none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<SchedulerDependencyRecord>>,
     /// The exact currently pending question. Neither prose nor a generic wait
     /// label is an alternative authority for its recipient or choices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,6 +277,25 @@ pub fn thread_phase(
         )
     });
     thread_phase_from_activity(thread, running, runnable, waiting)
+}
+
+/// Reuse the scheduler's already-read edges without exporting historical,
+/// optional or foreign-owner waits as current execution facts.
+pub(crate) fn current_thread_dependencies(
+    thread: &ThreadRecord,
+    dependencies: Vec<SchedulerDependencyRecord>,
+) -> Vec<SchedulerDependencyRecord> {
+    dependencies
+        .into_iter()
+        .filter(|dependency| {
+            !thread.lifecycle.is_terminal()
+                && dependency.owner_kind == super::SchedulerDependencyOwnerKind::Thread
+                && dependency.owner_id == thread.id
+                && dependency.owner_generation == thread.generation
+                && dependency.required
+                && dependency.status == super::SchedulerDependencyStatus::Pending
+        })
+        .collect()
 }
 
 /// Shared phase precedence for detailed Scheduler and bounded SQL projections.

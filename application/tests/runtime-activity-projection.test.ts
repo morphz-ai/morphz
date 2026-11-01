@@ -757,6 +757,51 @@ test("线程自己的定时和审批原因透传到活动，不被父目标的�
   }
 });
 
+test("native pending model dependencies survive the activity wire schema without additional reads", async () => {
+  const { f, internal, thread, bounds } = await fixture();
+  try {
+    const current = {
+      ...thread("model-wait"),
+      phase: "waiting",
+      dependencies: [
+        {
+          owner_kind: "thread",
+          owner_id: "model-wait",
+          owner_generation: 1,
+          dependency_kind: "resource",
+          dependency_id: "model-route:kimi-k3-256k",
+          required: true,
+          status: "pending",
+        },
+      ],
+    };
+    const calls: string[] = [];
+    internal.request = async (path) => {
+      calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      assert.ok(path.includes("/scheduler?"), path);
+      return { detail_bounds: bounds, threads: [current], objectives: [] };
+    };
+    await internal.refreshActivity();
+    const activity = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    assert.deepEqual(activity.threads[0]!.waitKinds, ["resource"]);
+    assert.deepEqual(activity.threads[0]!.waitResources, [
+      "model-route:kimi-k3-256k",
+    ]);
+    assert.equal(activity.threads[0]!.title, "工作意图 model-wait");
+    assert.equal(
+      calls.length,
+      4,
+      "existing two bounded inventories and delegation queries, no per-thread/history probe",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("目标控制共用 Runtime 的暂停恢复删除协议，校验真实来源和修订号，不创建线程或输入", async () => {
   const { f, internal, delivery, bounds, objective } = await fixture();
   const mutations: { path: string; method: string; body: any }[] = [];

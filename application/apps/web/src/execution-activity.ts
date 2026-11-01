@@ -66,13 +66,18 @@ export function executionActivitySummary(
   available: boolean,
 ): string {
   if (thread.lifecycle === "open" && !available) return "";
-  return thread.summary?.trim() ?? "";
+  const summary = thread.summary?.trim();
+  if (summary) return summary;
+  const status = executionActivityStatus(thread, available);
+  return status.kind === "waiting" && thread.waitKinds?.length
+    ? status.label
+    : "";
 }
 
 /** Lifecycle is authoritative. A completed Thread is not proof that its task succeeded. */
 export function executionActivityStatus(
   thread: Pick<ActivityThread, "lifecycle" | "phase" | "controlState"> &
-    Partial<Pick<ActivityThread, "waitKinds" | "waitUntil">>,
+    Partial<Pick<ActivityThread, "waitKinds" | "waitUntil" | "waitResources">>,
   available: boolean,
 ): ActivityStatus {
   if (thread.lifecycle === "failed")
@@ -95,7 +100,11 @@ export function executionActivityStatus(
   if (thread.phase === "waiting" || thread.phase === "idle")
     return {
       kind: "waiting",
-      label: executionWaitLabel(thread.waitKinds, thread.waitUntil),
+      label: executionWaitLabel(
+        thread.waitKinds,
+        thread.waitUntil,
+        thread.waitResources,
+      ),
     };
   return { kind: "unknown", label: "状态待核对" };
 }

@@ -125,6 +125,7 @@ export const executionThreadSchema = z.object({
   controlState: z.string().optional(),
   /** Current, exact Runtime scheduler facts; absent means unknown. */
   waitKinds: z.array(z.string()).optional(),
+  waitResources: z.array(z.string()).optional(),
   waitUntil: z.string().optional(),
   /** Exact pending Runtime question, not text inferred from progress. */
   userInputRequest: pendingUserInputRequestSchema.optional(),

@@ -4,8 +4,14 @@ import {
   type HostFailureReporter,
 } from "./host-diagnostics.js";
 import type { ConnectionReadFailure } from "../../core/src/connection.js";
-import { objectiveWaitKinds } from "./objective-wait-projection.js";
-import { threadWaitProjection } from "./thread-wait-projection.js";
+import {
+  objectiveWaitKinds,
+  objectiveWaitResources,
+} from "./objective-wait-projection.js";
+import {
+  threadWaitProjection,
+  threadWaitDependenciesSchema,
+} from "./thread-wait-projection.js";
 import {
   delegationRecordSchema,
   delegationRequestLink,
@@ -6881,6 +6887,7 @@ export class RuntimeBridge {
           .optional(),
         threads: z.array(
           z.object({
+            dependencies: threadWaitDependenciesSchema,
             source: runtimeSchedulerSourceSchema,
             response_annotations: z.unknown().optional(),
             user_input_request: pendingUserInputRequestSchema.nullish(),
@@ -7447,8 +7454,10 @@ export class RuntimeBridge {
               thread.sessionId === objective.coordinator_session_id &&
               thread.contextId === contextId &&
               !thread.waitKinds?.length
-            )
+            ) {
               thread.waitKinds = waitKinds;
+              thread.waitResources = objectiveWaitResources(value);
+            }
           activity.objectives!.push({
             id: objective.id,
             contextId,

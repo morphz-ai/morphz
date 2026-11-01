@@ -5,11 +5,18 @@ import {
   executionRecordThread,
   type RuntimeExecutionRecords,
 } from "./execution-thread-tree.js";
-import { objectiveWaitKinds } from "./objective-wait-projection.js";
-import { threadWaitProjection } from "./thread-wait-projection.js";
+import {
+  objectiveWaitKinds,
+  objectiveWaitResources,
+} from "./objective-wait-projection.js";
+import {
+  threadWaitProjection,
+  threadWaitDependenciesSchema,
+} from "./thread-wait-projection.js";
 import { pendingUserInputRequestSchema } from "../../core/src/user-input.js";
 
 const schedulerThreadSchema = z.object({
+  dependencies: threadWaitDependenciesSchema,
   user_input_request: pendingUserInputRequestSchema.nullish(),
   thread: z.object({
     id: z.string(),
@@ -170,6 +177,13 @@ export async function executionThreadsWithWait(
     )
       return thread;
     const kinds = objectiveWaitKinds(objective.data);
-    return kinds?.length ? { ...thread, waitKinds: kinds } : thread;
+    const resources = objectiveWaitResources(objective.data);
+    return kinds?.length
+      ? {
+          ...thread,
+          waitKinds: kinds,
+          ...(resources ? { waitResources: resources } : {}),
+        }
+      : thread;
   });
 }

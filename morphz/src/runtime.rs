@@ -9341,6 +9341,10 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                dependencies: Some(crate::scheduler::snapshot::current_thread_dependencies(
+                    &thread,
+                    dependencies,
+                )),
                 user_input_request: None,
                 execution_model: None,
                 source: thread_sources.get(&thread.id).cloned(),
@@ -10903,6 +10907,10 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                dependencies: Some(crate::scheduler::snapshot::current_thread_dependencies(
+                    &thread,
+                    dependencies,
+                )),
                 user_input_request: None,
                 execution_model: None,
                 source: self
@@ -19840,6 +19848,37 @@ mod tests {
             .await
             .unwrap();
 
+        let thread_dependency_id = "dependency-scheduler-snapshot-thread-resource";
+        for (id, generation, required) in [
+            (thread_dependency_id, thread.generation, true),
+            (
+                "dependency-scheduler-snapshot-other-generation",
+                thread.generation + 1,
+                true,
+            ),
+            (
+                "dependency-scheduler-snapshot-optional",
+                thread.generation,
+                false,
+            ),
+        ] {
+            runtime
+                .inner
+                .store
+                .register_scheduler_dependency(crate::scheduler::NewSchedulerDependency {
+                    id: id.to_string(),
+                    owner_kind: crate::scheduler::SchedulerDependencyOwnerKind::Thread,
+                    owner_id: thread.id.clone(),
+                    owner_generation: generation,
+                    dependency_kind: crate::scheduler::SchedulerDependencyKind::Resource,
+                    dependency_id: format!("model-route:{id}"),
+                    dependency_generation: 1,
+                    required,
+                    metadata: json!({"fixture": true}),
+                })
+                .await
+                .unwrap();
+        }
         let snapshot = runtime
             .scheduler_snapshot(
                 runtime.identity().context_id.as_str(),
@@ -19855,6 +19894,9 @@ mod tests {
             .iter()
             .find(|item| item.thread.id == thread.id)
             .unwrap();
+        let projected_dependencies = causal_thread.dependencies.as_ref().unwrap();
+        assert_eq!(projected_dependencies.len(), 1);
+        assert_eq!(projected_dependencies[0].id, thread_dependency_id);
         assert_eq!(causal_thread.activations.len(), 1);
         assert_eq!(causal_thread.activations[0].signals.len(), 1);
         assert_eq!(causal_thread.activations[0].jobs.len(), 1);
@@ -19908,6 +19950,10 @@ mod tests {
             .unwrap()
             .expect("exact Thread aggregate must be addressable independently of list limits");
         assert_eq!(detail.snapshot.thread.id, thread.id);
+        assert_eq!(
+            detail.snapshot.dependencies.as_ref().unwrap()[0].id,
+            thread_dependency_id
+        );
         assert_eq!(detail.snapshot.activations.len(), 1);
         assert_eq!(detail.snapshot.activations[0].jobs.len(), 1);
         assert_eq!(detail.snapshot.schedules[0].id, schedule.id);

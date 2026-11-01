@@ -1,4 +1,20 @@
+import { z } from "zod";
 import type { PendingUserInputRequest } from "../../core/src/user-input.js";
+
+/** Native Scheduler edges, not Agent prose or event-history guesses. */
+export const threadWaitDependenciesSchema = z
+  .array(
+    z.object({
+      owner_kind: z.string(),
+      owner_id: z.string(),
+      owner_generation: z.number().int().positive().safe(),
+      dependency_kind: z.string(),
+      dependency_id: z.string(),
+      required: z.boolean(),
+      status: z.string(),
+    }),
+  )
+  .optional();
 
 /** Thread-local Scheduler facts, independent of source attribution and its
  * supervising Objective's own dependencies. Never parse intent/diagnostics. */
@@ -12,6 +28,7 @@ export function threadWaitProjection(value: {
   };
   user_input_request?: PendingUserInputRequest | null;
   phase: string;
+  dependencies?: z.infer<typeof threadWaitDependenciesSchema>;
   schedules?: {
     thread_id: string;
     status?: string;
@@ -45,6 +62,19 @@ export function threadWaitProjection(value: {
   )
     return {};
   const kinds = new Set<string>();
+  const resources = new Set<string>();
+  for (const edge of value.dependencies ?? []) {
+    if (
+      edge.owner_kind !== "thread" ||
+      edge.owner_id !== value.thread.id ||
+      edge.owner_generation !== value.thread.generation ||
+      !edge.required ||
+      edge.status !== "pending"
+    )
+      continue;
+    kinds.add(edge.dependency_kind);
+    if (edge.dependency_kind === "resource") resources.add(edge.dependency_id);
+  }
   if (
     value.activations?.some((activation) =>
       activation.jobs.some(
@@ -74,6 +104,7 @@ export function threadWaitProjection(value: {
   if (schedules.length && !queued.length) kinds.add("schedule_resume");
   return {
     ...(kinds.size ? { waitKinds: [...kinds] } : {}),
+    ...(resources.size ? { waitResources: [...resources] } : {}),
     ...(dates[0] ? { waitUntil: dates[0] } : {}),
   };
 }

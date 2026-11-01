@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { threadWaitProjection } from "../packages/application/src/thread-wait-projection.js";
-import { executionActivityStatus } from "../apps/web/src/execution-activity.js";
+import {
+  executionActivityStatus,
+  executionActivitySummary,
+} from "../apps/web/src/execution-activity.js";
 import { arrangementTime } from "../apps/web/src/subject-schedules-model.js";
 
 const until = "2026-10-23T01:00:00Z";
@@ -114,4 +117,82 @@ test("暂停、已派发和失效定时不冒充下一次触发，多个等待�
     }),
     { waitKinds: ["permission", "timer"], waitUntil: until },
   );
+});
+
+test("模型等待必须来自当前线程代次的必需待满足依赖，显示线路而不冒称等用户", () => {
+  const edge = {
+    owner_kind: "thread",
+    owner_id: thread.id,
+    owner_generation: 2,
+    dependency_kind: "resource",
+    dependency_id: "model-route:kimi-k3-256k",
+    required: true,
+    status: "pending",
+  };
+  const value = {
+    thread: { ...thread, generation: 2 },
+    phase: "waiting",
+    dependencies: [edge],
+  };
+  const facts = threadWaitProjection(value);
+  assert.deepEqual(facts, {
+    waitKinds: ["resource"],
+    waitResources: ["model-route:kimi-k3-256k"],
+  });
+  const activity = {
+    ...facts,
+    id: thread.id,
+    projectId: null,
+    conversationId: null,
+    inputId: null,
+    rootId: "root",
+    sessionId: thread.session_id,
+    title: "原有标题",
+    lifecycle: "open",
+    phase: "waiting",
+    revision: 1,
+    updatedAt: until,
+  };
+  assert.equal(
+    executionActivityStatus(activity, true).label,
+    "等待模型恢复 · kimi-k3-256k",
+  );
+  assert.equal(
+    executionActivitySummary(activity, true),
+    "等待模型恢复 · kimi-k3-256k",
+  );
+  assert.equal(
+    executionActivitySummary({ ...activity, summary: "实际进展" }, true),
+    "实际进展",
+  );
+  assert.equal(executionActivitySummary(activity, false), "");
+  assert.equal(
+    executionActivitySummary({ ...activity, phase: "running" }, true),
+    "",
+  );
+  assert.equal(
+    executionActivitySummary({ ...activity, controlState: "paused" }, true),
+    "",
+  );
+  for (const patch of [
+    { owner_kind: "objective" },
+    { owner_id: "other" },
+    { owner_generation: 1 },
+    { status: "satisfied" },
+    { status: "cancelled" },
+    { required: false },
+  ])
+    assert.deepEqual(
+      threadWaitProjection({ ...value, dependencies: [{ ...edge, ...patch }] }),
+      {},
+    );
+  assert.deepEqual(threadWaitProjection({ ...value, thread }), {});
+  for (const lifecycle of ["completed", "failed", "cancelled"])
+    assert.deepEqual(
+      threadWaitProjection({
+        ...value,
+        thread: { ...value.thread, lifecycle },
+      }),
+      {},
+    );
 });

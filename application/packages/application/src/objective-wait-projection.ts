@@ -42,3 +42,25 @@ export function objectiveWaitKinds(value: {
     ),
   ];
 }
+
+/** Resource identities use the same complete, current dependency proof. */
+export function objectiveWaitResources(
+  value: Parameters<typeof objectiveWaitKinds>[0],
+): string[] | undefined {
+  if (!objectiveWaitKinds(value)?.includes("resource")) return;
+  const ids = new Set(value.readiness.dependency_ids ?? []);
+  const resources = (value.dependencies ?? [])
+    .filter(
+      (edge) =>
+        ids.has(edge.id) &&
+        edge.owner_kind === "objective" &&
+        edge.owner_id === value.objective.id &&
+        edge.owner_generation === value.objective.generation &&
+        edge.required &&
+        edge.status === "pending" &&
+        edge.dependency_kind === "resource" &&
+        edge.dependency_id,
+    )
+    .map((edge) => edge.dependency_id!);
+  return resources.length ? [...new Set(resources)] : undefined;
+}

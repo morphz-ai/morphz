@@ -14,11 +14,29 @@ const reasons: Record<string, string> = {
   schedule_resume: "恢复定时任务",
 };
 /** Unknown is not a request for user input. Never interpret Agent prose. */
-export function executionWaitLabel(kinds?: readonly string[], until?: string) {
+export function executionWaitLabel(
+  kinds?: readonly string[],
+  until?: string,
+  resources?: readonly string[],
+) {
   if (!kinds?.length) return "等待中（未提供具体原因）";
   return (
     "等待" +
-    [...new Set(kinds.map((kind) => reasons[kind] ?? "其他条件"))].join("、") +
+    [
+      ...new Set(
+        kinds.map((kind) =>
+          kind === "resource" && resources?.length
+            ? resources
+                .map((id) =>
+                  id.startsWith("model-route:")
+                    ? `模型恢复 · ${id.slice("model-route:".length)}`
+                    : `资源可用 · ${id}`,
+                )
+                .join("、")
+            : (reasons[kind] ?? "其他条件"),
+        ),
+      ),
+    ].join("、") +
     (kinds.includes("timer") && until && Number.isFinite(Date.parse(until))
       ? ` · ${arrangementTime(until)}`
       : "")

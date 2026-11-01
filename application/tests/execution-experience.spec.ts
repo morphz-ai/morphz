@@ -16,6 +16,65 @@ async function openActivity(page: Page) {
   ).toHaveCount(0);
 }
 
+test("waiting activity shows its native model route in the original summary line and retains its title", async ({
+  page,
+}) => {
+  let available = true;
+  const threads: NonNullable<
+    PlatformHistory["runtime"]["activity"]
+  >["threads"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      activity: { available, truncated: false, threads },
+      attention: { available: true, approvals: [] },
+    },
+  }));
+  threads.push({
+    ...fixture.scope,
+    id: "TEST-model-wait",
+    inputId: null,
+    rootId: "TEST-root",
+    sessionId: "TEST-session",
+    title: "TEST 保留原来的任务标题",
+    kind: "execution",
+    phase: "waiting",
+    lifecycle: "open",
+    controlState: "active",
+    waitKinds: ["resource"],
+    waitResources: ["model-route:kimi-k3-256k"],
+    revision: 1,
+    updatedAt: "2026-11-01T01:10:00Z",
+  });
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  await openActivity(page);
+  const row = page.locator('[data-thread-id="TEST-model-wait"]');
+  await expect(row.locator("strong")).toHaveText("TEST 保留原来的任务标题");
+  await expect(row.locator(".execution-activity-summary")).toHaveText(
+    "等待模型恢复 · kimi-k3-256k",
+  );
+  await expect(row).not.toContainText("等待你回复");
+  await expect(row.locator(".execution-activity-icon")).toHaveAttribute(
+    "title",
+    "等待模型恢复 · kimi-k3-256k",
+  );
+  available = false;
+  await fixture.refresh();
+  await expect(row.locator(".execution-activity-icon")).toHaveAttribute(
+    "data-status",
+    "unknown",
+  );
+  await expect(row.locator(".execution-activity-summary")).toHaveCount(0);
+  await expect(row.locator("strong")).toHaveText("TEST 保留原来的任务标题");
+});
+
 test("incomplete or disconnected work snapshots never claim an exact count or idle work", async ({
   page,
 }) => {

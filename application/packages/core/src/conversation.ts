@@ -126,6 +126,7 @@ export const activitySchema = z.object({
       annotationsTruncated: z.boolean().optional(),
       phase: z.string(),
       waitKinds: z.array(z.string()).optional(),
+      waitResources: z.array(z.string()).optional(),
       /** Exact queued Schedule time, not a prediction or a parent goal's wait. */
       waitUntil: z.string().optional(),
       userInputRequest: pendingUserInputRequestSchema.optional(),

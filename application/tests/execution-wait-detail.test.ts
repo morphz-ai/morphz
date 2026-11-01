@@ -6,6 +6,8 @@ import { executionActivityStatus } from "../apps/web/src/execution-activity.js";
 import { randomUUID } from "node:crypto";
 import { localAccess } from "../packages/core/src/model.js";
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
+import type { threadWaitDependenciesSchema } from "../packages/application/src/thread-wait-projection.js";
+import type { z } from "zod";
 
 const stamp = "2026-10-24T01:00:00Z";
 function fixture() {
@@ -58,6 +60,9 @@ function fixture() {
         },
       },
       phase: t.phase,
+      dependencies: [] as NonNullable<
+        z.infer<typeof threadWaitDependenciesSchema>
+      >,
       schedules: [] as Array<{
         thread_id: string;
         status: string;
@@ -183,6 +188,31 @@ test("current thread-local approval/timer facts take precedence over an Objectiv
   assert.deepEqual(snapshot.threads![0]!.waitKinds, ["timer"]);
   assert.equal(snapshot.threads![0]!.waitUntil, until);
   assert.deepEqual(snapshot.threads![1]!.waitKinds, ["permission"]);
+  assert.equal(f.reads.length, 1);
+});
+
+test("direct detail carries exact native model-route waits with no event-history or extra per-thread reads", async () => {
+  const f = fixture();
+  f.scheduler.threads[1]!.dependencies = [
+    {
+      owner_kind: "thread",
+      owner_id: "child",
+      owner_generation: 1,
+      dependency_kind: "resource",
+      dependency_id: "model-route:kimi-k3-256k",
+      required: true,
+      status: "pending",
+    },
+  ];
+  const snapshot = await f.read();
+  assert.deepEqual(snapshot.threads![1]!.waitResources, [
+    "model-route:kimi-k3-256k",
+  ]);
+  assert.equal(
+    executionActivityStatus(snapshot.threads![1]!, true).label,
+    "等待模型恢复 · kimi-k3-256k",
+  );
+  assert.deepEqual(snapshot.threads![0]!.waitKinds, ["thread_group"]);
   assert.equal(f.reads.length, 1);
 });
 

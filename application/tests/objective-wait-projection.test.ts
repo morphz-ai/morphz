@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { objectiveWaitKinds } from "../packages/application/src/objective-wait-projection.js";
+import {
+  objectiveWaitKinds,
+  objectiveWaitResources,
+} from "../packages/application/src/objective-wait-projection.js";
 import { executionWaitLabel } from "../apps/web/src/execution-wait-label.js";
 import { executionActivityStatus } from "../apps/web/src/execution-activity.js";
 import { objectiveDetailStatus } from "../apps/web/src/subject-sidebar-model.js";
@@ -42,6 +45,45 @@ test("waiting reasons use only exact required pending edges in the current owner
   );
   assert.equal(
     objectiveWaitKinds({ ...value, readiness: { state: "leased" } }),
+    undefined,
+  );
+});
+test("primary objective exposes the exact pending model route only with complete current dependency proof", () => {
+  const edge = {
+    id: "resource",
+    owner_kind: "objective",
+    owner_id: "goal",
+    owner_generation: 2,
+    dependency_kind: "resource",
+    dependency_id: "model-route:kimi-k3-256k",
+    required: true,
+    status: "pending",
+  };
+  const value = {
+    readiness: { state: "waiting", dependency_ids: [edge.id] },
+    objective: { id: "goal", generation: 2 },
+    dependencies: [edge],
+  };
+  assert.deepEqual(objectiveWaitResources(value), [edge.dependency_id]);
+  for (const patch of [
+    { owner_kind: "thread" },
+    { owner_id: "other" },
+    { owner_generation: 1 },
+    { required: false },
+    { status: "satisfied" },
+  ])
+    assert.equal(
+      objectiveWaitResources({
+        ...value,
+        dependencies: [{ ...edge, ...patch }],
+      }),
+      undefined,
+    );
+  assert.equal(
+    objectiveWaitResources({
+      ...value,
+      readiness: { state: "waiting", dependency_ids: [edge.id, "missing"] },
+    }),
     undefined,
   );
 });
