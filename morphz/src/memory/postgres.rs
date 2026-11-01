@@ -9912,7 +9912,7 @@ mod tests {
         let store = PostgresStore::new(&scoped, 4).await.unwrap();
         sqlx::query(r#"WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000)
             INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,metadata_json,created_at,updated_at)
-            SELECT 'history-'||n,'thread','selected',1,'resource','history-'||n,1,TRUE,'satisfied','{}','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter"#).execute(&store.pool).await.unwrap();
+            SELECT 'history-'||n,'thread','selected',1,'resource','history-'||n,1,TRUE,'pending','{}','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter"#).execute(&store.pool).await.unwrap();
         // A tiny pending-group inventory legitimately favors a global partial
         // index. Exercise the real adversarial boundary instead: thousands of
         // unrelated pending groups must still seek this exact owner's index.
@@ -10009,19 +10009,49 @@ mod tests {
         let pair = [("selected".into(), 2_i64)];
         let builder = super::scheduler::thread_projection_dependencies_query(&pair);
         let plan: serde_json::Value =
-            sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {}", builder.sql()))
+            sqlx::query_scalar(&format!("EXPLAIN (ANALYZE, FORMAT JSON) {}", builder.sql()))
                 .bind("selected")
                 .bind(2_i64)
                 .fetch_one(&store.pool)
                 .await
                 .unwrap();
-        let plan = plan.to_string();
+        fn dependency_scans<'a>(
+            node: &'a serde_json::Value,
+            scans: &mut Vec<&'a serde_json::Value>,
+        ) {
+            if node["Relation Name"] == "scheduler_dependencies" {
+                scans.push(node);
+            }
+            for child in node["Plans"].as_array().into_iter().flatten() {
+                dependency_scans(child, scans);
+            }
+        }
+        let mut scans = Vec::new();
+        dependency_scans(&plan[0]["Plan"], &mut scans);
+        assert_eq!(scans.len(), 2, "{plan}");
         assert!(
-            plan.contains("idx_pg_scheduler_dependencies_owner")
-                && plan.contains("idx_pg_scheduler_thread_pending_projection"),
-            "{plan}"
+            scans.iter().all(|scan| {
+                scan["Node Type"] == "Index Scan"
+                    && scan["Index Cond"]
+                        .as_str()
+                        .is_some_and(|condition| condition.contains("owner_id"))
+                    && scan["Actual Rows"].as_u64().is_some_and(|rows| rows <= 2)
+                    && scan["Rows Removed by Filter"].as_u64().unwrap_or(0) == 0
+            }),
+            "both branches must seek only the selected edges: {plan}"
         );
-        assert!(!plan.contains("Seq Scan"), "{plan}");
+        assert!(scans.iter().any(|scan| scan["Index Cond"].as_str().is_some_and(|condition| condition.contains("owner_generation"))), "the required branch must seek the current generation, not filter a lifetime of pending edges: {plan}");
+        assert!(
+            scans.iter().any(|scan| {
+                scan["Index Name"] == "idx_audit_pending_group"
+                    || (scan["Index Name"] == "idx_pg_scheduler_thread_pending_projection"
+                        && scan["Index Cond"]
+                            .as_str()
+                            .is_some_and(|condition| condition.contains("dependency_kind")))
+            }),
+            "the group branch must seek its owner within a pending-group index: {plan}"
+        );
+        assert!(!plan.to_string().contains("Seq Scan"), "{plan}");
         store.pool.close().await;
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&admin)
