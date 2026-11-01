@@ -2,15 +2,74 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
-import { mkdtemp, writeFile, readdir, rm, readFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  writeFile,
+  readdir,
+  rm,
+  readFile,
+  symlink,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 const { DesktopCapture } = createRequire(import.meta.url)(
   "../apps/desktop/capture.cjs",
 );
 const region = { x: 10, y: 20, width: 100, height: 80 };
+
+test("capture center preparation rejects unowned directories and symlinks before loading a data owner", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "morphz-capture-other-"));
+  const linked = join(temporary, "morphz-embedded-electron-linked");
+  try {
+    await symlink(
+      temporary,
+      linked,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const before = await readdir(temporary);
+    for (const directory of [temporary, linked]) {
+      await assert.rejects(
+        promisify(execFile)(
+          process.execPath,
+          [
+            fileURLToPath(
+              new URL("./fixtures/prepare-capture-center.mjs", import.meta.url),
+            ),
+            directory,
+          ],
+          {
+            env: {
+              ...process.env,
+              MORPHZ_APP_DATA_DIR: join(temporary, "must-not-open"),
+              MORPHZ_APP_ENV_FILE: "",
+            },
+            timeout: 5000,
+            maxBuffer: 65536,
+          },
+        ),
+        (error: unknown) =>
+          typeof error === "object" &&
+          error !== null &&
+          "stderr" in error &&
+          String(error.stderr).includes(
+            "A generated isolated capture fixture is required",
+          ),
+      );
+      assert.deepEqual(
+        await readdir(temporary),
+        before,
+        "denied setup must not create a database or use inherited data paths",
+      );
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
 
 async function fixture(
   overrides: {
