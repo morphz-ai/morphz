@@ -52,13 +52,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Compile the exact complete Root workspace test inventory
-        run: cargo test --locked --all --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
+        run: |
+          if [ "${{ inputs.prefix_only }}" = "true" ]; then
+            cargo test --locked -p morphz --lib --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
+          else
+            cargo test --locked --all --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
+          fi
       - name: Install the same exact test images and native service as Root CI
         run: |
           test ! -e "$MORPHZ_TEST_HOST_NETNS"
           sudo install -m 0444 /dev/null "$MORPHZ_TEST_HOST_NETNS"
           sudo mount --bind /proc/self/ns/net "$MORPHZ_TEST_HOST_NETNS"
-          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --workspace --install-service
+          if [ "${{ inputs.prefix_only }}" = "true" ]; then
+            sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --install-service
+          else
+            sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --workspace --install-service
+          fi
           sudo systemctl daemon-reload
           sudo systemctl start morphz-sandbox.service
           for _ in $(seq 1 100); do
