@@ -5072,11 +5072,17 @@ impl Orchestrator {
         timer_engine: Arc<TimerEngine>,
         execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
     ) -> Result<Arc<Self>, DynError> {
+        // Runtime-backed fixtures use the same native mutation authority as
+        // production. Bounded recovery must not skip its invariant audit just
+        // because this integration-test assembly omitted the Kernel.
+        let scheduler_kernel = plan_store
+            .as_ref()
+            .map(|store| Arc::new(crate::scheduler::SchedulerKernel::new(Arc::clone(store))));
         let orchestrator = Self::assemble_with_scheduler_kernel(
             bus,
             store,
             plan_store,
-            None,
+            scheduler_kernel,
             client,
             registry,
             orchestrator_config,

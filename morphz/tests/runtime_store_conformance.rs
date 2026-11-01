@@ -3241,7 +3241,7 @@ async fn assert_terminal_proof_conformance<S: morphz::memory::RuntimeStore>(stor
                 context_id: "terminal-proof-context".into(),
                 parent_session_id: None,
                 title: "TEST terminal proof".into(),
-                mount_kind: SessionMountKind::ExistingContext,
+                mount_kind: SessionMountKind::NewBlankContext,
             },
         )
         .await

@@ -394,9 +394,7 @@ export function SubjectObjectives({
             </p>
           )}
           {runtime.activity?.objectivesTruncated && (
-            <small className="muted">
-              {current.length ? "目标概览尚不完整" : "历史目标概览尚不完整"}
-            </small>
+            <small className="muted">目标概览尚不完整</small>
           )}
         </section>
       )}
