@@ -27,6 +27,7 @@ REQUIRED_JOBS = {
         "Isolated macOS iframe, manager and native control diagnosis",
         "Intel macOS fresh signatures and native Notes stability",
         "Intel macOS mounted resource and view stability",
+        *{f"Intel macOS mounted resource and view pass {index}" for index in range(1, 6)},
         "Installed service and actual Runtime exec / PTY",
         "Typed compiler and actual AppArmor literal paths",
     }),

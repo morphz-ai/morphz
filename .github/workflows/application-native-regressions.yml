@@ -224,12 +224,16 @@ jobs:
           path: application/test-results/
           if-no-files-found: ignore
 
-  macos-mounted-resource-regressions:
-    name: Intel macOS mounted resource and view stability
+  macos-mounted-resource-passes:
+    name: Intel macOS mounted resource and view pass ${{ matrix.pass }}
     runs-on: macos-26-intel
-    # The first complete cold Intel pass measured 565830 ms for 37 cases.
-    # Budget all five passes plus setup; every 5s/10s operation limit stays.
-    timeout-minutes: 60
+    # A historical cold pass measured 565830 ms; the current scope has 38
+    # cases. Keep all five passes and the same 5s/10s operation limits.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pass: [1, 2, 3, 4, 5]
     defaults:
       run:
         working-directory: application
@@ -249,28 +253,54 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: brew install postgresql@16
       - run: npx playwright install chromium
-      - name: Require five complete mounted resource and view passes without retries
+      - name: Require this complete mounted resource and view pass without retries
         shell: bash
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
         run: |
           set -euo pipefail
-          for round in 1 2 3 4 5; do
-            printf 'Intel mounted resource and view pass %s/5\n' "$round"
-            MORPHZ_TEST_COVERAGE_LOG="$RUNNER_TEMP/mounted-resource-pass-$round.log" \
-            MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 \
-              tests/cognitive-document-view-mounted.test.ts \
-              tests/create-dialog-mounted.test.ts \
-              tests/exchange-reference-preparation-mounted.test.ts \
-              tests/object-annotations-mounted.test.ts \
-              2>&1
-          done
+          log="$RUNNER_TEMP/mounted-resource-pass-${{ matrix.pass }}.log"
+          output="$RUNNER_TEMP/mounted-resource-output-${{ matrix.pass }}.log"
+          MORPHZ_TEST_COVERAGE_LOG="$log" \
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 \
+            tests/cognitive-document-view-mounted.test.ts \
+            tests/create-dialog-mounted.test.ts \
+            tests/exchange-reference-preparation-mounted.test.ts \
+            tests/object-annotations-mounted.test.ts \
+            > "$output" 2>&1
+          python3 - "$log" <<'PYTHON'
+          import json, sys
+          from pathlib import Path
+          prefix = "[test coverage] "
+          receipts = [json.loads(line[len(prefix):]) for line in Path(sys.argv[1]).read_text().splitlines() if line.startswith(prefix)]
+          assert len(receipts) == 1, "one complete coverage receipt is required"
+          receipt = receipts[0]
+          expected = {str(Path("tests", name).resolve()) for name in ["cognitive-document-view-mounted.test.ts", "create-dialog-mounted.test.ts", "exchange-reference-preparation-mounted.test.ts", "object-annotations-mounted.test.ts"]}
+          selected = receipt["selectedFiles"]
+          assert len(selected) == 4 and {str(Path(name).resolve()) for name in selected} == expected
+          assert "postgres" in receipt["required"] and receipt["unexpectedSkips"] == [] and receipt["optionalNotExecuted"] == []
+          counts = receipt["counts"]
+          assert counts["tests"] >= 37 and counts["passed"] == counts["tests"]
+          assert all(counts[key] == 0 for key in ["failed", "cancelled", "skipped", "todo"])
+          PYTHON
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: intel-mounted-resource-regressions
-          path: ${{ runner.temp }}/mounted-resource-pass-*.log
+          name: intel-mounted-resource-pass-${{ matrix.pass }}
+          path: |
+            ${{ runner.temp }}/mounted-resource-pass-${{ matrix.pass }}.log
+            ${{ runner.temp }}/mounted-resource-output-${{ matrix.pass }}.log
           if-no-files-found: ignore
+
+  macos-mounted-resource-regressions:
+    name: Intel macOS mounted resource and view stability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: macos-mounted-resource-passes
+    if: ${{ always() }}
+    steps:
+      - name: Require all five independent complete native passes
+        run: test "${{ needs.macos-mounted-resource-passes.result }}" = "success"
 
   macos-intel-publication-regressions:
     name: Intel macOS fresh signatures and native Notes stability

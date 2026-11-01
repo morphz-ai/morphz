@@ -156,6 +156,22 @@ class ReleaseCiTests(unittest.TestCase):
         with self.assertRaisesRegex(CI.AdmissionError, "Required complete CI jobs"):
             CI.verify_jobs(pages(inventory), run(), "ci.yml")
 
+    def test_every_independent_mounted_pass_is_mandatory_beside_the_fan_in(self):
+        required = {f"Intel macOS mounted resource and view pass {index}" for index in range(1, 6)}
+        required.add("Intel macOS mounted resource and view stability")
+        self.assertLessEqual(required, CI.REQUIRED_JOBS["ci.yml"])
+        for name in required:
+            with self.subTest(missing=name):
+                inventory = [job for job in jobs() if job["name"] != name]
+                with self.assertRaisesRegex(CI.AdmissionError, "Required complete CI jobs"):
+                    CI.verify_jobs(pages(inventory), run(), "ci.yml")
+        for conclusion in ["failure", "cancelled", "skipped", "neutral"]:
+            with self.subTest(conclusion=conclusion):
+                inventory = jobs()
+                next(job for job in inventory if job["name"] == "Intel macOS mounted resource and view pass 3")["conclusion"] = conclusion
+                with self.assertRaises(CI.AdmissionError):
+                    CI.verify_jobs(pages(inventory), run(), "ci.yml")
+
     def test_full_verifier_fetches_both_workflows_and_exact_attempt_jobs_without_retries(self):
         calls = []
         def fetch(endpoint):
