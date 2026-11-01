@@ -13,19 +13,22 @@ function fixture(dashboard: boolean) {
   const source = resolve("../dashboard/src");
   return `
 import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
-${dashboard ? `import {AppDialog} from '/@fs/${source}/App.tsx';import '/@fs/${source}/index.css';import '/@fs/${source}/App.css';import '/@fs/${source}/i18n/index.ts';` : `import {SubjectObjectiveDialog} from '/src/SubjectObjectiveDialog.tsx';${currentAppCSSImports()}`}
+${dashboard ? `import {AppDialog} from '/@fs/${source}/App.tsx';import '/@fs/${source}/index.css';import '/@fs/${source}/App.css';import '/@fs/${source}/i18n/index.ts';` : `import {SubjectObjectiveDialog} from '/src/SubjectObjectiveDialog.tsx';import {SubjectObjectives} from '/src/SubjectObjectives.tsx';import {ExecutionSidebar} from '/src/ExecutionSidebar.tsx';${currentAppCSSImports()}`}
+import {initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';
+const lane=new URL(location.href).searchParams.get('lane');
 const goal={id:'TEST-goal',projectId:'TEST-project',conversationId:'TEST-conversation',inputId:'TEST-input',rootId:'TEST-root',
  sessionId:'TEST-session',contextId:'TEST-context',title:'TEST 原目标全文。'.repeat(300),generation:1,revision:7,status:'active',controlAllowed:true,
  readiness:'waiting',statusReason:null,parentId:null,threadIds:[],updatedAt:'2026-11-01T00:00:00Z'};
 let accept,resolveRefresh;const ack=new Promise(resolve=>accept=resolve),refresh=new Promise(resolve=>resolveRefresh=resolve);
 const calls=[];let refreshes=0;
-window.morphzDesktop={application:{cancel(){},async invoke(envelope){calls.push(envelope);await ack;
- return new URL(location.href).searchParams.has('fail')?{ok:false,error:{code:'conflict',message:'TEST 控制被拒绝'}}:{ok:true,value:{objectiveId:goal.id,action:'delete'}};}}};
-const client={online:true,boot:{runtime:{connected:true,activity:{available:true,threads:[],objectives:[goal]}}},async refreshView(){refreshes++;await refresh;return true;}};
+const thread={id:'TEST-thread',kind:'execution',projectId:goal.projectId,conversationId:goal.conversationId,inputId:goal.inputId,rootId:goal.rootId,sessionId:goal.sessionId,contextId:goal.contextId,title:'TEST 原执行标题',phase:'waiting',lifecycle:'open',controlState:'active',revision:7,generation:1,updatedAt:goal.updatedAt};
+window.morphzDesktop={application:{cancel(){},onStream:()=>()=>{},subscribe:async()=>{},unsubscribe:()=>{},async invoke(envelope){calls.push(envelope);await ack;
+ return new URL(location.href).searchParams.has('fail')?{ok:false,error:{code:'conflict',message:'TEST 控制被拒绝'}}:{ok:true,value:{objectiveId:goal.id,action:lane==='goal'?'pause':'delete'}};}}};
+const client={online:true,workspaceChangeRevision:0,boot:{csrfToken:'TEST-generation',centerId:'TEST-center',principalId:'TEST-owner',workspace:initialWorkspace(goal.updatedAt),capabilities:{teamAuthentication:true},runtime:{configured:true,connected:true,deliveries:[],messages:[],attention:{available:true,approvals:[]},activity:{available:true,openWorkComplete:true,threads:[thread],objectives:[goal]}}},executionSnapshot:async()=>({jobs:[],approvals:[],limit:100}),executionResult:async()=>null,contentCatalog:[],controlExecution:async operation=>{calls.push(operation);await ack;if(new URL(location.href).searchParams.has('fail'))throw Error('TEST 控制被拒绝');return{accepted:true,status:'paused'};},async refreshView(){refreshes++;await refresh;return true;}};
 window.controlFixture={accept:()=>accept(),releaseRefresh:()=>resolveRefresh(),report:()=>({calls:calls.length,refreshes})};
 function Frame(){const [open,setOpen]=useState(true);return <div className="${dashboard ? "page-shell" : "app"}" data-color-mode="light" data-accent="cyan" style={{display:'block',height:'100vh'}}>
 <textarea aria-label="原草稿" defaultValue="TEST 必须保留的草稿"/>
-${dashboard ? `{open&&<AppDialog request={{id:'TEST-delete',kind:'confirm',title:'删除这个目标？',description:goal.title,confirmLabel:'删除目标',cancelLabel:'取消',tone:'danger'}} onResolve={value=>{window.controlFixture.resolved=value;setOpen(false);}}/>}` : `{open&&<SubjectObjectiveDialog goal={goal} threads={[]} client={client} fresh onClose={()=>setOpen(false)} onSelect={()=>{}}/>}`}
+${dashboard ? `{open&&<AppDialog request={{id:'TEST-delete',kind:'confirm',title:'删除这个目标？',description:goal.title,confirmLabel:'删除目标',cancelLabel:'取消',tone:'danger'}} onResolve={value=>{window.controlFixture.resolved=value;setOpen(false);}}/>}` : `{lane==='goal'?<SubjectObjectives client={client} onSelect={()=>{}}/>:lane==='thread'?<ExecutionSidebar client={client} scope={{projectId:goal.projectId,conversationId:goal.conversationId,inputId:goal.inputId,threadId:thread.id,artifactId:null}} layout={{mode:'docked',width:340,maxWidth:520}} onResize={()=>{}} onClose={()=>{}} onSelect={()=>{}} onOpen={()=>{}}/>:open&&<SubjectObjectiveDialog goal={goal} threads={[]} client={client} fresh onClose={()=>setOpen(false)} onSelect={()=>{}}/>}`}
 <output aria-label="弹层状态">{open?'open':'closed'}</output></div>}
 createRoot(document.getElementById('root')).render(<Frame/>);
 `;
@@ -273,6 +276,50 @@ test(
         await page.evaluate(() =>
           Reflect.get(window, "controlFixture").releaseRefresh(),
         );
+      }
+      for (const lane of ["goal", "thread"]) {
+        for (const failed of [false, true]) {
+          await page.goto(
+            base +
+              "/__control/desktop?lane=" +
+              lane +
+              (failed ? "&fail=1" : ""),
+          );
+          const control = page.getByRole("button", {
+            name: lane === "goal" ? "暂停目标" : "暂停此执行",
+            exact: true,
+          });
+          await expect(control).toBeEnabled();
+          await control.click();
+          await expect(control).toBeDisabled();
+          assert.equal(
+            await page.evaluate(
+              () => Reflect.get(window, "controlFixture").report().calls,
+            ),
+            1,
+          );
+          await page.evaluate(() =>
+            Reflect.get(window, "controlFixture").accept(),
+          );
+          await expect(control).toBeEnabled();
+          assert.equal(
+            await page.evaluate(
+              () => Reflect.get(window, "controlFixture").report().refreshes,
+            ),
+            1,
+            "the real row control must settle while its refresh is still held",
+          );
+          if (failed)
+            await expect(
+              page.getByText("TEST 控制被拒绝", { exact: true }).first(),
+            ).toBeVisible();
+          await expect(
+            page.getByRole("textbox", { name: "原草稿" }),
+          ).toHaveValue("TEST 必须保留的草稿");
+          await page.evaluate(() =>
+            Reflect.get(window, "controlFixture").releaseRefresh(),
+          );
+        }
       }
       assert.deepEqual(errors, []);
     } finally {

@@ -442,9 +442,10 @@ const expected = parse({
           thread.lifecycle === "open" && !executionActivityIsDeferred(thread, runtime)),
       );`,
       )
+      .replace("!client.boot!.capabilities.teamAuthentication", "sharedDefault")
       .replace(
-        "!client.boot!.capabilities.teamAuthentication",
-        "sharedDefault",
+        "activityAvailable && !runtime.activity?.truncated",
+        "activityAvailable && (runtime.activity?.openWorkComplete ?? !runtime.activity?.truncated)",
       )}
     return {activityThreads,active,recent,activeCount,activityAvailable,activityComplete};
   }`,
@@ -1112,7 +1113,7 @@ test("overview roots, active descendants, date/read ordering and bounded quality
       "runtime.configured && runtime.activity?.available === true",
     ],
     [
-      "activityAvailable && !runtime.activity?.truncated",
+      "(runtime.activity?.openWorkComplete ?? !runtime.activity?.truncated)",
       "activityAvailable && runtime.openWorkComplete",
     ],
   ] as const)

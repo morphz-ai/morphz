@@ -260,7 +260,7 @@ export function ExecutionSidebar({
               void client.refreshView().catch(() => {});
               throw cause;
             }
-            await client.refreshView();
+            void client.refreshView().catch(() => false);
           }}
         />
       )}

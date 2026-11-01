@@ -45,9 +45,11 @@ export async function submitThreadControl(
         thread[key as keyof ThreadRecord] === selected[key as keyof Target],
     )
   for (let attempt = 0; attempt < 2; attempt++) {
+    // Read just the existing operator Thread/control record. Full Thread
+    // detail also assembles execution history and must not gate a control.
     const current = (
-      await api.get<{ snapshot?: { thread?: ThreadRecord } }>(path)
-    )?.snapshot?.thread
+      await api.get<{ thread?: ThreadRecord }>(`${path}/evaluation-policy`)
+    )?.thread
     if (
       !current ||
       !sameSource(current) ||

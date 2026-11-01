@@ -33,7 +33,8 @@ function fixture(
       const path = new URL(String(input)).pathname
       assert.equal(
         path,
-        '/api/contexts/context-confirmed/threads/thread%2Fconfirmed',
+        '/api/contexts/context-confirmed/threads/thread%2Fconfirmed' +
+          (!init?.method ? '/evaluation-policy' : ''),
       )
       if (!init?.method) {
         reads.push(path)
@@ -44,12 +45,7 @@ function fixture(
           }
         if (options.postReadFailure && writes)
           return new Response('{}', { status: 503 })
-        return Response.json({
-          snapshot: {
-            thread: { ...current },
-            phase: current.lifecycle === 'open' ? 'waiting' : 'idle',
-          },
-        })
+        return Response.json({ thread: { ...current } })
       }
       assert.equal(init.method, 'POST')
       writes++

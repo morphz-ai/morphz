@@ -185,7 +185,6 @@ export function SubjectObjectives({
         },
         { identityGeneration: origin, signal: AbortSignal.timeout(12000) },
       );
-      await client.refreshView();
     } catch (cause) {
       if (identity.current === origin)
         setControlError(
@@ -196,6 +195,7 @@ export function SubjectObjectives({
     } finally {
       pendingControl.current = false;
       if (identity.current === origin) setControlling("");
+      void client.refreshView().catch(() => false);
     }
   }
   if (!goals.length && (scope || !runtime.activity?.objectivesTruncated))

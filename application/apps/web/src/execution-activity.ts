@@ -565,7 +565,9 @@ export function executionActivityOverview(
   const activeCount = active.length;
   const activityAvailable =
     runtime.connected && runtime.activity?.available === true;
-  const activityComplete = activityAvailable && !runtime.activity?.truncated;
+  const activityComplete =
+    activityAvailable &&
+    (runtime.activity?.openWorkComplete ?? !runtime.activity?.truncated);
   return {
     activityThreads,
     active,

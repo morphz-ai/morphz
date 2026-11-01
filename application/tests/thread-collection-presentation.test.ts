@@ -599,16 +599,28 @@ test("complete current work remains known when only terminal history is truncate
       openWorkComplete: true,
     },
   });
+  assert.equal(overview([], { runtime: rt }).activityComplete, true);
   assert.equal(executionActivityOverviewSummary(rt, true, 0), "0 项进行中");
   assert.equal(executionActivityOverviewSummary(rt, true, 2), "2 项进行中");
-  rt.activity!.openWorkComplete = false;
-  assert.equal(executionActivityOverviewSummary(rt, true, 0), "工作状态待核对");
+  const incomplete = runtime([], {
+    activity: { ...rt.activity!, openWorkComplete: false },
+  });
+  assert.equal(overview([], { runtime: incomplete }).activityComplete, false);
   assert.equal(
-    executionActivityOverviewSummary(rt, true, 2),
+    executionActivityOverviewSummary(incomplete, true, 0),
+    "工作状态待核对",
+  );
+  assert.equal(
+    executionActivityOverviewSummary(incomplete, true, 2),
     "至少 2 项进行中",
   );
-  delete rt.activity!.openWorkComplete;
-  assert.equal(executionActivityOverviewSummary(rt, true, 0), "工作状态待核对");
+  const legacy = runtime([], {
+    activity: { ...rt.activity!, openWorkComplete: undefined },
+  });
+  assert.equal(
+    executionActivityOverviewSummary(legacy, true, 0),
+    "工作状态待核对",
+  );
 });
 
 test("two original overview phases keep date construction before availability, prose between phases and lazy summary quality reads", () => {
