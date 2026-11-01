@@ -3,6 +3,10 @@ name: Event notification diagnosis
 on:
   workflow_dispatch:
     inputs:
+      delay_wal:
+        description: Slow real owned-child WAL write returns without changing the notification test
+        type: boolean
+        default: false
       prefix_only:
         description: Diagnose the exact original-order library prefix ending at the notification case
         type: boolean
@@ -53,7 +57,7 @@ jobs:
           sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Compile the exact complete Root workspace test inventory
         run: |
-          if [ "${{ inputs.prefix_only }}" = "true" ]; then
+          if [ "${{ inputs.prefix_only || inputs.delay_wal }}" = "true" ]; then
             cargo test --locked -p morphz --lib --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
           else
             cargo test --locked --all --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
@@ -63,7 +67,7 @@ jobs:
           test ! -e "$MORPHZ_TEST_HOST_NETNS"
           sudo install -m 0444 /dev/null "$MORPHZ_TEST_HOST_NETNS"
           sudo mount --bind /proc/self/ns/net "$MORPHZ_TEST_HOST_NETNS"
-          if [ "${{ inputs.prefix_only }}" = "true" ]; then
+          if [ "${{ inputs.prefix_only || inputs.delay_wal }}" = "true" ]; then
             sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --install-service
           else
             sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl" --workspace --install-service
@@ -75,6 +79,18 @@ jobs:
             sleep 0.1
           done
           test -S /run/morphz-sandbox/control.sock
+      - name: Build the isolated post-write latency probe
+        if: ${{ inputs.delay_wal }}
+        run: gcc -shared -fPIC -O2 -Wall -Wextra -Werror tools/diagnostics/notification-wal-write-delay.c -o "$RUNNER_TEMP/notification-wal-write-delay.so"
+      - name: Diagnose notification ordering under real owned-child WAL latency
+        if: ${{ inputs.delay_wal }}
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/event-notification-evidence"
+          LD_PRELOAD="$RUNNER_TEMP/notification-wal-write-delay.so" cargo test --locked -p morphz --lib memory::event_changes::tests::sqlite_peer_commits_wake_without_a_database_poll -- --exact --test-threads=1 --nocapture 2>&1 | tee "$RUNNER_TEMP/event-notification-evidence/delayed-wal.log"
       - name: Diagnose five original-order prefixes through the notification case
         if: ${{ inputs.prefix_only }}
         shell: bash
@@ -96,7 +112,7 @@ jobs:
           PYTHON
           done
       - name: Diagnose the unchanged complete Root test order with child commit evidence
-        if: ${{ !inputs.prefix_only }}
+        if: ${{ !inputs.prefix_only && !inputs.delay_wal }}
         shell: bash
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
