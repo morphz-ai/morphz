@@ -168,6 +168,19 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
         run: ./scripts/cargo-dev.sh test --locked --all --verbose --no-fail-fast -- --test-threads=1
+      - name: Require five committed SQLite notification passes under real WAL write latency
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          set -euo pipefail
+          gcc -shared -fPIC -O2 -Wall -Wextra -Werror morphz/tests/fixtures/sqlite-wal-write-delay.c -o "$RUNNER_TEMP/sqlite-wal-write-delay.so"
+          for round in 1 2 3 4 5; do
+            log="$RUNNER_TEMP/sqlite-notification-$round.log"
+            receipt="$RUNNER_TEMP/morphz-sqlite-wal-probe-$round.json"
+            MORPHZ_NOTIFICATION_TEST_WAL_PROBE_RECEIPT="$receipt" LD_PRELOAD="$RUNNER_TEMP/sqlite-wal-write-delay.so" cargo test --locked -p morphz --lib memory::event_changes::tests::sqlite_peer_commits_wake_without_a_database_poll -- --exact --test-threads=1 --nocapture 2>&1 | tee "$log"
+            python3 -c 'import pathlib,re,sys; text=re.sub(r"\x1b\[[0-9;]*[mK]", "", pathlib.Path(sys.argv[1]).read_text()); assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in text' "$log"
+            python3 -c 'import json,sys; receipt=json.load(open(sys.argv[1])); assert receipt["delayed_writes"] > 0' "$receipt"
+          done
       - name: Require five exact clock-independent Context encoding passes
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py

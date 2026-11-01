@@ -2209,7 +2209,11 @@ impl SqliteStore {
 
         Ok(Self {
             pool,
-            event_database_path: (db_path != ":memory:").then(|| std::path::PathBuf::from(db_path)),
+            event_database_path: if db_path == ":memory:" {
+                None
+            } else {
+                Some(std::fs::canonicalize(db_path)?)
+            },
             event_changes: std::sync::Mutex::new(None),
             edge_command_notify: Arc::new(Notify::new()),
             #[cfg(feature = "context-db")]
@@ -28011,6 +28015,11 @@ impl EventStore for SqliteStore {
         crate::memory::event_tail::input_previews!(sqlx::Sqlite, &self.pool, context, ids, false)
     }
     fn committed_event_hint(&self) {
+        if let Some(database) = self.event_database_path.as_deref() {
+            if let Err(error) = super::event_changes::publish_committed(database) {
+                tracing::warn!(%error, event_code="memory.sqlite.event_post_commit_hint_failed", "SQLite commit succeeded but its native post-commit hint failed; local subscribers retain the durable cursor");
+            }
+        }
         if let Some(changes) = self.event_changes.lock().unwrap().as_ref() {
             changes.committed();
         }
@@ -28101,9 +28110,7 @@ impl EventStore for SqliteStore {
             .await;
             match result {
                 Ok(()) => {
-                    if let Some(changes) = self.event_changes.lock().unwrap().as_ref() {
-                        changes.committed();
-                    }
+                    self.committed_event_hint();
                     return Ok(());
                 }
                 Err(error) if is_transient_storage_contention(error.as_ref()) => {
@@ -28139,9 +28146,7 @@ impl EventStore for SqliteStore {
             append_event_idempotent_in_transaction(&mut tx, &entry.event).await?;
         }
         tx.commit().await?;
-        if let Some(changes) = self.event_changes.lock().unwrap().as_ref() {
-            changes.committed();
-        }
+        self.committed_event_hint();
         Ok(())
     }
 
