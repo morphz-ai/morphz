@@ -15898,8 +15898,12 @@ impl ThreadGroupStore for SqliteStore {
         &self,
         thread: &ThreadRecord,
     ) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
-        let sequence: Option<Option<i64>> = sqlx::query_scalar("SELECT o.terminal_event_sequence FROM thread_outcomes o JOIN threads t ON t.id=o.thread_id WHERE o.thread_id=? AND o.thread_generation=? AND o.root_turn_id=? AND o.session_id=? AND o.terminal_kind=? AND t.context_id=? AND t.agent_id=?")
-            .bind(&thread.id).bind(i64::try_from(thread.generation)?).bind(&thread.root_turn_id).bind(&thread.session_id).bind(thread.lifecycle.as_str()).bind(&thread.context_id).bind(&thread.agent_id).fetch_optional(&self.pool).await?;
+        // Native cancellation invalidates outstanding work by advancing the
+        // Thread generation; its terminal receipt belongs to the preceding
+        // generation. Match the current row and exact receipt before allowing
+        // that one-step cancellation boundary.
+        let sequence: Option<Option<i64>> = sqlx::query_scalar("SELECT o.terminal_event_sequence FROM thread_outcomes o JOIN threads t ON t.id=o.thread_id WHERE o.thread_id=? AND t.generation=? AND o.root_turn_id=? AND t.root_turn_id=o.root_turn_id AND o.session_id=? AND t.session_id=o.session_id AND o.terminal_kind=? AND t.status=o.terminal_kind AND t.context_id=? AND t.agent_id=? AND t.result_event_id=? AND o.event_id=t.result_event_id AND (o.thread_generation=t.generation OR (t.status='cancelled' AND o.thread_generation=t.generation-1))")
+            .bind(&thread.id).bind(i64::try_from(thread.generation)?).bind(&thread.root_turn_id).bind(&thread.session_id).bind(thread.lifecycle.as_str()).bind(&thread.context_id).bind(&thread.agent_id).bind(&thread.result_event_id).fetch_optional(&self.pool).await?;
         sequence
             .flatten()
             .map(u64::try_from)

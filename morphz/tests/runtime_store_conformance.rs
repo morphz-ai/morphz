@@ -3166,6 +3166,128 @@ where
     assert!(race_activation.lease_expires_at.is_none());
 }
 
+async fn assert_exact_terminal_proof<S>(store: &S, thread: &morphz::memory::ThreadRecord)
+where
+    S: ThreadGroupStore + EventStore,
+{
+    let outcome = store.get_thread_outcome(&thread.id).await.unwrap().unwrap();
+    let events = store
+        .query(QueryFilter {
+            event_id: Some(outcome.result_event_id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].sequence.is_some());
+    assert_eq!(outcome.terminal_event_sequence, events[0].sequence);
+    assert_eq!(
+        store.thread_terminal_sequence(thread).await.unwrap(),
+        events[0].sequence,
+        "the scalar proof must identify the actual committed terminal Event"
+    );
+    let mismatches: [fn(&mut morphz::memory::ThreadRecord); 8] = [
+        |t| t.context_id.push_str("-foreign"),
+        |t| t.agent_id.push_str("-foreign"),
+        |t| t.session_id.push_str("-foreign"),
+        |t| t.root_turn_id.push_str("-foreign"),
+        |t| t.generation += 1,
+        |t| t.lifecycle = ThreadLifecycle::Open,
+        |t| t.result_event_id = None,
+        |t| t.result_event_id = Some("foreign-terminal-receipt".into()),
+    ];
+    for mismatch in mismatches {
+        let mut foreign = thread.clone();
+        mismatch(&mut foreign);
+        assert_eq!(
+            store.thread_terminal_sequence(&foreign).await.unwrap(),
+            None
+        );
+    }
+    if thread.generation > 0 {
+        let mut stale = thread.clone();
+        stale.generation -= 1;
+        assert_eq!(
+            store.thread_terminal_sequence(&stale).await.unwrap(),
+            None,
+            "the preceding outcome generation is not a current Thread identity"
+        );
+    }
+}
+
+async fn assert_terminal_proof_conformance<S: morphz::memory::RuntimeStore>(store: &S) {
+    let completed = store
+        .get_thread("conformance-outcome-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.lifecycle, ThreadLifecycle::Completed);
+    assert_exact_terminal_proof(store, &completed).await;
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "terminal-proof-agent".into(),
+                title: "TEST terminal proof".into(),
+                root_context_id: "terminal-proof-context".into(),
+            },
+            NewCognitiveContext {
+                id: "terminal-proof-context".into(),
+                agent_id: "terminal-proof-agent".into(),
+                title: "TEST terminal proof".into(),
+            },
+            NewSession {
+                id: "terminal-proof-session".into(),
+                agent_id: "terminal-proof-agent".into(),
+                context_id: "terminal-proof-context".into(),
+                parent_session_id: None,
+                title: "TEST terminal proof".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            },
+        )
+        .await
+        .unwrap();
+    let original = store
+        .ensure_thread(NewThread {
+            id: "terminal-proof-thread".into(),
+            agent_id: "terminal-proof-agent".into(),
+            context_id: "terminal-proof-context".into(),
+            session_id: "terminal-proof-session".into(),
+            root_turn_id: "terminal-proof-root".into(),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".into(),
+            executor_id: None,
+            target_id: None,
+            initiating_principal_id: None,
+            model_alias: None,
+            reasoning_effort: None,
+            response_annotations: morphz::response_annotations::Protocol::Off,
+            supervision: ThreadSupervision::legacy(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store.thread_terminal_sequence(&original).await.unwrap(),
+        None
+    );
+    let cancelled = match store
+        .control_thread(
+            &original.id,
+            original.revision,
+            ThreadControlAction::Cancel,
+            Some("TEST exact cancellation receipt"),
+            Some("Store-Conformance"),
+        )
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(value) => value,
+        value => panic!("native cancellation must commit: {value:?}"),
+    };
+    assert_eq!(cancelled.lifecycle, ThreadLifecycle::Cancelled);
+    assert_eq!(cancelled.generation, original.generation + 1);
+    assert_exact_terminal_proof(store, &cancelled).await;
+}
+
 async fn assert_dialogue_interruption_conformance<S>(store: Arc<S>)
 where
     S: morphz::memory::RuntimeStore + 'static,
@@ -12500,6 +12622,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_terminal_proof_conformance(store.as_ref()).await;
     assert_dialogue_interruption_conformance(Arc::clone(&store)).await;
     assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
@@ -13191,6 +13314,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_terminal_proof_conformance(store.as_ref()).await;
     assert_dialogue_interruption_conformance(Arc::clone(&store)).await;
     assert_scheduler_dependency_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
