@@ -2,6 +2,11 @@ name: Event notification diagnosis
 
 on:
   workflow_dispatch:
+    inputs:
+      prefix_only:
+        description: Diagnose the exact original-order library prefix ending at the notification case
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -61,7 +66,28 @@ jobs:
             sleep 0.1
           done
           test -S /run/morphz-sandbox/control.sock
+      - name: Diagnose five original-order prefixes through the notification case
+        if: ${{ inputs.prefix_only }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/event-notification-evidence"
+          for round in 1 2 3 4 5; do
+            python3 - <<'PYTHON' 2>&1 | tee "$RUNNER_TEMP/event-notification-evidence/prefix-$round.log"
+          import subprocess
+          binary = "/usr/local/libexec/morphz-runtime-ci/lib"
+          target = "memory::event_changes::tests::sqlite_peer_commits_wake_without_a_database_poll"
+          inventory = subprocess.run([binary, "--list"], check=True, text=True, stdout=subprocess.PIPE).stdout
+          assert len(inventory.encode()) <= 2 * 1024 * 1024
+          names = sorted(line.removesuffix(": test") for line in inventory.splitlines() if line.endswith(": test"))
+          assert 0 < len(names) <= 10000 and names.count(target) == 1
+          selected = names[:names.index(target) + 1]
+          print(f"Original-order prefix: {len(selected)} of {len(names)} library tests, ending exactly at {target}", flush=True)
+          subprocess.run([binary, "--exact", "--test-threads=1", *selected], check=True)
+          PYTHON
+          done
       - name: Diagnose the unchanged complete Root test order with child commit evidence
+        if: ${{ !inputs.prefix_only }}
         shell: bash
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
