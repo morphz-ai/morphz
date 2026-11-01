@@ -147,3 +147,36 @@ Local/HTTP/remote Desktop stream transport, and coalesced change frames. Only
 the active visible reader opens a screen; another terminal's output does not
 refresh it. Resource lease/security checkpoints remain independent of UI demand.
 Terminal catalog continuation and legacy source fanout are separately open.
+
+
+## Bounded startup recovery pages
+
+Context recovery uses the existing stable-ID metadata directory in 200-row
+batches, excluding seed/Mind/Event bodies. Live Activation recovery seeks queued
+and running status ranges separately, then merges only the bounded locator
+heads. Each selected Activation is revalidated by its native ID, and opens only
+its trigger and exact persisted decision IDs. Unresolved/foreign/missing facts
+retain their original failure handling; a recovery page is not permission to
+resume a new generation or duplicate an external action.
+
+A pending Signal has no native Context column. `directory_context_id` is a
+source-transaction read index copied from its actual Thread. Insert/rebind/status
+changes and Thread Context moves maintain it; deletion retains the original FK
+semantics. A bounded 200-key pending-only backfill repairs retained rows without
+changing original IDs, generations, sequences, status, clocks or payloads. A
+missing native parent fails the migration rather than looping or inventing a
+Context. Post-update verification checks only that same selected ID batch;
+an unrelated unresolved row cannot mask its failure. Native Thread scope is
+still point-checked before the locator LIMIT;
+the derived key does not grant authority.
+
+Pending rows seek `(Context,Thread,sequence,id)` and return at most 200 plus a
+sentinel. Dispatch the first Signal for each selected Thread, then advance past
+the last Thread; its native mailbox owns the remaining Signals, matching the
+former all-then-distinct recovery rule without reading a 10000-Signal mailbox.
+Open Thread cleanup also has its own 200-key page and complete native EXISTS
+proofs for live Activations, Jobs, queued Schedules, pending Signals and required
+pending dependencies. The existing Objective-supervision checks and native
+CAS/control receipts remain in force. Invariant audits no longer load every
+Context seed, but their per-Context authority materialization remains a separate
+open boundary.

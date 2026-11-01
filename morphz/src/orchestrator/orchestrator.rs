@@ -6143,180 +6143,183 @@ impl Orchestrator {
             return Ok(Vec::new());
         };
         let mut all_violations = Vec::new();
-        for context in store.list_contexts(false).await? {
-            let objectives = store.list_context_objectives(&context.id, false).await?;
-            let threads = store.list_context_threads(&context.id, false).await?;
-            let activations = store
-                .list_context_thread_activations(&context.id, false)
-                .await?;
-            let groups = store
-                .list_thread_groups(ThreadGroupFilter {
-                    context_id: Some(context.id.clone()),
-                    include_terminal: false,
-                    newest_first: false,
-                    limit: None,
-                    ..Default::default()
-                })
-                .await?;
-            let group_ids = groups
-                .iter()
-                .map(|group| group.id.clone())
-                .collect::<Vec<_>>();
-            let mut grouped_members = Vec::new();
-            for group_ids in group_ids.chunks(500) {
-                grouped_members.extend(
-                    store
-                        .list_thread_group_members_for_groups(group_ids)
-                        .await?,
-                );
-            }
-            let members = grouped_members
-                .iter()
-                .map(|(_, member)| member.clone())
-                .collect::<Vec<_>>();
-            let mut thread_ids_by_entity = HashMap::new();
-            for group in &groups {
-                let group_members = grouped_members
+        let mut context_pages = crate::memory::recovery::ContextRecoveryPages::default();
+        while let Some(contexts) = context_pages.next(store.as_ref()).await? {
+            for context in contexts {
+                let objectives = store.list_context_objectives(&context.id, false).await?;
+                let threads = store.list_context_threads(&context.id, false).await?;
+                let activations = store
+                    .list_context_thread_activations(&context.id, false)
+                    .await?;
+                let groups = store
+                    .list_thread_groups(ThreadGroupFilter {
+                        context_id: Some(context.id.clone()),
+                        include_terminal: false,
+                        newest_first: false,
+                        limit: None,
+                        ..Default::default()
+                    })
+                    .await?;
+                let group_ids = groups
                     .iter()
-                    .filter(|(group_id, _)| group_id == &group.id)
-                    .map(|(_, member)| member);
-                thread_ids_by_entity.insert(
-                    ("thread_group".to_string(), group.id.clone()),
-                    group_members
-                        .map(|member| member.thread_id.clone())
-                        .collect(),
-                );
-            }
-            let thread_by_root = threads
-                .iter()
-                .map(|thread| (thread.root_turn_id.as_str(), thread.id.clone()))
-                .collect::<HashMap<_, _>>();
-            for activation in &activations {
-                if let Some(thread_id) = thread_by_root.get(activation.root_turn_id.as_str()) {
+                    .map(|group| group.id.clone())
+                    .collect::<Vec<_>>();
+                let mut grouped_members = Vec::new();
+                for group_ids in group_ids.chunks(500) {
+                    grouped_members.extend(
+                        store
+                            .list_thread_group_members_for_groups(group_ids)
+                            .await?,
+                    );
+                }
+                let members = grouped_members
+                    .iter()
+                    .map(|(_, member)| member.clone())
+                    .collect::<Vec<_>>();
+                let mut thread_ids_by_entity = HashMap::new();
+                for group in &groups {
+                    let group_members = grouped_members
+                        .iter()
+                        .filter(|(group_id, _)| group_id == &group.id)
+                        .map(|(_, member)| member);
                     thread_ids_by_entity.insert(
-                        ("activation".to_string(), activation.id.clone()),
-                        vec![thread_id.clone()],
+                        ("thread_group".to_string(), group.id.clone()),
+                        group_members
+                            .map(|member| member.thread_id.clone())
+                            .collect(),
                     );
                 }
-            }
-            let thread_ids = threads
-                .iter()
-                .map(|thread| thread.id.clone())
-                .collect::<Vec<_>>();
-            let mut outcomes = Vec::new();
-            for thread_ids in thread_ids.chunks(500) {
-                outcomes.extend(store.list_thread_outcomes(thread_ids).await?);
-            }
-            let objective_ids = objectives
-                .iter()
-                .map(|objective| objective.id.clone())
-                .collect::<Vec<_>>();
-            let mut dependencies = Vec::new();
-            for objective_ids in objective_ids.chunks(500) {
-                dependencies.extend(
-                    store
-                        .list_scheduler_dependencies_for_owners(
-                            SchedulerDependencyOwnerKind::Objective,
-                            objective_ids,
-                        )
-                        .await?,
-                );
-            }
-            for thread_ids in thread_ids.chunks(500) {
-                dependencies.extend(
-                    store
-                        .list_scheduler_dependencies_for_owners(
-                            SchedulerDependencyOwnerKind::Thread,
-                            thread_ids,
-                        )
-                        .await?,
-                );
-            }
-            dependencies.sort_by(|left, right| left.id.cmp(&right.id));
-            dependencies.dedup_by(|left, right| left.id == right.id);
-
-            let candidate_barrier_event_ids = groups
-                .iter()
-                .filter_map(|group| group.barrier_event_id.as_ref())
-                .cloned()
-                .collect::<Vec<_>>();
-            let barrier_event_ids = if candidate_barrier_event_ids.is_empty() {
-                HashSet::new()
-            } else {
-                let mut existing = HashSet::new();
-                for event_ids in candidate_barrier_event_ids.chunks(500) {
-                    existing.extend(
-                        self.store
-                            .query(QueryFilter {
-                                event_ids: event_ids.to_vec(),
-                                ..Default::default()
-                            })
-                            .await?
-                            .into_iter()
-                            .map(|event| event.id),
+                let thread_by_root = threads
+                    .iter()
+                    .map(|thread| (thread.root_turn_id.as_str(), thread.id.clone()))
+                    .collect::<HashMap<_, _>>();
+                for activation in &activations {
+                    if let Some(thread_id) = thread_by_root.get(activation.root_turn_id.as_str()) {
+                        thread_ids_by_entity.insert(
+                            ("activation".to_string(), activation.id.clone()),
+                            vec![thread_id.clone()],
+                        );
+                    }
+                }
+                let thread_ids = threads
+                    .iter()
+                    .map(|thread| thread.id.clone())
+                    .collect::<Vec<_>>();
+                let mut outcomes = Vec::new();
+                for thread_ids in thread_ids.chunks(500) {
+                    outcomes.extend(store.list_thread_outcomes(thread_ids).await?);
+                }
+                let objective_ids = objectives
+                    .iter()
+                    .map(|objective| objective.id.clone())
+                    .collect::<Vec<_>>();
+                let mut dependencies = Vec::new();
+                for objective_ids in objective_ids.chunks(500) {
+                    dependencies.extend(
+                        store
+                            .list_scheduler_dependencies_for_owners(
+                                SchedulerDependencyOwnerKind::Objective,
+                                objective_ids,
+                            )
+                            .await?,
                     );
                 }
-                existing
-            };
+                for thread_ids in thread_ids.chunks(500) {
+                    dependencies.extend(
+                        store
+                            .list_scheduler_dependencies_for_owners(
+                                SchedulerDependencyOwnerKind::Thread,
+                                thread_ids,
+                            )
+                            .await?,
+                    );
+                }
+                dependencies.sort_by(|left, right| left.id.cmp(&right.id));
+                dependencies.dedup_by(|left, right| left.id == right.id);
 
-            let mut violations = crate::scheduler::audit_scheduler_invariants(
-                crate::scheduler::SchedulerInvariantInput {
-                    objectives: &objectives,
-                    threads: &threads,
-                    activations: &activations,
-                    outcomes: &outcomes,
-                    groups: &groups,
-                    group_members: &members,
-                    dependencies: &dependencies,
-                },
-            );
-            violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
-                &objectives,
-                &threads,
-                &activations,
-                &groups,
-                &barrier_event_ids,
-            ));
-            let plan = crate::recovery::SchedulerReconciler::plan(
-                &violations,
-                &threads,
-                &thread_ids_by_entity,
-            );
-            for action in plan.actions {
-                let crate::recovery::ReconcilerAction::QuarantineThread { thread_id, reason } =
-                    action;
-                let Some(thread) = threads.iter().find(|thread| thread.id == thread_id) else {
-                    continue;
+                let candidate_barrier_event_ids = groups
+                    .iter()
+                    .filter_map(|group| group.barrier_event_id.as_ref())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let barrier_event_ids = if candidate_barrier_event_ids.is_empty() {
+                    HashSet::new()
+                } else {
+                    let mut existing = HashSet::new();
+                    for event_ids in candidate_barrier_event_ids.chunks(500) {
+                        existing.extend(
+                            self.store
+                                .query(QueryFilter {
+                                    event_ids: event_ids.to_vec(),
+                                    ..Default::default()
+                                })
+                                .await?
+                                .into_iter()
+                                .map(|event| event.id),
+                        );
+                    }
+                    existing
                 };
-                let command = crate::controllers::DialogueController::control_thread(
-                    thread,
-                    &context.id,
-                    ThreadControlAction::Pause,
-                    reason.clone(),
-                    "Runtime-Reconciler",
+
+                let mut violations = crate::scheduler::audit_scheduler_invariants(
+                    crate::scheduler::SchedulerInvariantInput {
+                        objectives: &objectives,
+                        threads: &threads,
+                        activations: &activations,
+                        outcomes: &outcomes,
+                        groups: &groups,
+                        group_members: &members,
+                        dependencies: &dependencies,
+                    },
                 );
-                match kernel.execute(command).await {
-                    Ok(crate::scheduler::KernelResult::ThreadControlled(
-                        ThreadMutation::Updated(_),
-                    )) => tracing::warn!(
-                        thread_id = %thread.id,
-                        reason = %reason,
-                        event_code = "orchestrator.scheduler_reconciler.thread_quarantined",
-                        "Scheduler Reconciler quarantined a Thread violating invariants without inferring a business terminal state"
-                    ),
-                    Ok(crate::scheduler::KernelResult::ThreadControlled(
-                        ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
-                    )) => {}
-                    Ok(_) => unreachable!("ControlThread must return ThreadControlled"),
-                    Err(error) => tracing::warn!(
-                        thread_id = %thread.id,
-                        %error,
-                        event_code = "orchestrator.scheduler_reconciler.quarantine_failed",
-                        "Scheduler Reconciler quarantine command failed; retaining authoritative state for the next cycle"
-                    ),
+                violations.extend(crate::recovery::SchedulerReconciler::audit_supervision(
+                    &objectives,
+                    &threads,
+                    &activations,
+                    &groups,
+                    &barrier_event_ids,
+                ));
+                let plan = crate::recovery::SchedulerReconciler::plan(
+                    &violations,
+                    &threads,
+                    &thread_ids_by_entity,
+                );
+                for action in plan.actions {
+                    let crate::recovery::ReconcilerAction::QuarantineThread { thread_id, reason } =
+                        action;
+                    let Some(thread) = threads.iter().find(|thread| thread.id == thread_id) else {
+                        continue;
+                    };
+                    let command = crate::controllers::DialogueController::control_thread(
+                        thread,
+                        &context.id,
+                        ThreadControlAction::Pause,
+                        reason.clone(),
+                        "Runtime-Reconciler",
+                    );
+                    match kernel.execute(command).await {
+                        Ok(crate::scheduler::KernelResult::ThreadControlled(
+                            ThreadMutation::Updated(_),
+                        )) => tracing::warn!(
+                            thread_id = %thread.id,
+                            reason = %reason,
+                            event_code = "orchestrator.scheduler_reconciler.thread_quarantined",
+                            "Scheduler Reconciler quarantined a Thread violating invariants without inferring a business terminal state"
+                        ),
+                        Ok(crate::scheduler::KernelResult::ThreadControlled(
+                            ThreadMutation::Conflict { .. } | ThreadMutation::NotFound,
+                        )) => {}
+                        Ok(_) => unreachable!("ControlThread must return ThreadControlled"),
+                        Err(error) => tracing::warn!(
+                            thread_id = %thread.id,
+                            %error,
+                            event_code = "orchestrator.scheduler_reconciler.quarantine_failed",
+                            "Scheduler Reconciler quarantine command failed; retaining authoritative state for the next cycle"
+                        ),
+                    }
                 }
+                all_violations.extend(violations);
             }
-            all_violations.extend(violations);
         }
         all_violations.sort();
         Ok(all_violations)
@@ -7029,47 +7032,87 @@ impl Orchestrator {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
-        for context in session_store.list_contexts(false).await? {
-            let mut dispatched_threads = HashSet::new();
-            let signals = session_store
-                .list_context_thread_signals(
-                    &context.id,
-                    Some(crate::memory::ThreadSignalStatus::Pending),
-                )
-                .await?
-                .into_iter()
-                .filter(|signal| dispatched_threads.insert(signal.thread_id.clone()))
-                .collect::<Vec<_>>();
-            let event_ids = signals
-                .iter()
-                .map(|signal| signal.event_id.clone())
-                .collect::<Vec<_>>();
-            let mut events_by_id = HashMap::new();
-            for event_ids in event_ids.chunks(500) {
-                for event in self
-                    .store
-                    .query(QueryFilter {
-                        event_ids: event_ids.to_vec(),
-                        context_id: Some(context.id.clone()),
-                        ..Default::default()
-                    })
-                    .await?
-                {
-                    events_by_id.insert(event.id.clone(), event);
+        let mut context_cursor = None;
+        loop {
+            let contexts = session_store
+                .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                    kind: crate::memory::RuntimeDirectoryKind::Contexts,
+                    identity_order: true,
+                    cursor: context_cursor.clone(),
+                    limit: 200,
+                    ..Default::default()
+                })
+                .await?;
+            for context in contexts.contexts {
+                let mut after = String::new();
+                loop {
+                    let mut page = session_store
+                        .read_scheduler_recovery_page(
+                            crate::memory::SchedulerRecoverySource::PendingSignalThreads,
+                            &context.id,
+                            &after,
+                            200,
+                        )
+                        .await?;
+                    let has_more = page.len() > 200;
+                    page.truncate(200);
+                    let Some(tail) = page.last() else {
+                        break;
+                    };
+                    let next = tail.cursor_id.clone();
+                    if next <= after {
+                        return Err("Signal recovery cursor did not advance".into());
+                    }
+                    let mut dispatched = HashSet::new();
+                    for signal in page {
+                        if signal.context_id != context.id {
+                            return Err("Signal recovery scope changed".into());
+                        }
+                        if !dispatched.insert(signal.entity_id) {
+                            continue;
+                        }
+                        let event_id = signal
+                            .event_id
+                            .ok_or("Signal recovery locator has no Event")?;
+                        // One immutable Event at a time. An entire Context's
+                        // pending tool/input payloads are not a startup page.
+                        let event = self
+                            .store
+                            .query(QueryFilter {
+                                event_id: Some(event_id.clone()),
+                                context_id: Some(context.id.clone()),
+                                top_k: Some(1),
+                                ..Default::default()
+                            })
+                            .await?
+                            .into_iter()
+                            .next();
+                        let Some(event) = event else {
+                            tracing::error!(%event_id, event_code = "orchestrator.thread_signal.recovery_event_missing",
+                                "Cannot recover pending Thread Signal because its Event was not persisted");
+                            continue;
+                        };
+                        self.bus.dispatch_persisted(event).await?;
+                    }
+                    // The native mailbox owns the rest of this last Thread's
+                    // Signals, exactly as the former all-then-distinct path.
+                    after = next;
+                    if !has_more {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
             }
-            for signal in signals {
-                let Some(event) = events_by_id.remove(&signal.event_id) else {
-                    tracing::error!(
-                        signal_id = %signal.id,
-                        event_id = %signal.event_id,
-                        event_code = "orchestrator.thread_signal.recovery_event_missing",
-                        "Cannot recover pending Thread Signal because its Event was not persisted"
-                    );
-                    continue;
-                };
-                self.bus.dispatch_persisted(event).await?;
+            if !contexts.has_more {
+                break;
             }
+            let next = contexts
+                .next_cursor
+                .ok_or("Context recovery continuation is missing")?;
+            if context_cursor.as_ref() == Some(&next) {
+                return Err("Context recovery cursor did not advance".into());
+            }
+            context_cursor = Some(next);
         }
         Ok(())
     }
@@ -7421,134 +7464,177 @@ impl Orchestrator {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
-        for context in session_store.list_contexts(false).await? {
-            let activations = session_store
-                .list_context_thread_activations(&context.id, false)
+        let mut context_cursor = None;
+        loop {
+            let contexts = session_store
+                .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                    kind: crate::memory::RuntimeDirectoryKind::Contexts,
+                    identity_order: true,
+                    cursor: context_cursor.clone(),
+                    limit: 200,
+                    ..Default::default()
+                })
                 .await?;
-            if activations.is_empty() {
-                continue;
-            }
-            let mut event_ids = Vec::with_capacity(activations.len().saturating_mul(3));
-            for activation in &activations {
-                event_ids.push(activation.trigger_event_id.clone());
-                event_ids.push(format!("call_{}", activation.id));
-                event_ids.push(format!("call_{}_final", activation.id));
-            }
-            event_ids.sort();
-            event_ids.dedup();
-            let mut events = Vec::new();
-            // Keep recovery proportional to live Activations while respecting
-            // SQLite/PostgreSQL bind limits for a large active fleet.
-            for event_ids in event_ids.chunks(500) {
-                events.extend(
-                    self.store
-                        .query(QueryFilter {
-                            event_ids: event_ids.to_vec(),
-                            context_id: Some(context.id.clone()),
-                            ..Default::default()
-                        })
-                        .await?,
-                );
-            }
-            let events = events
-                .into_iter()
-                .map(|event| (event.id.clone(), event))
-                .collect::<HashMap<_, _>>();
-            for activation in activations {
-                let Some(trigger) = events.get(&activation.trigger_event_id).cloned() else {
-                    tracing::error!(
-                        activation_id = %activation.id,
-                        trigger_event_id = %activation.trigger_event_id,
-                        event_code = "orchestrator.activation.recovery_trigger_missing",
-                        "Cannot recover Thread Activation because its Trigger Event was not persisted"
-                    );
-                    continue;
-                };
-                let recovery_owns_activation = recovery_owns_activation(
-                    self.context_engine.worker_coordination_mode(),
-                    &activation,
-                    Utc::now(),
-                );
-                // A model request has no external side effect before an
-                // Assistant decision is durably recorded. Therefore a queued
-                // or lease-expired DialogueTurn is safe to resume after a
-                // Runtime restart; cancelling it forced users to resend and
-                // could race with delayed lease recovery into duplicate work.
-                // A persisted assistant decision is a durable recovery
-                // boundary. A running Activation may also have compiled its
-                // trigger into Context and entered model streaming without
-                // reaching that boundary. In both cases the original trigger
-                // can look "covered" by a later Context snapshot; force this
-                // one process-local redispatch so recovery either resumes the
-                // exact persisted decision or finishes the interrupted model
-                // continuation. dispatch_persisted never appends a new Event.
-                let mut trigger = trigger;
-                if events.contains_key(&format!("call_{}", activation.id))
-                    || events.contains_key(&format!("call_{}_final", activation.id))
-                    || session_store
-                        .get_thread_activation_approval_wait(&activation.id)
-                        .await?
-                        .is_some()
-                    || (recovery_owns_activation
-                        && activation.status == ThreadActivationStatus::Running)
-                {
-                    trigger
-                        .payload
-                        .insert("runtime_force_evaluation".to_string(), json!(true));
-                    trigger.payload.insert(
-                        "runtime_recovery_activation_id".to_string(),
-                        json!(&activation.id),
-                    );
-                }
-                match activation.status {
-                    ThreadActivationStatus::Queued => {
-                        if self.activation_admission.contains(&activation.id) {
-                            self.dispatch_recovered_activation(&activation, trigger)
-                                .await?;
-                        }
+            for context in contexts.contexts {
+                let mut after = String::new();
+                loop {
+                    let mut page = session_store
+                        .read_scheduler_recovery_page(
+                            crate::memory::SchedulerRecoverySource::LiveActivations,
+                            &context.id,
+                            &after,
+                            200,
+                        )
+                        .await?;
+                    let has_more = page.len() > 200;
+                    page.truncate(200);
+                    let Some(tail) = page.last() else {
+                        break;
+                    };
+                    let next = tail.cursor_id.clone();
+                    if next <= after {
+                        return Err("Activation recovery cursor did not advance".into());
                     }
-                    ThreadActivationStatus::Running => {
-                        if recovery_owns_activation {
-                            tracing::warn!(
-                                activation_id = %activation.id,
-                                claimed_by = ?activation.claimed_by,
-                                event_code = "orchestrator.activation.recovered_from_exited_runtime",
-                                "Recovering a Thread Activation held by an exited Runtime"
-                            );
-                            match self
-                                .transition_thread_activation(
-                                    &activation,
-                                    ThreadActivationStatus::Queued,
-                                    None,
-                                    None,
-                                    None,
-                                    &activation.trigger_event_id,
-                                    "Runtime-Recovery",
-                                )
-                                .await?
-                            {
-                                ThreadActivationMutation::Updated(queued) => {
-                                    self.cancel_activation_lease(&activation.id).await?;
-                                    if self.activation_admission.restore_queued(
-                                        activation_admission_key(&queued, &trigger),
-                                    )? == RestoreQueuedOutcome::Restored
-                                    {
-                                        self.dispatch_recovered_activation(&queued, trigger)
-                                            .await?;
-                                    }
-                                }
-                                ThreadActivationMutation::Conflict { .. }
-                                | ThreadActivationMutation::NotFound => {}
-                            }
+                    for locator in page {
+                        let Some(activation) = session_store
+                            .get_thread_activation(&locator.entity_id)
+                            .await?
+                        else {
+                            continue;
+                        };
+                        if activation.context_id != context.id {
+                            return Err("Activation recovery scope changed".into());
+                        }
+                        if activation.status.is_terminal() {
                             continue;
                         }
-                        self.arm_activation_lease(&activation).await?;
+                        let events = self
+                            .store
+                            .query(QueryFilter {
+                                event_ids: vec![
+                                    activation.trigger_event_id.clone(),
+                                    format!("call_{}", activation.id),
+                                    format!("call_{}_final", activation.id),
+                                ],
+                                context_id: Some(context.id.clone()),
+                                top_k: Some(3),
+                                ..Default::default()
+                            })
+                            .await?
+                            .into_iter()
+                            .map(|event| (event.id.clone(), event))
+                            .collect::<HashMap<_, _>>();
+                        let Some(trigger) = events.get(&activation.trigger_event_id).cloned()
+                        else {
+                            tracing::error!(activation_id=%activation.id,trigger_event_id=%activation.trigger_event_id,
+                                event_code="orchestrator.activation.recovery_trigger_missing",
+                                "Cannot recover Thread Activation because its Trigger Event was not persisted");
+                            continue;
+                        };
+                        let recovery_owns_activation = recovery_owns_activation(
+                            self.context_engine.worker_coordination_mode(),
+                            &activation,
+                            Utc::now(),
+                        );
+                        // A model request has no external side effect before an
+                        // Assistant decision is durably recorded. Therefore a queued
+                        // or lease-expired DialogueTurn is safe to resume after a
+                        // Runtime restart; cancelling it forced users to resend and
+                        // could race with delayed lease recovery into duplicate work.
+                        // A persisted assistant decision is a durable recovery
+                        // boundary. A running Activation may also have compiled its
+                        // trigger into Context and entered model streaming without
+                        // reaching that boundary. In both cases the original trigger
+                        // can look "covered" by a later Context snapshot; force this
+                        // one process-local redispatch so recovery either resumes the
+                        // exact persisted decision or finishes the interrupted model
+                        // continuation. dispatch_persisted never appends a new Event.
+                        let mut trigger = trigger;
+                        if events.contains_key(&format!("call_{}", activation.id))
+                            || events.contains_key(&format!("call_{}_final", activation.id))
+                            || session_store
+                                .get_thread_activation_approval_wait(&activation.id)
+                                .await?
+                                .is_some()
+                            || (recovery_owns_activation
+                                && activation.status == ThreadActivationStatus::Running)
+                        {
+                            trigger
+                                .payload
+                                .insert("runtime_force_evaluation".to_string(), json!(true));
+                            trigger.payload.insert(
+                                "runtime_recovery_activation_id".to_string(),
+                                json!(&activation.id),
+                            );
+                        }
+                        match activation.status {
+                            ThreadActivationStatus::Queued => {
+                                if self.activation_admission.contains(&activation.id) {
+                                    self.dispatch_recovered_activation(&activation, trigger)
+                                        .await?;
+                                }
+                            }
+                            ThreadActivationStatus::Running => {
+                                if recovery_owns_activation {
+                                    tracing::warn!(
+                                        activation_id = %activation.id,
+                                        claimed_by = ?activation.claimed_by,
+                                        event_code = "orchestrator.activation.recovered_from_exited_runtime",
+                                        "Recovering a Thread Activation held by an exited Runtime"
+                                    );
+                                    match self
+                                        .transition_thread_activation(
+                                            &activation,
+                                            ThreadActivationStatus::Queued,
+                                            None,
+                                            None,
+                                            None,
+                                            &activation.trigger_event_id,
+                                            "Runtime-Recovery",
+                                        )
+                                        .await?
+                                    {
+                                        ThreadActivationMutation::Updated(queued) => {
+                                            self.cancel_activation_lease(&activation.id).await?;
+                                            if self.activation_admission.restore_queued(
+                                                activation_admission_key(&queued, &trigger),
+                                            )? == RestoreQueuedOutcome::Restored
+                                            {
+                                                self.dispatch_recovered_activation(
+                                                    &queued, trigger,
+                                                )
+                                                .await?;
+                                            }
+                                        }
+                                        ThreadActivationMutation::Conflict { .. }
+                                        | ThreadActivationMutation::NotFound => {}
+                                    }
+                                    continue;
+                                }
+                                self.arm_activation_lease(&activation).await?;
+                            }
+                            ThreadActivationStatus::Succeeded
+                            | ThreadActivationStatus::Cancelled
+                            | ThreadActivationStatus::Failed => {}
+                        }
                     }
-                    ThreadActivationStatus::Succeeded
-                    | ThreadActivationStatus::Cancelled
-                    | ThreadActivationStatus::Failed => {}
+                    after = next;
+                    if !has_more {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
             }
+            if !contexts.has_more {
+                break;
+            }
+            let next = contexts
+                .next_cursor
+                .ok_or("Context recovery continuation is missing")?;
+            if context_cursor.as_ref() == Some(&next) {
+                return Err("Context recovery cursor did not advance".into());
+            }
+            context_cursor = Some(next);
         }
         Ok(())
     }
@@ -7568,168 +7654,157 @@ impl Orchestrator {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
-        let scheduled_threads = session_store
-            .list_schedules(None, Some(crate::memory::ScheduleStatus::Queued))
-            .await?
-            .into_iter()
-            .map(|intent| intent.thread_id)
-            .collect::<HashSet<_>>();
-        let pending_dependency_threads = if let Some(store) = self.plan_store.as_ref() {
-            store
-                .list_scheduler_dependencies(SchedulerDependencyFilter {
-                    owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                    status: Some(SchedulerDependencyStatus::Pending),
-                    required_only: true,
-                    ..Default::default()
-                })
-                .await?
-                .into_iter()
-                .map(|dependency| dependency.owner_id)
-                .collect::<HashSet<_>>()
-        } else {
-            HashSet::new()
-        };
-        let active_execution_job_threads = if let Some(manager) = self.execution_jobs.as_ref() {
-            manager
-                .store()
-                .list_execution_jobs(ExecutionJobFilter {
-                    include_terminal: false,
-                    ..ExecutionJobFilter::default()
-                })
-                .await?
-                .into_iter()
-                .map(|job| job.thread_id)
-                .collect::<HashSet<_>>()
-        } else {
-            HashSet::new()
-        };
-        for context in session_store.list_contexts(false).await? {
-            let pending_signal_threads = session_store
-                .list_context_thread_signals(
-                    &context.id,
-                    Some(crate::memory::ThreadSignalStatus::Pending),
-                )
-                .await?
-                .into_iter()
-                .map(|signal| signal.thread_id)
-                .collect::<HashSet<_>>();
-            let activations = session_store
-                .list_context_thread_activations(&context.id, false)
-                .await?;
-            let active_roots = activations
-                .iter()
-                .map(|item| item.root_turn_id.clone())
-                .collect::<HashSet<_>>();
-            let threads = session_store
-                .list_context_threads(&context.id, false)
-                .await?;
-            for thread in threads {
-                if thread.lifecycle != ThreadLifecycle::Open
-                    || active_roots.contains(&thread.root_turn_id)
-                    || scheduled_threads.contains(&thread.id)
-                    || pending_signal_threads.contains(&thread.id)
-                    || pending_dependency_threads.contains(&thread.id)
-                    || active_execution_job_threads.contains(&thread.id)
-                {
-                    continue;
-                }
-                if thread.kind == ThreadKind::Execution
-                    && thread.supervision.supervisor_kind
-                        == crate::memory::ThreadSupervisorKind::Objective
-                    && thread.supervision.origin_evaluation_id.is_none()
-                {
-                    let objective = if let (Some(supervisor), Some(objective_id)) = (
-                        self.objective_supervisor.as_ref(),
-                        thread.supervision.supervisor_id.as_deref(),
-                    ) {
-                        supervisor.get(objective_id).await?
-                    } else {
-                        None
-                    };
-                    if objective_supervision_matches_state(&thread.supervision, objective.as_ref())
-                    {
-                        continue;
-                    }
-                }
-                let reason = "Runtime restart detected an active Thread with no non-terminal Thread Activation, pending schedule, or committed terminal state; the orphaned state was marked cancelled.";
-                let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
-                    match kernel
-                        .execute(crate::controllers::DialogueController::control_thread(
-                            &thread,
+        let mut contexts = crate::memory::recovery::ContextRecoveryPages::default();
+        while let Some(page) = contexts.next(session_store.as_ref()).await? {
+            for context in page {
+                let mut after = String::new();
+                loop {
+                    let mut locators = session_store
+                        .read_scheduler_recovery_page(
+                            crate::memory::SchedulerRecoverySource::OpenThreads,
                             &context.id,
-                            ThreadControlAction::Cancel,
-                            reason,
-                            "Runtime-Recovery",
-                        ))
-                        .await?
-                    {
-                        crate::scheduler::KernelResult::ThreadControlled(mutation) => mutation,
-                        _ => unreachable!("ControlThread command returned wrong result"),
+                            &after,
+                            200,
+                        )
+                        .await?;
+                    let has_more = locators.len() > 200;
+                    locators.truncate(200);
+                    let Some(tail) = locators.last() else {
+                        break;
+                    };
+                    let next = tail.cursor_id.clone();
+                    if next <= after {
+                        return Err("Thread recovery cursor did not advance".into());
                     }
-                } else {
-                    // Narrow recovery fixtures may assemble an Orchestrator
-                    // without a Kernel. Production Runtime always injects it.
-                    session_store
-                        .control_thread(
-                            &thread.id,
-                            thread.revision,
-                            ThreadControlAction::Cancel,
-                            Some(reason),
-                            Some("Runtime-Recovery"),
-                        )
+                    let ids = locators
+                        .iter()
+                        .map(|row| row.entity_id.clone())
+                        .collect::<Vec<_>>();
+                    let owned = session_store
+                        .recovery_owned_threads(&context.id, &ids)
                         .await?
-                };
-                match mutation {
-                    ThreadMutation::Updated(_) => {
-                        self.revoke_thread_capability_leases(
-                            &thread.id,
-                            "Runtime reconciled an orphan Thread as cancelled",
-                        )
-                        .await;
-                        if let Some(scheduler) = &self.thread_scheduler {
-                            scheduler.dependency_completed(&thread.id).await?;
+                        .into_iter()
+                        .collect::<HashSet<_>>();
+                    for locator in locators {
+                        if owned.contains(&locator.entity_id) {
+                            continue;
                         }
-                        tracing::warn!(
-                            thread_id = %thread.id,
-                            root_turn_id = %thread.root_turn_id,
-                            event_code = "orchestrator.startup.orphan_thread_cancelled",
-                            "Closed an orphan Thread during Runtime startup"
-                        );
-                        self.bus
-                            .publish(Event::new(
-                                format!("thread_reconciled_{}_g{}", thread.id, thread.generation),
-                                "Runtime".to_string(),
-                                "runtime_control".to_string(),
-                                "runtime/thread_reconciled".to_string(),
-                                serde_json::json!({
-                                    "agent_id": thread.agent_id,
-                                    "context_id": thread.context_id,
-                                    "session_id": thread.session_id,
-                                    "thread_id": thread.id,
-                                    "root_turn_id": thread.root_turn_id,
-                                    "thread_generation": thread.generation,
-                                    "terminal_kind": "cancelled",
-                                    "wake_policy": "none",
-                                    "text": reason,
-                                })
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default(),
-                            ))
-                            .await?;
+                        let Some(thread) = session_store.get_thread(&locator.entity_id).await?
+                        else {
+                            continue;
+                        };
+                        if thread.context_id != context.id {
+                            return Err("Thread recovery scope changed".into());
+                        }
+                        if thread.lifecycle != ThreadLifecycle::Open {
+                            continue;
+                        }
+                        if thread.kind == ThreadKind::Execution
+                            && thread.supervision.supervisor_kind
+                                == crate::memory::ThreadSupervisorKind::Objective
+                            && thread.supervision.origin_evaluation_id.is_none()
+                        {
+                            let objective = if let (Some(supervisor), Some(objective_id)) = (
+                                self.objective_supervisor.as_ref(),
+                                thread.supervision.supervisor_id.as_deref(),
+                            ) {
+                                supervisor.get(objective_id).await?
+                            } else {
+                                None
+                            };
+                            if objective_supervision_matches_state(
+                                &thread.supervision,
+                                objective.as_ref(),
+                            ) {
+                                continue;
+                            }
+                        }
+                        let reason = "Runtime restart detected an active Thread with no non-terminal Thread Activation, pending schedule, or committed terminal state; the orphaned state was marked cancelled.";
+                        let mutation = if let Some(kernel) = self.scheduler_kernel.as_ref() {
+                            match kernel
+                                .execute(crate::controllers::DialogueController::control_thread(
+                                    &thread,
+                                    &context.id,
+                                    ThreadControlAction::Cancel,
+                                    reason,
+                                    "Runtime-Recovery",
+                                ))
+                                .await?
+                            {
+                                crate::scheduler::KernelResult::ThreadControlled(mutation) => {
+                                    mutation
+                                }
+                                _ => unreachable!("ControlThread command returned wrong result"),
+                            }
+                        } else {
+                            // Narrow recovery fixtures may assemble an Orchestrator
+                            // without a Kernel. Production Runtime always injects it.
+                            session_store
+                                .control_thread(
+                                    &thread.id,
+                                    thread.revision,
+                                    ThreadControlAction::Cancel,
+                                    Some(reason),
+                                    Some("Runtime-Recovery"),
+                                )
+                                .await?
+                        };
+                        match mutation {
+                            ThreadMutation::Updated(_) => {
+                                self.revoke_thread_capability_leases(
+                                    &thread.id,
+                                    "Runtime reconciled an orphan Thread as cancelled",
+                                )
+                                .await;
+                                if let Some(scheduler) = &self.thread_scheduler {
+                                    scheduler.dependency_completed(&thread.id).await?;
+                                }
+                                tracing::warn!(
+                                    thread_id = %thread.id,
+                                    root_turn_id = %thread.root_turn_id,
+                                    event_code = "orchestrator.startup.orphan_thread_cancelled",
+                                    "Closed an orphan Thread during Runtime startup"
+                                );
+                                self.bus
+                                    .publish(Event::new(
+                                        format!(
+                                            "thread_reconciled_{}_g{}",
+                                            thread.id, thread.generation
+                                        ),
+                                        "Runtime".to_string(),
+                                        "runtime_control".to_string(),
+                                        "runtime/thread_reconciled".to_string(),
+                                        serde_json::json!({
+                                            "agent_id": thread.agent_id,
+                                            "context_id": thread.context_id,
+                                            "session_id": thread.session_id,
+                                            "thread_id": thread.id,
+                                            "root_turn_id": thread.root_turn_id,
+                                            "thread_generation": thread.generation,
+                                            "terminal_kind": "cancelled",
+                                            "wake_policy": "none",
+                                            "text": reason,
+                                        })
+                                        .as_object()
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                    ))
+                                    .await?;
+                            }
+                            ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
+                        }
                     }
-                    ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
+                    after = next;
+                    if !has_more {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
             }
         }
         Ok(())
     }
 
-    /// Close non-terminal physical Actions whose causal owner has already
-    /// reached a terminal state. Older Runtime versions could persist an
-    /// Approval decision and then fail the Activation before consuming the
-    /// grant, leaving a `waiting_approval` Job alive forever. Such a Job is not
-    /// resumable work: its Activation/Thread can no longer receive the result.
     async fn reconcile_orphaned_execution_jobs(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());

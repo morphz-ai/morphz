@@ -283,6 +283,55 @@ impl ThreadStore for PostgresStore {
         }
         Ok(page)
     }
+    async fn recovery_owned_threads(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<String>, StoreError> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if thread_ids.len() > 200 || context_id.is_empty() {
+            return Err("invalid recovery ownership page".into());
+        }
+        let mut query =
+            crate::memory::recovery::owned_threads_query!(sqlx::Postgres, context_id, thread_ids);
+        Ok(query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| row.get("id"))
+            .collect())
+    }
+    async fn read_scheduler_recovery_page(
+        &self,
+        source: crate::memory::SchedulerRecoverySource,
+        context_id: &str,
+        after: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::memory::SchedulerRecoveryLocator>, StoreError> {
+        if context_id.is_empty() || after.len() > 512 {
+            return Err("invalid scheduler recovery scope".into());
+        }
+        let mut query = crate::memory::recovery::scheduler_query!(
+            sqlx::Postgres,
+            source,
+            context_id,
+            after,
+            limit
+        );
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::memory::SchedulerRecoveryLocator {
+                cursor_id: row.get("cursor_id"),
+                context_id: row.get("context_id"),
+                entity_id: row.get("entity_id"),
+                event_id: row.get("event_id"),
+            })
+            .collect())
+    }
     async fn read_transfer_projection_recovery_page(
         &self,
         source: crate::memory::TransferProjectionSource,

@@ -1,6 +1,9 @@
 # Product read audit — 2026-11-01
 
-Status: **in progress, candidate not deployed**. The first validated read-model commit is `0c710e2b`; additional scoped Activity and Terminal catalog changes are still under validation.
+Status: **in progress, candidate not deployed**. Validated local read-model
+commits are `0c710e2b`, `66756062` and `96962e2a`. Startup recovery pagination
+has also passed the focused validation recorded below. Remaining read owners
+and original-app acceptance are still open.
 This document is not whole-product acceptance. The root `AGENTS.md` is the
 read contract for Runtime, Dashboard and Desktop.
 
@@ -32,7 +35,7 @@ array is not evidence of completion, absence or a broken approval route.
 | TUI | Native durable-change subscription replaces healthy 500 ms tail polling; Session directory loaded only when opened, explicit tail continuation | Release all-target check passed; behavior still needs current binary tests |
 | Model identity / CLI directory | Principal/Agent predicates before directory LIMIT; CLI scoped `--last` uses a one-row seek; list has explicit cursor | Release all-target check passed; remaining legacy bulk APIs and other CLI/TUI collections still need inventory |
 | Transcript search | Bounded Recall candidates; exact Event metadata and <=50 authorized Session points before bodies | Does not hydrate a whole Session directory to authorize a search |
-| Startup recovery | Stable-ID 200-key policy/route batches and live transfer locators | Remaining orchestrator startup/integrity paths must bound materialization without truncating complete checks |
+| Startup recovery | Stable-ID 200-key policy/route/Context batches, live transfer/Activation locators, pending mailbox heads and orphan ownership EXISTS | SQLite and owned PostgreSQL recovery pressure fixtures passed; remaining per-Context invariant materialization must bound complete checks |
 
 ## Validation receipts
 
@@ -136,3 +139,46 @@ catalog page and a healthy Objective control despite an unrelated unavailable
 Context. The command does not wait for the reconciliation's JavaScript turn.
 A follow-up original-profile read-only guard observed one live Activation, zero
 live Jobs and zero nonterminal Objectives; Runtime was not switched or stopped.
+
+## Startup recovery and concurrent-demand follow-up
+
+Case 10 frozen native source fingerprint is
+`94293306625a0fe7118d34a3e79b586c6dd59c2930d29df4bef64c802cf79788`
+(219 files). Release test-executable construction and release all-target check
+44 passed. The SQLite native pressure case passed in 2.13 s; the same owned
+ephemeral PostgreSQL case passed in 18.47 s. These cases add 220 live Threads,
+Activations and pending mailbox heads plus 10000 pending Signals for one Thread.
+Seven-row locator pages advance without draining that mailbox; native ownership,
+foreign scope, retained-index backfill, transaction rollback and physical plans
+are checked. Exact source Events are opened only for the selected recovery
+locator, not for every live Activation in a Context.
+
+The Activity coalescer also keeps the exact requested Context coverage. A
+concurrent history/current request for another Context cannot be absorbed by
+the older in-flight read. After waiting, it retains its original scoped demand
+rather than expanding to all registered Contexts. Application run 43 passed
+**92/92**, zero skips; production build 44 passed. The complete case-10
+frozen-native library run passed **1762 tests**, zero failures, 18 explicit
+ignores (470.63 s). These ignores are not reported as passes.
+
+Case 11 changes only the recovery-index backfill's post-update verification:
+it checks the exact <=200 selected IDs rather than one arbitrary unresolved
+global row. A missing parent in the selected page now fails that batch even
+when another unresolved row lies outside it. Its native fingerprint is
+`aed405b9fd78d91014d362d14ad4b29e4a2adfe0232e10fa47afa006f1613c15`
+(SHA-256 of compact JSON containing the ordered 219 path/hash entries).
+The frozen source passed release test-executable construction and release
+all-target check 45, the SQLite
+pressure case (2.15 s), the owned PostgreSQL pressure case (18.80 s), and the
+65 selected recovery tests with zero failures/ignores (37.20 s). This is not a
+claim of another complete case-11 library run.
+
+An additional owned ephemeral PostgreSQL diagnostic exercised this exact
+post-update query shape on 100000 Signal metadata rows, including 9800
+unresolved rows outside its 200 selected IDs. The real plan used the missing-ID
+index, with zero filtered lifetime rows and 403 buffer touches; it did not scan
+the retained Signal table. This is a physical-query diagnostic, not original
+Runtime latency or end-to-end acceptance.
+
+No original Runtime, profile, draft, model or task was changed, and no GitHub
+run is claimed.

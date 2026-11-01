@@ -2186,6 +2186,7 @@ impl SqliteStore {
         crate::memory::directory::schedule_index::sqlite(&pool).await?;
         crate::memory::directory::approval_index::sqlite(&pool).await?;
         crate::memory::directory::binding_agent::sqlite(&pool).await?;
+        crate::memory::recovery::sqlite_scheduler_indexes(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -15976,6 +15977,58 @@ impl ThreadStore for SqliteStore {
             }
         }
         Ok(page)
+    }
+    async fn recovery_owned_threads(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if thread_ids.len() > 200 || context_id.is_empty() {
+            return Err("invalid recovery ownership page".into());
+        }
+        let mut query =
+            crate::memory::recovery::owned_threads_query!(sqlx::Sqlite, context_id, thread_ids);
+        Ok(query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| row.get("id"))
+            .collect())
+    }
+    async fn read_scheduler_recovery_page(
+        &self,
+        source: crate::memory::SchedulerRecoverySource,
+        context_id: &str,
+        after: &str,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::memory::SchedulerRecoveryLocator>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if context_id.is_empty() || after.len() > 512 {
+            return Err("invalid scheduler recovery scope".into());
+        }
+        let mut query = crate::memory::recovery::scheduler_query!(
+            sqlx::Sqlite,
+            source,
+            context_id,
+            after,
+            limit
+        );
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::memory::SchedulerRecoveryLocator {
+                cursor_id: row.get("cursor_id"),
+                context_id: row.get("context_id"),
+                entity_id: row.get("entity_id"),
+                event_id: row.get("event_id"),
+            })
+            .collect())
     }
     async fn read_transfer_projection_recovery_page(
         &self,
@@ -45666,6 +45719,11 @@ mod tests {
         crate::memory::directory::tests::terminal_catalog_pages!(sqlx::Sqlite, &store);
         crate::memory::directory::tests::identity_recovery!(sqlx::Sqlite, &store, false);
         crate::memory::directory::tests::transfer_recovery!(sqlx::Sqlite, &store, false);
+        crate::memory::directory::tests::scheduler_recovery_pages!(
+            sqlx::Sqlite,
+            &store,
+            crate::memory::recovery::sqlite_scheduler_indexes
+        );
         for (name, mut query) in crate::memory::directory::tests::plan_cases!(sqlx::Sqlite) {
             use std::sync::atomic::{AtomicUsize, Ordering};
             let operations = std::sync::Arc::new(AtomicUsize::new(0));

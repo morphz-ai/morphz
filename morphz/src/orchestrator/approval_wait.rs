@@ -50,80 +50,129 @@ impl Orchestrator {
             return Ok(());
         };
         let mut reconciled = HashSet::new();
-        for context in store.list_contexts(false).await? {
-            for activation in store
-                .list_context_thread_activations(&context.id, false)
-                .await?
-            {
-                let Some(wait) = store
-                    .get_thread_activation_approval_wait(&activation.id)
-                    .await?
-                else {
-                    continue;
-                };
-                let call = self
-                    .context_engine
-                    .find_event(&activation.context_id, &wait.assistant_call_event_id)
-                    .await?
-                    .ok_or(
-                        "Objective approval recovery is missing its immutable assistant batch",
-                    )?;
-                let outputs = self
-                    .store
-                    .query(QueryFilter {
-                        context_id: Some(activation.context_id.clone()),
-                        activation_id: Some(activation.id.clone()),
-                        topic: Some("chat/tool_output".into()),
-                        ..Default::default()
-                    })
-                    .await?;
-                let Some(binding) =
-                    crate::memory::approval_checkpoint_objective_binding(&call, &outputs)?
-                else {
-                    continue;
-                };
-                let route = crate::objective::ActiveObjectiveEvaluation::from_event(binding)
-                    .ok_or("Objective approval recovery has an invalid Evaluation binding")?;
-                let Some(objective) = supervisor.get(&route.objective_id).await? else {
-                    return Err(
-                        "Objective approval recovery is missing its durable Objective".into(),
-                    );
-                };
-                if objective.agent_id != activation.agent_id
-                    || objective.context_id != activation.context_id
-                    || objective.coordinator_session_id != activation.session_id
-                {
-                    return Err("Objective approval recovery has conflicting owner scope".into());
+        let mut context_pages = crate::memory::recovery::ContextRecoveryPages::default();
+        while let Some(contexts) = context_pages.next(store.as_ref()).await? {
+            for context in contexts {
+                let mut after = String::new();
+                loop {
+                    let mut page = store
+                        .read_scheduler_recovery_page(
+                            crate::memory::SchedulerRecoverySource::LiveActivations,
+                            &context.id,
+                            &after,
+                            200,
+                        )
+                        .await?;
+                    let has_more = page.len() > 200;
+                    page.truncate(200);
+                    let Some(tail) = page.last() else {
+                        break;
+                    };
+                    let next = tail.cursor_id.clone();
+                    if next <= after {
+                        return Err("Approval recovery cursor did not advance".into());
+                    }
+                    for locator in page {
+                        let Some(activation) =
+                            store.get_thread_activation(&locator.entity_id).await?
+                        else {
+                            continue;
+                        };
+                        if activation.context_id != context.id {
+                            return Err("Approval recovery scope changed".into());
+                        }
+                        if activation.status.is_terminal() {
+                            continue;
+                        }
+                        let Some(wait) = store
+                            .get_thread_activation_approval_wait(&activation.id)
+                            .await?
+                        else {
+                            continue;
+                        };
+                        let call = self
+                        .context_engine
+                        .find_event(&activation.context_id, &wait.assistant_call_event_id)
+                        .await?
+                        .ok_or(
+                            "Objective approval recovery is missing its immutable assistant batch",
+                        )?;
+                        let outputs = self
+                            .store
+                            .query(QueryFilter {
+                                context_id: Some(activation.context_id.clone()),
+                                activation_id: Some(activation.id.clone()),
+                                topic: Some("chat/tool_output".into()),
+                                ..Default::default()
+                            })
+                            .await?;
+                        let Some(binding) =
+                            crate::memory::approval_checkpoint_objective_binding(&call, &outputs)?
+                        else {
+                            continue;
+                        };
+                        let route =
+                            crate::objective::ActiveObjectiveEvaluation::from_event(binding)
+                                .ok_or(
+                                    "Objective approval recovery has an invalid Evaluation binding",
+                                )?;
+                        let Some(objective) = supervisor.get(&route.objective_id).await? else {
+                            return Err(
+                                "Objective approval recovery is missing its durable Objective"
+                                    .into(),
+                            );
+                        };
+                        if objective.agent_id != activation.agent_id
+                            || objective.context_id != activation.context_id
+                            || objective.coordinator_session_id != activation.session_id
+                        {
+                            return Err(
+                                "Objective approval recovery has conflicting owner scope".into()
+                            );
+                        }
+                        // Evaluation IDs are fencing tokens and never reused. A
+                        // subsequent resume cannot make this old batch current again.
+                        // Stop states also cover an exit before finish_evaluation.
+                        if objective.active_evaluation_id.as_deref()
+                            == Some(route.evaluation_id.as_str())
+                            && !matches!(
+                                objective.status,
+                                crate::memory::ObjectiveStatus::Paused
+                                    | crate::memory::ObjectiveStatus::Cancelled
+                                    | crate::memory::ObjectiveStatus::Failed
+                            )
+                        {
+                            continue;
+                        }
+                        if !reconciled
+                            .insert((route.objective_id.clone(), route.evaluation_id.clone()))
+                        {
+                            continue;
+                        }
+                        // A restarted Runtime may already see a newer Objective
+                        // lifetime. The immutable checkpoint's Evaluation token is
+                        // never reused; do not borrow the latest generation to filter
+                        // its old infer children. Each selected Thread keeps its own
+                        // exact generation/revision fence throughout cancellation.
+                        self.cancel_objective_evaluation(
+                            &route.objective_id,
+                            &route.evaluation_id,
+                            None,
+                        )
+                        .await?;
+                        tracing::info!(
+                            objective_id = %route.objective_id,
+                            evaluation_id = %route.evaluation_id,
+                            event_code = "orchestrator.startup.revoked_objective_approval_closed",
+                            "Closed approval checkpoints whose Objective Evaluation was revoked before restart"
+                        );
+                    }
+                    after = next;
+                    if !has_more {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
                 }
-                // Evaluation IDs are fencing tokens and never reused. A
-                // subsequent resume cannot make this old batch current again.
-                // Stop states also cover an exit before finish_evaluation.
-                if objective.active_evaluation_id.as_deref() == Some(route.evaluation_id.as_str())
-                    && !matches!(
-                        objective.status,
-                        crate::memory::ObjectiveStatus::Paused
-                            | crate::memory::ObjectiveStatus::Cancelled
-                            | crate::memory::ObjectiveStatus::Failed
-                    )
-                {
-                    continue;
-                }
-                if !reconciled.insert((route.objective_id.clone(), route.evaluation_id.clone())) {
-                    continue;
-                }
-                // A restarted Runtime may already see a newer Objective
-                // lifetime. The immutable checkpoint's Evaluation token is
-                // never reused; do not borrow the latest generation to filter
-                // its old infer children. Each selected Thread keeps its own
-                // exact generation/revision fence throughout cancellation.
-                self.cancel_objective_evaluation(&route.objective_id, &route.evaluation_id, None)
-                    .await?;
-                tracing::info!(
-                    objective_id = %route.objective_id,
-                    evaluation_id = %route.evaluation_id,
-                    event_code = "orchestrator.startup.revoked_objective_approval_closed",
-                    "Closed approval checkpoints whose Objective Evaluation was revoked before restart"
-                );
             }
         }
         Ok(())

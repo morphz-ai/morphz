@@ -182,6 +182,52 @@ macro_rules! transfer_recovery {
 }
 pub(crate) use transfer_recovery;
 
+macro_rules! scheduler_recovery_pages {
+ ($db:ty,$store:expr,$install:path)=>{{
+    use crate::memory::{ThreadStore,SchedulerRecoverySource as K};
+    let store=$store;
+    let mut tx=store.pool.begin().await.unwrap();
+    for i in 0..220 {
+        let id=format!("recovery-thread-{i:04}");
+        let event=format!("recovery-event-{i:04}");
+        let mut q=sqlx::QueryBuilder::<$db>::new("INSERT INTO threads(id,kind,agent_id,context_id,session_id,root_turn_id,status,executor_kind,created_at,updated_at) VALUES (");
+        q.push_bind(id.clone()).push(",'execution','dir-agent','dir-a','s-0004',").push_bind(format!("recovery-root-{i:04}")).push(",'open','TEST','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')");q.build().execute(&mut *tx).await.unwrap();
+        let mut q=sqlx::QueryBuilder::<$db>::new("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES (");q.push_bind(event.clone()).push(",'2026-11-01T00:00:00Z','TEST','test','TEST','{\"context_id\":\"dir-a\",\"session_id\":\"s-0004\"}')");q.build().execute(&mut *tx).await.unwrap();
+        let mut q=sqlx::QueryBuilder::<$db>::new("INSERT INTO thread_activations(id,agent_id,context_id,session_id,trigger_event_id,trigger_sequence,trigger_kind,root_turn_id,status,created_at,updated_at) VALUES (");
+        q.push_bind(format!("recovery-act-{i:04}")).push(",'dir-agent','dir-a','s-0004',").push_bind(event.clone()).push(",1,'TEST',").push_bind(format!("recovery-root-{i:04}")).push(",").push_bind(if i%2==0 {"queued"}else{"running"}).push(",'2026-11-01T00:00:00Z','2026-11-01T00:00:00Z')");q.build().execute(&mut *tx).await.unwrap();
+        let mut q=sqlx::QueryBuilder::<$db>::new("INSERT INTO thread_signals(id,thread_id,event_id,sequence,kind,status,created_at) VALUES (");q.push_bind(format!("recovery-signal-{i:04}")).push(",").push_bind(id).push(",").push_bind(event).push(",1,'TEST','pending','2026-11-01T00:00:00Z')");q.build().execute(&mut *tx).await.unwrap();
+    }
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO events(id,timestamp,actor,type,topic,payload) SELECT 'recovery-many-event-'||CAST(i AS TEXT),'2026-11-01T00:00:00Z','TEST','test','TEST','{}' FROM n").execute(&mut *tx).await.unwrap();
+    sqlx::query("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO thread_signals(id,thread_id,event_id,sequence,kind,status,created_at) SELECT 'recovery-many-signal-'||CAST(i AS TEXT),'recovery-thread-0000','recovery-many-event-'||CAST(i AS TEXT),i+1,'TEST','pending','2026-11-01T00:00:00Z' FROM n").execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    for kind in [K::LiveActivations,K::OpenThreads,K::PendingSignalThreads] {
+        let mut after=String::new();let mut seen=std::collections::HashSet::new();let mut reads=0;
+        loop {
+            let mut page=store.read_scheduler_recovery_page(kind,"dir-a",&after,7).await.unwrap();reads+=1;assert!(page.len()<=8);
+            let more=page.len()>7;page.truncate(7);
+            for row in &page {assert_eq!(row.context_id,"dir-a");assert!(row.cursor_id>after);if row.entity_id.starts_with(if matches!(kind,K::LiveActivations){"recovery-act-"}else{"recovery-thread-"}) {seen.insert(row.entity_id.clone());}}
+            if let Some(tail)=page.last(){after=tail.cursor_id.clone();}if !more {break;}
+        }
+        assert_eq!(seen.len(),220,"a bounded recovery must not truncate its later live work");
+        assert!(reads<100,"the first Signal per Thread must not drain a 10000-Signal mailbox");
+    }
+    assert!(store.read_scheduler_recovery_page(K::LiveActivations,"dir-b","",7).await.unwrap().iter().all(|row|!row.entity_id.starts_with("recovery-act-")));
+    assert!(store.recovery_owned_threads("dir-a",&["recovery-thread-0000".into()]).await.unwrap().contains(&"recovery-thread-0000".into()));
+    assert!(store.recovery_owned_threads("dir-b",&["recovery-thread-0000".into()]).await.unwrap().is_empty());
+    // Retained index backfill, source-row move and rollback keep original IDs,
+    // sequences/statuses/clocks. The derived Context is never authority alone.
+    sqlx::query("UPDATE thread_signals SET directory_context_id=NULL WHERE id='recovery-signal-0000'").execute(&store.pool).await.unwrap();
+    $install(&store.pool).await.unwrap();
+    let context:String=sqlx::query_scalar("SELECT directory_context_id FROM thread_signals WHERE id='recovery-signal-0000'").fetch_one(&store.pool).await.unwrap();assert_eq!(context,"dir-a");
+    let mut tx=store.pool.begin().await.unwrap();
+    sqlx::query("UPDATE threads SET context_id='dir-b' WHERE id='recovery-thread-0000'").execute(&mut *tx).await.unwrap();
+    let context:String=sqlx::query_scalar("SELECT directory_context_id FROM thread_signals WHERE id='recovery-signal-0000'").fetch_one(&mut *tx).await.unwrap();assert_eq!(context,"dir-b");
+    tx.rollback().await.unwrap();
+    let context:String=sqlx::query_scalar("SELECT directory_context_id FROM thread_signals WHERE id='recovery-signal-0000'").fetch_one(&store.pool).await.unwrap();assert_eq!(context,"dir-a");
+ }};
+}
+pub(crate) use scheduler_recovery_pages;
+
 macro_rules! session_priority {
     ($db:ty,$store:expr) => {{
         let store = $store;
@@ -394,6 +440,9 @@ macro_rules! plan_cases {
           "created_at":"2026-11-01T01:00:00.100Z","updated_at":"2026-11-01T01:00:00.100Z"
         })).unwrap());
         vec![
+            ("live Activation recovery",crate::memory::recovery::scheduler_query!($db,crate::memory::SchedulerRecoverySource::LiveActivations,"dir-a","recovery-act-0100",7usize)),
+            ("pending mailbox recovery",crate::memory::recovery::scheduler_query!($db,crate::memory::SchedulerRecoverySource::PendingSignalThreads,"dir-a","recovery-thread-0100",7usize)),
+            ("open Thread recovery",crate::memory::recovery::scheduler_query!($db,crate::memory::SchedulerRecoverySource::OpenThreads,"dir-a","recovery-thread-0100",7usize)),
             ("deep scoped terminal catalog",crate::memory::terminal::terminal_catalog_query!($db,&crate::memory::terminal::TerminalSessionFilter {
                 session_id:"s-0004".into(),context_id:"dir-a".into(),principal_id:"dir-human-a".into(),root_ids:Some(vec![]),scope_ref:Some("catalog-owned".into()),cursor:Some(terminal_key),limit:8,
             }).unwrap()),

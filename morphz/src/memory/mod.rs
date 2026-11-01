@@ -1,5 +1,8 @@
 pub(crate) mod recovery;
-pub use recovery::{TransferProjectionCandidate, TransferProjectionSource};
+pub use recovery::{
+    SchedulerRecoveryLocator, SchedulerRecoverySource, TransferProjectionCandidate,
+    TransferProjectionSource,
+};
 pub(crate) mod approval_page;
 pub mod inspection_page;
 pub use approval_page::{ApprovalPageRequest, PendingApprovalRecordsPage};
@@ -7629,6 +7632,25 @@ pub struct ThreadFamilyRead {
 /// Stable Thread lifecycle and completion-delivery projection.
 #[async_trait::async_trait]
 pub trait ThreadStore: Send + Sync {
+    /// Complete native ownership proofs for one selected recovery page. The
+    /// predicate intentionally retains pending dependencies across generations,
+    /// matching the existing conservative restart cancellation rule.
+    async fn recovery_owned_threads(
+        &self,
+        _context_id: &str,
+        _thread_ids: &[String],
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("bounded recovery ownership is not implemented".into())
+    }
+    async fn read_scheduler_recovery_page(
+        &self,
+        _source: SchedulerRecoverySource,
+        _context_id: &str,
+        _after: &str,
+        _limit: usize,
+    ) -> Result<Vec<SchedulerRecoveryLocator>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("bounded scheduler recovery locators are not implemented".into())
+    }
     async fn read_thread_inspection_page(
         &self,
         _thread: &ThreadRecord,

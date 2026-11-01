@@ -764,6 +764,7 @@ impl PostgresStore {
             store.run_versioned_migration("20261101_05_approval_directory_index",crate::memory::directory::approval_index::postgres(&store.pool)).await?;
             store.run_versioned_migration("20261101_06_binding_agent_index",crate::memory::directory::binding_agent::postgres(&store.pool)).await?;
             store.run_versioned_migration("20261101_07_terminal_catalog_index", terminal::migrate_catalog(&store.pool)).await?;
+            store.run_versioned_migration("20261101_08_scheduler_recovery_index", crate::memory::recovery::postgres_scheduler_indexes(&store.pool)).await?;
             // Index creation is retried outside the versioned migration so a
             // deployment that failed to build it once recovers on a later
             // start without editing migration history.
@@ -10126,6 +10127,11 @@ mod tests {
         crate::memory::directory::tests::terminal_catalog_pages!(sqlx::Postgres, &store);
         crate::memory::directory::tests::identity_recovery!(sqlx::Postgres, &store, true);
         crate::memory::directory::tests::transfer_recovery!(sqlx::Postgres, &store, true);
+        crate::memory::directory::tests::scheduler_recovery_pages!(
+            sqlx::Postgres,
+            &store,
+            crate::memory::recovery::postgres_scheduler_indexes
+        );
         for (name, mut query) in crate::memory::directory::tests::plan_cases!(sqlx::Postgres) {
             use sqlx::{Execute, Row};
             let mut built = query.build();
