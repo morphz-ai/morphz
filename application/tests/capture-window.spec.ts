@@ -32,11 +32,28 @@ async function picker(app: ElectronApplication): Promise<Page> {
   return page;
 }
 
-async function selectRegion(page: Page) {
+async function selectRegion(page: Page, diagnosticErrors: string[]) {
   await page.mouse.move(160, 160);
   await page.mouse.down();
   await page.mouse.move(340, 290);
-  await page.mouse.up();
+  // Selection destroys this auxiliary target during pointerup. Its native
+  // close may beat Playwright's input acknowledgement; await that exact
+  // lifecycle event and retain the caller's mandatory capture/read outcomes.
+  const closed = page.waitForEvent("close", { timeout: 5000 });
+  await Promise.all([
+    closed,
+    page.mouse.up().catch((error: unknown) => {
+      if (
+        !page.isClosed() ||
+        !(error instanceof Error) ||
+        !error.message.includes(
+          "Target page, context or browser has been closed",
+        )
+      )
+        throw error;
+      diagnosticErrors.push(`picker pointerup completion: ${String(error)}`);
+    }),
+  ]);
 }
 
 test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失败恢复，关窗不复活", async ({}, testInfo) => {
@@ -197,7 +214,7 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     // Auxiliary-window activation must not restore the main window into the shot.
     await app.evaluate(({ app }) => app.emit("activate"));
     expect(await mainVisible(app)).toBe(false);
-    await selectRegion(firstPicker);
+    await selectRegion(firstPicker, diagnosticErrors);
     const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
     await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
     expect(await mainVisible(app)).toBe(true);
@@ -238,7 +255,7 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     await retry.click();
     const normalPicker = await picker(app);
     expect(await mainVisible(app)).toBe(true);
-    await selectRegion(normalPicker);
+    await selectRegion(normalPicker, diagnosticErrors);
     await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
     expect(await reads()).toEqual([{ visible: false }, { visible: true }]);
 
@@ -260,7 +277,7 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
       (globalThis as any).__captureWindowFixture.fail = true;
     });
     await retry.click({ modifiers: ["Alt"] });
-    await selectRegion(await picker(app));
+    await selectRegion(await picker(app), diagnosticErrors);
     await expect(dialog.getByRole("alert")).toContainText("截图未成功");
     expect(await mainVisible(app)).toBe(true);
     await expect(dialog.getByAltText("待确认的截图")).toBeVisible();

@@ -382,3 +382,17 @@ and no retries. On macOS, all eight cases passed five complete repeats (40 passe
 no skips or retries), alongside typecheck and 21 CI coverage contracts. This is
 focused browser-test evidence, not a new product UI change or original-window
 acceptance; exact-current full native and browser CI remain mandatory.
+
+The next native job passed all eight appearance cases and exposed a separate
+picker-test race: the trusted pointer-up selection destroys the auxiliary
+window before Playwright's input acknowledgement returns. The native diagnostic
+shows that exact picker closing and the original main window restored, not an
+application crash. The test now subscribes to the picker's close before release
+and accepts only the matching target-closed error after that target has closed.
+Every original preview, pixel-read count/visibility, cancel, failure, draft and
+main-window lifetime assertion remains. The picker file has one mandatory CI
+owner running five complete repetitions without retries; the existing 45-second
+case, focus checks and 120-minute job budget remain. Typecheck, 16 capture/picker
+contracts and 50 CI coverage/setup contracts passed locally. Local native runs
+stopped at the locked-screen foreground prerequisite and are not passes; the
+five native repetitions must succeed on the macOS CI runner before closing.
