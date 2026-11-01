@@ -9480,6 +9480,143 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
+    async fn thread_projection_dependencies_seek_current_edges_postgres() {
+        use super::*;
+        use crate::scheduler::SchedulerDependencyStore;
+        let url =
+            std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL URL required");
+        let schema = format!(
+            "morphz_dep_projection_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        let admin = PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let scoped = format!("{url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
+        let store = PostgresStore::new(&scoped, 4).await.unwrap();
+        sqlx::query(r#"WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000)
+            INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,metadata_json,created_at,updated_at)
+            SELECT 'history-'||n,'thread','selected',1,'resource','history-'||n,1,TRUE,'satisfied','{}','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter"#).execute(&store.pool).await.unwrap();
+        for (id, owner, generation, kind, status, required) in [
+            (
+                "current-resource",
+                "selected",
+                2,
+                "resource",
+                "pending",
+                true,
+            ),
+            (
+                "current-group",
+                "selected",
+                2,
+                "thread_group",
+                "pending",
+                true,
+            ),
+            ("old-group", "selected", 1, "thread_group", "pending", false),
+            ("old-resource", "selected", 1, "resource", "pending", true),
+            (
+                "current-optional",
+                "selected",
+                2,
+                "resource",
+                "pending",
+                false,
+            ),
+            (
+                "current-satisfied",
+                "selected",
+                2,
+                "resource",
+                "satisfied",
+                true,
+            ),
+            ("foreign", "foreign", 2, "resource", "pending", true),
+        ] {
+            let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,created_at,updated_at) ");
+            query.push_values(
+                [(id, owner, generation, kind, status, required)],
+                |mut row, (id, owner, generation, kind, status, required)| {
+                    row.push_bind(id)
+                        .push_bind("thread")
+                        .push_bind(owner)
+                        .push_bind(generation as i64)
+                        .push_bind(kind)
+                        .push_bind(id)
+                        .push_bind(1_i64)
+                        .push_bind(required)
+                        .push_bind(status)
+                        .push_bind("2026-11-01T00:00:00Z")
+                        .push_bind("2026-11-01T00:00:00Z");
+                },
+            );
+            query.build().execute(&store.pool).await.unwrap();
+        }
+        let mut owners = (0..129)
+            .map(|n| (format!("absent-{n}"), 2_u64))
+            .collect::<Vec<_>>();
+        owners.insert(0, ("selected".into(), 2));
+        owners.push(("selected".into(), 2));
+        let edges = store
+            .list_thread_projection_dependencies(&owners)
+            .await
+            .unwrap();
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["current-group", "current-resource", "old-group"]
+        );
+        let later = store
+            .list_thread_projection_dependencies(&[("selected".into(), 3)])
+            .await
+            .unwrap();
+        assert_eq!(later.iter().map(|edge|edge.id.as_str()).collect::<Vec<_>>(),vec!["current-group","old-group"],"old group edges remain available for invariant diagnostics; no current resource is borrowed across generations");
+        assert!(store
+            .list_thread_projection_dependencies(&[])
+            .await
+            .unwrap()
+            .is_empty());
+
+        sqlx::query("ANALYZE scheduler_dependencies")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let pair = [("selected".into(), 2_i64)];
+        let builder = super::scheduler::thread_projection_dependencies_query(&pair);
+        let plan: serde_json::Value =
+            sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) {}", builder.sql()))
+                .bind("selected")
+                .bind(2_i64)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        let plan = plan.to_string();
+        assert!(
+            plan.contains("idx_pg_scheduler_dependencies_owner")
+                && plan.contains("idx_pg_scheduler_thread_pending_projection"),
+            "{plan}"
+        );
+        assert!(!plan.contains("Seq Scan"), "{plan}");
+        store.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
     async fn thread_event_sources_seek_each_topic_before_limit_postgres() {
         use super::*;
         let url =

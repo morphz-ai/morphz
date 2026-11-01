@@ -1443,6 +1443,9 @@ impl SqliteStore {
             ON scheduler_dependencies(owner_kind, owner_id, owner_generation, status, required);
         CREATE INDEX IF NOT EXISTS idx_scheduler_dependencies_fact
             ON scheduler_dependencies(dependency_kind, dependency_id, dependency_generation, status);
+        CREATE INDEX IF NOT EXISTS idx_scheduler_thread_pending_projection
+            ON scheduler_dependencies(owner_id, dependency_kind)
+            WHERE owner_kind = 'thread' AND status = 'pending';
 
         CREATE TABLE IF NOT EXISTS thread_groups (
             id TEXT PRIMARY KEY,
@@ -17486,6 +17489,33 @@ impl SchedulerDependencyStore for SqliteStore {
         rows.iter().map(scheduler_dependency_from_row).collect()
     }
 
+    async fn list_thread_projection_dependencies(
+        &self,
+        owners: &[(String, u64)],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let owners = owners
+            .iter()
+            .map(|(id, generation)| {
+                i64::try_from(*generation).map(|generation| (id.clone(), generation))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut records = std::collections::BTreeMap::new();
+        for chunk in owners.chunks(128) {
+            let mut query = sqlite_thread_projection_dependencies_query(chunk);
+            for row in query.build().fetch_all(&self.pool).await? {
+                let edge = scheduler_dependency_from_row(&row)?;
+                records.insert(edge.id.clone(), edge);
+            }
+        }
+        let mut records = records.into_values().collect::<Vec<_>>();
+        records.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(records)
+    }
+
     async fn list_pending_user_input_dependencies(
         &self,
         thread_ids: &[String],
@@ -27696,8 +27726,22 @@ fn sqlite_fts_query(terms: &[String], phrase: bool) -> String {
         .join(" OR ")
 }
 
-/// Each constant source pair owns one LIMIT before payloads are joined.
-/// CROSS JOIN keeps that bounded source set outside the rowid point reads.
+/// Two indexed dependency ranges retain current waits and group diagnostics.
+fn sqlite_thread_projection_dependencies_query(
+    owners: &[(String, i64)],
+) -> QueryBuilder<'_, sqlx::Sqlite> {
+    let mut query = QueryBuilder::new("WITH selected(owner_id,owner_generation) AS (");
+    query.push_values(owners, |mut row, (id, generation)| {
+        row.push_bind(id).push_bind(*generation);
+    });
+    query.push(") SELECT d.* FROM selected s CROSS JOIN scheduler_dependencies d INDEXED BY idx_scheduler_dependencies_owner \
+        WHERE d.owner_kind='thread' AND d.owner_id=s.owner_id AND d.owner_generation=s.owner_generation AND d.status='pending' AND d.required=1 \
+        UNION SELECT d.* FROM selected s CROSS JOIN scheduler_dependencies d INDEXED BY idx_scheduler_thread_pending_projection \
+        WHERE d.owner_kind='thread' AND d.owner_id=s.owner_id AND d.status='pending' AND d.dependency_kind='thread_group' ORDER BY created_at,id");
+    query
+}
+
+/// Each constant source pair owns its LIMIT before payloads are joined.
 fn sqlite_thread_source_query<'a>(
     context_id: &'a str,
     pairs: &'a [(String, String)],
@@ -31441,6 +31485,121 @@ mod tests {
         assert!(
             plan.contains("idx_events_context_topic_time"),
             "unexpected query plan: {plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_projection_dependencies_seek_current_edges_and_keep_group_diagnostics() {
+        let tmp_file = TempSqliteDb::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        sqlx::query(r#"WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n<10000)
+            INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,metadata_json,created_at,updated_at)
+            SELECT 'history-'||n,'thread','selected',1,'resource','history-'||n,1,TRUE,'satisfied','{}','2026-11-01T00:00:00Z','2026-11-01T00:00:00Z' FROM counter"#).execute(&store.pool).await.unwrap();
+        for (id, owner, generation, kind, status, required) in [
+            (
+                "current-resource",
+                "selected",
+                2,
+                "resource",
+                "pending",
+                true,
+            ),
+            (
+                "current-group",
+                "selected",
+                2,
+                "thread_group",
+                "pending",
+                true,
+            ),
+            ("old-group", "selected", 1, "thread_group", "pending", false),
+            ("old-resource", "selected", 1, "resource", "pending", true),
+            (
+                "current-optional",
+                "selected",
+                2,
+                "resource",
+                "pending",
+                false,
+            ),
+            (
+                "current-satisfied",
+                "selected",
+                2,
+                "resource",
+                "satisfied",
+                true,
+            ),
+            ("foreign", "foreign", 2, "resource", "pending", true),
+        ] {
+            let mut query=sqlx::QueryBuilder::<sqlx::Sqlite>::new("INSERT INTO scheduler_dependencies(id,owner_kind,owner_id,owner_generation,dependency_kind,dependency_id,dependency_generation,required,status,created_at,updated_at) ");
+            query.push_values(
+                [(id, owner, generation, kind, status, required)],
+                |mut row, (id, owner, generation, kind, status, required)| {
+                    row.push_bind(id)
+                        .push_bind("thread")
+                        .push_bind(owner)
+                        .push_bind(generation as i64)
+                        .push_bind(kind)
+                        .push_bind(id)
+                        .push_bind(1_i64)
+                        .push_bind(required)
+                        .push_bind(status)
+                        .push_bind("2026-11-01T00:00:00Z")
+                        .push_bind("2026-11-01T00:00:00Z");
+                },
+            );
+            query.build().execute(&store.pool).await.unwrap();
+        }
+        let mut owners = (0..129)
+            .map(|n| (format!("absent-{n}"), 2_u64))
+            .collect::<Vec<_>>();
+        owners.insert(0, ("selected".into(), 2));
+        owners.push(("selected".into(), 2));
+        let edges = store
+            .list_thread_projection_dependencies(&owners)
+            .await
+            .unwrap();
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| edge.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["current-group", "current-resource", "old-group"]
+        );
+        let later = store
+            .list_thread_projection_dependencies(&[("selected".into(), 3)])
+            .await
+            .unwrap();
+        assert_eq!(later.iter().map(|edge|edge.id.as_str()).collect::<Vec<_>>(),vec!["current-group","old-group"],"old group edges remain available for invariant diagnostics; no current resource is borrowed across generations");
+        assert!(store
+            .list_thread_projection_dependencies(&[])
+            .await
+            .unwrap()
+            .is_empty());
+
+        let pair = [("selected".into(), 2_i64)];
+        let builder = sqlite_thread_projection_dependencies_query(&pair);
+        let plan = sqlx::query(&format!("EXPLAIN QUERY PLAN {}", builder.sql()))
+            .bind("selected")
+            .bind(2_i64)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_scheduler_dependencies_owner")
+                && plan.contains("idx_scheduler_thread_pending_projection"),
+            "{plan}"
+        );
+        assert!(
+            !plan.contains("SCAN d ") && !plan.contains("SCAN scheduler_dependencies"),
+            "{plan}"
         );
     }
 

@@ -83,6 +83,34 @@ pub trait SchedulerDependencyStore: Send + Sync {
         Ok(records)
     }
 
+    /// Read only dependencies consumed by a Thread projection: required
+    /// pending edges at the selected generation, plus pending group edges at
+    /// any generation so invariant diagnostics retain their original scope.
+    /// Historical dependency reads remain available through the methods above.
+    async fn list_thread_projection_dependencies(
+        &self,
+        owners: &[(String, u64)],
+    ) -> Result<Vec<SchedulerDependencyRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let generations = owners
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let ids = generations.keys().cloned().collect::<Vec<_>>();
+        Ok(self
+            .list_scheduler_dependencies_for_owners(SchedulerDependencyOwnerKind::Thread, &ids)
+            .await?
+            .into_iter()
+            .filter(|edge| {
+                edge.owner_kind == SchedulerDependencyOwnerKind::Thread
+                    && generations.contains_key(&edge.owner_id)
+                    && edge.status == SchedulerDependencyStatus::Pending
+                    && (edge.dependency_kind == SchedulerDependencyKind::ThreadGroup
+                        || (edge.required
+                            && generations.get(&edge.owner_id) == Some(&edge.owner_generation)))
+            })
+            .collect())
+    }
+
     /// Current pending question edges for an already authorized, bounded
     /// Thread selection. Production backends join current generations in SQL.
     async fn list_pending_user_input_dependencies(

@@ -36,6 +36,9 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON scheduler_dependencies(owner_kind, owner_id, owner_generation, status, required)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_scheduler_dependencies_fact
            ON scheduler_dependencies(dependency_kind, dependency_id, dependency_generation, status)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_scheduler_thread_pending_projection
+           ON scheduler_dependencies(owner_id, dependency_kind)
+           WHERE owner_kind = 'thread' AND status = 'pending'"#,
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
@@ -118,6 +121,20 @@ pub(super) async fn backfill_objective_wait_dependencies(pool: &PgPool) -> Resul
     }
     tx.commit().await?;
     Ok(())
+}
+
+pub(super) fn thread_projection_dependencies_query(
+    owners: &[(String, i64)],
+) -> QueryBuilder<'_, Postgres> {
+    let mut query = QueryBuilder::new("WITH selected(owner_id,owner_generation) AS (");
+    query.push_values(owners, |mut row, (id, generation)| {
+        row.push_bind(id).push_bind(*generation);
+    });
+    query.push(") SELECT d.* FROM selected s JOIN scheduler_dependencies d \
+        ON d.owner_kind='thread' AND d.owner_id=s.owner_id AND d.owner_generation=s.owner_generation AND d.status='pending' AND d.required \
+        UNION SELECT d.* FROM selected s JOIN scheduler_dependencies d \
+        ON d.owner_kind='thread' AND d.owner_id=s.owner_id AND d.status='pending' AND d.dependency_kind='thread_group' ORDER BY created_at,id");
+    query
 }
 
 pub(super) fn dependency_from_row(row: &PgRow) -> Result<SchedulerDependencyRecord, StoreError> {
@@ -294,6 +311,33 @@ impl SchedulerDependencyStore for PostgresStore {
         query.push(") ORDER BY created_at, id");
         let rows = query.build().fetch_all(&self.pool).await?;
         rows.iter().map(dependency_from_row).collect()
+    }
+
+    async fn list_thread_projection_dependencies(
+        &self,
+        owners: &[(String, u64)],
+    ) -> Result<Vec<SchedulerDependencyRecord>, StoreError> {
+        let owners = owners
+            .iter()
+            .map(|(id, generation)| {
+                i64::try_from(*generation).map(|generation| (id.clone(), generation))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut records = std::collections::BTreeMap::new();
+        for chunk in owners.chunks(128) {
+            let mut query = thread_projection_dependencies_query(chunk);
+            for row in query.build().fetch_all(&self.pool).await? {
+                let edge = dependency_from_row(&row)?;
+                records.insert(edge.id.clone(), edge);
+            }
+        }
+        let mut records = records.into_values().collect::<Vec<_>>();
+        records.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        Ok(records)
     }
 
     async fn list_pending_user_input_dependencies(

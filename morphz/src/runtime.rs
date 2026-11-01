@@ -9280,9 +9280,11 @@ impl MorphzRuntime {
         let thread_dependencies = self
             .inner
             .store
-            .list_scheduler_dependencies_for_owners(
-                SchedulerDependencyOwnerKind::Thread,
-                &authority_thread_ids,
+            .list_thread_projection_dependencies(
+                &authority_threads
+                    .iter()
+                    .map(|thread| (thread.id.clone(), thread.generation))
+                    .collect::<Vec<_>>(),
             )
             .await?;
         let mut dependencies_by_thread = HashMap::<String, Vec<_>>::new();
@@ -10841,11 +10843,7 @@ impl MorphzRuntime {
         let dependencies = self
             .inner
             .store
-            .list_scheduler_dependencies(SchedulerDependencyFilter {
-                owner_kind: Some(SchedulerDependencyOwnerKind::Thread),
-                owner_id: Some(thread_id.to_string()),
-                ..SchedulerDependencyFilter::default()
-            })
+            .list_thread_projection_dependencies(&[(thread_id.to_string(), thread.generation)])
             .await?;
         let phase = crate::scheduler::thread_phase(
             &thread,
