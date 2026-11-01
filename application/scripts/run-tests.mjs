@@ -35,6 +35,18 @@ export async function testSelection(args = []) {
       // Reducing local resource use changes scheduling, never selection or
       // capability requirements. Keep the default upper bound unchanged.
       options.push(value);
+    } else if (value.startsWith("--test-shard=")) {
+      const match = /^--test-shard=([1-9]\d*)\/([1-9]\d*)$/.exec(value);
+      if (
+        !match ||
+        Number(match[1]) > Number(match[2]) ||
+        Number(match[2]) > 16 ||
+        options.some((option) => option.startsWith("--test-shard="))
+      )
+        throw new Error(
+          "Test selection: one valid shard index/total is required (total <= 16)",
+        );
+      options.push(value);
     } else {
       if (value.startsWith("-") || !value.endsWith(".test.ts"))
         throw new Error(
@@ -57,6 +69,13 @@ export async function testSelection(args = []) {
         .filter((name) => name.endsWith(".test.ts"))
         .sort()
         .map((name) => `tests/${name}`),
+    );
+  if (
+    options.some((option) => option.startsWith("--test-shard=")) &&
+    options.some((option) => option.startsWith("--test-name-pattern"))
+  )
+    throw new Error(
+      "Test selection: sharding cannot be combined with a name filter",
     );
   return { files: [...new Set(files)], options };
 }

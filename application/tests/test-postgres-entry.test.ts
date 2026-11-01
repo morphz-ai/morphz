@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   chmod,
@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { Client } from "pg";
 
 type Prepared = {
@@ -131,6 +132,25 @@ test("safe test selection preserves original default inventory and cannot replac
     testSelection(["--test-concurrency=1", "--test-concurrency=2"]),
     /concurrency must be specified once/,
   );
+  for (const shard of ["1/2", "2/2"])
+    assert.deepEqual(
+      (await testSelection([`--test-shard=${shard}`])).files,
+      (await testSelection()).files,
+      "Node receives the complete inventory and owns the actual partition",
+    );
+  for (const shard of ["0/2", "3/2", "1/0", "1/17", "1.5/2", "1/2 --eval=1"])
+    await assert.rejects(
+      testSelection([`--test-shard=${shard}`]),
+      /valid shard/,
+    );
+  await assert.rejects(
+    testSelection(["--test-shard=1/2", "--test-shard=2/2"]),
+    /valid shard/,
+  );
+  await assert.rejects(
+    testSelection(["--test-shard=1/2", "--test-name-pattern=one"]),
+    /name filter/,
+  );
   assert.ok(
     (await testSelection()).files.includes("tests/test-postgres-entry.test.ts"),
   );
@@ -154,6 +174,81 @@ test("safe test selection preserves original default inventory and cannot replac
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+test(
+  "actual managed Node shards retain PostgreSQL and report each executed file exactly once",
+  { timeout: 75_000 },
+  async () => {
+    const files = [
+      "tests/activity-read-page.test.ts",
+      "tests/activity-read-presentation.test.ts",
+    ];
+    const seen = new Set<string>();
+    let passed = 0;
+    for (const coordinate of ["1/2", "2/2"]) {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          "scripts/run-tests.mjs",
+          "--test-concurrency=1",
+          `--test-shard=${coordinate}`,
+          ...files,
+        ],
+        {
+          cwd: root,
+          env: automaticEnv({
+            MORPHZ_TEST_SHARD: "not-an-inherited-authority",
+          }),
+          timeout: 30_000,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      const line = stdout
+        .split("\n")
+        .findLast((value) => value.startsWith("[test coverage] "))!;
+      const report = JSON.parse(line.slice("[test coverage] ".length));
+      assert.equal(report.shard.coordinate, coordinate);
+      assert.deepEqual(report.shard.inventory, files);
+      assert.deepEqual(report.shard.unexpectedFiles, []);
+      assert.deepEqual(report.unexpectedSkips, []);
+      assert.deepEqual(report.required, ["postgres"]);
+      assert.equal(report.counts.failed, 0);
+      assert.equal(report.shard.executedFiles.length, 1);
+      for (const file of report.shard.executedFiles) {
+        assert.equal(seen.has(file), false);
+        seen.add(file);
+      }
+      passed += report.counts.passed;
+    }
+    assert.deepEqual([...seen].sort(), files);
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      ["scripts/run-tests.mjs", "--test-concurrency=1", ...files],
+      {
+        cwd: root,
+        env: automaticEnv({ MORPHZ_TEST_SHARD: "not-an-inherited-authority" }),
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    const unsharded = JSON.parse(
+      stdout
+        .split("\n")
+        .findLast((value) => value.startsWith("[test coverage] "))!
+        .slice("[test coverage] ".length),
+    );
+    assert.equal(
+      unsharded.shard,
+      undefined,
+      "only native CLI arguments identify a shard",
+    );
+    assert.equal(
+      passed,
+      unsharded.counts.passed,
+      "both real inventories execute; neither is silently filtered",
+    );
+  },
+);
 
 test(
   "test PostgreSQL entry uses real isolated SQL, honors explicit input and cleans owned clusters on all exits",

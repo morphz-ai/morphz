@@ -10,6 +10,7 @@ const jobs = [
   "web-node",
   "web-browser",
   "storage-postgres",
+  "macos-node",
   "desktop",
   "cognitive-runtime-contract",
   "runtime-contract",
@@ -140,17 +141,32 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
 
 test("small macOS runner bounds file workers without narrowing the full test inventory", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/application.yml", import.meta.url), "utf8");
-  const desktop = jobSource(workflow, "desktop");
-  assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
-  assert.doesNotMatch(desktop, /npm test -- --test-concurrency=1.*\.test\.ts/);
+  const node = jobSource(workflow, "macos-node");
+  assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2 2>&1 \| tee/);
+  assert.doesNotMatch(node, /npm test -- .*\.test\.ts/);
 });
 
 test("complete macOS inventory leaves bounded room for native validation and cleanup", () => {
   function verifyBudget(source) {
     const desktop = jobSource(source, "desktop");
     const minutes = Number(/^    timeout-minutes: (\d+)$/m.exec(desktop)?.[1]);
-    assert.ok(minutes >= 120 && minutes <= 150);
-    assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
+    assert.equal(minutes, 120, "native acceptance retains the existing job budget");
+    const node = jobSource(source, "macos-node");
+    assert.match(node, /timeout-minutes: 90/);
+    assert.match(node, /fail-fast: false/);
+    assert.match(node, /shard: \[1, 2\]/);
+    assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2 2>&1 \| tee/);
+    assert.doesNotMatch(node, /npm test -- .*\.test\.ts|--test-name-pattern|--test-skip-pattern/);
+    const complete = jobSource(source, "macos");
+    assert.match(desktop, /name: Embedded Desktop native \(macOS\)/);
+    assert.match(complete, /name: Embedded Desktop \(macOS\)/);
+    assert.match(complete, /needs: \[macos-node, desktop\]/);
+    assert.match(complete, /if: \$\{\{ always\(\) \}\}/);
+    assert.match(complete, /test "\$NODE_RESULT" = success/);
+    assert.match(complete, /test "\$NATIVE_RESULT" = success/);
+    assert.match(complete, /verify-application-node-shards\.py verify .*--commit "\$GITHUB_SHA"/);
+    assert.match(node, /verify-application-node-shards\.py capture/);
+    assert.match(node, /if-no-files-found: error/);
     for (const command of [
       "npm run test:embedded",
       "npm run test:platform-embedded-desktop",
@@ -167,9 +183,24 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     desktop.replace("timeout-minutes: 120", "timeout-minutes: 90"),
     desktop.replace("timeout-minutes: 120", "timeout-minutes: 360"),
     desktop.replace("npm run test:reader-stability", "echo omitted"),
-    desktop.replace("npm test -- --test-concurrency=1", "npm test -- tests/one.test.ts"),
+    desktop.replace("npm run test:draft-restart", "echo omitted"),
   ])
     assert.throws(() => verifyBudget(workflow.replace(desktop, changed)));
+  const node = jobSource(workflow, "macos-node");
+  for (const changed of [
+    node.replace("shard: [1, 2]", "shard: [1]"),
+    node.replace("fail-fast: false", "fail-fast: true"),
+    node.replace("--test-shard=${{ matrix.shard }}/2", "tests/only-one.test.ts"),
+    node.replace("--test-shard=${{ matrix.shard }}/2", "--test-shard=${{ matrix.shard }}/2 --test-name-pattern=one"),
+    node.replace("verify-application-node-shards.py capture", "echo omitted"),
+  ]) assert.throws(() => verifyBudget(workflow.replace(node, changed)));
+  const complete = jobSource(workflow, "macos");
+  for (const changed of [
+    complete.replace("needs: [macos-node, desktop]", "needs: [desktop]"),
+    complete.replace('test "$NODE_RESULT" = success', "true"),
+    complete.replace('test "$NATIVE_RESULT" = success', "true"),
+    complete.replace("verify-application-node-shards.py verify", "echo omitted"),
+  ]) assert.throws(() => verifyBudget(workflow.replace(complete, changed)));
 });
 
 function verifyPostgres16Runner(source, job) {

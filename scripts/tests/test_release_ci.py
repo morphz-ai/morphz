@@ -172,6 +172,20 @@ class ReleaseCiTests(unittest.TestCase):
         self.assertIn("/runs/10/attempts/2/jobs?per_page=100", calls[1])
         self.assertIn(f"head_sha={COMMIT}&event=push&per_page=100", calls[0])
 
+    def test_macos_requires_both_complete_node_shards_native_acceptance_and_their_fan_in(self):
+        required = {"Complete macOS Node inventory (1/2)", "Complete macOS Node inventory (2/2)",
+                    "Embedded Desktop (macOS)", "Embedded Desktop native (macOS)"}
+        self.assertLessEqual(required, CI.REQUIRED_JOBS["application.yml"])
+        for name in required:
+            missing = [job for job in jobs("application.yml") if job["name"] != name]
+            with self.subTest(name=name), self.assertRaises(CI.AdmissionError):
+                CI.verify_jobs(pages(missing), run(), "application.yml")
+            for conclusion in ["skipped", "cancelled", "failure"]:
+                changed = jobs("application.yml")
+                next(job for job in changed if job["name"] == name)["conclusion"] = conclusion
+                with self.subTest(name=name, conclusion=conclusion), self.assertRaises(CI.AdmissionError):
+                    CI.verify_jobs(pages(changed), run(), "application.yml")
+
     def test_full_verifier_admits_main_and_checks_exact_main_runs(self):
         def fetch(endpoint):
             if "/workflows/" in endpoint:

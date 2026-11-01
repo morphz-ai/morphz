@@ -5,7 +5,7 @@ import test from "node:test";
 const workflow = readFileSync(new URL("../../.github/workflows/application.yml", import.meta.url), "utf8");
 const preparation = "npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts";
 const cache = 'printf \'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\\n\' "$RUNNER_TEMP" >> "$GITHUB_ENV"';
-const jobs = ["web-node", "web-browser", "storage-postgres", "desktop", "cognitive-runtime-contract"];
+const jobs = ["web-node", "web-browser", "storage-postgres", "macos-node", "desktop", "cognitive-runtime-contract"];
 
 function jobSource(source, name) {
   const header = `\n  ${name}:\n`;
@@ -32,7 +32,7 @@ function verify(source) {
       ? job.indexOf("npm exec --offline -- node scripts/ci-cognitive-runtime.mjs", steps)
       : name === "web-browser" ? job.indexOf("npm run test:e2e", steps) : job.search(/\bnpm test\b/);
     assert.ok(firstConsumer > prepare, `${name}: prepare before independent consumers`);
-    if (["web-node", "storage-postgres", "desktop"].includes(name)) {
+    if (["web-node", "storage-postgres", "macos-node", "desktop"].includes(name)) {
       const dashboard = job.indexOf("npm ci --prefix ../dashboard", steps);
       assert.ok(dashboard > install && dashboard < firstConsumer, `${name}: actual Dashboard component dependencies must precede the full Node inventory`);
       const dashboardStep = job.slice(job.lastIndexOf("      - ", dashboard), job.indexOf("\n      - ", dashboard));
@@ -58,7 +58,7 @@ for (const name of jobs) {
   });
 }
 
-for (const name of ["web-node", "storage-postgres", "desktop"]) {
+for (const name of ["web-node", "storage-postgres", "macos-node", "desktop"]) {
   test(`${name}: missing cross-surface dependencies cannot reach the full Node inventory`, () => {
     const job = jobSource(workflow, name);
     assert.throws(() => verify(workflow.replace(job, job.replace("npm ci --prefix ../dashboard", "echo omitted"))), /Dashboard component dependencies/);

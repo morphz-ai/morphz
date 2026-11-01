@@ -204,16 +204,69 @@ jobs:
           # the two backend services. Internal CAS/race concurrency is retained.
           xvfb-run -a npm test -- --test-concurrency=1
 
+  macos-node:
+    name: Complete macOS Node inventory (${{ matrix.shard }}/2)
+    runs-on: macos-26-intel
+    # A complete serial inventory took 115m35s and exhausted the old combined
+    # job before native acceptance. Partition files with Node's own runner;
+    # retain every case, one file worker and all individual deadlines.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Prepare actual Dashboard components used by the shared Node inventory
+        run: npm ci --prefix ../dashboard
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: node node_modules/electron/install.js
+      - run: npm run build
+      - run: brew install postgresql@16
+      - run: npx playwright install chromium
+      - name: Run complete Node shard with mandatory isolated PostgreSQL
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
+        run: |
+          set -euo pipefail
+          node ../scripts/observe-ci-resources.mjs &
+          resource_observer=$!
+          trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 --test-shard=${{ matrix.shard }}/2 2>&1 | tee "$RUNNER_TEMP/mac-node-shard-${{ matrix.shard }}.log"
+          python3 ../scripts/verify-application-node-shards.py capture \
+            --log "$RUNNER_TEMP/mac-node-shard-${{ matrix.shard }}.log" \
+            --shard "${{ matrix.shard }}/2" --commit "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/shard-${{ matrix.shard }}.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: application-macos-node-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
   desktop:
-    name: Embedded Desktop (macOS)
+    name: Embedded Desktop native (macOS)
     # The arm64 hosted fleet cancelled the complete inventory before acquiring
     # a runner (40339218428 / 121628987967). Keep the same macOS 26 release on
     # the standard Intel fleet; dedicated Reader/GUI jobs retain arm64.
     # Every case, native-focus requirement and deadline below stays mandatory.
     runs-on: macos-26-intel
-    # On the Intel runner, the complete single-worker Node inventory took 88m52s.
-    # Native/OCR assertions also passed, but the old 90m budget cancelled final
-    # cleanup. Preserve every case and its own deadlines; budget the whole job.
+    # Full Node coverage has independent mandatory shards. Native focus, GUI,
+    # crash recovery and OCR keep their original commands and job budget here.
     timeout-minutes: 120
     defaults:
       run:
@@ -239,15 +292,6 @@ jobs:
       - run: npm run build
       - run: brew install postgresql@16
       - run: npx playwright install chromium
-      - name: Run tests with mandatory isolated PostgreSQL
-        run: |
-          node ../scripts/observe-ci-resources.mjs &
-          resource_observer=$!
-          trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          # The Intel runner reports 14 GiB RAM. Four simultaneous browser/TypeScript
-          # workers previously caused memory pressure and high load. Retain
-          # every case and its internal concurrency; bound file scheduling only.
-          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1
       - name: Require actual browser foreground and background receipt behavior
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,native-focus
@@ -286,6 +330,32 @@ jobs:
           name: application-desktop-failures
           path: application/test-results/
           if-no-files-found: ignore
+
+  macos:
+    # Preserve the existing required-check identity for the complete acceptance.
+    name: Embedded Desktop (macOS)
+    needs: [macos-node, desktop]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both Node shards and native acceptance
+        env:
+          NODE_RESULT: ${{ needs.macos-node.result }}
+          NATIVE_RESULT: ${{ needs.desktop.result }}
+        run: |
+          test "$NODE_RESULT" = success
+          test "$NATIVE_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: application-macos-node-*
+          path: ${{ runner.temp }}/macos-node-reports
+          merge-multiple: true
+      - name: Verify exact-commit complete nonoverlapping file coverage
+        run: python3 scripts/verify-application-node-shards.py verify --directory "$RUNNER_TEMP/macos-node-reports" --commit "$GITHUB_SHA"
 
   cognitive-runtime-contract:
     name: Cognitive application and actual Runtime contracts

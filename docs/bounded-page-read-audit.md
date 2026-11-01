@@ -319,3 +319,18 @@ continuations, raw-cache eviction, the newer confirmed receipt, zero additional
 current-collection requests, and incomplete/unavailable/revoked evidence. The full
 83-case Activity/authority/projection group passed three times. Original-window
 follow-up and exact-latest-commit CI remain separate completion requirements.
+
+The old macOS combined CI job reached its unchanged 120-minute cap after the
+complete managed Node inventory passed (4766 passed, no failures, 27 explicit
+capability omissions; 115m35s in the Node process). Native acceptance had no time
+left to run. Full macOS Node coverage now uses two independent, single-worker
+[native Node shards](https://r2.nodejs.org/docs/latest-v24.x/api/cli.html#--test-shard),
+each with a 90-minute job cap; native focus/GUI/recovery/OCR keep their original
+commands, individual deadlines and 120-minute job cap, and run independently.
+The existing `Embedded Desktop (macOS)` required-check identity is the final
+fan-in. Both shard jobs, native acceptance and actual per-file summary coverage
+are mandatory. The final verifier compares the current checkout's complete
+inventory, exact source commit and both coordinates, rejecting missing or
+overlapping executed files, failures, cancellation, unexpected skips or absent
+PostgreSQL. No product code or original Runtime restart is needed for this CI
+layout fix.

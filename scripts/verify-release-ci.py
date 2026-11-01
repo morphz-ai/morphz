@@ -36,6 +36,8 @@ REQUIRED_JOBS = {
         "Shared application and Web", "Application storage (PostgreSQL)",
         "Embedded Desktop (macOS)", "Cognitive application and actual Runtime contracts",
         "Application and Runtime contract",
+        "Complete macOS Node inventory (1/2)", "Complete macOS Node inventory (2/2)",
+        "Embedded Desktop native (macOS)",
     }),
 }
 
