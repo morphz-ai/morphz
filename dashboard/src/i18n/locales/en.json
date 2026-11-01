@@ -1675,6 +1675,7 @@
     "deleteObjectiveTitle": "Delete this Objective?",
     "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained.",
     "cancelThreadTitle": "Cancel this Thread?",
+    "threadControlChanged": "The Thread generation, source or control state changed. Review the latest Thread before acting.",
     "cancelThreadBody": "{{thread}} ({{id}})\n\nCancelling ends this logical obligation and cancels its current evaluations. Existing external side effects and audit history remain intact.",
     "supersedeThreadTitle": "Correct this Thread",
     "supersedeThreadBody": "Thread {{id}} keeps its logical identity and supervision obligation. Runtime cancels the old generation and starts a new generation from your corrected instruction.",

@@ -164,6 +164,8 @@ import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { CORE_HTTP_URL, CORE_WS_URL } from './api/deployment'
 import { DashboardApiError } from './api/client'
 import { DASHBOARD_API, getDashboardToken } from './api/runtime'
+import { submitThreadControl } from './app/threadControl'
+import { objectiveControlReceipt } from './app/objectiveControl'
 import {
   invalidatedQueriesForTopic,
   invalidationsRequireSessionRefresh,
@@ -593,7 +595,7 @@ function MarkdownInline({ children }: { children: string }) {
   )
 }
 
-function AppDialog({
+export function AppDialog({
   request,
   onResolve,
 }: {
@@ -643,7 +645,9 @@ function AppDialog({
         } else if (
           event.key === 'Enter'
           && !(event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
-          && (request.kind !== 'prompt' || !request.multiline || event.metaKey || event.ctrlKey)
+          && request.kind === 'prompt'
+          && !(event.target instanceof Element && event.target.closest('button'))
+          && (!request.multiline || event.metaKey || event.ctrlKey)
         ) {
           event.preventDefault()
           confirm()
@@ -664,7 +668,7 @@ function AppDialog({
           </div>
           <button type="button" aria-label={request.cancelLabel} onClick={cancel}><X size={16} /></button>
         </header>
-        {request.description && <p id={`app-dialog-description-${request.id}`}>{request.description}</p>}
+        {request.description && <p id={`app-dialog-description-${request.id}`} tabIndex={0}>{request.description}</p>}
         {request.kind === 'prompt' && (
           <label>
             <span>{request.inputLabel}</span>
@@ -3410,6 +3414,7 @@ export default function App() {
   const [capabilityLeases, setCapabilityLeases] = useState<CapabilityLeaseSummary[]>([])
   const [executionJobs, setExecutionJobs] = useState<ExecutionJobSummary[]>([])
   const [schedulerSnapshot, setSchedulerSnapshot] = useState<SchedulerSnapshot | null>(null)
+  const workControlVersion = useRef(0)
   const [attentionAcknowledgements, setAttentionAcknowledgements] = useState<AttentionAcknowledgement[]>([])
   const [acknowledgingAttentionKey, setAcknowledgingAttentionKey] = useState('')
   const [schedulerHistoryLimit, setSchedulerHistoryLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
@@ -3973,6 +3978,7 @@ export default function App() {
       return
     }
     sessionLoadInFlight.current = true
+    const controlVersion = workControlVersion.current
     try {
       const isCurrentScope = () => {
         const selectedScope = selectedScopeRef.current
@@ -3989,7 +3995,7 @@ export default function App() {
       const readPrincipalId = principalScopeRef.current?.principal.id ?? ''
       let resolvedSchedulerSummary: SchedulerSnapshot['summary'] | null = null
       const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
-        if (!isCurrentScope()) return
+        if (!isCurrentScope() || controlVersion !== workControlVersion.current) return
         resolvedSchedulerSummary = snapshot.summary
         setSchedulerSnapshot(snapshot)
         setContextOverview(previous => previous
@@ -4230,12 +4236,14 @@ export default function App() {
   }, [])
 
   const loadRuntimeOverview = useCallback(async () => {
+    const controlVersion = workControlVersion.current
     setRuntimeOverviewLoading(true)
     try {
       const sessionsPerContext = activeViewRef.current === 'runtime' ? 24 : 6
       const snapshot = await DASHBOARD_API.get<RuntimeOverview>(
         `/api/overview?context_limit=40&sessions_per_context=${sessionsPerContext}`,
       )
+      if (controlVersion !== workControlVersion.current) return
       setRuntimeOverview(snapshot)
       setRuntimeOverviewError('')
     } catch (reason) {
@@ -7118,11 +7126,48 @@ export default function App() {
     }
   }
 
+  const publishObjectiveControl = (value: { id: string; revision: number; status: string }) => {
+    workControlVersion.current++
+    setSchedulerSnapshot((current) =>
+      current
+        ? {
+            ...current,
+            objectives: current.objectives.map((snapshot) =>
+              snapshot.objective.id === value.id
+                && (typeof snapshot.objective.revision !== 'number' || snapshot.objective.revision <= value.revision)
+                ? { ...snapshot, objective: { ...snapshot.objective, ...value } }
+                : snapshot,
+            ),
+          }
+        : current,
+    )
+    setRuntimeOverview((current) =>
+      current
+        ? {
+            ...current,
+            contexts: current.contexts.map((context) => ({
+              ...context,
+              sessions: context.sessions.map((session) => ({
+                ...session,
+                objectives: session.objectives.map((objective) =>
+                  objective.id === value.id && objective.revision <= value.revision ? { ...objective, ...value } : objective,
+                ),
+                current_objective:
+                  session.current_objective?.id === value.id && session.current_objective.revision <= value.revision
+                    ? { ...session.current_objective, ...value }
+                    : session.current_objective,
+              })),
+            })),
+          }
+        : current,
+    )
+  }
+
   const pauseObjective = async (objective: ObjectiveRecord) => {
     if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
     setPausingObjectiveId(objective.id)
     try {
-      await DASHBOARD_API.command(
+      const response = await DASHBOARD_API.command(
         `/api/objectives/${encodeURIComponent(objective.id)}/pause`,
         'POST',
         {
@@ -7130,12 +7175,13 @@ export default function App() {
           reason: t('reason.pauseByUser'),
         },
       )
-      await loadSession(selectedSessionId, selectedContextId)
+      publishObjectiveControl(objectiveControlReceipt(objective, 'pause', response))
+      void loadSession(selectedSessionId, selectedContextId)
       setError('')
     } catch (reason) {
       // Runtime control mutations are revision fenced. Refresh after a
       // conflict so the next action does not resubmit stale control state.
-      await loadSession(selectedSessionId, selectedContextId).catch(() => {})
+      void loadSession(selectedSessionId, selectedContextId).catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setPausingObjectiveId('')
@@ -7146,7 +7192,7 @@ export default function App() {
     if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
     setResumingObjectiveId(objective.id)
     try {
-      await DASHBOARD_API.command(
+      const response = await DASHBOARD_API.command(
         `/api/objectives/${encodeURIComponent(objective.id)}/resume`,
         'POST',
         {
@@ -7154,7 +7200,8 @@ export default function App() {
           reason: t('reason.resumeByUser'),
         },
       )
-      await loadSession(selectedSessionId, selectedContextId)
+      publishObjectiveControl(objectiveControlReceipt(objective, 'resume', response))
+      void loadSession(selectedSessionId, selectedContextId)
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -7175,7 +7222,7 @@ export default function App() {
     if (!confirmed) return
     setDeletingObjectiveId(objective.id)
     try {
-      await DASHBOARD_API.command(
+      const response = await DASHBOARD_API.command(
         `/api/objectives/${encodeURIComponent(objective.id)}`,
         'DELETE',
         {
@@ -7183,7 +7230,8 @@ export default function App() {
           reason: t('reason.deleteByUser'),
         },
       )
-      await loadSession(selectedSessionId, selectedContextId)
+      publishObjectiveControl(objectiveControlReceipt(objective, 'delete', response))
+      void loadSession(selectedSessionId, selectedContextId)
       setExpandedObjectiveIds(current => {
         const next = new Set(current)
         next.delete(objective.id)
@@ -7195,6 +7243,71 @@ export default function App() {
     } finally {
       setDeletingObjectiveId('')
     }
+  }
+
+  const publishThreadControl = (receipt: { thread: ThreadRecord }) => {
+    workControlVersion.current++
+    const value = receipt.thread
+    const patchSnapshot = (snapshot: SchedulerThreadSnapshot): SchedulerThreadSnapshot =>
+      snapshot.thread.id === value.id && snapshot.thread.context_id === value.context_id
+        && snapshot.thread.revision <= value.revision
+        ? {
+            ...snapshot,
+            thread: value,
+            ...(value.lifecycle !== 'open' ? { phase: 'idle' } : {}),
+          }
+        : snapshot
+    setSchedulerSnapshot((current) =>
+      current?.context_id === value.context_id
+        ? { ...current, threads: current.threads.map(patchSnapshot) }
+        : current,
+    )
+    setThreadDetail((current) =>
+      current?.snapshot.thread.id === value.id && current.context_id === value.context_id
+        ? { ...current, snapshot: patchSnapshot(current.snapshot) }
+        : current,
+    )
+    const patchOverview = (thread: RuntimeOverviewThread): RuntimeOverviewThread =>
+      thread.id !== value.id || thread.revision > value.revision
+        ? thread
+        : {
+            ...thread,
+            revision: value.revision,
+            generation: value.generation,
+            lifecycle: value.lifecycle,
+            control_state: value.control_state,
+            updated_at: value.updated_at,
+            ...(value.lifecycle !== 'open'
+              ? { state: 'idle' as const }
+              : value.control_state === 'paused'
+                ? { state: 'paused' as const }
+                : {}),
+          }
+    setRuntimeOverview((current) =>
+      current
+        ? {
+            ...current,
+            contexts: current.contexts.map((context) =>
+              context.context.id !== value.context_id
+                ? context
+                : {
+                    ...context,
+                    sessions: context.sessions.map((session) =>
+                      session.session.id !== value.session_id
+                        ? session
+                        : {
+                            ...session,
+                            threads: session.threads.map(patchOverview),
+                            current_thread: session.current_thread
+                              ? patchOverview(session.current_thread)
+                              : undefined,
+                          },
+                    ),
+                  },
+            ),
+          }
+        : current,
+    )
   }
 
   const controlThread = async (thread: ThreadRecord, action: 'pause' | 'resume' | 'cancel') => {
@@ -7211,25 +7324,16 @@ export default function App() {
     }
     setMutatingThreadId(thread.id)
     try {
-      await DASHBOARD_API.command(
-        `/api/contexts/${encodeURIComponent(selectedContextId)}/threads/${encodeURIComponent(thread.id)}`,
-        'POST',
-        {
-          action,
-          expected_revision: thread.revision,
-          reason: t(`reason.${action}ThreadByUser`),
-        },
-      )
-      await Promise.all([
-        loadSession(selectedSessionId, selectedContextId),
-        loadOverview(selectedContextId, selectedSessionId),
-      ])
-      if (threadDetail?.snapshot.thread.id === thread.id) {
-        await loadThreadDetail(selectedContextId, thread.id)
-      }
+      const receipt = await submitThreadControl(DASHBOARD_API, thread.context_id, thread, action,
+        t(`reason.${action}ThreadByUser`), t('dialog.threadControlChanged'))
+      publishThreadControl(receipt)
+      void Promise.all([
+        loadSession(thread.session_id, thread.context_id),
+        loadOverview(thread.context_id, thread.session_id),
+      ]).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
       setError('')
     } catch (reason) {
-      await loadSession(selectedSessionId, selectedContextId).catch(() => {})
+      void loadSession(selectedSessionId, selectedContextId).catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingThreadId('')
@@ -7244,23 +7348,17 @@ export default function App() {
     }
     setMutatingThreadId(thread.id)
     try {
-      await DASHBOARD_API.command(
-        `/api/contexts/${encodeURIComponent(thread.context_id)}/threads/${encodeURIComponent(thread.id)}`,
-        'POST',
-        {
-          action: 'cancel',
-          expected_revision: thread.revision,
-          reason: t('reason.stopDialogueTurnByUser'),
-        },
-      )
+      const receipt = await submitThreadControl(DASHBOARD_API, thread.context_id, thread, 'cancel',
+        t('reason.stopDialogueTurnByUser'), t('dialog.threadControlChanged'))
+      publishThreadControl(receipt)
       setPendingTurn(current => current?.rootTurnId === thread.root_turn_id ? null : current)
-      await Promise.all([
+      void Promise.all([
         loadSession(thread.session_id, thread.context_id),
         loadOverview(thread.context_id, thread.session_id),
-      ])
+      ]).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
       setError('')
     } catch (reason) {
-      await loadSession(thread.session_id, thread.context_id).catch(() => {})
+      void loadSession(thread.session_id, thread.context_id).catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingThreadId('')
@@ -7292,24 +7390,18 @@ export default function App() {
     }
     setMutatingThreadId(thread.id)
     try {
-      await DASHBOARD_API.command(
-        `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(thread.id)}`,
-        'POST',
-        {
-          action,
-          expected_revision: thread.revision,
-          reason: t(`reason.${action}ThreadByUser`),
-        },
-      )
-      await Promise.all([
+      const receipt = await submitThreadControl(DASHBOARD_API, contextId, thread, action,
+        t(`reason.${action}ThreadByUser`), t('dialog.threadControlChanged'))
+      publishThreadControl(receipt)
+      void Promise.all([
         loadRuntimeOverview(),
         contextId === selectedContextId
           ? loadSession(selectedSessionId, selectedContextId)
           : Promise.resolve(),
-      ])
+      ]).catch(reason => setError(reason instanceof Error ? reason.message : String(reason)))
       setError('')
     } catch (reason) {
-      await loadRuntimeOverview().catch(() => {})
+      void loadRuntimeOverview().catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingThreadId('')
@@ -7377,21 +7469,23 @@ export default function App() {
       })
       if (!confirmed) return
     }
-    const setBusy = action === 'pause'
-      ? setPausingObjectiveId
-      : action === 'resume'
-        ? setResumingObjectiveId
-        : setDeletingObjectiveId
+    const setBusy =
+      action === 'pause'
+        ? setPausingObjectiveId
+        : action === 'resume'
+          ? setResumingObjectiveId
+          : setDeletingObjectiveId
     setBusy(objective.id)
     try {
+      let response: unknown
       if (action === 'cancel') {
-        await DASHBOARD_API.command(
+        response = await DASHBOARD_API.command(
           `/api/objectives/${encodeURIComponent(objective.id)}`,
           'DELETE',
           { expected_revision: objective.revision, reason: t('reason.deleteByUser') },
         )
       } else {
-        await DASHBOARD_API.command(
+        response = await DASHBOARD_API.command(
           `/api/objectives/${encodeURIComponent(objective.id)}/${action}`,
           'POST',
           {
@@ -7400,10 +7494,15 @@ export default function App() {
           },
         )
       }
-      await loadRuntimeOverview()
+      publishObjectiveControl(
+        objectiveControlReceipt(objective, action === 'cancel' ? 'delete' : action, response),
+      )
+      void loadRuntimeOverview().catch((reason) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      )
       setError('')
     } catch (reason) {
-      await loadRuntimeOverview().catch(() => {})
+      void loadRuntimeOverview().catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setBusy('')

@@ -66,6 +66,7 @@ export function SubjectObjectiveDialog({
     more = useRef<HTMLButtonElement>(null),
     previousView = useRef<View>("reading"),
     pending = useRef(false),
+    controlReadVersion = useRef(0),
     alive = useRef(true);
   const titleId = useId(),
     descriptionId = useId();
@@ -190,6 +191,7 @@ export function SubjectObjectiveDialog({
         ? "此目标仅可查看"
         : "";
   function changeView(next: View) {
+    controlReadVersion.current++;
     setError("");
     setFeedback("");
     if (next === "edit" || next === "delete") {
@@ -214,6 +216,7 @@ export function SubjectObjectiveDialog({
     )
       return;
     pending.current = true;
+    const readVersion = ++controlReadVersion.current;
     setBusy(action);
     setError("");
     let accepted = false;
@@ -245,7 +248,8 @@ export function SubjectObjectiveDialog({
         );
       }
     } finally {
-      const refreshed = await client.refreshView().catch(() => false);
+      // The actual command receipt/error ends the control interaction. A
+      // separate workspace read may fail or wait without prolonging it.
       pending.current = false;
       if (alive.current) {
         setBusy("");
@@ -254,9 +258,20 @@ export function SubjectObjectiveDialog({
           setView("reading");
           setFeedback(action === "edit" ? "已保存" : "");
         }
-        if (!refreshed && action !== "delete")
-          setError("最新状态暂时无法读取，请核对后再操作。");
       }
+      void client
+        .refreshView()
+        .catch(() => false)
+        .then((refreshed) => {
+          if (
+            !refreshed &&
+            accepted &&
+            action !== "delete" &&
+            alive.current &&
+            controlReadVersion.current === readVersion
+          )
+            setError("最新状态暂时无法读取，请核对后再操作。");
+        });
     }
   }
   async function supplement() {

@@ -1680,6 +1680,7 @@
     "deleteObjectiveTitle": "删除这个目标？",
     "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。",
     "cancelThreadTitle": "取消这个线程？",
+    "threadControlChanged": "线程代次、来源或控制状态已变化，请核对最新线程后再操作。",
     "cancelThreadBody": "{{thread}}（{{id}}）\n\n取消会终结这项逻辑义务，并取消当前代次的求值；已经发生的外部副作用和审计历史仍会保留。",
     "supersedeThreadTitle": "纠正这个线程",
     "supersedeThreadBody": "线程 {{id}} 会保留原有逻辑身份与监督义务；运行时将取消旧代次，并按纠正后的指令启动新代次。",

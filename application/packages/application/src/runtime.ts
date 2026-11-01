@@ -3392,6 +3392,7 @@ export class RuntimeBridge {
     const readPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/threads/${encodeURIComponent(scope.threadId)}`;
     const recordsPath = `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/execution-records?${new URLSearchParams({ limit: "100", thread_id: scope.threadId, metadata_only: "true" })}`;
     const writePath = `/api/contexts/${encodeURIComponent(scope.runtime.contextId)}/threads/${encodeURIComponent(scope.threadId)}${action.type === "supersede-thread" ? "/supersede" : ""}`;
+    let mutation: unknown;
     const request: RuntimeRequest = async (path, method = "GET", body) => {
       active();
       if (
@@ -3434,6 +3435,7 @@ export class RuntimeBridge {
       const value = await this.request(path, method, body, access);
       await latest.recheck();
       active();
+      mutation = value;
       return value;
     };
     const controls = new ExecutionControls(request, () => ({
@@ -3443,14 +3445,51 @@ export class RuntimeBridge {
       threadId: scope.threadId,
     }));
     try {
-      return await controls.control(control);
+      const result = await controls.control(control);
+      const receipt = z
+        .object({
+          thread: z.object({
+            id: z.literal(scope.threadId),
+            context_id: z.literal(scope.runtime.contextId),
+            session_id: z.literal(scope.runtime.sessionId),
+            root_turn_id: z.literal(proof.selected.root_turn_id),
+            lifecycle: z.string(),
+            control_state: z.string(),
+            generation: z.number().int().nonnegative(),
+            revision: z.number().int().positive(),
+            updated_at: z.string(),
+          }),
+        })
+        .safeParse(mutation);
+      this.activityControlVersion++;
+      if (receipt.success && this.state.activity) {
+        const value = receipt.data.thread;
+        this.state.activity.threads = this.state.activity.threads.map(
+          (thread) =>
+            thread.id === value.id &&
+            thread.contextId === value.context_id &&
+            thread.sessionId === value.session_id &&
+            thread.rootId === value.root_turn_id &&
+            (thread.revision === undefined || thread.revision <= value.revision)
+              ? {
+                  ...thread,
+                  lifecycle: value.lifecycle,
+                  controlState: value.control_state,
+                  generation: value.generation,
+                  revision: value.revision,
+                  updatedAt: value.updated_at,
+                  ...(value.lifecycle !== "open" ? { phase: "idle" } : {}),
+                }
+              : thread,
+        );
+      }
+      return result;
     } catch (error) {
       if (error instanceof UpstreamError)
         throw new DomainError("conflict", "执行控制未确认，请核对最新状态。");
       throw error;
     } finally {
-      await this.refreshActivity();
-      this.publishWorkspaceChange();
+      this.refreshActivityAfterControl();
     }
   }
 
@@ -3763,7 +3802,21 @@ export class RuntimeBridge {
     };
     active();
     await authorize(scope, access);
-    await this.refreshActivity();
+    // The loaded Objective/source is an immutable ownership proof, not the
+    // write version authority. Recheck live access below and let Runtime CAS
+    // reject changed revisions. A control must not first rebuild every work
+    // item and terminal-history page merely to rediscover this one identity.
+    if (
+      !this.state.activity?.available ||
+      !this.state.activity.objectives?.some(
+        (goal) =>
+          goal.id === control.objectiveId &&
+          goal.projectId === scope.projectId &&
+          goal.conversationId === scope.conversationId &&
+          this.activitySources.has(goal.inputId),
+      )
+    )
+      await this.refreshActivity(false);
     const verify = async () => {
       active();
       const grant = await authorize(scope, access);
@@ -3833,29 +3886,76 @@ export class RuntimeBridge {
         access,
         undefined,
       );
+      let revision: number | undefined;
       if (control.action === "delete")
         z.object({
           deleted: z.literal(true),
           objective_id: z.literal(control.objectiveId),
           terminal_status: z.literal("cancelled"),
         }).parse(response);
-      else if (control.action === "edit")
-        z.object({
-          edited: z.literal(true),
-          objective: z.object({
-            id: z.literal(control.objectiveId),
-            stated_objective: z.literal(control.statedObjective),
-          }),
-        }).parse(response);
-      else
-        z.object({
-          [control.action === "pause" ? "paused" : "resumed"]: z.literal(true),
-          objective: z.object({
-            id: z.literal(control.objectiveId),
-            status: z.literal(control.action === "pause" ? "paused" : "active"),
-          }),
-        }).parse(response);
+      else if (control.action === "edit") {
+        const receipt = z
+          .object({
+            edited: z.literal(true),
+            objective: z.object({
+              id: z.literal(control.objectiveId),
+              stated_objective: z.literal(control.statedObjective),
+              revision: z.number().int().positive(),
+            }),
+          })
+          .parse(response);
+        revision = receipt.objective.revision;
+      } else {
+        (control.action === "pause"
+          ? z.object({ paused: z.literal(true) })
+          : z.object({ resumed: z.literal(true) })
+        ).parse(response);
+        const receipt = z
+          .object({
+            objective: z.object({
+              id: z.literal(control.objectiveId),
+              status: z.literal(
+                control.action === "pause" ? "paused" : "active",
+              ),
+              revision: z.number().int().positive(),
+            }),
+          })
+          .parse(response);
+        revision = receipt.objective.revision;
+      }
+      if (revision !== undefined && revision <= control.revision)
+        throw new DomainError(
+          "conflict",
+          "目标操作回执未推进修订号，请核对最新状态。",
+        );
       active();
+      this.activityControlVersion++;
+      if (this.state.activity?.objectives)
+        this.state.activity.objectives = this.state.activity.objectives.map(
+          (goal) =>
+            goal.id === control.objectiveId &&
+            goal.projectId === scope.projectId &&
+            goal.conversationId === scope.conversationId &&
+            goal.revision === control.revision
+              ? {
+                  ...goal,
+                  revision,
+                  ...(control.action === "edit"
+                    ? { title: control.statedObjective }
+                    : {
+                        status:
+                          control.action === "delete"
+                            ? "cancelled"
+                            : control.action === "pause"
+                              ? "paused"
+                              : "active",
+                      }),
+                  ...(control.action === "delete"
+                    ? { controlAllowed: false }
+                    : {}),
+                }
+              : goal,
+        );
       return { objectiveId: control.objectiveId, action: control.action };
     } catch (error) {
       if (error instanceof UpstreamError)
@@ -3871,8 +3971,7 @@ export class RuntimeBridge {
         "目标操作回执尚未确认，请核对最新状态。",
       );
     } finally {
-      await this.refreshActivity();
-      this.publishWorkspaceChange();
+      this.refreshActivityAfterControl();
     }
   }
 
@@ -6476,6 +6575,32 @@ export class RuntimeBridge {
   }
   private activityRefresh: Promise<void> | null = null;
   private activityRefreshIncludesHistory = true;
+  private activityControlVersion = 0;
+  private activityControlRefreshRequests = 0;
+  private activityControlRefresh: Promise<void> | null = null;
+  /** Confirmed controls publish their exact receipt immediately. Reconcile
+   * after any older read, coalescing only event-triggered follow-up work. */
+  private refreshActivityAfterControl() {
+    this.publishWorkspaceChange();
+    this.activityControlRefreshRequests++;
+    if (this.activityControlRefresh) return;
+    const reconcile = async () => {
+      let observed: number;
+      do {
+        observed = this.activityControlRefreshRequests;
+        if (this.activityRefresh) await this.activityRefresh;
+        if (this.stopped) return;
+        await this.refreshActivity(false);
+      } while (observed !== this.activityControlRefreshRequests);
+    };
+    this.activityControlRefresh = reconcile()
+      .catch((error) => {
+        this.reportActivityReadFailure("control", "current", error);
+      })
+      .finally(() => {
+        this.activityControlRefresh = null;
+      });
+  }
   private rememberReadFailure(
     operation: ConnectionReadFailure["operation"],
     error: unknown,
@@ -6584,6 +6709,7 @@ export class RuntimeBridge {
     );
   }
   private async refreshActivityNow(includeHistory = true) {
+    const controlVersion = this.activityControlVersion;
     const activity: z.infer<typeof activitySchema> = {
       available: true,
       truncated: false,
@@ -7648,6 +7774,9 @@ export class RuntimeBridge {
       );
       activity.openWorkComplete &&= activity.available;
       activity.schedulesAvailable &&= activity.available;
+      // An inventory started before a confirmed control cannot replace its
+      // newer receipt. The coalesced post-control read closes this exact gap.
+      if (controlVersion !== this.activityControlVersion) return;
       this.state.activity = activity;
       this.activitySources = sources;
       for (const thread of activity.threads)
@@ -7664,6 +7793,7 @@ export class RuntimeBridge {
             inputId: thread.inputId,
           };
     } catch (error) {
+      if (controlVersion !== this.activityControlVersion) return;
       this.reportActivityReadFailure(
         createHash("sha256")
           .update([...currentKeys].sort().join(":"))

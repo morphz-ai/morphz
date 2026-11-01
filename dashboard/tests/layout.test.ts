@@ -650,9 +650,14 @@ test('stopping a reply targets its exact DialogueTurn instead of cancelling a Se
   )
   assert.match(
     appSource,
-    /const stopDialogueTurn = async \(thread: ThreadRecord\)[\s\S]*?thread\.kind !== 'dialogue_turn'[\s\S]*?action: 'cancel'[\s\S]*?expected_revision: thread\.revision/s,
+    /const stopDialogueTurn = async \(thread: ThreadRecord\)[\s\S]*?thread\.kind !== 'dialogue_turn'[\s\S]*?submitThreadControl\(DASHBOARD_API, thread\.context_id, thread, 'cancel'/s,
     'reply stop must be revision-fenced and restricted to the exact live DialogueTurn',
   )
+  const threadControlSource = readFileSync(new URL('../src/app/threadControl.ts', import.meta.url), 'utf8')
+  assert.match(threadControlSource, /threads\/\$\{encodeURIComponent\(selected\.id\)\}/)
+  assert.match(threadControlSource, /expected_revision: current\.revision/)
+  assert.match(threadControlSource, /current\.generation !== selected\.generation/)
+  assert.doesNotMatch(threadControlSource, /\/sessions\/[^\n]*\/cancel/)
   assert.match(
     appSource,
     /dialogueStreamingAttempts\.map[\s\S]*?className="stream-control-line"[\s\S]*?className="turn-stop-button"[\s\S]*?stopDialogueTurn\(dialogueThread\)[\s\S]*?<ReasoningSummaryBlock/s,

@@ -910,6 +910,89 @@ test("目标控制共用 Runtime 的暂停恢复删除协议，校验真实来�
   }
 });
 
+test(
+  "目标控制回执不等待活动清单或历史，较早在途读取不能覆盖已确认暂停",
+  { timeout: 30000 },
+  async () => {
+    const { f, internal, delivery, bounds, objective } = await fixture();
+    let release!: () => void, entered!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let block = false,
+      reads = 0,
+      writes = 0;
+    internal.request = async (path, method = "GET", body: any) => {
+      if (method === "GET") {
+        reads++;
+        const value = structuredClone({
+          detail_bounds: bounds,
+          threads: [],
+          objectives: [objective],
+        });
+        if (block) {
+          entered();
+          await held;
+        }
+        return value;
+      }
+      assert.equal(path, "/api/objectives/objective-1/pause");
+      assert.equal(body.expected_revision, 1);
+      writes++;
+      objective.objective.status = "paused";
+      objective.objective.revision = 2;
+      return { paused: true, objective: { ...objective.objective } };
+    };
+    try {
+      await internal.refreshActivity();
+      const initialReads = reads;
+      block = true;
+      const olderInventory = internal.refreshActivity();
+      await readEntered;
+      await f.session().objectiveControl({
+        objectiveId: objective.objective.id,
+        projectId: delivery.platformSource.projectId,
+        conversationId: delivery.platformSource.conversationId,
+        revision: 1,
+        action: "pause",
+      });
+      assert.equal(writes, 1);
+      assert.equal(
+        reads,
+        initialReads + 1,
+        "the control must not wait for or start another inventory/history read",
+      );
+      const current = () =>
+        f.runtime.platformNavigationSnapshot(localAccess, [f.projectId]).runtime
+          .activity!.objectives![0]!;
+      assert.equal(
+        current().status,
+        "paused",
+        "only the real accepted receipt supplies immediate state",
+      );
+      assert.equal(current().revision, 2);
+      block = false;
+      release();
+      await olderInventory;
+      assert.equal(
+        current().status,
+        "paused",
+        "the older read must not resurrect active state",
+      );
+      await (internal as any).activityControlRefresh;
+      assert.equal(current().status, "paused");
+    } finally {
+      block = false;
+      release();
+      await (internal as any).activityControlRefresh;
+      await f.close();
+    }
+  },
+);
+
 test("编辑目标复用同一权限和修订栅栏，以 PATCH 确认原文，不恢复暂停或创建执行", async () => {
   const { f, internal, delivery, bounds, objective } = await fixture();
   const mutations: { path: string; method: string; body: any }[] = [];
