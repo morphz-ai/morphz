@@ -104,6 +104,76 @@ fn native_message_terminal_backfills_indexed_text_without_inventing_phase_or_id(
 }
 
 #[test]
+fn completed_unindexed_text_closes_its_sole_announced_native_message() {
+    let body = "查询已完成，未发现符合范围的告警。🧠";
+    for delta_metadata in [
+        json!({}),
+        json!({"output_index":3}),
+        json!({"content_index":0}),
+    ] {
+        let mut delta = json!({"type":"response.output_text.delta","delta":body});
+        delta
+            .as_object_mut()
+            .unwrap()
+            .extend(delta_metadata.as_object().unwrap().clone());
+        let events = vec![
+            json!({"type":"response.output_item.added","output_index":3,"item":{"type":"message","id":"synthetic-message","phase":"final_answer","content":[]}}),
+            delta,
+            json!({"type":"response.completed","response":{"status":"completed"}}),
+        ];
+        let (raw, messages, visible) = replay(events);
+        assert_eq!(raw.content, body);
+        assert_eq!(visible, body);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].index, 3);
+        assert_eq!(messages[0].id.as_deref(), Some("synthetic-message"));
+        assert_eq!(messages[0].phase.as_deref(), Some("final_answer"));
+        assert_eq!(messages[0].text, body);
+        let parts = native::decode_messages(&raw, &messages, &binding(), "test-unindexed").unwrap();
+        assert_eq!(parts.response.content, body);
+        assert!(parts.response.tool_calls.is_empty());
+    }
+}
+
+#[test]
+fn unindexed_message_completion_keeps_terminal_and_identity_fences() {
+    for (second_message, conflicting_hint, complete) in [
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut accumulator = StreamAccumulator::default();
+        accumulator.apply_openai_responses(json!({"type":"response.output_item.added","output_index":3,"item":{"type":"message","id":"synthetic-message","phase":"final_answer","content":[]}}),&tx).unwrap();
+        if second_message {
+            accumulator.apply_openai_responses(json!({"type":"response.output_item.added","output_index":4,"item":{"type":"message","id":"another-message","content":[]}}),&tx).unwrap();
+        }
+        let mut delta = json!({"type":"response.output_text.delta","delta":"查询已完成"});
+        if conflicting_hint {
+            delta["output_index"] = json!(4);
+        }
+        accumulator.apply_openai_responses(delta, &tx).unwrap();
+        if complete {
+            accumulator
+                .apply_openai_responses(
+                    json!({"type":"response.completed","response":{"status":"completed"}}),
+                    &tx,
+                )
+                .unwrap();
+        }
+        let error = accumulator.finish(&tx).unwrap_err().to_string();
+        assert!(
+            error.contains(if complete {
+                "ambiguous or conflicting"
+            } else {
+                "disconnected before"
+            }),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn old_return_binding_does_not_publish_native_message_metadata() {
     let mut old = crate::session_io::response_stream::ModelStreamNormalizer::new(
         ReturnBinding::new("old", 1, "old", true).with_unified_output(),

@@ -3353,6 +3353,9 @@ struct StreamAccumulator {
     responses_text_deltas: BTreeMap<(usize, usize), String>,
     responses_text_final: BTreeMap<(usize, usize), String>,
     responses_unindexed_text: bool,
+    // Preserve supplied half-identities even when a compatible delta omits
+    // content_index. Missing metadata must not erase a conflicting output ID.
+    responses_unindexed_text_outputs: BTreeSet<usize>,
     responses_unindexed_text_final: Option<PartiallyIndexedResponsesText>,
     gemini_function_calls: BTreeMap<usize, GeminiFunctionCallContinuation>,
     gemini_tool_index: usize,
@@ -4035,6 +4038,9 @@ impl StreamAccumulator {
                         });
                     } else {
                         self.responses_unindexed_text = true;
+                        if let Some(index) = event.get("output_index").and_then(Value::as_u64) {
+                            self.responses_unindexed_text_outputs.insert(index as usize);
+                        }
                     }
                     self.text(delta, stream);
                 }
@@ -4462,6 +4468,43 @@ impl StreamAccumulator {
         let mut messages = BTreeMap::<usize, String>::new();
         for ((index, _), text) in message_parts {
             messages.entry(index).or_default().push_str(&text);
+        }
+        if self.responses_completed
+            && self.responses_unindexed_text
+            && !self.content.is_empty()
+            && messages.is_empty()
+            && self.responses_message_final.is_empty()
+            && !self.responses_message_items.is_empty()
+        {
+            // A completed response can carry one announced message followed
+            // by unindexed ordinary text deltas, with no repeated output
+            // array. Those exact bytes belong to the sole announced message;
+            // the response terminal closes it just as it closes indexed
+            // deltas below. Do not invent an index, ID, phase or punctuation,
+            // and never correlate multiple messages or a conflicting hint.
+            let mut items = self.responses_message_items.iter();
+            let (&index, item) = items.next().expect("nonempty message inventory");
+            if items.next().is_some()
+                || self
+                    .responses_unindexed_text_outputs
+                    .iter()
+                    .any(|hint| *hint != index)
+            {
+                return Err(provider_protocol_failure(
+                    ModelProtocol::OpenaiResponses,
+                    "unindexed text cannot be assigned to one authoritative announced message: ambiguous or conflicting output identities",
+                ));
+            }
+            let announced_text = Self::openai_responses_message_text(index, item)
+                .into_values()
+                .collect::<String>();
+            if !self.content.starts_with(&announced_text) {
+                return Err(provider_protocol_failure(
+                    ModelProtocol::OpenaiResponses,
+                    "completed unindexed text conflicts with its announced message prefix",
+                ));
+            }
+            messages.insert(index, self.content.clone());
         }
         for (index, text) in messages {
             if self.responses_message_final.contains(&index) {
