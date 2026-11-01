@@ -205,8 +205,15 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
         return {
           snapshot: {
             thread: {
-              id: path.endsWith("legacy-thread") ? "legacy-thread" : "thread-1",
-              session_id: path.endsWith("legacy-thread")
+              id: new URL(path, "http://test.invalid").pathname.endsWith(
+                "legacy-thread",
+              )
+                ? "legacy-thread"
+                : "thread-1",
+              session_id: new URL(
+                path,
+                "http://test.invalid",
+              ).pathname.endsWith("legacy-thread")
                 ? "legacy-session"
                 : binding.sessionId,
               context_id: binding.contextId,
@@ -252,7 +259,19 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
     2,
     "explicit continuation reaches the retained Session without duplicates",
   );
-  assert.equal(next.approvals.length, 1);
+  assert.equal(
+    next.approvals.length,
+    0,
+    "Job continuation does not re-read the independent Approval inventory",
+  );
+  assert.ok(view.nextApprovalCursor);
+  const approvalPage = await controls.snapshot({
+    ...scope,
+    approvalCursor: view.nextApprovalCursor,
+  });
+  assert.equal(approvalPage.jobs.length, 0);
+  assert.equal(approvalPage.approvals.length, 1);
+  assert.ok(!approvalPage.nextApprovalCursor);
   assert.equal(next.nextJobCursor, null);
   assert.equal((await controls.result(scope, legacy.id)).text, "历史结果");
   assert.equal(
