@@ -180,18 +180,18 @@ impl Tool for RecallTool {
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         ToolDefinition {
             name: "recall".to_string(),
-            description: format!("Read persisted Event content and retired Frames by stable reference, query, or time range. Use an Observation ref such as @e27 only when the Runtime presents that exact ref in Context or suggested_recall; never construct @eN from a Signal or Event sequence. Searchable non-Observation Events use their full immutable Event ID. Use this to verify summaries, recover forgotten content, or page through large preview-truncated output. Results enter only inbox and are not written to Mind automatically. event_id mode returns at most {max_chunk_chars} characters per call; when next_offset is present, pass it back unchanged as offset. Search mode accepts a time range alone or together with query; when next_cursor is present, pass it back unchanged to continue."),
+            description: format!("Read persisted Event content and retired Frames by stable reference, query, or time range. Use an Observation ref such as @e27 only when the Runtime presents that exact ref in Context or suggested_recall; never construct @eN from a Signal or Event sequence. Searchable non-Observation Events use their full immutable Event ID. Use this to verify summaries, recover forgotten content, or page through large preview-truncated output. Results enter only inbox and are not written to Mind automatically. event_id alone reads content; event_id + query searches only that exact visible Event for a case-sensitive literal substring, with Unicode character offsets into the same text returned by event_id alone. Event reads/search previews return at most {max_chunk_chars} characters per call; keep event_id/query unchanged and pass next_offset unchanged as offset. json_pointer selects a typed subtree and cannot accompany query. Context search accepts query/time range without event_id; keep those filters unchanged and pass next_cursor unchanged as cursor."),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "event_id": { "type": "string", "description": "An exact Context Observation ref such as @e27 copied from Runtime output, or a full immutable Event ID; never synthesize @eN from a sequence" },
                     "json_pointer": { "type": "string", "description": "Select a typed message subtree with a JSON pointer; empty string selects its content root. offset/limit count object or array entries, or Unicode characters for a string. Follow incomplete entries by their returned path. Numbers remain lossless." },
                     "frame_id": { "type": "string", "description": "An existing or retired Frame ID" },
-                    "query": { "type": "string", "description": "Optional keywords to search persisted Events across every Session in the current Cognitive Context" },
+                    "query": { "type": "string", "description": "With event_id: a case-sensitive literal substring within that visible Event only. Without event_id: keywords across persisted Events in the current Cognitive Context" },
                     "start_time": { "type": "string", "format": "date-time", "description": "Optional inclusive RFC 3339 start time interpreted using evaluation-environment.local-time; an explicit offset is required. A time-only recall does not require query" },
                     "end_time": { "type": "string", "format": "date-time", "description": "Optional exclusive RFC 3339 end time interpreted in local time with an explicit offset" },
-                    "offset": { "type": "integer", "minimum": 0, "description": "Character offset into original Event content; for sequential paging, use the previous next_offset unchanged" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("Characters returned per call, at most {max_chunk_chars}") }
+                    "offset": { "type": "integer", "minimum": 0, "description": "Unicode character offset into original Event text to read or begin a within-event search; pass next_offset unchanged to continue. With json_pointer, the offset counts selected entries or characters" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("Event reads or within-event search: returned text/preview character budget, at most {max_chunk_chars}. Context search: maximum hits, capped at 50. With json_pointer: selected entries or characters") }
                     ,"depth": { "type": "integer", "minimum": 0, "maximum": 4, "description": "Relationship traversal depth in frame_id mode; 0 returns only the target Frame" }
                     ,"direction": { "type": "string", "enum": ["ancestors", "descendants", "both"], "description": "Relationship traversal direction in frame_id mode" }
                     ,"include_bodies": { "type": "boolean", "description": "Whether to return Frame bodies; defaults to true" }
@@ -213,6 +213,7 @@ impl Tool for RecallTool {
         args.query = non_empty(args.query);
         args.start_time = non_empty(args.start_time);
         args.end_time = non_empty(args.end_time);
+        args.cursor = non_empty(args.cursor);
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "recall is missing the Runtime-injected cognitive context")?;
@@ -222,17 +223,44 @@ impl Tool for RecallTool {
             .ok_or("recall has no Runtime-injected Context View manifest")?;
         view_manifest.validate_for_context(&context_id)?;
         let view_manifest = Some(view_manifest);
-        let search_selected = args.query.is_some()
-            || args.start_time.is_some()
-            || args.end_time.is_some()
-            || (args.cursor.is_some() && args.frame_id.is_none());
+        let search_selected = args.event_id.is_none()
+            && (args.query.is_some()
+                || args.start_time.is_some()
+                || args.end_time.is_some()
+                || (args.cursor.is_some() && args.frame_id.is_none()));
         let selected = usize::from(args.event_id.is_some())
             + usize::from(args.frame_id.is_some())
             + usize::from(search_selected);
         if selected != 1 {
             return Err(
-                "recall must select event_id, frame_id, or search by query/time range".into(),
+                "recall must select one mode: {\"event_id\":\"@e27\"}, {\"event_id\":\"@e27\",\"query\":\"关键词\"}, {\"frame_id\":\"frame-id\"}, or Context search {\"query\":\"关键词\"} with optional start_time/end_time/cursor".into(),
             );
+        }
+        let frame_options = args.depth.is_some()
+            || args.direction.is_some()
+            || args.include_bodies.is_some()
+            || args.include_events.is_some()
+            || args.max_nodes.is_some();
+        if args.event_id.is_some()
+            && (args.start_time.is_some()
+                || args.end_time.is_some()
+                || args.cursor.is_some()
+                || frame_options)
+        {
+            return Err("recall event_id mode does not accept time filters, cursor or Frame options; use {\"event_id\":\"@e27\",\"query\":\"关键词\",\"offset\":0,\"limit\":1000} for within-event search, or omit event_id for Context query/time search".into());
+        }
+        if args.event_id.is_some() && args.query.is_some() && args.json_pointer.is_some() {
+            return Err("recall query searches the Event text, not a typed subtree; use {\"event_id\":\"@e27\",\"query\":\"关键词\"} or {\"event_id\":\"@e27\",\"json_pointer\":\"/path\"}, separately".into());
+        }
+        if args.frame_id.is_some()
+            && (args.json_pointer.is_some() || args.offset.is_some() || args.limit.is_some())
+        {
+            return Err("recall Frame paging uses max_nodes/cursor, not json_pointer/offset/limit; use {\"frame_id\":\"frame-id\",\"max_nodes\":32}".into());
+        }
+        if search_selected
+            && (args.json_pointer.is_some() || args.offset.is_some() || frame_options)
+        {
+            return Err("recall Context search uses query/time range/limit/cursor, not json_pointer/offset or Frame options; use {\"query\":\"关键词\",\"limit\":10}".into());
         }
 
         if let Some(frame_id) = args.frame_id {
@@ -297,6 +325,16 @@ impl Tool for RecallTool {
                 )
             })?;
             let event_reference = self.context_engine.event_reference(&event);
+            if let Some(query) = args.query {
+                return event_search(
+                    event,
+                    event_reference,
+                    &query,
+                    args.offset.unwrap_or(0),
+                    args.limit.unwrap_or(4_000),
+                    self.context_engine.recall_chunk_chars(),
+                );
+            }
             if let Some(path) = args.json_pointer {
                 let message = crate::session_io::event_message(&event)
                     .or_else(|| crate::session_io::standard_chat_event(&event))
@@ -464,6 +502,80 @@ fn recall_event_text(event: &Event) -> String {
         .map(ToOwned::to_owned)
         .or_else(|| event.payload.get("tool_calls").map(ToString::to_string))
         .unwrap_or_else(|| serde_json::Value::Object(event.payload.clone()).to_string())
+}
+
+/// Search only the already-authorized immutable Event. Offsets refer to the
+/// exact same Unicode text as event_chunk; no recall-index or history read.
+fn event_search(
+    event: Event,
+    event_reference: String,
+    query: &str,
+    requested_offset: usize,
+    requested_limit: usize,
+    max_visible_chars: usize,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let text = recall_event_text(&event);
+    let total_chars = text.chars().count();
+    let offset = requested_offset.min(total_chars);
+    let start_byte = text
+        .char_indices()
+        .nth(offset)
+        .map_or(text.len(), |(i, _)| i);
+    let query_chars = query.chars().count();
+    let mut remaining = requested_limit
+        .clamp(1, 20_000)
+        .min(max_visible_chars.max(1));
+    let mut matches = Vec::new();
+    let mut next_offset = None;
+    let mut previous_byte = start_byte;
+    let mut match_offset = offset;
+    for (relative_byte, _) in text[start_byte..].match_indices(query) {
+        let byte = start_byte + relative_byte;
+        match_offset += text[previous_byte..byte].chars().count();
+        previous_byte = byte;
+        if matches.len() == 50 || remaining == 0 {
+            next_offset = Some(match_offset);
+            break;
+        }
+        let width = remaining.min(320);
+        let before = match_offset.min(width / 4);
+        let preview_byte = if before == 0 {
+            byte
+        } else {
+            text[..byte].char_indices().rev().nth(before - 1).unwrap().0
+        };
+        let end_byte = text[preview_byte..]
+            .char_indices()
+            .nth(width)
+            .map_or(text.len(), |(i, _)| preview_byte + i);
+        let preview = &text[preview_byte..end_byte];
+        let preview_chars = preview.chars().count();
+        remaining -= preview_chars;
+        matches.push(serde_json::json!({
+            "offset": match_offset,
+            "end_offset": match_offset + query_chars,
+            "preview_offset": match_offset - before,
+            "preview": preview,
+            "suggested_recall": {"event_id": event_reference, "offset": match_offset - before, "limit": preview_chars},
+        }));
+    }
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "context_delivery": "event-search",
+        "event_id": event_reference,
+        "document_id": event.id,
+        "kind": event.event_type,
+        "topic": event.topic,
+        "actor": event.actor,
+        "timestamp": crate::local_time::format_utc_for_local(event.timestamp),
+        "query": query,
+        "match_mode": "case-sensitive literal substring; non-overlapping matches; Unicode character offsets into event_id read text",
+        "offset": offset,
+        "total_chars": total_chars,
+        "returned": matches.len(),
+        "matches": matches,
+        "next_offset": next_offset,
+        "paging_instruction": next_offset.map(|next| format!("keep event_id/query unchanged and use offset={next} on the next request")),
+    }))?)
 }
 
 #[cfg(test)]
@@ -932,6 +1044,281 @@ mod tests {
         let aliased: serde_json::Value = serde_json::from_str(&aliased).unwrap();
         assert_eq!(aliased["text"], "甲乙");
         assert_eq!(aliased["event_id"], "@e1");
+    }
+
+    #[tokio::test]
+    async fn recall_event_query_pages_unicode_matches_without_searching_other_events() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("event-search.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let text = format!(
+            "{}货架 Shelf{}货架 末尾🧠",
+            "前🧠".repeat(28_000),
+            "间".repeat(1_000)
+        );
+        for (id, body) in [
+            ("event:source", text.as_str()),
+            ("event:other", "货架 不得混入其他事件"),
+        ] {
+            store
+                .append(Event::new(
+                    id.into(),
+                    "Tool".into(),
+                    crate::event::TYPE_TOOL_OUTPUT.into(),
+                    "chat/tool_output".into(),
+                    serde_json::json!({"session_id":"event-search", "text":body})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        let tool = RecallTool::new(Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )));
+        let mut offsets = vec![];
+        let mut offset = 0;
+        loop {
+            let page = execute_model_recall(
+                &tool,
+                "event-search",
+                2,
+                serde_json::json!({"event_id":"@e1","query":"货架","offset":offset,"limit":128}),
+            )
+            .await
+            .unwrap();
+            let page: serde_json::Value = serde_json::from_str(&page).unwrap();
+            assert_eq!(page["event_id"], "@e1");
+            assert_eq!(page["document_id"], "event:source");
+            assert_eq!(page["total_chars"], text.chars().count());
+            let hits = page["matches"].as_array().unwrap();
+            assert_eq!(hits.len(), 1, "one preview consumes this page's budget");
+            for hit in hits {
+                let start = hit["offset"].as_u64().unwrap() as usize;
+                let end = hit["end_offset"].as_u64().unwrap() as usize;
+                assert_eq!(
+                    text.chars()
+                        .skip(start)
+                        .take(end - start)
+                        .collect::<String>(),
+                    "货架"
+                );
+                offsets.push(start);
+                assert!(!hit["preview"].as_str().unwrap().contains("不得混入"));
+                assert!(hit["preview"].as_str().unwrap().chars().count() <= 128);
+                let read =
+                    execute_model_recall(&tool, "event-search", 2, hit["suggested_recall"].clone())
+                        .await
+                        .unwrap();
+                let read: serde_json::Value = serde_json::from_str(&read).unwrap();
+                assert_eq!(
+                    read["text"], hit["preview"],
+                    "suggested exact read must reproduce the source excerpt"
+                );
+            }
+            match page["next_offset"].as_u64() {
+                Some(next) => {
+                    assert!(next as usize > offset);
+                    offset = next as usize;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(offsets, vec![56_000, 57_008]);
+        for query in ["不存在", "shelf", "货架.*"] {
+            let page = execute_model_recall(
+                &tool,
+                "event-search",
+                2,
+                serde_json::json!({"event_id":"event:source","query":query}),
+            )
+            .await
+            .unwrap();
+            let page: serde_json::Value = serde_json::from_str(&page).unwrap();
+            assert_eq!(page["returned"], 0);
+            assert!(page["next_offset"].is_null());
+        }
+        let beyond = execute_model_recall(
+            &tool,
+            "event-search",
+            2,
+            serde_json::json!({"event_id":"event:source","query":"货架","offset":usize::MAX}),
+        )
+        .await
+        .unwrap();
+        let beyond: serde_json::Value = serde_json::from_str(&beyond).unwrap();
+        assert_eq!(beyond["offset"], text.chars().count());
+        assert_eq!(beyond["returned"], 0);
+    }
+
+    #[test]
+    fn event_query_has_bounded_preview_and_hit_counts_even_for_dense_matches() {
+        let event = Event::new(
+            "dense".into(),
+            "Tool".into(),
+            crate::event::TYPE_TOOL_OUTPUT.into(),
+            "chat/tool_output".into(),
+            serde_json::json!({"text":"🧠货架".repeat(1_000)})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        for (budget, expected) in [(1, 1), (20_000, 50)] {
+            let page =
+                event_search(event.clone(), "@e1".into(), "货架", 0, usize::MAX, budget).unwrap();
+            let page: serde_json::Value = serde_json::from_str(&page).unwrap();
+            let hits = page["matches"].as_array().unwrap();
+            assert_eq!(hits.len(), expected);
+            assert!(
+                hits.iter()
+                    .map(|h| h["preview"].as_str().unwrap().chars().count())
+                    .sum::<usize>()
+                    <= budget
+            );
+            assert_eq!(page["next_offset"], 1 + expected * 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_event_query_keeps_the_existing_view_and_context_fences() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("event-query-fences.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        for (id, context, topic) in [
+            ("visible", "query-fences", "chat/user_message"),
+            ("foreign", "other-context", "chat/user_message"),
+            ("future", "query-fences", "chat/user_message"),
+            ("control", "query-fences", "runtime/control"),
+        ] {
+            store
+                .append(Event::new(
+                    id.into(),
+                    "User".into(),
+                    if topic.starts_with("chat/") {
+                        crate::event::TYPE_USER_MESSAGE.into()
+                    } else {
+                        "runtime_control".into()
+                    },
+                    topic.into(),
+                    serde_json::json!({"context_id":context,"session_id":context,"text":"货架"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        let tool = RecallTool::new(Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )));
+        for event_id in ["foreign", "future", "@e3", "missing"] {
+            let error = execute_model_recall(
+                &tool,
+                "query-fences",
+                1,
+                serde_json::json!({"event_id":event_id,"query":"货架"}),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains("outside the current Context"),
+                "{event_id}: {error}"
+            );
+        }
+        let error = execute_model_recall(
+            &tool,
+            "query-fences",
+            4,
+            serde_json::json!({"event_id":"@e4","query":"货架"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("does not identify a visible observation"),
+            "{error}"
+        );
+        for invalid in ["other-context", "unsupported-policy"] {
+            let mut manifest = ContextViewManifest::context_wide("query-fences", 0, 4, [], []);
+            if invalid == "other-context" {
+                manifest.context_id = invalid.into()
+            } else {
+                manifest.visibility_fingerprint = invalid.into()
+            }
+            let error = CURRENT_CONTEXT_VIEW_MANIFEST
+                .scope(
+                    Some(Arc::new(manifest)),
+                    CURRENT_CONTEXT_ID.scope(
+                        "query-fences".into(),
+                        tool.execute(r#"{"event_id":"visible","query":"货架"}"#),
+                    ),
+                )
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("another Context")
+                    || error.contains("unsupported visibility policy"),
+                "{error}"
+            );
+        }
+        let resident =
+            ContextViewManifest::context_wide("query-fences", 0, 1, ["future".into()], []);
+        let page = CURRENT_CONTEXT_VIEW_MANIFEST
+            .scope(
+                Some(Arc::new(resident)),
+                CURRENT_CONTEXT_ID.scope(
+                    "query-fences".into(),
+                    tool.execute(r#"{"event_id":"@e3","query":"货架"}"#),
+                ),
+            )
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_str(&page).unwrap();
+        assert_eq!(page["document_id"], "future");
+        assert_eq!(page["returned"], 1);
+    }
+
+    #[tokio::test]
+    async fn recall_rejects_mixed_mode_fields_with_legal_examples() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("recall-mixed-modes.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let tool = RecallTool::new(Arc::new(ContextEngine::new(
+            store as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )));
+        for args in [
+            serde_json::json!({"event_id":"@e27","query":"货架","start_time":"2026-11-01T00:00:00Z"}),
+            serde_json::json!({"event_id":"@e27","query":"货架","cursor":"cursor"}),
+            serde_json::json!({"event_id":"@e27","query":"货架","json_pointer":"/path"}),
+            serde_json::json!({"frame_id":"frame","query":"货架"}),
+            serde_json::json!({"frame_id":"frame","offset":1}),
+            serde_json::json!({"query":"货架","depth":1}),
+            serde_json::json!({"query":"货架","offset":1}),
+        ] {
+            let error = execute_model_recall(&tool, "mixed", 0, args.clone())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("{\""),
+                "error needs a legal invocation example: {args}: {error}"
+            );
+        }
     }
 
     #[tokio::test]
