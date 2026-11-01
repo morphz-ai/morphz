@@ -653,6 +653,66 @@ function originalValue(
   same(actual, expression(raw), rule);
   references(parsed, actual, bindings, rule + ":result-binding");
 }
+
+/** Only the reviewed native resource identity was added to the wait-label
+ * call and borrowed input type. Verify both exact seams before restoring the
+ * historical algorithm digest; lifecycle/priority/owner hashes stay fixed. */
+function statusBeforeResourceLabel(owner: Parsed, node: FunctionDeclaration) {
+  const rule = "collection-domain-algorithm:executionActivityStatus";
+  const waitOwner = imported(
+    owner,
+    "executionWaitLabel",
+    "./execution-wait-label.js",
+  );
+  const calls = inside(node)
+    .filter(isCallExpression)
+    .filter(
+      (call) =>
+        owner.symbols.get(call.expression) === owner.symbols.get(waitOwner),
+    );
+  assert.equal(calls.length, 1, rule);
+  const call = calls[0]!;
+  assert.equal(call.arguments.length, 3, rule);
+  for (const [index, raw] of [
+    "thread.waitKinds",
+    "thread.waitUntil",
+    "thread.waitResources",
+  ].entries())
+    same(call.arguments[index]!, expression(raw), rule, owner);
+  const unions = inside(node.parameters[0]!).filter(
+    (part) =>
+      part.kind === SyntaxKind.UnionType &&
+      inside(part).some(
+        (child) => isStringLiteral(child) && child.text === "waitResources",
+      ),
+  );
+  assert.equal(unions.length, 1, rule);
+  const union = unions[0]!;
+  assert.deepEqual(
+    inside(union)
+      .filter(isStringLiteral)
+      .map((part) => part.text),
+    ["waitKinds", "waitUntil", "waitResources"],
+    rule,
+  );
+  const edits = [
+    {
+      start: call.getStart(),
+      end: call.end,
+      text: `${call.expression.getText()}(${call.arguments[0]!.getText()}, ${call.arguments[1]!.getText()})`,
+    },
+    {
+      start: union.getStart(),
+      end: union.end,
+      text: '"waitKinds" | "waitUntil"',
+    },
+  ].sort((a, b) => b.start - a.start);
+  let source = owner.source.getText();
+  for (const edit of edits)
+    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
+  const restored = parse({ Owner: source }).get("Owner")!;
+  return shape(fn(restored, "executionActivityStatus"), restored);
+}
 function validate(contents: Sources) {
   const parsed = parse(contents),
     owner = parsed.get("Owner")!,
@@ -680,7 +740,13 @@ function validate(contents: Sources) {
         ? statement(variable(where.source, name))
         : fn(where, name);
     assert.equal(
-      hash(JSON.stringify(shape(node, where))),
+      hash(
+        JSON.stringify(
+          name === "executionActivityStatus"
+            ? statusBeforeResourceLabel(where, node as FunctionDeclaration)
+            : shape(node, where),
+        ),
+      ),
       digest,
       "collection-domain-algorithm:" + name,
     );
@@ -985,6 +1051,13 @@ test("fixed thirteen complete historical declarations retain their independently
 });
 test("three typed collection projections own the complete original algorithms and actual consumers", () =>
   validate(sources));
+
+test("native resource label retains the exact route input and historical state precedence", () => {
+  rejected(
+    changed("Owner", "thread.waitResources,", "undefined,"),
+    "collection-domain-algorithm:executionActivityStatus",
+  );
+});
 
 test("input priority, exact identity and first fallback cannot be replaced by a different family policy", () => {
   for (const [before, after] of [
