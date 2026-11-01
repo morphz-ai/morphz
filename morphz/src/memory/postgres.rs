@@ -2239,6 +2239,8 @@ impl PostgresStore {
              ON events(context_id, session_id, topic, thread_id, timestamp, sequence)",
             "CREATE INDEX IF NOT EXISTS idx_pg_events_context_thread_time \
              ON events(context_id, thread_id, timestamp, sequence)",
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_context_thread_type_topic_sequence \
+             ON events(context_id, thread_id, type, topic, sequence DESC)",
             "CREATE INDEX IF NOT EXISTS idx_pg_events_session_root_sequence \
              ON events(session_id, root_turn_id, sequence DESC)",
             "CREATE INDEX IF NOT EXISTS idx_pg_events_session_root_attempt_sequence \
@@ -5748,48 +5750,34 @@ impl EventStore for PostgresStore {
         topics: &[&str],
         per_thread_limit: usize,
     ) -> Result<Vec<Event>, StoreError> {
-        if thread_ids.is_empty() || topics.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut builder = QueryBuilder::<Postgres>::new(
-            "SELECT sequence,id,timestamp,actor,type,topic,payload FROM (SELECT sequence,id,timestamp,actor,type,topic,payload,ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY sequence DESC) AS source_rank FROM events WHERE context_id = "
-        );
-        builder
-            .push_bind(context_id)
-            .push(" AND type = ")
-            .push_bind(event_type)
-            .push(" AND topic IN (");
-        let mut selected_topics = builder.separated(", ");
-        for topic in topics {
-            selected_topics.push_bind(*topic);
-        }
-        builder.push(") AND thread_id IN (");
-        let mut selected = builder.separated(", ");
-        for id in thread_ids.iter().take(2_000) {
-            selected.push_bind(id);
-        }
-        builder
-            .push(")) AS bounded_sources WHERE source_rank <= ")
-            .push_bind(per_thread_limit.clamp(1, 129) as i64)
-            .push(" ORDER BY sequence ASC");
-        let rows = builder.build().fetch_all(&self.pool).await?;
-        rows.into_iter()
-            .map(|row| {
+        let pairs = super::thread_sources::pairs(thread_ids, topics);
+        let limit = per_thread_limit.clamp(1, 129);
+        let mut sources = super::thread_sources::Sources::new(limit);
+        for batch in pairs.chunks(super::thread_sources::PAIR_BATCH) {
+            let mut builder = postgres_thread_source_query(context_id, batch, event_type, limit);
+            let rows = builder.build().fetch_all(&self.pool).await?;
+            for row in rows {
+                let sequence: i64 = row.get("sequence");
                 let payload: JsonValue = row.get("payload");
-                Ok(Event {
-                    id: row.get("id"),
-                    sequence: u64::try_from(row.get::<i64, _>("sequence")).ok(),
-                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
-                    actor: row.get("actor"),
-                    event_type: row.get("type"),
-                    topic: row.get("topic"),
-                    payload: payload
-                        .as_object()
-                        .cloned()
-                        .ok_or("PostgreSQL Event payload must be an object")?,
-                })
-            })
-            .collect()
+                sources.insert(
+                    row.get("thread_id"),
+                    sequence,
+                    Event {
+                        id: row.get("id"),
+                        sequence: u64::try_from(sequence).ok(),
+                        timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                        actor: row.get("actor"),
+                        event_type: row.get("type"),
+                        topic: row.get("topic"),
+                        payload: payload
+                            .as_object()
+                            .cloned()
+                            .ok_or("PostgreSQL Event payload must be an object")?,
+                    },
+                );
+            }
+        }
+        Ok(sources.finish())
     }
 
     async fn backfill_causal_projection_for_thread(
@@ -9466,9 +9454,121 @@ impl PostgresStore {
     }
 }
 
+fn postgres_thread_source_query<'a>(
+    context_id: &'a str,
+    pairs: &'a [(String, String)],
+    event_type: &'a str,
+    limit: usize,
+) -> QueryBuilder<'a, Postgres> {
+    let mut builder = QueryBuilder::<Postgres>::new("WITH selected_sources(thread_id,topic) AS (");
+    builder.push_values(pairs, |mut row, (thread, topic)| {
+        row.push_bind(thread.as_str()).push_bind(topic.as_str());
+    });
+    builder.push(") SELECT e.sequence,e.thread_id,e.id,e.timestamp,e.actor,e.type,e.topic,e.payload \
+                FROM selected_sources AS selected CROSS JOIN LATERAL (\
+                SELECT sequence,thread_id,id,timestamp,actor,type,topic,payload FROM events WHERE context_id = ")
+                .push_bind(context_id)
+                .push(" AND thread_id = selected.thread_id AND type = ").push_bind(event_type)
+                .push(" AND topic = selected.topic ORDER BY sequence DESC LIMIT ").push_bind(limit.clamp(1,129) as i64)
+                .push(") AS e");
+    builder
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_time;
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
+    async fn thread_event_sources_seek_each_topic_before_limit_postgres() {
+        use super::*;
+        let url =
+            std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL URL required");
+        let schema = format!(
+            "morphz_source_tails_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        let admin = PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let scoped = format!("{url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
+        let store = PostgresStore::new(&scoped, 4).await.unwrap();
+        sqlx::query(r#"INSERT INTO events(id,timestamp,actor,type,topic,context_id,session_id,thread_id,payload)
+            SELECT 'source-'||n, CASE WHEN n%2=0 THEN '2026-01-01T00:00:00Z' ELSE '2026-12-01T00:00:00Z' END,
+              'TEST', CASE WHEN n%13=0 THEN 'other-type' ELSE 'runtime_control' END,
+              CASE WHEN n%17=0 THEN 'other-topic' WHEN n%3=0 THEN 'topic-999' ELSE 'topic-000' END,
+              CASE WHEN n%11=0 THEN 'foreign-context' ELSE 'source-context' END, 'source-session',
+              CASE WHEN n%100=0 THEN 'thread-a' WHEN n%100=1 THEN 'thread-b' ELSE 'noise-thread' END,
+              jsonb_build_object('text',repeat('前',1024)) FROM generate_series(1,8000) AS n"#)
+            .execute(&store.pool).await.unwrap();
+        sqlx::query("ANALYZE events")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let mut topics = (0..129)
+            .map(|n| format!("topic-{n:03}"))
+            .collect::<Vec<_>>();
+        topics.push("topic-999".into());
+        topics.push("topic-000".into());
+        let topics = topics.iter().map(String::as_str).collect::<Vec<_>>();
+        let ids = vec!["thread-a".into(), "thread-b".into(), "thread-a".into()];
+        let events = store
+            .list_thread_event_sources("source-context", &ids, "runtime_control", &topics, 7)
+            .await
+            .unwrap();
+        let mut expected = Vec::new();
+        for remainder in [0, 1] {
+            expected.extend(
+                (1..=8000)
+                    .rev()
+                    .filter(|n| n % 100 == remainder && n % 11 != 0 && n % 13 != 0 && n % 17 != 0)
+                    .take(7),
+            );
+        }
+        expected.sort_unstable();
+        assert_eq!(
+            events.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|n| format!("source-{n}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(events.len(), 14);
+        let pair = [("thread-a".into(), "topic-000".into())];
+        let builder = postgres_thread_source_query("source-context", &pair, "runtime_control", 7);
+        let explain = format!("EXPLAIN (FORMAT JSON) {}", builder.sql());
+        let plan: JsonValue = sqlx::query_scalar(&explain)
+            .bind("thread-a")
+            .bind("topic-000")
+            .bind("source-context")
+            .bind("runtime_control")
+            .bind(7_i64)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let plan = plan.to_string();
+        assert!(
+            plan.contains("idx_pg_events_context_thread_type_topic_sequence"),
+            "{plan}"
+        );
+        assert!(
+            !plan.contains("Seq Scan") && !plan.contains("WindowAgg") && !plan.contains("Sort"),
+            "{plan}"
+        );
+        store.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
 
     #[test]
     fn parses_legacy_postgres_timestamp_text_and_rfc3339() {

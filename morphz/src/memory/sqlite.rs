@@ -3516,6 +3516,14 @@ async fn migrate_event_causal_columns(
     )
     .execute(pool)
     .await?;
+    // Equality on all four fields leaves the implicit rowid suffix available
+    // for an indexed newest-first seek, independent of wall-clock timestamps.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_context_thread_type_topic \
+         ON events(context_id, thread_id, type, topic)",
+    )
+    .execute(pool)
+    .await?;
     // A Session participant can page one input root's public Events without
     // walking every Event in a long, shared Session.
     sqlx::query(
@@ -27349,46 +27357,32 @@ impl EventStore for SqliteStore {
         topics: &[&str],
         per_thread_limit: usize,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
-        if thread_ids.is_empty() || topics.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut builder = QueryBuilder::new(
-            "SELECT event_sequence,id,timestamp,actor,type,topic,payload FROM (SELECT rowid AS event_sequence,id,timestamp,actor,type,topic,payload,ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY rowid DESC) AS source_rank FROM events WHERE context_id = "
-        );
-        builder
-            .push_bind(context_id)
-            .push(" AND type = ")
-            .push_bind(event_type)
-            .push(" AND topic IN (");
-        let mut selected_topics = builder.separated(", ");
-        for topic in topics {
-            selected_topics.push_bind(*topic);
-        }
-        builder.push(") AND thread_id IN (");
-        let mut selected = builder.separated(", ");
-        for id in thread_ids.iter().take(2_000) {
-            selected.push_bind(id);
-        }
-        builder
-            .push(")) AS bounded_sources WHERE source_rank <= ")
-            .push_bind(per_thread_limit.clamp(1, 129) as i64)
-            .push(" ORDER BY event_sequence ASC");
-        let rows = builder.build().fetch_all(&self.pool).await?;
-        rows.into_iter()
-            .map(|row| {
+        let pairs = super::thread_sources::pairs(thread_ids, topics);
+        let limit = per_thread_limit.clamp(1, 129);
+        let mut sources = super::thread_sources::Sources::new(limit);
+        for batch in pairs.chunks(super::thread_sources::PAIR_BATCH) {
+            let mut builder = sqlite_thread_source_query(context_id, batch, event_type, limit);
+            let rows = builder.build().fetch_all(&self.pool).await?;
+            for row in rows {
+                let sequence: i64 = row.get("event_sequence");
                 let payload: String = row.get("payload");
                 let timestamp: String = row.get("timestamp");
-                Ok(Event {
-                    id: row.get("id"),
-                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
-                    timestamp: parse_time(&timestamp),
-                    actor: row.get("actor"),
-                    event_type: row.get("type"),
-                    topic: row.get("topic"),
-                    payload: serde_json::from_str(&payload)?,
-                })
-            })
-            .collect()
+                sources.insert(
+                    row.get("thread_id"),
+                    sequence,
+                    Event {
+                        id: row.get("id"),
+                        sequence: u64::try_from(sequence).ok(),
+                        timestamp: parse_time(&timestamp),
+                        actor: row.get("actor"),
+                        event_type: row.get("type"),
+                        topic: row.get("topic"),
+                        payload: serde_json::from_str(&payload)?,
+                    },
+                );
+            }
+        }
+        Ok(sources.finish())
     }
 
     async fn backfill_causal_projection_for_thread(
@@ -27700,6 +27694,28 @@ fn sqlite_fts_query(terms: &[String], phrase: bool) -> String {
         .map(|term| format!("\"{}\"", quoted(term)))
         .collect::<Vec<_>>()
         .join(" OR ")
+}
+
+/// Each constant source pair owns one LIMIT before payloads are joined.
+/// CROSS JOIN keeps that bounded source set outside the rowid point reads.
+fn sqlite_thread_source_query<'a>(
+    context_id: &'a str,
+    pairs: &'a [(String, String)],
+    event_type: &'a str,
+    limit: usize,
+) -> QueryBuilder<'a, sqlx::Sqlite> {
+    let mut builder = QueryBuilder::new("WITH selected_sources(thread_id,topic) AS (");
+    builder.push_values(pairs, |mut row, (thread, topic)| {
+        row.push_bind(thread.as_str()).push_bind(topic.as_str());
+    });
+    builder.push(") SELECT e.rowid AS event_sequence,e.thread_id,e.id,e.timestamp,e.actor,e.type,e.topic,e.payload \
+        FROM selected_sources AS selected CROSS JOIN events AS e WHERE e.rowid IN (\
+        SELECT rowid FROM events INDEXED BY idx_events_context_thread_type_topic WHERE context_id = ")
+        .push_bind(context_id)
+        .push(" AND thread_id = selected.thread_id AND type = ").push_bind(event_type)
+        .push(" AND topic = selected.topic ORDER BY rowid DESC LIMIT ").push_bind(limit.clamp(1,129) as i64)
+        .push(")");
+    builder
 }
 
 fn sqlite_event_query_source(filter: &QueryFilter) -> &'static str {
@@ -31425,6 +31441,106 @@ mod tests {
         assert!(
             plan.contains("idx_events_context_topic_time"),
             "unexpected query plan: {plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_event_sources_seek_each_topic_before_limit() {
+        let tmp_file = TempSqliteDb::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        sqlx::query(r#"WITH RECURSIVE counter(n) AS (
+            SELECT 1 UNION ALL SELECT n+1 FROM counter WHERE n < 8000
+          ) INSERT INTO events(id,timestamp,actor,type,topic,context_id,session_id,thread_id,payload)
+          SELECT 'source-'||n, CASE WHEN n%2=0 THEN '2026-01-01T00:00:00Z' ELSE '2026-12-01T00:00:00Z' END,
+            'TEST', CASE WHEN n%13=0 THEN 'other-type' ELSE 'runtime_control' END,
+            CASE WHEN n%17=0 THEN 'other-topic' WHEN n%3=0 THEN 'topic-999' ELSE 'topic-000' END,
+            CASE WHEN n%11=0 THEN 'foreign-context' ELSE 'source-context' END, 'source-session',
+            CASE WHEN n%2=0 THEN 'thread-a' ELSE 'thread-b' END,
+            json_object('text', replace(hex(zeroblob(512)),'0','前')) FROM counter"#)
+            .execute(&store.pool).await.unwrap();
+        let mut topics = (0..129)
+            .map(|n| format!("topic-{n:03}"))
+            .collect::<Vec<_>>();
+        topics.push("topic-999".into());
+        topics.push("topic-000".into());
+        let topics = topics.iter().map(String::as_str).collect::<Vec<_>>();
+        let ids = vec!["thread-a".into(), "thread-b".into(), "thread-a".into()];
+        let events = store
+            .list_thread_event_sources("source-context", &ids, "runtime_control", &topics, 7)
+            .await
+            .unwrap();
+        let mut expected = Vec::new();
+        for parity in [0, 1] {
+            expected.extend(
+                (1..=8000)
+                    .rev()
+                    .filter(|n| n % 2 == parity && n % 11 != 0 && n % 13 != 0 && n % 17 != 0)
+                    .take(7),
+            );
+        }
+        expected.sort_unstable();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|n| format!("source-{n}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            events.len(),
+            14,
+            "the limit is per Thread, not per topic or pair batch"
+        );
+        assert!(store
+            .list_thread_event_sources("source-context", &[], "runtime_control", &topics, 7)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .list_thread_event_sources("source-context", &ids, "runtime_control", &[], 7)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let pair = [("thread-a".into(), "topic-000".into())];
+        let builder = sqlite_thread_source_query("source-context", &pair, "runtime_control", 7);
+        let explain = format!("EXPLAIN QUERY PLAN {}", builder.sql());
+        let rows = sqlx::query(&explain)
+            .bind("thread-a")
+            .bind("topic-000")
+            .bind("source-context")
+            .bind("runtime_control")
+            .bind(7_i64)
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_events_context_thread_type_topic"),
+            "{plan}"
+        );
+        assert!(
+            plan.contains("SEARCH e USING INTEGER PRIMARY KEY"),
+            "{plan}"
+        );
+        assert!(
+            !plan.contains("SCAN events")
+                && !plan.contains("SCAN e ")
+                && !plan.contains("TEMP B-TREE"),
+            "{plan}"
+        );
+        assert!(
+            !builder.sql().contains("ROW_NUMBER"),
+            "a rank after an unbounded historical sort is not a bounded tail"
         );
     }
 
