@@ -56,6 +56,7 @@ const {
   failurePage,
   errorSummary,
 } = require("./startup-page.cjs");
+const { prepareApplicationModules } = require("./startup-modules.cjs");
 const developmentBundle =
   app.isPackaged &&
   require(join(app.getAppPath(), "package.json")).morphzDevelopmentBundle ===
@@ -84,6 +85,13 @@ app.setPath("userData", profilePath);
 const appPartition = persistentPartition(app.getPath("userData"), "app");
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
+  globalThis.__morphzStartupDiagnostic?.("main:imports-prefetch-start");
+  const startupModules = prepareApplicationModules();
+  void startupModules.then((prepared) =>
+    globalThis.__morphzStartupDiagnostic?.("main:imports-prefetch-settled", {
+      failed: "error" in prepared,
+    }),
+  );
   let window;
   let windowStartup;
   let windowReady = false;
@@ -298,13 +306,14 @@ else {
   app
     .whenReady()
     .then(async () => {
-      globalThis.__morphzStartupDiagnostic?.("main:imports-start");
-      const { dataDirectory } =
-        await import("../../dist/service/packages/application/src/paths.js");
-      globalThis.__morphzStartupDiagnostic?.("main:paths-loaded");
-      const { openEmbeddedApplication, embeddedResources } =
-        await import("../../dist/service/apps/desktop/application-host.js");
+      globalThis.__morphzStartupDiagnostic?.("main:imports-consume");
+      const prepared = await startupModules;
+      if ("error" in prepared) throw prepared.error;
       globalThis.__morphzStartupDiagnostic?.("main:host-module-loaded");
+      const [
+        { dataDirectory },
+        { openEmbeddedApplication, embeddedResources },
+      ] = prepared.modules;
       connection = connectionFromArgs(process.argv, dataDirectory);
       if (hot) {
         if (connection.mode !== "remote")
