@@ -94,6 +94,17 @@ jobs:
           sh scripts/test_install.sh
       - name: Clippy
         run: cargo clippy --all-targets --all-features --keep-going -- -D warnings
+      - name: Require remote Store notification contracts and three receipt passes
+        run: |
+          set -euo pipefail
+          suite="$RUNNER_TEMP/remote-store-observers.log"
+          cargo test --locked -p morphz --features remote-store --lib memory::remote::observer_tests:: -- --test-threads=1 | tee "$suite"
+          python3 -c 'import pathlib,re,sys; text=re.sub(r"\x1b\[[0-9;]*[mK]", "", pathlib.Path(sys.argv[1]).read_text()); assert re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;", text)' "$suite"
+          for round in 1 2 3; do
+            log="$RUNNER_TEMP/remote-store-notification-$round.log"
+            cargo test --locked -p morphz --features remote-store --lib memory::remote::observer_tests::remote_event_notifications_wait_for_remote_receipts_without_idle_polling -- --exact --test-threads=1 | tee "$log"
+            python3 -c 'import pathlib,re,sys; text=re.sub(r"\x1b\[[0-9;]*[mK]", "", pathlib.Path(sys.argv[1]).read_text()); assert "test result: ok. 1 passed; 0 failed; 0 ignored;" in text' "$log"
+          done
 
   test:
     name: Test

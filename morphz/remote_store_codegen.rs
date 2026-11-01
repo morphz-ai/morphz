@@ -53,6 +53,13 @@ pub fn generate() {
                 "worker_coordination_mode" => quote! { WorkerCoordinationMode::SharedLeases },
                 "storage_pool_metrics" => quote! { None },
                 "storage_backend_name" => quote! { "remote" },
+                // A process-local receiver cannot be forwarded as an RPC.
+                // The owned remote Store publishes hints after remote receipts.
+                "subscribe_event_changes" => quote! { self.event_change_subscription() },
+                // execute() already announces the validated remote revision;
+                // the kernel's post-commit hook must not announce speculation
+                // or cause a second notification for the same receipt.
+                "committed_event_hint" => quote! {},
                 // A notification wait is a hint, not a Store operation. Never
                 // hold the transaction queue or obstruct owner renewal here.
                 "wait_for_edge_command_change" | "wait_for_thread_signal_change" => {
@@ -61,7 +68,7 @@ pub fn generate() {
                 _ => {
                     assert!(
                         signature.asyncness.is_some(),
-                        "new synchronous Store method needs an explicit remote contract"
+                        "new synchronous Store method '{name}::{method_name}' needs an explicit remote contract"
                     );
                     let args: Vec<_> = signature
                         .inputs

@@ -430,6 +430,57 @@ async fn barrier_cannot_certify_a_different_compute_owner_or_epoch() {
 // These execute the actual SQLite operation and journal. Only transport
 // receipts are injected; no result/lease is synthesized by a model or UI.
 #[tokio::test]
+async fn remote_event_notifications_wait_for_remote_receipts_without_idle_polling() {
+    for mode in [1, 2] {
+        let (authority, store, _queue) = setup().await;
+        let before_subscription = authority.head_calls.load(Ordering::SeqCst);
+        let mut changes = store.subscribe_event_changes().unwrap();
+        assert_eq!(
+            authority.head_calls.load(Ordering::SeqCst),
+            before_subscription
+        );
+        let checkpoint = store.event_tail_checkpoint().await.unwrap();
+        assert!(!changes.has_changed().unwrap());
+        authority.commit_mode.store(mode, Ordering::SeqCst);
+        let writer = store.clone();
+        let task = tokio::spawn(async move { writer.append(event("notification-receipt")).await });
+        tokio::time::timeout(Duration::from_secs(5), authority.commit_entered.notified())
+            .await
+            .unwrap();
+        assert!(!task.is_finished());
+        assert!(
+            !changes.has_changed().unwrap(),
+            "neither speculative SQLite state nor a held remote receipt may wake the observer"
+        );
+        authority.commit_release.notify_one();
+        task.await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), changes.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let page = store.read_event_tail_page(&checkpoint, 7).await.unwrap();
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].id, "notification-receipt");
+        assert!(!page.has_more);
+        changes.borrow_and_update();
+        assert!(store
+            .read_event_tail_page(&page.next, 7)
+            .await
+            .unwrap()
+            .records
+            .is_empty());
+        let heads = authority.head_calls.load(Ordering::SeqCst);
+        let commits = authority.commit_calls.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!changes.has_changed().unwrap());
+        assert_eq!(authority.head_calls.load(Ordering::SeqCst), heads);
+        assert_eq!(authority.commit_calls.load(Ordering::SeqCst), commits);
+        store.lost.store(true, Ordering::Release);
+        assert!(store.subscribe_event_changes().is_err());
+    }
+}
+
+#[tokio::test]
 async fn remote_execution_uses_one_authority_roundtrip_per_cached_operation() {
     let (authority, store, _queue) = setup().await;
     authority.head_calls.store(0, Ordering::SeqCst);
@@ -499,6 +550,7 @@ async fn remote_execution_validates_the_exact_read_snapshot_and_write_base() {
 async fn remote_execution_cancellation_and_lost_receipts_never_promote_speculation() {
     for mode in [1, 2, 3] {
         let (authority, store, _queue) = setup().await;
+        let mut changes = store.subscribe_event_changes().unwrap();
         authority.commit_mode.store(mode, Ordering::SeqCst);
         let writer = store.clone();
         let task = tokio::spawn(async move { writer.append(event("uncertain")).await });
@@ -512,10 +564,18 @@ async fn remote_execution_cancellation_and_lost_receipts_never_promote_speculati
         } else {
             assert!(task.await.unwrap().is_err());
         }
+        assert!(!changes.has_changed().unwrap());
         assert!(store.replica.lock().await.is_none());
         let events = store.query(QueryFilter::default()).await.unwrap();
         assert_eq!(events.len(), usize::from(mode != 1));
+        assert_eq!(
+            changes.has_changed().unwrap(),
+            mode != 1,
+            "only a newly authority-validated restored revision may announce an uncertain commit"
+        );
+        changes.borrow_and_update();
         store.append(event("next")).await.unwrap();
+        assert!(changes.has_changed().unwrap());
         assert_eq!(
             store.query(QueryFilter::default()).await.unwrap().len(),
             usize::from(mode != 1) + 1
@@ -526,6 +586,7 @@ async fn remote_execution_cancellation_and_lost_receipts_never_promote_speculati
 #[tokio::test]
 async fn remote_execution_commits_bookkeeping_before_returning_a_domain_error() {
     let (authority, store, _queue) = setup().await;
+    let changes = store.subscribe_event_changes().unwrap();
     authority.commit_calls.store(0, Ordering::SeqCst);
     let result: Result<Result<(), StoreError>, StoreError> = store
         .execute("test", |local| async move {
@@ -538,6 +599,7 @@ async fn remote_execution_commits_bookkeeping_before_returning_a_domain_error() 
         "expected domain error"
     );
     assert_eq!(authority.commit_calls.load(Ordering::SeqCst), 1);
+    assert!(changes.has_changed().unwrap());
     assert_eq!(store.query(QueryFilter::default()).await.unwrap().len(), 1);
 }
 

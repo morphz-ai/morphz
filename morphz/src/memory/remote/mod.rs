@@ -47,6 +47,7 @@ pub struct RemoteRuntimeStore {
     lease_control: Option<Arc<dyn protocol::RemoteStoreLeaseTransport>>,
     _lease_guard: Option<lease::LeaseGuard>,
     observer_progress: OnceLock<Arc<host_observers::ObserverProgress>>,
+    event_changes: tokio::sync::watch::Sender<u64>,
 }
 
 /// Once a park RPC starts, only an explicit busy receipt proves this owner may
@@ -82,10 +83,13 @@ impl RemoteRuntimeStore {
             lease_control: None,
             _lease_guard: None,
             observer_progress: OnceLock::new(),
+            event_changes: tokio::sync::watch::channel(0).0,
         };
         // Connecting validates schema/ownership and restores the complete state;
         // never create a local empty Runtime because the remote is unreachable.
-        *store.replica.lock().await = Some(store.restore().await?);
+        let replica = store.restore().await?;
+        store.notify_validated_revision(replica.revision);
+        *store.replica.lock().await = Some(replica);
         Ok(store)
     }
 
@@ -123,8 +127,11 @@ impl RemoteRuntimeStore {
             lease_control: Some(transport),
             _lease_guard: Some(guard),
             observer_progress: OnceLock::new(),
+            event_changes: tokio::sync::watch::channel(0).0,
         };
-        *store.replica.lock().await = Some(store.restore().await?);
+        let replica = store.restore().await?;
+        store.notify_validated_revision(replica.revision);
+        *store.replica.lock().await = Some(replica);
         store.ensure_owned()?;
         Ok(store)
     }
@@ -162,6 +169,25 @@ impl RemoteRuntimeStore {
             );
         }
         Ok(())
+    }
+
+    fn event_change_subscription(&self) -> Result<tokio::sync::watch::Receiver<u64>, StoreError> {
+        self.ensure_owned()?;
+        Ok(self.event_changes.subscribe())
+    }
+
+    // All ingress writes belong to this fenced compute owner. The disposable
+    // replica's speculative notifications are never exposed. A newer revision
+    // is announced only after a remote commit receipt or validated read;
+    // unchanged reads neither wake observers nor initiate background I/O.
+    fn notify_validated_revision(&self, revision: u64) {
+        self.event_changes.send_if_modified(|previous| {
+            if revision <= *previous {
+                return false;
+            }
+            *previous = revision;
+            true
+        });
     }
 
     pub async fn complete_recovery(&self) -> Result<(), StoreError> {
@@ -365,6 +391,7 @@ impl RemoteRuntimeStore {
             }
             validation.validated();
             timing.validated();
+            self.notify_validated_revision(revision);
             return Ok(result);
         }
         let commit = Commit {
@@ -403,6 +430,7 @@ impl RemoteRuntimeStore {
         replica.sequence = head.sequence;
         *slot = Some(replica);
         timing.validated();
+        self.notify_validated_revision(head.revision);
         Ok(result)
     }
 }
