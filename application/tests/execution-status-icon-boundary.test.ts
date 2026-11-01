@@ -229,10 +229,6 @@ const templates = parse({
     "const preview = <>{thread && (<UserInputPreview thread={thread} onReply={onReply} disabled={!client.online || !executionActivityThreadAvailable(thread, runtime)} />)}</>;",
   SidebarQuestionEntry:
     'const entry = <div key={t.id} className="execution-activity-entry" />;',
-  SidebarActivityFacts: `
-    const stateLabel = needsInput ? "等待你的输入" : status.label;
-    const visibleSummary = summary === stateLabel ? "" : summary;`,
-  SidebarActivityState: `const state = <span className="execution-activity-state" data-status={status.kind} data-user-input={needsInput || undefined} title={stateLabel}>{stateLabel}</span>;`,
   SidebarThreadControls: [
     "const controls = <ExecutionControlActions",
     "key={`${client.boot!.csrfToken}:${JSON.stringify(scope)}`}",
@@ -417,105 +413,6 @@ function imported(parsed: Parsed, path: string, name: string) {
   const symbol = parsed.symbols.get(matches[0]!);
   assert.notEqual(symbol, undefined);
   return symbol;
-}
-
-/** Reviewed title-first layout: expose the existing label beside the unchanged
- * metadata, and omit only an exact duplicate summary. Restore this finite
- * presentation delta before the historical glyph/freshness/lifecycle proof;
- * no baseline hashes, reads, hooks, title facts or callbacks are replaced. */
-function withoutReviewedActivityPresentation(parsed: Parsed): string {
-  const facts = templates.get("SidebarActivityFacts")!;
-  const edits: { start: number; end: number; text: string }[] = [];
-  const replace = (node: Node, text: string) =>
-    edits.push({ start: node.getStart(), end: node.end, text });
-  const elements = parsed.nodes.filter(isJsxElement);
-  const named = (name: string) => {
-    const matches = elements.filter(
-      (node) =>
-        attribute(node.openingElement, "className")?.initializer?.getText() ===
-        JSON.stringify(name),
-    );
-    assert.equal(matches.length, 1);
-    return matches[0]!;
-  };
-  const footer = named("execution-activity-footer");
-  assert.equal(footer.openingElement.attributes.properties.length, 1);
-  const children = footer.children.filter((node) => syntax(node) !== undefined);
-  assert.equal(children.length, 2);
-  const state = named("execution-activity-state");
-  assert.equal(children[0], state);
-  assert.deepEqual(
-    syntax(state),
-    syntax(templates.get("SidebarActivityState")!.nodes.find(isJsxElement)!),
-  );
-  const meta = named("execution-activity-meta");
-  assert.equal(children[1], meta);
-  assert.equal(meta.openingElement.tagName.getText(), "span");
-  assert.equal(meta.openingElement.attributes.properties.length, 2);
-  assert.equal(
-    attribute(meta.openingElement, "title")?.initializer?.getText(),
-    "{metadata}",
-  );
-  replace(footer, meta.getText().replace(/^ {2}/gm, ""));
-  for (const name of ["stateLabel", "visibleSummary"]) {
-    const declarations = parsed.nodes
-      .filter(isVariableDeclaration)
-      .filter((node) => node.name.getText() === name);
-    const expected = facts.nodes
-      .filter(isVariableDeclaration)
-      .find((node) => node.name.getText() === name)!;
-    assert.equal(declarations.length, 1);
-    const declaration = declarations[0]!;
-    assert.deepEqual(syntax(declaration), syntax(expected));
-    const statement = declaration.parent.parent;
-    assert.ok(isVariableStatement(statement));
-    assert.equal(statement.declarationList.declarations.length, 1);
-    replace(statement, "");
-    const owner = parsed.symbols.get(declaration.name);
-    assert.notEqual(owner, undefined);
-    const references = parsed.nodes
-      .filter(isIdentifier)
-      .filter(
-        (node) =>
-          parsed.symbols.get(node) === owner &&
-          node !== declaration.name &&
-          !edits.some(
-            (edit) => node.getStart() >= edit.start && node.end <= edit.end,
-          ),
-      );
-    assert.equal(references.length, name === "stateLabel" ? 3 : 4);
-    for (const reference of references) {
-      // The duplicate-summary declaration is verified and removed in the next
-      // iteration; never turn that declaration into another derived fact.
-      const duplicate = parsed.nodes
-        .filter(isVariableDeclaration)
-        .find((node) => node.name.getText() === "visibleSummary")!;
-      if (
-        name === "stateLabel" &&
-        reference.getStart() >= duplicate.getStart() &&
-        reference.end <= duplicate.end
-      )
-        continue;
-      let ancestor: Node | undefined = reference.parent;
-      while (ancestor && !isJsxAttribute(ancestor)) ancestor = ancestor.parent;
-      const aria =
-        ancestor &&
-        isJsxAttribute(ancestor) &&
-        ancestor.name.getText() === "aria-label";
-      replace(
-        reference,
-        name === "stateLabel"
-          ? 'needsInput ? "等待你的输入" : status.label'
-          : aria
-            ? 'needsInput ? "" : summary'
-            : "summary",
-      );
-    }
-  }
-  let source = parsed.source.getText();
-  for (const edit of edits.sort((a, b) => b.start - a.start))
-    source = source.slice(0, edit.start) + edit.text + source.slice(edit.end);
-  return source;
 }
 
 /** The approved 6f8ba889 approval projection adds one exact attention argument,
@@ -788,14 +685,6 @@ function inspect(sources: Sources) {
       failures.push(name);
     }
   }
-  rule("Sidebar-exact-title-first-state-presentation", () => {
-    parsed.set(
-      "Sidebar",
-      parse({
-        Sidebar: withoutReviewedActivityPresentation(parsed.get("Sidebar")!),
-      }).get("Sidebar")!,
-    );
-  });
   rule("Sidebar-exact-approved-attention-projection", () => {
     parsed.set(
       "Sidebar",
@@ -1033,25 +922,6 @@ test("finite AST contract tolerates formatting, not a line-count/source-substrin
     ),
   };
   assert.deepEqual(inspect(formatted), []);
-});
-test("title-first labels retain authoritative status and only suppress an identical summary", () => {
-  for (const [before, after, count] of [
-    [
-      'needsInput ? "等待你的输入" : status.label;',
-      'needsInput ? "等待你的输入" : t.title;',
-      2,
-    ],
-    ['summary === stateLabel ? "" : summary', 'summary ? "" : summary', 2],
-    ["title={stateLabel}", 'title="已完成"', 3],
-  ] as const) {
-    assert.equal(source.Sidebar.split(before).length, count);
-    assert.ok(
-      inspect({
-        ...source,
-        Sidebar: source.Sidebar.replace(before!, after!),
-      }).includes("Sidebar-exact-title-first-state-presentation"),
-    );
-  }
 });
 test("new Thread controls retain exact source, revision owner, freshness and accepted refresh seam", () => {
   const control = parse({ Sidebar: source.Sidebar })
