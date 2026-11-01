@@ -246,7 +246,9 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 --test-shard=${{ matrix.shard }}/2 2>&1 | tee "$RUNNER_TEMP/mac-node-shard-${{ matrix.shard }}.log"
+          MORPHZ_TEST_COVERAGE_LOG="$RUNNER_TEMP/mac-node-shard-${{ matrix.shard }}.log" \
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" \
+            npm test -- --test-concurrency=1 --test-shard=${{ matrix.shard }}/2
           python3 ../scripts/verify-application-node-shards.py capture \
             --log "$RUNNER_TEMP/mac-node-shard-${{ matrix.shard }}.log" \
             --shard "${{ matrix.shard }}/2" --commit "$GITHUB_SHA" \

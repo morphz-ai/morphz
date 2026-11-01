@@ -142,7 +142,7 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
 test("small macOS runner bounds file workers without narrowing the full test inventory", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/application.yml", import.meta.url), "utf8");
   const node = jobSource(workflow, "macos-node");
-  assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2 2>&1 \| tee/);
+  assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2\n/);
   assert.doesNotMatch(node, /npm test -- .*\.test\.ts/);
 });
 
@@ -155,7 +155,9 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     assert.match(node, /timeout-minutes: 90/);
     assert.match(node, /fail-fast: false/);
     assert.match(node, /shard: \[1, 2\]/);
-    assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2 2>&1 \| tee/);
+    assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2\n/);
+    assert.match(node, /MORPHZ_TEST_COVERAGE_LOG="\$RUNNER_TEMP\/mac-node-shard-\$\{\{ matrix.shard \}\}\.log"/);
+    assert.doesNotMatch(node, /\|\s*tee|continue-on-error/);
     assert.doesNotMatch(node, /npm test -- .*\.test\.ts|--test-name-pattern|--test-skip-pattern/);
     const complete = jobSource(source, "macos");
     assert.match(desktop, /name: Embedded Desktop native \(macOS\)/);
@@ -193,6 +195,8 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     node.replace("--test-shard=${{ matrix.shard }}/2", "tests/only-one.test.ts"),
     node.replace("--test-shard=${{ matrix.shard }}/2", "--test-shard=${{ matrix.shard }}/2 --test-name-pattern=one"),
     node.replace("verify-application-node-shards.py capture", "echo omitted"),
+    node.replace("MORPHZ_TEST_COVERAGE_LOG=", "OMITTED_LOG="),
+    node.replace("--test-shard=${{ matrix.shard }}/2\n", "--test-shard=${{ matrix.shard }}/2 | tee ignored.log\n"),
   ]) assert.throws(() => verifyBudget(workflow.replace(node, changed)));
   const complete = jobSource(workflow, "macos");
   for (const changed of [

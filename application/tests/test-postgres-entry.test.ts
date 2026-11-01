@@ -178,7 +178,9 @@ test("safe test selection preserves original default inventory and cannot replac
 test(
   "actual managed Node shards retain PostgreSQL and report each executed file exactly once",
   { timeout: 75_000 },
-  async () => {
+  async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "morphz-native-reports-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
     const files = [
       "tests/activity-read-page.test.ts",
       "tests/activity-read-presentation.test.ts",
@@ -186,6 +188,7 @@ test(
     const seen = new Set<string>();
     let passed = 0;
     for (const coordinate of ["1/2", "2/2"]) {
+      const coverageLog = join(directory, `shard-${coordinate[0]}.log`);
       const { stdout } = await promisify(execFile)(
         process.execPath,
         [
@@ -198,15 +201,18 @@ test(
           cwd: root,
           env: automaticEnv({
             MORPHZ_TEST_SHARD: "not-an-inherited-authority",
+            MORPHZ_TEST_COVERAGE_LOG: coverageLog,
           }),
           timeout: 30_000,
           maxBuffer: 1024 * 1024,
         },
       );
-      const line = stdout
+      const line = (await readFile(coverageLog, "utf8"))
         .split("\n")
         .findLast((value) => value.startsWith("[test coverage] "))!;
       const report = JSON.parse(line.slice("[test coverage] ".length));
+      assert.match(stdout, /pass \d+/);
+      assert.doesNotMatch(stdout, /\[test coverage\]/);
       assert.equal(report.shard.coordinate, coordinate);
       assert.deepEqual(report.shard.inventory, files);
       assert.deepEqual(report.shard.unexpectedFiles, []);
@@ -249,6 +255,40 @@ test(
     );
   },
 );
+
+test("native file coverage retains a failed verdict and never leaks its destination to a worker", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "morphz-failed-report-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const coverageLog = join(directory, "failure.log");
+  const result = await child("fail", {
+    MORPHZ_TEST_COVERAGE_LOG: coverageLog,
+  }).completion;
+  assert.equal(result.code, 1);
+  assert.match(result.output, /intentional child failure/);
+  const log = await readFile(coverageLog, "utf8");
+  assert.match(log, /\[test failure\]/);
+  const coverage = JSON.parse(
+    log
+      .split("\n")
+      .findLast((line) => line.startsWith("[test coverage] "))!
+      .slice("[test coverage] ".length),
+  );
+  assert.equal(coverage.counts.failed, 1);
+  assert.deepEqual(coverage.unexpectedSkips, []);
+});
+
+test("coverage destinations reject implicit or relative files before preparing a test database", async () => {
+  for (const value of ["", "relative.log", "stdout"]) {
+    const result = await child("pass", { MORPHZ_TEST_COVERAGE_LOG: value })
+      .completion;
+    assert.equal(result.code, 1);
+    assert.match(
+      result.output,
+      /coverage log must be an absolute owned output path/,
+    );
+    assert.doesNotMatch(result.output, /MORPHZ_TEST_ENTRY_READY/);
+  }
+});
 
 test(
   "test PostgreSQL entry uses real isolated SQL, honors explicit input and cleans owned clusters on all exits",

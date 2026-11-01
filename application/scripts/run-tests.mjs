@@ -87,6 +87,9 @@ export async function runTests({
   stdio = "inherit",
 } = {}) {
   const { files, options } = await testSelection(args);
+  const coverageLog = env.MORPHZ_TEST_COVERAGE_LOG;
+  if (coverageLog !== undefined && !isAbsolute(coverageLog))
+    throw new Error("Test coverage log must be an absolute owned output path");
   verifyTestElectron();
   const prepared = await prepareTestPostgres({ env, signal });
   let groupStopped = true;
@@ -101,6 +104,8 @@ export async function runTests({
     };
     // A nested test invocation must be a manager, not an inherited Node worker.
     delete testEnv.NODE_TEST_CONTEXT;
+    // This output belongs to this manager, never a nested test invocation.
+    delete testEnv.MORPHZ_TEST_COVERAGE_LOG;
     const child = spawn(
       process.execPath,
       [
@@ -111,7 +116,9 @@ export async function runTests({
         "--test-reporter=spec",
         "--test-reporter-destination=stdout",
         `--test-reporter=${reporter}`,
-        "--test-reporter-destination=stdout",
+        // Keep the native live spec reporter and let Node write the coverage
+        // file directly. BSD tee can fail on nonblocking hosted stdout.
+        `--test-reporter-destination=${coverageLog ?? "stdout"}`,
         ...(testEnv.MORPHZ_TEST_COGNITIVE_CI === "1"
           ? [
               `--test-reporter=${fileURLToPath(new URL("./ci-cognitive-runtime-reporter.mjs", import.meta.url))}`,

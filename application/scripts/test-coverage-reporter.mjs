@@ -51,7 +51,22 @@ export default async function* coverageReporter(events) {
   const shard = process.execArgv
     .find((option) => option.startsWith("--test-shard="))
     ?.slice("--test-shard=".length);
-  yield* reportTestCoverage(events, testCapabilityPlan({ files }), shard);
+  const fileOutput = process.execArgv.some(
+    (option) =>
+      option.startsWith("--test-reporter-destination=") &&
+      !["stdout", "stderr"].includes(option.split("=")[1]),
+  );
+  for await (const line of reportTestCoverage(
+    events,
+    testCapabilityPlan({ files }),
+    shard,
+  )) {
+    // A file receipt must not hide an early failure while sibling tests run.
+    // Node's own stderr stream handles backpressure; never add a tee process.
+    if (fileOutput && line.startsWith("[test failure] "))
+      process.stderr.write(line);
+    yield line;
+  }
 }
 
 export async function* reportTestCoverage(events, plan, shard) {

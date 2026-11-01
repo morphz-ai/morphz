@@ -8,6 +8,11 @@ test(
   { skip: mode === "skip" ? "entry audit counterexample" : false },
   async () => {
     assert.equal(
+      process.env.MORPHZ_TEST_COVERAGE_LOG,
+      undefined,
+      "a nested worker must not inherit its manager's coverage destination",
+    );
+    assert.equal(
       process.env.MORPHZ_APP_ENV_FILE,
       "",
       "tests must not load a production env file",
