@@ -292,6 +292,44 @@ test("新建加号直接操作；共享输入显示并冻结选中终端，应�
   const stamp = "2026-10-16T00:00:00Z",
     records: any[] = [],
     opens: string[] = [];
+  // This UI-only fixture has no Runtime. Mock its subscription as well as
+  // its reads: the real Terminal subscribes before closing the initial gap.
+  // Keep every unrelated stream on the actual application transport.
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    class TerminalFeed {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      private timer: ReturnType<typeof setTimeout>;
+      constructor() {
+        this.timer = setTimeout(() => {
+          this.onmessage?.(
+            new MessageEvent("message", {
+              data: JSON.stringify({
+                kind: "terminal",
+                sequence: 1,
+                reason: "resync",
+                catalog: true,
+                screen: true,
+              }),
+            }),
+          );
+        }, 0);
+      }
+      close() {
+        clearTimeout(this.timer);
+      }
+    }
+    const terminalSource = function (
+      url: string | URL,
+      options?: EventSourceInit,
+    ) {
+      return new URL(String(url), location.href).pathname ===
+        "/api/platform/terminal/stream"
+        ? new TerminalFeed()
+        : new NativeEventSource(url, options);
+    };
+    Reflect.set(window, "EventSource", terminalSource);
+  });
   await page.route("**/api/terminals**", async (route) => {
     const req = route.request(),
       url = new URL(req.url());
