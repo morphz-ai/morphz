@@ -1658,6 +1658,7 @@ impl Tool for TerminalTool {
                         principal_id: principal.into(),
                         root_ids: None,
                         scope_ref: None,
+                        cursor: None,
                         limit: 51,
                     })
                     .await?;
@@ -2092,6 +2093,7 @@ mod tests {
             principal_id: principal.into(),
             root_ids: Some(vec![]),
             scope_ref: scope,
+            cursor: None,
             limit: 50,
         };
         assert_eq!(
@@ -2577,6 +2579,7 @@ mod tests {
                 principal_id: record.principal_id.clone(),
                 root_ids: Some(vec!["not-this-root".into()]),
                 scope_ref: None,
+                cursor: None,
                 limit: 1,
             })
             .await
@@ -2704,6 +2707,7 @@ mod tests {
                 principal_id: record.principal_id.clone(),
                 root_ids: Some(vec![record.root_turn_id.clone().unwrap()]),
                 scope_ref: None,
+                cursor: None,
                 limit: 1,
             })
             .await

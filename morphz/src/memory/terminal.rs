@@ -70,8 +70,88 @@ pub struct TerminalSessionFilter {
     pub root_ids: Option<Vec<String>>,
     /// Host-issued source scope for Human-created resources, not authority.
     pub scope_ref: Option<String>,
+    /// Exact creation coordinate; reading another page never opens its screen.
+    pub cursor: Option<String>,
     pub limit: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalCatalogCursor {
+    pub created_at: String,
+    pub id: String,
+}
+impl TerminalCatalogCursor {
+    pub fn decode(value: Option<&str>) -> Result<Option<Self>, TerminalStoreError> {
+        use base64::Engine;
+        value
+            .map(|value| {
+                if value.is_empty() || value.len() > 2048 {
+                    return Err("invalid terminal cursor".into());
+                }
+                let cursor: Self = serde_json::from_slice(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value)?,
+                )?;
+                if cursor.id.is_empty()
+                    || cursor.id.len() > 500
+                    || cursor.created_at.len() > 64
+                    || chrono::DateTime::parse_from_rfc3339(&cursor.created_at).is_err()
+                {
+                    return Err("invalid terminal cursor".into());
+                }
+                Ok(cursor)
+            })
+            .transpose()
+    }
+    pub fn for_record(record: &TerminalSessionRecord) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&Self {
+                created_at: record.created_at.clone(),
+                id: record.id.clone(),
+            })
+            .expect("typed terminal coordinate"),
+        )
+    }
+}
+
+// Each authorized source and each equal/older cursor range has its own index
+// seek and limit. Only bounded candidates enter the final merge. Lease time is
+// live metadata, not a reason to sort every retained terminal before LIMIT.
+macro_rules! terminal_catalog_query {
+    ($database:ty, $filter:expr) => {{ (|| -> Result<sqlx::QueryBuilder<'_, $database>, crate::memory::terminal::TerminalStoreError> {
+        use crate::memory::terminal::TerminalCatalogCursor;
+        let f = $filter;
+        let key = TerminalCatalogCursor::decode(f.cursor.as_deref())?;
+        if f.root_ids.as_ref().is_some_and(|roots| roots.len() > 50 || roots.iter().any(|id| id.is_empty() || id.len() > 500)) { return Err("terminal source page exceeds its budget".into()); }
+        let mut sources = Vec::new();
+        match &f.root_ids {
+            None => sources.push((None, None)),
+            Some(roots) => {
+                for root in roots { sources.push((Some(root), None)); }
+                if let Some(scope) = &f.scope_ref { sources.push((None, Some(scope))); }
+            }
+        }
+        let mut q = sqlx::QueryBuilder::<$database>::new("SELECT record_json,lease_expires_at FROM (");
+        if sources.is_empty() { q.push("SELECT record_json,lease_expires_at,created_at,id FROM terminal_sessions WHERE 1=0"); }
+        for (branch, (root, scope)) in sources.into_iter().enumerate() {
+            for seek in 0..if key.is_some() { 2 } else { 1 } {
+                if branch > 0 || seek > 0 { q.push(" UNION ALL "); }
+                q.push("SELECT * FROM (SELECT record_json,lease_expires_at,created_at,id FROM terminal_sessions WHERE session_id=").push_bind(f.session_id.clone())
+                    .push(" AND context_id=").push_bind(f.context_id.clone()).push(" AND principal_id=").push_bind(f.principal_id.clone());
+                if let Some(root) = root { q.push(" AND root_turn_id=").push_bind(root.clone()); }
+                if let Some(scope) = scope { q.push(" AND root_turn_id IS NULL AND scope_ref=").push_bind(scope.clone()); }
+                if let Some(key) = &key {
+                    if seek == 0 { q.push(" AND created_at=").push_bind(key.created_at.clone()).push(" AND id<").push_bind(key.id.clone()); }
+                    else { q.push(" AND created_at<").push_bind(key.created_at.clone()); }
+                }
+                q.push(" ORDER BY created_at DESC,id DESC LIMIT ").push_bind(f.limit.clamp(1, 51) as i64).push(") source_range");
+            }
+        }
+        q.push(") candidates ORDER BY created_at DESC,id DESC LIMIT ").push_bind(f.limit.clamp(1, 51) as i64);
+        Ok(q)
+    })() }};
+}
+pub(crate) use terminal_catalog_query;
 
 /// Human PTY control receipt. Input bytes are deliberately not stored here or
 /// injected into Agent Context. The hash binds one identity to one request.
@@ -185,6 +265,11 @@ pub(crate) fn human_session_schema(table: &str) -> String {
         )
 }
 pub(crate) const SCOPE_INDEX: &str = "CREATE INDEX IF NOT EXISTS terminal_sessions_scope ON terminal_sessions(session_id,context_id,principal_id,scope_ref,created_at DESC,id)";
+pub(crate) const CATALOG_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS terminal_catalog_reader ON terminal_sessions(session_id,context_id,principal_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS terminal_catalog_root ON terminal_sessions(session_id,context_id,principal_id,root_turn_id,created_at DESC,id DESC);
+CREATE INDEX IF NOT EXISTS terminal_catalog_scope ON terminal_sessions(session_id,context_id,principal_id,scope_ref,created_at DESC,id DESC) WHERE root_turn_id IS NULL;
+";
 
 /// Only these static SQL statements use anonymous bind markers. No values are
 /// interpolated; PostgreSQL gets its numbered markers, SQLite keeps `?`.
@@ -240,22 +325,7 @@ macro_rules! terminal_store {
                 row.map(|row| { let mut r: crate::memory::terminal::TerminalSessionRecord = serde_json::from_str(&sqlx::Row::try_get::<String,_>(&row,"record_json")?)?; r.lease_expires_at=sqlx::Row::try_get(&row,"lease_expires_at")?; Ok(r) }).transpose()
             }
             async fn terminals(&self, f: &crate::memory::terminal::TerminalSessionFilter) -> Result<Vec<crate::memory::terminal::TerminalSessionRecord>, crate::memory::terminal::TerminalStoreError> {
-                let mut q = sqlx::QueryBuilder::<$database>::new("SELECT record_json,lease_expires_at FROM terminal_sessions WHERE session_id=");
-                q.push_bind(&f.session_id).push(" AND context_id=").push_bind(&f.context_id).push(" AND principal_id=").push_bind(&f.principal_id);
-                if let Some(roots) = &f.root_ids {
-                    if roots.is_empty() && f.scope_ref.is_none() { return Ok(Vec::new()); }
-                    if roots.len() > 1000 { return Err("terminal root filter exceeds 1000 entries".into()); }
-                    q.push(" AND (");
-                    if roots.is_empty() { q.push("1=0"); } else {
-                        q.push("root_turn_id IN (");
-                        let mut values = q.separated(",");
-                        for root in roots { values.push_bind(root); }
-                        values.push_unseparated(")");
-                    }
-                    if let Some(scope) = &f.scope_ref { q.push(" OR scope_ref=").push_bind(scope); }
-                    q.push(")");
-                }
-                q.push(" ORDER BY CASE WHEN status IN ('open','starting') AND lease_expires_at>").push_bind(chrono::Utc::now().to_rfc3339()).push(" THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT ").push_bind(i64::try_from(f.limit.clamp(1, 51))?);
+                let mut q = crate::memory::terminal::terminal_catalog_query!($database, f)?;
                 let rows = q.build().fetch_all(&self.pool).await?;
                 rows.into_iter().map(|row| { let mut r: crate::memory::terminal::TerminalSessionRecord = serde_json::from_str(&sqlx::Row::try_get::<String,_>(&row,"record_json")?)?; r.lease_expires_at=sqlx::Row::try_get(&row,"lease_expires_at")?; Ok(r) }).collect()
             }

@@ -1,3 +1,4 @@
+import { terminalCatalogPage } from "./terminal-catalog-page.js";
 import { createHash } from "node:crypto";
 import {
   hostFailureDiagnostic,
@@ -2702,6 +2703,10 @@ export class RuntimeBridge {
   >();
   private activityHistoryDirty = new Map<string, number>();
   private activityHistoryVersion = 0;
+  private activityPublishedScopes = new Map<
+    string,
+    { key: string; complete: boolean; schedulesAvailable: boolean }
+  >();
   private activityHintSessions = new Set<string>();
   private attentionHintPending = true;
   private delegatedHistoryCache = new Map<string, unknown>();
@@ -3207,44 +3212,76 @@ export class RuntimeBridge {
           );
         return receipt;
       },
-      catalog: async () => {
-        const legacy = await (
-          await this.platformExecutionControls(scope, access)
-        ).terminals();
-        let human: z.infer<typeof terminalCatalogSchema> = {
-          terminals: [],
-          limit: 50,
-          has_more: false,
-        };
-        try {
-          human = terminalCatalogSchema.parse(
-            await request(
-              `${base}?${new URLSearchParams({ root_ids: "[]", scope_ref: scopeRef, limit: "50" })}`,
-            ),
-          );
-          if (human.terminals.some((record) => !owned(record)))
-            throw new DomainError("forbidden", "终端来源不属于当前工作范围。");
-        } catch (error) {
-          if (!(error instanceof UpstreamError && error.status === 404))
-            throw error;
-        }
+      catalog: async (cursor?: string) => {
         await verify();
-        const records = [
-          ...new Map(
-            [...legacy.terminals, ...human.terminals].map((r) => [r.id, r]),
-          ).values(),
-        ].sort(
-          (a, b) =>
-            Number(!["open", "starting"].includes(a.status)) -
-              Number(!["open", "starting"].includes(b.status)) ||
-            b.created_at.localeCompare(a.created_at) ||
-            b.id.localeCompare(a.id),
-        );
-        return {
-          terminals: records.slice(0, 50),
-          limit: 50,
-          has_more: records.length > 50 || legacy.has_more || human.has_more,
-        };
+        const legacy = await this.platformExecutionControls(scope, access);
+        const agentSources = legacy.terminalCatalogSources();
+        const sameSession = (source: {
+          sessionId: string;
+          contextId: string;
+        }) => source.sessionId === sessionId && source.contextId === contextId;
+        const page = await terminalCatalogPage({
+          owner: [
+            this.config.namespace,
+            this.config.url,
+            access.principalId,
+            access.actantId,
+            conversation.projectId,
+            conversation.conversationId,
+          ],
+          cursor,
+          sources: [
+            {
+              key: "0:current",
+              sessionId,
+              contextId,
+              roots: agentSources.find(sameSession)?.roots ?? [],
+              scopeRef,
+            },
+            ...agentSources.filter((source) => !sameSession(source)),
+          ],
+          read: async (source, roots, native) => {
+            const query = new URLSearchParams({
+              root_ids: JSON.stringify(roots),
+              limit: "50",
+            });
+            if (source.scopeRef) query.set("scope_ref", source.scopeRef);
+            if (native) query.set("cursor", native);
+            try {
+              const value = terminalCatalogSchema.parse(
+                await request(
+                  `/api/sessions/${encodeURIComponent(source.sessionId)}/terminals?${query}`,
+                ),
+              );
+              if (
+                source.scopeRef &&
+                value.terminals.some(
+                  (record) => record.root_turn_id === null && !owned(record),
+                )
+              )
+                throw new DomainError(
+                  "forbidden",
+                  "终端来源不属于当前工作范围。",
+                );
+              return value;
+            } catch (error) {
+              if (
+                source.scopeRef &&
+                error instanceof UpstreamError &&
+                error.status === 404
+              )
+                return {
+                  terminals: [],
+                  limit: 50,
+                  has_more: false,
+                  next_cursor: null,
+                };
+              throw error;
+            }
+          },
+        });
+        await verify();
+        return page;
       },
       read: async (id: string, scrollback: number) => {
         const source = await metadata(id);
@@ -3590,7 +3627,7 @@ export class RuntimeBridge {
         throw new DomainError("conflict", "执行控制未确认，请核对最新状态。");
       throw error;
     } finally {
-      this.refreshActivityAfterControl();
+      this.refreshActivityAfterControl([scope.runtime.sessionId]);
     }
   }
 
@@ -3885,7 +3922,10 @@ export class RuntimeBridge {
         );
       throw error;
     } finally {
-      this.refreshActivityAfterControl();
+      this.refreshActivityAfterControl([
+        proof.record.parent_session_id,
+        proof.record.child_session_id,
+      ]);
     }
   }
 
@@ -3902,34 +3942,49 @@ export class RuntimeBridge {
       conversationId: control.conversationId,
     };
     active();
-    await authorize(scope, access);
+    const initialGrant = await authorize(scope, access);
     // The loaded Objective/source is an immutable ownership proof, not the
     // write version authority. Recheck live access below and let Runtime CAS
     // reject changed revisions. A control must not first rebuild every work
     // item and terminal-history page merely to rediscover this one identity.
-    if (
-      !this.state.activity?.available ||
-      !this.state.activity.objectives?.some(
+    const loadedGoal = () =>
+      this.state.activity?.objectives?.find(
         (goal) =>
           goal.id === control.objectiveId &&
           goal.projectId === scope.projectId &&
-          goal.conversationId === scope.conversationId &&
-          this.activitySources.has(goal.inputId),
-      )
+          goal.conversationId === scope.conversationId,
+      );
+    const currentOwner = (goal: NonNullable<ReturnType<typeof loadedGoal>>) =>
+      this.state.activity?.readScopes
+        ? this.state.activity.readScopes.find(
+            (read) =>
+              read.contextId ===
+              (goal.contextId ?? this.contextId(goal.projectId)),
+          )?.currentAvailable === true
+        : this.state.activity?.available === true;
+    const known = loadedGoal();
+    if (
+      !known ||
+      !currentOwner(known) ||
+      !this.activitySources.has(known.inputId)
     )
-      await this.refreshActivity(false);
+      await this.refreshActivity(
+        false,
+        new Set([
+          known?.sessionId ??
+            this.objectSessionId(
+              scope.projectId,
+              scope.conversationId,
+              initialGrant.personalDefault,
+            ),
+        ]),
+      );
     const verify = async () => {
       active();
       const grant = await authorize(scope, access);
       active();
-      const goal =
-        this.state.activity?.available &&
-        this.state.activity.objectives?.find(
-          (goal) =>
-            goal.id === control.objectiveId &&
-            goal.projectId === scope.projectId &&
-            goal.conversationId === scope.conversationId,
-        );
+      const candidate = loadedGoal();
+      const goal = candidate && currentOwner(candidate) ? candidate : undefined;
       const source = goal ? this.activitySources.get(goal.inputId) : undefined;
       if (
         !goal ||
@@ -4072,7 +4127,11 @@ export class RuntimeBridge {
         "目标操作回执尚未确认，请核对最新状态。",
       );
     } finally {
-      this.refreshActivityAfterControl();
+      this.refreshActivityAfterControl(
+        this.state.activity?.objectives
+          ?.filter((goal) => goal.id === control.objectiveId)
+          .map((goal) => goal.sessionId) ?? [],
+      );
     }
   }
 
@@ -4213,7 +4272,7 @@ export class RuntimeBridge {
         );
       throw error;
     } finally {
-      this.refreshActivityAfterControl();
+      this.refreshActivityAfterControl([row.sessionId]);
     }
   }
 
@@ -4436,55 +4495,15 @@ export class RuntimeBridge {
     };
     return {
       snapshot,
-      terminals: async () => {
-        const pages = [];
-        for (const entry of controls) {
-          const roots = [...entry.roots];
-          for (let offset = 0; offset < roots.length; offset += 250) {
-            const query = new URLSearchParams({
-              root_ids: JSON.stringify(roots.slice(offset, offset + 250)),
-              limit: "50",
-            });
-            const page = terminalCatalogSchema.parse(
-              await request(
-                `/api/sessions/${encodeURIComponent(entry.sessionId)}/terminals?${query}`,
-              ),
-            );
-            if (
-              page.terminals.some(
-                (t) =>
-                  t.session_id !== entry.sessionId ||
-                  t.context_id !== entry.contextId ||
-                  !t.root_turn_id ||
-                  !entry.roots.has(t.root_turn_id),
-              )
-            )
-              throw new DomainError(
-                "forbidden",
-                "终端来源不属于当前工作对话。",
-              );
-            pages.push(page);
-          }
-        }
-        await recheck();
-        const live = (status: string) =>
-          status === "open" || status === "starting" ? 0 : 1;
-        const terminals = [
-          ...new Map(
-            pages.flatMap((p) => p.terminals).map((t) => [t.id, t]),
-          ).values(),
-        ].sort(
-          (a, b) =>
-            live(a.status) - live(b.status) ||
-            b.created_at.localeCompare(a.created_at) ||
-            b.id.localeCompare(a.id),
-        );
-        return {
-          terminals: terminals.slice(0, 50),
-          limit: 50,
-          has_more: terminals.length > 50 || pages.some((p) => p.has_more),
-        };
-      },
+      // Locators only. The catalog reader owns exactly one bounded source
+      // page; exposing a control scope never fetches every historical root.
+      terminalCatalogSources: () =>
+        controls.map((entry) => ({
+          key: `1:${entry.sessionId}:${entry.contextId}`,
+          sessionId: entry.sessionId,
+          contextId: entry.contextId,
+          roots: [...entry.roots],
+        })),
       terminalCommand: async (terminalId: string, command: TerminalCommand) => {
         await recheck();
         for (const entry of controls) {
@@ -6695,27 +6714,36 @@ export class RuntimeBridge {
   private activityRefresh: Promise<void> | null = null;
   private activityRefreshIncludesHistory = true;
   private activityControlVersion = 0;
-  private activityControlRefreshRequests = 0;
+  private activityControlRefreshSessions = new Set<string>();
   private activityControlRefresh: Promise<void> | null = null;
   /** Confirmed controls publish their exact receipt immediately. Reconcile
    * after any older read, coalescing only event-triggered follow-up work. */
-  private refreshActivityAfterControl() {
+  private refreshActivityAfterControl(sessionIds: readonly string[]) {
     this.publishWorkspaceChange();
-    this.activityControlRefreshRequests++;
-    if (this.activityControlRefresh) return;
+    for (const id of sessionIds) this.activityControlRefreshSessions.add(id);
+    if (
+      this.activityControlRefresh ||
+      !this.activityControlRefreshSessions.size
+    )
+      return;
     const reconcile = async () => {
-      let observed: number;
-      do {
-        observed = this.activityControlRefreshRequests;
+      while (this.activityControlRefreshSessions.size) {
+        const changed = this.activityControlRefreshSessions;
+        this.activityControlRefreshSessions = new Set();
         if (this.activityRefresh) await this.activityRefresh;
         if (this.stopped) return;
-        await this.refreshActivity(false);
-      } while (observed !== this.activityControlRefreshRequests);
+        await this.refreshActivity(false, changed);
+      }
     };
-    this.activityControlRefresh = reconcile()
-      .catch((error) => {
-        this.reportActivityReadFailure("control", "current", error);
-      })
+    // Yield before even preparing the scoped read, so expensive read-model
+    // projection cannot occupy the control response's JavaScript turn.
+    this.activityControlRefresh = new Promise<void>((resolve) =>
+      setTimeout(resolve, 0),
+    )
+      .then(reconcile)
+      .catch((error) =>
+        this.reportActivityReadFailure("control", "current", error),
+      )
       .finally(() => {
         this.activityControlRefresh = null;
       });
@@ -6850,9 +6878,22 @@ export class RuntimeBridge {
       threads: [],
     };
     const sessions = this.activeSessions();
-    const contextIds = [
+    const registeredContextIds = [
       ...new Set(sessions.map((session) => this.contextId(session.projectId))),
     ];
+    const changedContexts =
+      changedSessions &&
+      new Set(
+        sessions
+          .filter((session) => changedSessions.has(session.id))
+          .map((session) => this.contextId(session.projectId)),
+      );
+    const contextIds = changedContexts
+      ? registeredContextIds.filter((id) => changedContexts.has(id))
+      : registeredContextIds;
+    const previousActivity = this.state.activity;
+    const previousSources = this.activitySources;
+    const invalidOpenScopes = new Set<string>();
     const readScopeKey = (contextId: string, domain = sessions) =>
       createHash("sha256")
         .update(
@@ -6883,7 +6924,9 @@ export class RuntimeBridge {
     const delegatedHistoryDemand = new Set(
       contextIds.filter(() => includeHistory),
     );
-    const currentKeys = new Set(initialKeys.values());
+    const currentKeys = new Set(
+      registeredContextIds.map((id) => readScopeKey(id)),
+    );
     for (const key of this.activitySnapshotCache.keys())
       if (!currentKeys.has(key)) this.activitySnapshotCache.delete(key);
     activity.readScopes = contextIds.map((contextId) => ({
@@ -6922,6 +6965,87 @@ export class RuntimeBridge {
         binding.rootId,
       );
     }
+    const retainUnchangedScopes = (
+      projection: z.infer<typeof activitySchema>,
+      currentSessions = this.activeSessions(),
+    ) => {
+      const liveContexts = new Set(
+        currentSessions.map((session) => this.contextId(session.projectId)),
+      );
+      // Keep the unavailable observation for an owner retired during the
+      // read. Removing its failed scope would turn an empty array into a
+      // false claim of verified coverage. No retired entity facts survive.
+      projection.readScopes ??= [];
+      for (const contextId of liveContexts)
+        if (
+          !projection.readScopes.some((scope) => scope.contextId === contextId)
+        )
+          projection.readScopes.push({
+            contextId,
+            currentAvailable: false,
+            historyAvailable: false,
+          });
+      // An invalidation owns only its changed Contexts. Retain independently
+      // accepted read models without reopening their history, source Events or
+      // delegated children. A changed actor/Session domain cannot reuse them.
+      const retained = new Set(
+        registeredContextIds.filter(
+          (contextId) =>
+            !initialKeys.has(contextId) &&
+            this.activityPublishedScopes.get(contextId)?.key ===
+              readScopeKey(contextId, currentSessions),
+        ),
+      );
+      if (previousActivity && retained.size) {
+        projection.threads.push(
+          ...previousActivity.threads.filter((thread) =>
+            retained.has(
+              thread.delegation?.parentContextId ?? thread.contextId ?? "",
+            ),
+          ),
+        );
+        projection.objectives!.push(
+          ...(previousActivity.objectives ?? []).filter((objective) =>
+            retained.has(objective.contextId ?? ""),
+          ),
+        );
+        projection.schedules!.push(
+          ...(previousActivity.schedules ?? []).filter((schedule) =>
+            retained.has(schedule.contextId),
+          ),
+        );
+        projection.readScopes = projection.readScopes!.map((scope) =>
+          retained.has(scope.contextId)
+            ? (previousActivity.readScopes?.find(
+                (previous) => previous.contextId === scope.contextId,
+              ) ?? scope)
+            : scope,
+        );
+        const keptInputs = new Set([
+          ...projection.threads.flatMap((thread) =>
+            thread.inputId ? [thread.inputId] : [],
+          ),
+          ...projection.objectives!.map((objective) => objective.inputId),
+          ...projection.schedules!.map((schedule) => schedule.inputId),
+        ]);
+        for (const inputId of keptInputs)
+          if (!sources.has(inputId) && previousSources.has(inputId))
+            sources.set(inputId, previousSources.get(inputId)!);
+        projection.openWorkComplete &&= [...retained].every(
+          (id) => this.activityPublishedScopes.get(id)?.complete,
+        );
+        projection.schedulesAvailable &&= [...retained].every(
+          (id) => this.activityPublishedScopes.get(id)?.schedulesAvailable,
+        );
+        projection.truncated ||= previousActivity.truncated;
+        projection.objectivesTruncated ||= previousActivity.objectivesTruncated;
+        projection.schedulesTruncated ||= previousActivity.schedulesTruncated;
+        projection.delegationsAvailable &&=
+          previousActivity.delegationsAvailable ?? false;
+        projection.delegationsTruncated ||=
+          previousActivity.delegationsTruncated;
+      }
+    };
     let lookupBudget = 16;
     const resolveRoot = async (
       sessionId: string,
@@ -7256,7 +7380,6 @@ export class RuntimeBridge {
         const readHistory = includeHistory;
         const readCurrent =
           !changedSessions ||
-          !cached?.active ||
           sessions.some(
             (session) =>
               changedSessions.has(session.id) &&
@@ -7266,7 +7389,7 @@ export class RuntimeBridge {
           try {
             const value = schema.parse(
               await this.request(
-                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=${terminal ? 50 : 200}`,
+                `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=${terminal}&limit=${terminal ? 50 : 200}&include_job_details=false`,
               ),
             );
             if (value.context_id !== undefined)
@@ -7470,8 +7593,10 @@ export class RuntimeBridge {
         for (const value of active.threads) {
           const t = value.thread;
           if (!sessionsById.has(t.session_id)) continue;
-          if (t.context_id !== contextId || t.lifecycle !== "open")
+          if (t.context_id !== contextId || t.lifecycle !== "open") {
             activity.openWorkComplete = false;
+            invalidOpenScopes.add(contextId);
+          }
           // Resolve association opportunistically; current execution coverage
           // is established by the authoritative inventory, not this link.
           await resolveThreadRoot(value, contextId);
@@ -7483,8 +7608,10 @@ export class RuntimeBridge {
             objective.context_id !== contextId ||
             !["active", "paused", "blocked"].includes(objective.status) ||
             !(await resolveObjectiveRoot(value, contextId))
-          )
+          ) {
             activity.openWorkComplete = false;
+            invalidOpenScopes.add(contextId);
+          }
         }
       }
       // Current timers have the same source-lookup priority as open work.
@@ -7663,8 +7790,10 @@ export class RuntimeBridge {
           const route = await resolveObjectiveRoot(value, contextId);
           if (!route) {
             activity.objectivesTruncated = true;
-            if (["active", "paused", "blocked"].includes(objective.status))
+            if (["active", "paused", "blocked"].includes(objective.status)) {
               activity.openWorkComplete = false;
+              invalidOpenScopes.add(contextId);
+            }
             continue;
           }
           sources.set(route.inputId, route.source);
@@ -7911,14 +8040,32 @@ export class RuntimeBridge {
         for (const inputId of sources.keys())
           if (!retainedInputs.has(inputId)) sources.delete(inputId);
       }
-      activity.available = activity.readScopes!.every(
-        (scope) => scope.currentAvailable,
-      );
+      retainUnchangedScopes(activity, finalSessions);
+      activity.available =
+        changedContexts.size === 0 &&
+        activity.readScopes!.every((scope) => scope.currentAvailable);
       activity.openWorkComplete &&= activity.available;
       activity.schedulesAvailable &&= activity.available;
       // An inventory started before a confirmed control cannot replace its
       // newer receipt. The coalesced post-control read closes this exact gap.
       if (controlVersion !== this.activityControlVersion) return;
+      for (const { contextId, currentAvailable, active } of snapshots) {
+        const valid = !changedContexts.has(contextId) && currentAvailable;
+        this.activityPublishedScopes.set(contextId, {
+          key: initialKeys.get(contextId)!,
+          complete:
+            valid &&
+            !invalidOpenScopes.has(contextId) &&
+            !!active.objectives &&
+            !!active.detail_bounds &&
+            active.detail_bounds.has_more_threads === false &&
+            active.detail_bounds.has_more_objectives === false,
+          schedulesAvailable: valid && active.schedules !== undefined,
+        });
+      }
+      for (const contextId of this.activityPublishedScopes.keys())
+        if (!registeredContextIds.includes(contextId))
+          this.activityPublishedScopes.delete(contextId);
       this.state.activity = activity;
       this.activitySources = sources;
       for (const thread of activity.threads)
@@ -7945,7 +8092,7 @@ export class RuntimeBridge {
       );
       // Expected read failures retain scoped cached facts above. An unexpected
       // projection failure must not copy a different actor's prior global view.
-      this.state.activity = {
+      const unavailable = {
         ...activity,
         available: false,
         readScopes: contextIds.map((contextId) => ({
@@ -7956,6 +8103,21 @@ export class RuntimeBridge {
         schedulesAvailable: false,
         openWorkComplete: false,
       };
+      for (const contextId of contextIds)
+        this.activityPublishedScopes.delete(contextId);
+      for (const scope of previousActivity?.readScopes ?? [])
+        if (
+          !unavailable.readScopes.some(
+            (value) => value.contextId === scope.contextId,
+          )
+        )
+          unavailable.readScopes.push({
+            contextId: scope.contextId,
+            currentAvailable: false,
+            historyAvailable: false,
+          });
+      retainUnchangedScopes(unavailable);
+      this.state.activity = unavailable;
       this.activitySources = sources;
     }
     this.notifyWorkspaceChanges();
@@ -8119,7 +8281,7 @@ export class RuntimeBridge {
             [true, false].map(async (terminal) =>
               childView.parse(
                 await (terminal ? readRetained : this.request.bind(this))(
-                  `/api/contexts/${encodeURIComponent(record.child_context_id)}/scheduler?include_terminal=${terminal}&limit=64`,
+                  `/api/contexts/${encodeURIComponent(record.child_context_id)}/scheduler?include_terminal=${terminal}&limit=64&include_job_details=false`,
                 ),
               ),
             ),

@@ -113,6 +113,7 @@ async fn assert_quiescent(runtime: &MorphzRuntime) {
         .scheduler_snapshot(
             &runtime.identity().context_id,
             SchedulerQuery {
+                include_job_details: true,
                 include_terminal: false,
                 limit: 2_000,
                 history_only: false,

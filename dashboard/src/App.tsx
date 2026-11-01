@@ -4161,12 +4161,12 @@ export default function App() {
           return
         }
         const scheduler = await DASHBOARD_API.get<SchedulerSnapshot>(
-          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=${schedulerLimit}`,
+          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=${schedulerLimit}&include_job_details=false`,
         )
         applySchedulerSnapshot(scheduler)
       }))
       const activityRequest = async () => {
-        const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200`
+        const currentPath = `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=200&include_job_details=false`
         const current = await DASHBOARD_API.get<SchedulerSnapshot>(currentPath)
         if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
         const previousOpen = schedulerOpenIdsRef.current
@@ -4180,7 +4180,7 @@ export default function App() {
         const version = schedulerHistoryVersionRef.current
         if (matching && matching.version === version) return
         const history = await DASHBOARD_API.get<SchedulerSnapshot>(
-          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&history_only=true&limit=${schedulerLimit}`,
+          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&history_only=true&limit=${schedulerLimit}&include_job_details=false`,
         )
         if (!isCurrentScope() || (principalScopeRef.current?.principal.id ?? '') !== readPrincipalId) return
         const retained = matching && matching.pages > 1
@@ -6072,7 +6072,7 @@ export default function App() {
       && schedulerHistoryCacheRef.current === cached
     setSchedulerHistoryBusy(true)
     try {
-      const page = await DASHBOARD_API.get<SchedulerSnapshot>(`/api/contexts/${encodeURIComponent(scope.contextId)}/scheduler?include_terminal=true&history_only=true&limit=${SCHEDULER_HISTORY_PAGE_SIZE}&history_cursor=${encodeURIComponent(cursor)}`)
+      const page = await DASHBOARD_API.get<SchedulerSnapshot>(`/api/contexts/${encodeURIComponent(scope.contextId)}/scheduler?include_terminal=true&history_only=true&limit=${SCHEDULER_HISTORY_PAGE_SIZE}&history_cursor=${encodeURIComponent(cursor)}&include_job_details=false`)
       if (!isCurrent()) return
       if (page.detail_bounds.next_history_cursor === cursor) throw new Error('Scheduler continuation did not advance')
       const snapshot = appendSchedulerHistoryPage(cached.snapshot, page)

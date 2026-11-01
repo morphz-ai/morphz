@@ -524,10 +524,6 @@ test("real Platform input and scoped terminal reads keep original roots and rech
         ...(foreignRoot ? { root_turn_id: "another-project-root" } : {}),
       };
       if (url.pathname.endsWith("/terminals")) {
-        if (url.searchParams.has("scope_ref")) {
-          assert.deepEqual(JSON.parse(url.searchParams.get("root_ids")!), []);
-          return { terminals: [], limit: 50, has_more: false };
-        }
         assert.deepEqual(JSON.parse(url.searchParams.get("root_ids")!), [
           "root-exact",
         ]);
@@ -553,9 +549,14 @@ test("real Platform input and scoped terminal reads keep original roots and rech
       conversationId: source.conversationId,
       artifactId: null,
     };
+    const firstCatalog = await f.session().terminalCatalog(scope);
+    assert.equal(firstCatalog.terminals[0]!.id, "terminal-exact");
     assert.equal(
-      (await f.session().terminalCatalog(scope)).terminals[0]!.id,
-      "terminal-exact",
+      calls.filter((path) =>
+        new URL(path, "http://runtime.invalid").pathname.endsWith("/terminals"),
+      ).length,
+      1,
+      "Human and Agent resources in the selected Session share one bounded physical page",
     );
     assert.equal(
       (await f.session().terminalRead({ scope, terminalId: "terminal-exact" }))

@@ -63,6 +63,7 @@ export function Terminal({
     scope: string;
     terminals: TerminalRecord[];
     hasMore: boolean;
+    nextCursor?: string | null;
   } | null>(null);
   const [observation, setObservation] = useState<{
     scope: string;
@@ -87,6 +88,9 @@ export function Terminal({
   );
   const [selecting, setSelecting] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const catalogGeneration = useRef(0);
+  const catalogPageBusy = useRef(false);
   const [createError, setCreateError] = useState("");
   const creating = useRef(false);
   const pendingCreate = useRef<{
@@ -122,9 +126,16 @@ export function Terminal({
   const currentScreen = useRef(observationScope);
   currentScreen.current = observationScope;
   const automaticSelection = useRef("");
-  const records = catalog?.scope === identity ? catalog.terminals : [];
   const view =
     observation?.scope === observationScope ? observation.view : null;
+  const pageRecords = catalog?.scope === identity ? catalog.terminals : [];
+  // The exact selected resource has its own authorized point read. Keep its
+  // tab when it is outside this directory page; never drain older pages just
+  // to rediscover a selection whose native metadata is already available.
+  const records =
+    view && !pageRecords.some((record) => record.id === view.terminal.id)
+      ? [view.terminal, ...pageRecords]
+      : pageRecords;
   const terminal = view?.terminal ?? records.find((t) => t.id === selection);
   useEffect(() => {
     if (active && terminal && terminal.id === selection)
@@ -270,16 +281,68 @@ export function Terminal({
     invalidation: "coalesce",
     read: (signal) => api.current.terminalCatalog(scope, signal),
     publish: (page) => {
+      catalogGeneration.current++;
       setCatalog({
         scope: identity,
         terminals: page.terminals,
         hasMore: page.has_more,
+        nextCursor: page.next_cursor,
       });
       setCatalogError("");
     },
     failed: (cause) =>
       setCatalogError(readFailure(cause, "无法读取终端会话。")),
   });
+  async function loadMoreCatalog() {
+    if (
+      catalogPageBusy.current ||
+      catalog?.scope !== identity ||
+      !catalog.nextCursor
+    )
+      return;
+    const captured = identity,
+      cursor = catalog.nextCursor,
+      generation = catalogGeneration.current;
+    catalogPageBusy.current = true;
+    setLoadingMore(true);
+    try {
+      const page = await api.current.terminalCatalog(scope, undefined, cursor);
+      if (
+        current.current !== captured ||
+        catalogGeneration.current !== generation
+      )
+        return;
+      if (page.has_more && (!page.next_cursor || page.next_cursor === cursor))
+        throw new Error("终端分页没有推进，请重新载入列表。");
+      setCatalog((previous) =>
+        previous?.scope !== captured || previous.nextCursor !== cursor
+          ? previous
+          : {
+              ...previous,
+              terminals: [
+                ...new Map(
+                  [...previous.terminals, ...page.terminals].map((record) => [
+                    record.id,
+                    record,
+                  ]),
+                ).values(),
+              ],
+              hasMore: page.has_more,
+              nextCursor: page.next_cursor,
+            },
+      );
+      setCatalogError("");
+    } catch (cause) {
+      if (
+        current.current === captured &&
+        catalogGeneration.current === generation
+      )
+        setCatalogError(readFailure(cause, "无法载入更多终端。"));
+    } finally {
+      catalogPageBusy.current = false;
+      setLoadingMore(false);
+    }
+  }
   const refreshView = useObservedRead({
     scope: observationScope,
     enabled: active && client.online && visible && !!selection && !!feed?.ready,
@@ -373,6 +436,7 @@ export function Terminal({
           ),
         ].slice(0, 50),
         hasMore: page?.scope === identity ? page.hasMore : false,
+        nextCursor: page?.scope === identity ? page.nextCursor : null,
       }));
       if (!(await select(record.id)))
         throw Error("终端已创建，选择未保存；点击核对新建，不会重复创建。");
@@ -591,7 +655,14 @@ export function Terminal({
       )}
       {catalog?.scope === identity && catalog.hasMore && (
         <div className="terminal-notice">
-          当前显示最近 50 个获授权会话；更多历史尚未加载。
+          <button
+            type="button"
+            data-size="sm"
+            disabled={loadingMore || !catalog.nextCursor}
+            onClick={() => void loadMoreCatalog()}
+          >
+            {loadingMore ? "正在载入…" : "载入更多终端"}
+          </button>
         </div>
       )}
     </section>

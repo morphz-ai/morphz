@@ -1,6 +1,7 @@
 import { z, ZodError } from "zod";
 import {
   terminalReadSchema,
+  terminalCatalogRequestSchema,
   terminalChangeScopeSchema,
   type TerminalChange,
   terminalCommandSchema,
@@ -3145,7 +3146,7 @@ export class ApplicationSession {
   }
   async terminalCatalog(raw: unknown) {
     this.active();
-    const scope = executionScopeSchema.parse(raw);
+    const { cursor, ...scope } = terminalCatalogRequestSchema.parse(raw);
     if (scope.taskRun || !this.options.platformWork)
       throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
     const controls = await this.runtime().platformTerminalResources(
@@ -3153,7 +3154,7 @@ export class ApplicationSession {
       this.access,
       () => this.active(),
     );
-    const result = await controls.catalog();
+    const result = await controls.catalog(cursor);
     this.active();
     return result;
   }

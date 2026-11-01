@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SchedulerQuery {
+    /// A collapsed activity directory does not own physical Job arguments.
+    /// Focused inspectors opt in, independently of authoritative phase/counts.
+    #[serde(default = "default_job_details")]
+    pub include_job_details: bool,
     #[serde(default)]
     pub include_terminal: bool,
     #[serde(default)]
@@ -27,10 +31,14 @@ pub struct SchedulerQuery {
 const fn default_scheduler_limit() -> usize {
     200
 }
+const fn default_job_details() -> bool {
+    true
+}
 
 impl Default for SchedulerQuery {
     fn default() -> Self {
         Self {
+            include_job_details: true,
             include_terminal: false,
             history_only: false,
             history_cursor: None,

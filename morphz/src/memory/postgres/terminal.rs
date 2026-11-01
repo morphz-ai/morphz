@@ -42,3 +42,17 @@ pub(super) async fn migrate_human(
     tx.commit().await?;
     Ok(())
 }
+
+pub(super) async fn migrate_catalog(
+    pool: &sqlx::PgPool,
+) -> Result<(), crate::memory::terminal::TerminalStoreError> {
+    let mut tx = pool.begin().await?;
+    for statement in crate::memory::terminal::CATALOG_INDEXES
+        .split(';')
+        .filter(|s| !s.trim().is_empty())
+    {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}

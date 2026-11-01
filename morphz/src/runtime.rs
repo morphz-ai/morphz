@@ -67,11 +67,11 @@ use crate::memory::{
     ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
     PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
     ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
-    SessionRecord, SessionStatus, SessionStore, SessionTimelineCursor, SessionTimelineItem,
-    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
-    ThreadControlState, ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    SessionRecord, SessionStore, SessionTimelineCursor, SessionTimelineItem, SessionUpdate,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadGroupFilter, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadPhase, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -9162,30 +9162,85 @@ impl MorphzRuntime {
             .map(|activation| activation.id.clone())
             .collect::<HashSet<_>>();
         let activation_id_list = activation_ids.iter().cloned().collect::<Vec<_>>();
-        let mut jobs = self
-            .inner
-            .store
-            .list_execution_jobs_for_activations(context_id, &activation_id_list)
-            .await?;
+        let mut jobs = if query.include_job_details {
+            self.inner
+                .store
+                .list_execution_jobs_for_activations(context_id, &activation_id_list)
+                .await?
+        } else {
+            Vec::new()
+        };
         if !include_terminal {
             jobs.retain(|job| !job.status.is_terminal());
+        }
+        let mut omitted_job_details = false;
+        if !query.include_job_details {
+            for ids in activation_id_list.chunks(100) {
+                if self
+                    .inner
+                    .store
+                    .activation_jobs_exist(context_id, ids)
+                    .await?
+                {
+                    omitted_job_details = true;
+                    break;
+                }
+            }
         }
         let aggregate_job_ids = jobs
             .iter()
             .map(|job| job.id.clone())
             .collect::<HashSet<_>>();
-        let live_job_candidates = self
-            .inner
-            .store
-            .list_execution_jobs(ExecutionJobFilter {
-                context_id: Some(context_id.to_string()),
-                include_terminal: false,
-                newest_first: true,
-                limit: Some(detail_fetch_limit),
-                ..ExecutionJobFilter::default()
-            })
-            .await?;
-        let has_more_jobs = live_job_candidates.len() > limit
+        let live_job_candidates = if query.include_job_details {
+            self.inner
+                .store
+                .list_execution_jobs(ExecutionJobFilter {
+                    context_id: Some(context_id.to_string()),
+                    include_terminal: false,
+                    newest_first: true,
+                    limit: Some(detail_fetch_limit),
+                    ..ExecutionJobFilter::default()
+                })
+                .await?
+        } else {
+            let metadata = self
+                .inner
+                .store
+                .list_active_execution_jobs_for_contexts(
+                    &[context_id.to_string()],
+                    detail_fetch_limit,
+                )
+                .await?;
+            omitted_job_details |= !metadata.is_empty();
+            let ids = metadata
+                .iter()
+                .map(|job| job.id.clone())
+                .collect::<Vec<_>>();
+            let healthy = self
+                .inner
+                .store
+                .live_execution_job_routes(context_id, &ids)
+                .await?
+                .into_iter()
+                .collect::<HashSet<_>>();
+            let mut broken = Vec::new();
+            for job in metadata
+                .into_iter()
+                .filter(|job| !healthy.contains(&job.id))
+            {
+                // Only an actual broken route owns this diagnostic record.
+                // Healthy collapsed rows never hydrate their request bodies.
+                if let Some(record) = self.inner.store.get_execution_job(&job.id).await? {
+                    if record.context_id != context_id {
+                        return Err("Job diagnostic scope changed".into());
+                    }
+                    broken.push(record);
+                }
+            }
+            broken
+        };
+        let has_more_jobs = omitted_job_details
+            || live_job_candidates.len() > limit
             || exact_job_counts.active_jobs > limit
             || jobs
                 .iter()
@@ -9993,11 +10048,15 @@ impl MorphzRuntime {
         let mut contexts = if let Some(context_id) = query.context_id.as_deref() {
             self.inner
                 .store
-                .get_context(context_id)
+                .read_runtime_directory_page(crate::memory::RuntimeDirectoryQuery {
+                    kind: crate::memory::RuntimeDirectoryKind::Contexts,
+                    include_archived: query.include_archived,
+                    ids: Some(vec![context_id.to_string()]),
+                    limit: 1,
+                    ..Default::default()
+                })
                 .await?
-                .filter(|context| query.include_archived || context.status == SessionStatus::Active)
-                .into_iter()
-                .collect()
+                .contexts
         } else {
             self.inner
                 .store
@@ -10579,6 +10638,7 @@ impl MorphzRuntime {
             self.scheduler_snapshot(
                 context_id,
                 SchedulerQuery {
+                    include_job_details: false,
                     include_terminal: false,
                     limit: 100,
                     ..Default::default()
@@ -14062,7 +14122,7 @@ mod tests {
             context_id: "context-default".to_string(),
             parent_session_id: None,
             title: "Background work".to_string(),
-            status: SessionStatus::Active,
+            status: crate::memory::SessionStatus::Active,
             model_alias: None,
             reasoning_effort: None,
             permission_mode: None,
@@ -20177,7 +20237,7 @@ mod tests {
                 target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
                 tool_call_id: "call-scheduler-snapshot".to_string(),
                 tool_name: "exec".to_string(),
-                request: json!({"command": "cargo test"}),
+                request: json!({"command": "cargo test", "TEST_LARGE_REQUEST_BODY": "x".repeat(2 * 1024 * 1024)}),
                 retry_safety: crate::memory::ExecutionRetrySafety::AtMostOnce,
                 requires_approval: true,
             })
@@ -20335,6 +20395,69 @@ mod tests {
             crate::scheduler::ObjectiveReadiness::Waiting { .. }
         ));
         assert_eq!(snapshot.summary.waiting_objectives, 1);
+        let collapsed = runtime
+            .scheduler_snapshot(
+                runtime.identity().context_id.as_str(),
+                SchedulerQuery {
+                    include_terminal: true,
+                    include_job_details: false,
+                    limit: 100,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            collapsed.summary.waiting_approval_jobs,
+            snapshot.summary.waiting_approval_jobs
+        );
+        assert_eq!(
+            collapsed.summary.pending_approvals,
+            snapshot.summary.pending_approvals
+        );
+        assert!(
+            collapsed.detail_bounds.has_more_jobs,
+            "omitted children are explicitly disclosed"
+        );
+        assert!(collapsed.orphan_jobs.is_empty());
+        assert!(
+            collapsed.orphan_approvals.is_empty(),
+            "a healthy off-page approval is never an orphan"
+        );
+        let collapsed_thread = collapsed
+            .threads
+            .iter()
+            .find(|value| value.thread.id == thread.id)
+            .unwrap();
+        assert_eq!(
+            collapsed_thread.phase, causal_thread.phase,
+            "phase comes from complete native activity flags"
+        );
+        assert!(collapsed_thread
+            .activations
+            .iter()
+            .all(|activation| activation.jobs.is_empty()));
+        let encoded = serde_json::to_string(&collapsed).unwrap();
+        assert!(!encoded.contains("TEST_LARGE_REQUEST_BODY"));
+        assert!(
+            encoded.len() < 256 * 1024,
+            "the collapsed page must not serialize a multi-MiB physical request"
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_execution_job(&job.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .request["TEST_LARGE_REQUEST_BODY"]
+                .as_str()
+                .unwrap()
+                .len(),
+            2 * 1024 * 1024,
+            "the original request remains unchanged and independently readable"
+        );
         let contract = serde_json::to_value(&snapshot).unwrap();
         let contract_thread = contract["threads"]
             .as_array()

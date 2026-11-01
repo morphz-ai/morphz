@@ -39,9 +39,17 @@ export function createTerminalInteractions(call: typeof applicationCall) {
           options(),
         ),
       ),
-    terminalCatalog: async (scope: ExecutionScope, signal?: AbortSignal) =>
+    terminalCatalog: async (
+      scope: ExecutionScope,
+      signal?: AbortSignal,
+      cursor?: string,
+    ) =>
       terminalCatalogSchema.parse(
-        await call("terminal.catalog", scope, options(signal)),
+        await call(
+          "terminal.catalog",
+          { ...scope, ...(cursor ? { cursor } : {}) },
+          options(signal),
+        ),
       ),
     terminalRead: async (
       scope: ExecutionScope,

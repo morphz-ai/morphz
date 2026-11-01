@@ -19,7 +19,14 @@ pub(super) async fn migrate(
     sqlx::query("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES('20261016_01_terminal_sessions',?)").bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
     sqlx::query("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES('20261016_02_terminal_commands',?)").bind(chrono::Utc::now().to_rfc3339()).execute(&mut *tx).await?;
     tx.commit().await?;
-    migrate_human(pool).await
+    migrate_human(pool).await?;
+    for statement in crate::memory::terminal::CATALOG_INDEXES
+        .split(';')
+        .filter(|s| !s.trim().is_empty())
+    {
+        sqlx::query(statement).execute(pool).await?;
+    }
+    Ok(())
 }
 
 async fn migrate_human(

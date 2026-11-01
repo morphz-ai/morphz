@@ -674,6 +674,92 @@ test("read evidence cache is private, bounded and not a persisted execution stor
   }
 });
 
+test("a changed Context cannot reread evicted unrelated inventories, history, source Events or delegations", async () => {
+  const x = await fixture();
+  try {
+    const contexts = Array.from({ length: 22 }, (_, i) =>
+      addContext(x, i + 40),
+    );
+    const calls: string[] = [];
+    x.internal.request = async (path: string) => {
+      calls.push(path);
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      const context = contexts.find((value) =>
+        path.includes(`${value.contextId}/`),
+      );
+      return context?.view() ?? x.view([x.thread("original-context-thread")]);
+    };
+    await x.internal.refreshActivity();
+    const before = x.read();
+    assert.equal(x.internal.activitySnapshotCache.size, 16);
+    calls.length = 0;
+    await x.internal.refreshActivity(
+      false,
+      new Set([contexts.at(-1)!.sessionId]),
+    );
+    assert.ok(calls.length > 0);
+    assert.ok(
+      calls.every((path) => path.includes(contexts.at(-1)!.contextId)),
+      JSON.stringify(calls),
+    );
+    assert.ok(calls.every((path) => !path.includes("include_terminal=true")));
+    assert.deepEqual(
+      x
+        .read()
+        .threads.map((thread) => thread.id)
+        .sort(),
+      before.threads.map((thread) => thread.id).sort(),
+      "unchanged loaded executions survive cache eviction without physical reads",
+    );
+    assert.equal(x.read().available, before.available);
+    assert.equal(x.read().openWorkComplete, before.openWorkComplete);
+  } finally {
+    await x.f.close();
+  }
+});
+
+test("an unexpected projection failure is local to the invalidated Context", async () => {
+  const x = await fixture();
+  try {
+    const other = addContext(x, 301);
+    x.internal.request = async (path: string) => {
+      if (path.startsWith("/api/delegations?"))
+        return { delegations: [], has_more: false };
+      return path.includes(`${other.contextId}/`)
+        ? other.view()
+        : x.view([x.thread("independently-accepted")]);
+    };
+    await x.internal.refreshActivity();
+    x.internal.appendDelegatedActivity = async () => {
+      throw new Error("TEST projection failed");
+    };
+    await x.internal.refreshActivity(false, new Set([other.sessionId]));
+    const value = x.read();
+    assert.ok(
+      value.threads.some((thread) => thread.id === "independently-accepted"),
+    );
+    assert.equal(
+      value.readScopes?.find((scope) => scope.contextId === x.contextId)
+        ?.currentAvailable,
+      true,
+    );
+    assert.equal(
+      value.readScopes?.find((scope) => scope.contextId === other.contextId)
+        ?.currentAvailable,
+      false,
+    );
+    assert.equal(value.openWorkComplete, false);
+    assert.equal(
+      x.internal.activityPublishedScopes.has(other.contextId),
+      false,
+      "a failed projection cannot later be retained as accepted facts",
+    );
+  } finally {
+    await x.f.close();
+  }
+});
+
 test("later Context reads cannot publish an earlier Context after its Session was removed", async () => {
   const x = await fixture();
   try {

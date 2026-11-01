@@ -25040,6 +25040,31 @@ impl ExecutionJobStore for SqliteStore {
         })
     }
 
+    async fn activation_jobs_exist(
+        &self,
+        context_id: &str,
+        activation_ids: &[String],
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        if activation_ids.is_empty() {
+            return Ok(false);
+        }
+        if activation_ids.len() > 100 {
+            return Err("Job existence scope exceeds 100".into());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT 1 FROM execution_jobs WHERE context_id=",
+        );
+        query.push_bind(context_id).push(" AND activation_id IN (");
+        {
+            let mut ids = query.separated(",");
+            for id in activation_ids {
+                ids.push_bind(id);
+            }
+        }
+        query.push(") LIMIT 1");
+        Ok(query.build().fetch_optional(&self.pool).await?.is_some())
+    }
+
     async fn list_execution_jobs_for_activations(
         &self,
         context_id: &str,
@@ -45638,6 +45663,7 @@ mod tests {
         crate::memory::directory::tests::session_priority!(sqlx::Sqlite, &store);
         crate::memory::directory::tests::inspection_pages!(sqlx::Sqlite, &store);
         crate::memory::directory::tests::schedule_pages!(sqlx::Sqlite, &store);
+        crate::memory::directory::tests::terminal_catalog_pages!(sqlx::Sqlite, &store);
         crate::memory::directory::tests::identity_recovery!(sqlx::Sqlite, &store, false);
         crate::memory::directory::tests::transfer_recovery!(sqlx::Sqlite, &store, false);
         for (name, mut query) in crate::memory::directory::tests::plan_cases!(sqlx::Sqlite) {

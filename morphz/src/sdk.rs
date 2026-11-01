@@ -4425,6 +4425,7 @@ impl MorphzSdk {
         session_id: &str,
         root_ids: Option<Vec<String>>,
         scope_ref: Option<String>,
+        cursor: Option<String>,
         limit: usize,
     ) -> SdkResult<Vec<crate::memory::terminal::TerminalSessionRecord>> {
         let session = self.authorize_session(principal_id, session_id).await?;
@@ -4436,6 +4437,7 @@ impl MorphzSdk {
                 context_id: session.context_id,
                 root_ids,
                 scope_ref,
+                cursor,
                 limit,
             })
             .await

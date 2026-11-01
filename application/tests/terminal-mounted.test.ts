@@ -25,13 +25,14 @@ const wake=(catalog=false,screen=true)=>{for(const feed of feeds)feed.emit(catal
 
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{copied=text;}}});
 const record={id:'terminal-exact',session_id:'session-exact',context_id:'context-exact',principal_id:'human-exact',root_turn_id:'root-exact',source_job_id:'job-exact',target_id:'target-default',revision:2,status:'open',title:'编译与检查',shell:'/bin/zsh',cwd:'/workspace/terminal-check',rows:24,cols:80,sandbox_status:'enforced',network_enabled:false,exit_code:null,created_at:'2026-10-16T00:00:00Z',updated_at:'2026-10-16T00:00:00Z'};
-const records=new Map(query.has('emptyCatalog')?[]:[[record.id,record]]),opens=new Map();let openAttempts=0;
+const older={...record,id:'terminal-older',title:'历史终端'};
+const records=new Map(query.has('emptyCatalog')?[]:[[record.id,record],...(query.has('pagedCatalog')?[[older.id,older]]:[])]),opens=new Map();let openAttempts=0;
 const text='实际输出：中文 <script>不是脚本</script>',screen={sequence:3,rows:24,cols:80,lines:Array.from({length:24},(_,i)=>i===1?[{text:'~/workspace',fg:'#3973c6',fg_index:4},{text:' ❯ ',fg:'#298451',fg_index:2},{text:'truecolor',fg:'#298451'}].map(span=>({...span,bold:false,italic:false,underline:false,inverse:false})):[{text:i===0?text:' ',bold:false,italic:false,underline:false,inverse:false}]),text,cursor:[1,13],cursor_visible:true,alternate_screen:false,scrollback:0,previous_available:true};
 function Frame(){
  const [facts,setFacts]=useState({active:true,online:true,inputSupported:true,appearance:'dark',accent:'cyan',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
  api={set:value=>{setFacts(old=>({...old,...value}));if(['screenError','serverError','inputSupported','checkpoint','unrestricted','noHistory'].some(key=>key in value))queueMicrotask(()=>wake());}};
  const client={boot:{centerId:'center-exact',principalId:facts.principal??'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
- terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[...records.values()],limit:50,has_more:false};},
+ terminalCatalog:async(scope,signal,cursor)=>{events.push(['catalog',scope,cursor]);return query.has('pagedCatalog')?{terminals:cursor?[older]:(query.has('selectedOutsidePage')?[older]:[record]),limit:50,has_more:!cursor,next_cursor:cursor?null:'TEST-ui-page-2'}:{terminals:[...records.values()],limit:50,has_more:false};},
  terminalOpen:async(scope,commandId)=>{events.push(['open',scope,commandId]);openAttempts++;if(!opens.has(commandId)){const created={...record,id:'human-'+commandId,title:'终端 '+(opens.size+1),root_turn_id:null,source_job_id:null,creation_command_id:commandId};records.set(created.id,created);opens.set(commandId,created);}await new Promise(r=>setTimeout(r,100));if(query.has('lostOpen')&&openAttempts===1)throw Error('TEST lost creation receipt');return {command_id:commandId,terminal:opens.get(commandId),connected:true};},
  terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{input_supported:!!facts.inputSupported,terminal:{...records.get(id),...(facts.checkpoint?{status:'lost'}:{}),...(facts.unrestricted?{sandbox_status:'disabled'}:{})},connected:!facts.checkpoint,checkpoint:!!facts.checkpoint,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:!facts.noHistory&&offset<48}};},
  terminalCommand:async(scope,id,command)=>{events.push(['command',command]);if(facts.commandError)throw Error('TEST lost receipt');record.revision++;return {command_id:command.command_id,terminal_id:id,revision:record.revision,input_status:'submitted',command_completion:'not_asserted'};},
@@ -633,5 +634,66 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
     await openCount(),
     beforeReload,
     "background refresh never repeats creation",
+  );
+  await page.goto(`http://127.0.0.1:${address.port}/__terminal?pagedCatalog=1`);
+  const more = page.getByRole("button", { name: "载入更多终端", exact: true });
+  await expect(more).toBeVisible();
+  await expect(page.getByRole("tab", { name: "历史终端" })).toHaveCount(0);
+  await page.waitForTimeout(100);
+  const beforeMore = await page.evaluate(
+    () =>
+      Reflect.get(window, "terminalFixture")
+        .state()
+        .events.filter((e: any[]) => e[0] === "catalog").length,
+  );
+  await page.waitForTimeout(1300);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter((e: any[]) => e[0] === "catalog").length,
+    ),
+    beforeMore,
+    "a visible continuation never follows itself",
+  );
+  await more.click();
+  await expect(page.getByRole("tab", { name: "历史终端" })).toBeVisible();
+  await expect(more).toHaveCount(0);
+  const pages = await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture")
+      .state()
+      .events.filter((e: any[]) => e[0] === "catalog"),
+  );
+  assert.equal(pages.length, beforeMore + 1);
+  assert.equal(pages.at(-1)[2], "TEST-ui-page-2");
+  assert.equal(
+    await openCount(),
+    0,
+    "loading a catalog page does not create a terminal",
+  );
+  await expect(page.getByRole("tab", { name: "编译与检查" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.goto(
+    `http://127.0.0.1:${address.port}/__terminal?pagedCatalog=1&selectedOutsidePage=1`,
+  );
+  await expect(
+    page.getByRole("region", { name: "真实终端屏幕" }),
+  ).toContainText("实际输出：中文");
+  await expect(page.getByRole("tab", { name: "编译与检查" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.getByRole("tab", { name: "历史终端" })).toBeVisible();
+  const selectedPageReads = await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture")
+      .state()
+      .events.filter((e: any[]) => e[0] === "catalog"),
+  );
+  assert.ok(
+    selectedPageReads.every((event: any[]) => event[2] === undefined),
+    "an exact selected point never drains directory continuations",
   );
 });

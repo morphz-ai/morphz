@@ -910,6 +910,72 @@ test("目标控制共用 Runtime 的暂停恢复删除协议，校验真实来�
   }
 });
 
+test("an unrelated unavailable Context does not rebuild a loaded Objective's control owner", async () => {
+  const { f, internal, delivery, bounds, objective, contextId } =
+    await fixture();
+  let writes = 0;
+  try {
+    internal.request = async () => ({
+      detail_bounds: bounds,
+      threads: [],
+      objectives: [objective],
+    });
+    await internal.refreshActivity();
+    const activity = (internal as any).state.activity;
+    // This fixture uses explicit reads rather than a background connection.
+    // Enable only the coalesced read owner's lifecycle for this unit case;
+    // actual started-Host/socket behavior is covered by runtime-event-driven.
+    (internal as any).stopped = false;
+    activity.available = false;
+    activity.readScopes.push({
+      contextId: "unrelated-unavailable",
+      currentAvailable: false,
+      historyAvailable: false,
+    });
+    const reads: string[] = [];
+    internal.request = async (path, method = "GET", body: any) => {
+      if (method === "GET") {
+        assert.ok(
+          writes > 0,
+          "a loaded exact owner does not need a pre-control inventory read",
+        );
+        reads.push(path);
+        assert.ok(
+          path.includes(contextId),
+          "post-control reconciliation stays in its actual Context",
+        );
+        assert.ok(!path.includes("include_terminal=true"));
+        return path.startsWith("/api/delegations?")
+          ? { delegations: [], has_more: false }
+          : { detail_bounds: bounds, threads: [], objectives: [objective] };
+      }
+      writes++;
+      assert.equal(body.expected_revision, 1);
+      objective.objective.status = "paused";
+      objective.objective.revision = 2;
+      return { paused: true, objective: { ...objective.objective } };
+    };
+    await f.session().objectiveControl({
+      objectiveId: objective.objective.id,
+      projectId: delivery.platformSource.projectId,
+      conversationId: delivery.platformSource.conversationId,
+      revision: 1,
+      action: "pause",
+    });
+    assert.equal(writes, 1);
+    assert.equal(
+      reads.length,
+      0,
+      "the native receipt returns before preparing any reconciliation read",
+    );
+    await (internal as any).activityControlRefresh;
+    assert.ok(reads.length > 0);
+  } finally {
+    await (internal as any).activityControlRefresh;
+    await f.close();
+  }
+});
+
 test(
   "目标控制回执不等待活动清单或历史，较早在途读取不能覆盖已确认暂停",
   { timeout: 30000 },

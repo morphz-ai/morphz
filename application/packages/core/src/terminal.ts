@@ -70,7 +70,11 @@ export const terminalViewSchema = z.object({
 export const terminalCatalogSchema = z.object({
   terminals: z.array(terminalRecordSchema).max(50),
   has_more: z.boolean(),
+  next_cursor: z.string().min(1).max(8192).nullable().optional(),
   limit: z.number().int().positive().max(50),
+});
+export const terminalCatalogRequestSchema = executionScopeSchema.extend({
+  cursor: z.string().min(1).max(8192).optional(),
 });
 export const terminalReadSchema = z
   .object({

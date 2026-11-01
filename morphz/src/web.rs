@@ -774,6 +774,7 @@ struct SessionTimelineHttpQuery {
 #[derive(Default, serde::Deserialize)]
 struct SchedulerSnapshotHttpQuery {
     token: Option<String>,
+    include_job_details: Option<bool>,
     #[serde(default)]
     include_terminal: bool,
     #[serde(default)]
@@ -6191,6 +6192,7 @@ struct TerminalQuery {
     principal_id: Option<String>,
     root_ids: Option<String>,
     scope_ref: Option<String>,
+    cursor: Option<String>,
     limit: Option<usize>,
     scrollback: Option<usize>,
     metadata_only: Option<bool>,
@@ -6216,7 +6218,7 @@ async fn handle_session_terminals(
     {
         Ok(roots)
             if roots.as_ref().is_none_or(|r| {
-                r.len() <= 1000 && r.iter().all(|v| !v.is_empty() && v.len() <= 500)
+                r.len() <= 50 && r.iter().all(|v| !v.is_empty() && v.len() <= 500)
             }) =>
         {
             roots
@@ -6229,6 +6231,9 @@ async fn handle_session_terminals(
         }
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 50);
+    if crate::memory::terminal::TerminalCatalogCursor::decode(query.cursor.as_deref()).is_err() {
+        return error_response(StatusCode::BAD_REQUEST, "invalid terminal cursor");
+    }
     if query
         .scope_ref
         .as_ref()
@@ -6243,6 +6248,7 @@ async fn handle_session_terminals(
             &session_id,
             roots,
             query.scope_ref,
+            query.cursor,
             limit + 1,
         )
         .await
@@ -6250,7 +6256,14 @@ async fn handle_session_terminals(
         Ok(mut terminals) => {
             let has_more = terminals.len() > limit;
             terminals.truncate(limit);
-            Json(json!({"terminals":terminals,"limit":limit,"has_more":has_more})).into_response()
+            let next_cursor = has_more
+                .then(|| {
+                    terminals
+                        .last()
+                        .map(crate::memory::terminal::TerminalCatalogCursor::for_record)
+                })
+                .flatten();
+            Json(json!({"terminals":terminals,"limit":limit,"has_more":has_more,"next_cursor":next_cursor})).into_response()
         }
         Err(e) => sdk_error_response(e),
     }
@@ -6691,6 +6704,7 @@ async fn handle_get_scheduler_snapshot(
         .scheduler_snapshot(
             &context_id,
             SchedulerQuery {
+                include_job_details: query.include_job_details.unwrap_or(true),
                 include_terminal: query.include_terminal,
                 history_only: query.history_only,
                 history_cursor: query.history_cursor,

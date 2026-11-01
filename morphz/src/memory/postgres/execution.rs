@@ -783,6 +783,31 @@ impl ExecutionJobStore for PostgresStore {
         })
     }
 
+    async fn activation_jobs_exist(
+        &self,
+        context_id: &str,
+        activation_ids: &[String],
+    ) -> Result<bool, StoreError> {
+        if activation_ids.is_empty() {
+            return Ok(false);
+        }
+        if activation_ids.len() > 100 {
+            return Err("Job existence scope exceeds 100".into());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT 1 FROM execution_jobs WHERE context_id=",
+        );
+        query.push_bind(context_id).push(" AND activation_id IN (");
+        {
+            let mut ids = query.separated(",");
+            for id in activation_ids {
+                ids.push_bind(id);
+            }
+        }
+        query.push(") LIMIT 1");
+        Ok(query.build().fetch_optional(&self.pool).await?.is_some())
+    }
+
     async fn list_execution_jobs_for_activations(
         &self,
         context_id: &str,

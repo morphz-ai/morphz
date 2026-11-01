@@ -1,7 +1,6 @@
 # Product read audit — 2026-11-01
 
-Status: **in progress, candidate not deployed**. HEAD is `0858f597`; the
-additional Runtime/Application/read-model changes are still under validation.
+Status: **in progress, candidate not deployed**. The first validated read-model commit is `0c710e2b`; additional scoped Activity and Terminal catalog changes are still under validation.
 This document is not whole-product acceptance. The root `AGENTS.md` is the
 read contract for Runtime, Dashboard and Desktop.
 
@@ -26,10 +25,10 @@ array is not evidence of completion, absence or a broken approval route.
 | Thread inspection | Separate Activation/Job/Signal/Schedule/model-history pages; exact Thread scope; question revalidation reads metadata | Child continuation response scope is checked; large Job request bodies are still a separate open issue |
 | ThreadGroup inspection | Exact counters on collapsed parents; explicit 64-member pages and selected outcomes | Counters retain corrupt-tail diagnostics and mixed-revision pages fail |
 | Pending approvals | Separate capped status ranges; raw timestamp key; exact known approval; native principal/binding checks | Operator paging is wired to explicit UI demand. Context/principal ordering indexes, native ownership checks and principal continuation passed candidate 7 SQLite/PostgreSQL fixtures |
-| Desktop activity/history | Background current-only invalidations do not open retained history; visible Activity owns history | Historical Session/Context fanout and per-reader current-work continuation remain open; do not call this complete |
+| Desktop activity/history | Background current-only invalidations do not open retained history; visible Activity owns history | A scoped invalidation no longer opens unrelated Contexts, even after the 16-entry raw cache evicts them; preserved projections retain per-owner fences. Initial/explicit visible-history Context fanout and per-reader current-work continuation remain open |
 | Desktop controls | Exact validated receipt publishes before coalesced reconciliation, including Schedule/Delegation | Preserve command identity/CAS, drafts, unknown outcomes and source proof; original-app verification pending |
 | Platform task dispatcher | Subscribe before startup recovery; commit wakes; busy wakes retained; bounded 50-row worker rounds; failed-item backoff only | 15 selected tests passed, including former-interval idle silence and no starvation behind failed head items |
-| Terminal view | Demand-owned metadata stream; selected output wakes screen only; hidden/idle view performs no periodic reads | 32-test selected Application run passed; new 14-test wire subset also passed (counts overlap). Legacy catalog fanout and its missing continuation remain open |
+| Terminal view | Demand-owned metadata stream; selected output wakes screen only; hidden/idle view performs no periodic reads | 32-test selected Application run passed; new 14-test wire subset also passed (counts overlap). Native catalog source/equal-clock ranges now have indexed cursors. Host demand reads one physical source page (32 roots maximum and an encoded byte bound); the UI follows only on explicit More. SQLite and owned PostgreSQL pressure cases passed; original-app acceptance remains open |
 | TUI | Native durable-change subscription replaces healthy 500 ms tail polling; Session directory loaded only when opened, explicit tail continuation | Release all-target check passed; behavior still needs current binary tests |
 | Model identity / CLI directory | Principal/Agent predicates before directory LIMIT; CLI scoped `--last` uses a one-row seek; list has explicit cursor | Release all-target check passed; remaining legacy bulk APIs and other CLI/TUI collections still need inventory |
 | Transcript search | Bounded Recall candidates; exact Event metadata and <=50 authorized Session points before bodies | Does not hydrate a whole Session directory to authorize a search |
@@ -85,10 +84,10 @@ array is not evidence of completion, absence or a broken approval route.
    Preserve annotation provenance and actual domain records; do not substitute
    fake empty requests to make a read look small. Inspect current dependency,
    Schedule and shared participant collections separately from history.
-3. Finish Terminal catalog continuation and legacy source-root fanout. The
-   screen stream removes healthy polling, not these independent collection
-   gaps. Native lease/security checkpoints are resource ownership work, not
-   page refresh timers.
+3. Finish original-app Terminal catalog acceptance. The candidate now has
+   native creation-key seeks, a continuation bound to the exact Host/source
+   page, and an explicit reader action. Native lease/security checkpoints are
+   resource ownership work, not page refresh timers.
 4. Review provider/account, delegation, content/Reader/script and remaining
    public/CLI collection paths against actual budgets and owners. Configuration
    and a single explicit full object are not licenses for directory bodies.
@@ -103,3 +102,37 @@ array is not evidence of completion, absence or a broken approval route.
    Preserve the existing profile, staged attachment, model choices, original
    records and live work. Commit the focused validated result locally; no
    GitHub push or release is part of this request.
+
+## Follow-up validation / still not deployed
+
+The fresh Application run 30 passed **88/88**, zero skips, including mounted
+terminal continuation, URL-byte budgets, 1200-source bounded demand, 23-Context
+invalidation isolation despite cache eviction, late control receipt fencing,
+retired-Session freshness and unexpected per-owner projection failure. An
+intermediate run exposed a real regression where removing a failed scope made
+an empty array look complete; the production fence was corrected and the
+original assertions retained. Terminal SQLite and owned PostgreSQL case 8
+passed against 10000 foreign retained terminals with raw equal-clock cursors;
+the PG sort input stayed bounded. The full case-8 library passed: 1762 passed, zero failures, 18 ignored (476.72 s).
+
+A collapsed scheduler `include_job_details=false` mode passed its current validation.
+It uses existing Job monitor metadata, exact route proofs and native activity
+flags; it never fabricates an empty physical Job request. Existing focused Job
+inspection still opens the original record. A 2 MiB healthy request fixture
+checks unchanged counts/phase, explicit omitted-child bounds and intact original
+bytes. This removes overview-owned Job bodies, not every remaining large-child
+payload issue. Do not call all body/byte demand closed yet.
+
+Case 9 source fingerprint is
+`68ce5e8cb8b3c9a4ea9545452c1f5cf1dacff32bc50d2133563a439bdc2c900b`.
+Its unchanged frozen native source passed the focused 2 MiB request case,
+SQLite and owned PostgreSQL directory/continuation pressure cases, and the full
+library: **1762 passed, zero failures, 18 ignored** (454.41 s). The test
+executable SHA-256 is
+`6d58bcecb4fd76af7f408e2ce47c685fffba0f09a77503913706af7ab22dc2de`.
+Dashboard 297 tests/build/lint passed. The widened Application run 36 passed
+**89/89**, zero skips, including selected-terminal metadata outside the loaded
+catalog page and a healthy Objective control despite an unrelated unavailable
+Context. The command does not wait for the reconciliation's JavaScript turn.
+A follow-up original-profile read-only guard observed one live Activation, zero
+live Jobs and zero nonterminal Objectives; Runtime was not switched or stopped.

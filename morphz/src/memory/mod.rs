@@ -6348,6 +6348,15 @@ pub trait ExecutionJobStore: Send + Sync {
                 .into(),
         )
     }
+    /// Exact existence over a selected metadata page, with no request/result
+    /// body access. This proves child disclosure, never execution authority.
+    async fn activation_jobs_exist(
+        &self,
+        _context_id: &str,
+        _activation_ids: &[String],
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Err("indexed activation Job existence is not implemented by this store".into())
+    }
     /// Terminal result outboxes which still need their one deterministic
     /// directed Signal or Session fallback. Production stores use indexed
     /// anti-joins over `thread_signals` and deterministic Runtime Wake/audit

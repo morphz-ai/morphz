@@ -262,6 +262,10 @@ macro_rules! inspection_pages {
     let mut foreign=thread.clone();foreign.context_id="dir-b".into();assert!(store.read_thread_inspection_page(&foreign,&request).await.unwrap().jobs.is_empty());
     foreign=thread.clone();foreign.id="other-thread".into();assert!(store.read_thread_inspection_page(&foreign,&request).await.is_err());
     let heads=store.list_execution_jobs_for_activations("dir-a",&["approval-page-activation".into()]).await.unwrap();assert_eq!(heads.len(),32,"one Activation cannot hydrate its 10055-Job lifetime");
+    assert!(store.activation_jobs_exist("dir-a", &["approval-page-activation".into()]).await.unwrap());
+    assert!(!store.activation_jobs_exist("dir-b", &["approval-page-activation".into()]).await.unwrap());
+    assert!(!store.activation_jobs_exist("dir-a", &[]).await.unwrap());
+    assert!(store.activation_jobs_exist("dir-a", &vec!["approval-page-activation".into();101]).await.is_err());
     let approvals=store.list_job_approvals("dir-a",&["approval-page-job-0000".into()]).await.unwrap();assert_eq!(approvals.len(),1,"one selected Job cannot hydrate historical approval revisions");
     for kind in [K::Activations,K::PendingSignals,K::Schedules] {
         let page=store.read_thread_inspection_page(&thread,&Q{kind,activation_id:None,cursor:None,limit:Some(7)}).await.unwrap();assert!(!page.has_more);
@@ -337,6 +341,39 @@ macro_rules! schedule_pages {
 }
 pub(crate) use schedule_pages;
 
+macro_rules! terminal_catalog_pages {
+ ($db:ty,$store:expr)=>{{
+    use crate::memory::terminal::{TerminalSessionFilter,TerminalSessionRecord,TerminalCatalogCursor,TerminalStore};
+    let store=$store;
+    let mut q=sqlx::QueryBuilder::<$db>::new("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) INSERT INTO terminal_sessions(id,session_id,context_id,principal_id,root_turn_id,source_job_id,scope_ref,target_id,owner_instance_id,lease_expires_at,revision,status,created_at,record_json) SELECT 'foreign-catalog-'||CAST(i AS TEXT),'s-0004','dir-a','dir-human-a',NULL,NULL,'foreign-scope','target-page-dir-human-a-0000','TEST','2099-01-01T00:00:00Z',1,'open','2026-11-01T01:00:00.100Z','{}' FROM n");
+    q.build().execute(&store.pool).await.unwrap();
+    for i in 0..55 {
+        let record:TerminalSessionRecord=serde_json::from_value(serde_json::json!({
+          "id":format!("page-terminal-{i:04}"),"session_id":"s-0004","context_id":"dir-a","principal_id":"dir-human-a",
+          "root_turn_id":null,"source_job_id":null,"scope_ref":"catalog-owned","creation_command_id":format!("TEST-{i}"),
+          "target_id":"target-page-dir-human-a-0000","owner_instance_id":"TEST","lease_expires_at":"2026-11-01T00:00:00Z",
+          "revision":1,"status":"closed","title":"TEST page","shell":"/bin/sh","cwd":"/tmp","rows":24,"cols":80,
+          "policy_hash":"TEST","sandbox_status":"TEST","network_enabled":false,"last_input_job_id":null,"last_input_status":null,"exit_code":0,
+          "created_at":"2026-11-01T01:00:00.100Z","updated_at":"2026-11-01T01:00:00.100Z"
+        })).unwrap();
+        assert!(store.create_terminal(&record).await.unwrap());
+    }
+    let mut filter=TerminalSessionFilter {session_id:"s-0004".into(),context_id:"dir-a".into(),principal_id:"dir-human-a".into(),root_ids:Some(vec![]),scope_ref:Some("catalog-owned".into()),cursor:None,limit:8};
+    let mut seen=std::collections::HashSet::new();
+    loop {
+        let page=store.terminals(&filter).await.unwrap();assert!(page.len()<=8);
+        for record in page.iter().take(7){assert!(record.id.starts_with("page-terminal-"));assert!(seen.insert(record.id.clone()));}
+        if page.len()<=7 {break;}
+        let next=TerminalCatalogCursor::for_record(&page[6]);assert_ne!(filter.cursor.as_ref(),Some(&next));filter.cursor=Some(next);
+    }
+    assert_eq!(seen.len(),55,"raw equal-clock cursor must reach the entire explicitly requested catalog");
+    filter.scope_ref=Some("another-scope".into());filter.cursor=None;assert!(store.terminals(&filter).await.unwrap().is_empty());
+    filter.cursor=Some("broken".into());assert!(store.terminals(&filter).await.is_err());
+    filter.cursor=None;filter.root_ids=Some(vec!["root".to_string();51]);assert!(store.terminals(&filter).await.is_err());
+ }};
+}
+pub(crate) use terminal_catalog_pages;
+
 macro_rules! plan_cases {
     ($db:ty) => {{
         let authority = crate::memory::ApprovalDecisionAuthority {
@@ -349,7 +386,17 @@ macro_rules! plan_cases {
             id: "old-transfer-5000".into(),
         }
         .encode();
+        let terminal_key=crate::memory::terminal::TerminalCatalogCursor::for_record(&serde_json::from_value::<crate::memory::terminal::TerminalSessionRecord>(serde_json::json!({
+          "id":"page-terminal-0030","session_id":"s-0004","context_id":"dir-a","principal_id":"dir-human-a",
+          "root_turn_id":null,"source_job_id":null,"target_id":"TEST","owner_instance_id":"TEST","lease_expires_at":"2026-11-01T00:00:00Z",
+          "revision":1,"status":"closed","title":"TEST","shell":"/bin/sh","cwd":"/tmp","rows":24,"cols":80,"policy_hash":"TEST",
+          "sandbox_status":"TEST","network_enabled":false,"last_input_job_id":null,"last_input_status":null,"exit_code":0,
+          "created_at":"2026-11-01T01:00:00.100Z","updated_at":"2026-11-01T01:00:00.100Z"
+        })).unwrap());
         vec![
+            ("deep scoped terminal catalog",crate::memory::terminal::terminal_catalog_query!($db,&crate::memory::terminal::TerminalSessionFilter {
+                session_id:"s-0004".into(),context_id:"dir-a".into(),principal_id:"dir-human-a".into(),root_ids:Some(vec![]),scope_ref:Some("catalog-owned".into()),cursor:Some(terminal_key),limit:8,
+            }).unwrap()),
             (
                 "context approvals",
                 crate::memory::approval_page::scoped_query!($db, Some("dir-a"), None, None, 8usize)

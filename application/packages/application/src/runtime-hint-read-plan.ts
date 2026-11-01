@@ -31,12 +31,14 @@ export function runtimeHintReadPlan(topic?: string) {
       "chat/tool_output",
       "chat/delegate",
       "runtime/session_restored",
+      "runtime/observer_scope_added",
       "runtime/model_attempt_state",
     ].includes(topic!);
   const attention =
     gap ||
     topic!.startsWith("runtime/approval") ||
     topic!.startsWith("runtime/execution") ||
-    topic === "runtime/session_restored";
+    topic === "runtime/session_restored" ||
+    topic === "runtime/observer_scope_added";
   return { history, activity, attention };
 }
