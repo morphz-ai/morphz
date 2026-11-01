@@ -5,7 +5,7 @@ permissions:
   contents: read
 jobs:
   capture-startup-diagnostic:
-    name: Isolated native startup diagnostic
+    name: Isolated native Reader persistence diagnostic
     runs-on: macos-26-intel
     timeout-minutes: 25
     defaults:
@@ -28,15 +28,25 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm run build
       - run: npx playwright install chromium
-      - name: Diagnose twenty complete native starts without retries
-        env:
-          MORPHZ_TEST_SOFTWARE_RENDERING: "1"
-          PLAYWRIGHT_JSON_OUTPUT_NAME: test-results/native-startup-report.json
-        run: npx playwright test tests/capture-window.spec.ts --repeat-each=20 --forbid-only --reporter=list,json
+      - name: Verify five remote and embedded reader journeys without retries
+        shell: bash
+        run: |
+          mkdir -p test-results/native-reader-stability
+          for mode in remote embedded; do
+            for round in 1 2 3 4 5; do
+              log="test-results/native-reader-stability/${mode}-${round}.log"
+              args=()
+              if [[ "$mode" == embedded ]]; then args+=(--embedded); fi
+              status=0
+              node scripts/platform-desktop-smoke.mjs "${args[@]}" > "$log" 2>&1 || status=$?
+              cat "$log"
+              if [[ "$status" != 0 ]]; then exit "$status"; fi
+            done
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: native-startup-diagnostic
+          name: native-reader-stability
           path: application/test-results/
           if-no-files-found: error
           retention-days: 3
