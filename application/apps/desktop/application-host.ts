@@ -109,12 +109,18 @@ export async function openEmbeddedApplication(
   ocrEngine?: ReadingOcrEngine,
   runtimeRequest?: typeof fetch,
 ) {
+  const diagnostic = Reflect.get(globalThis, "__morphzStartupDiagnostic");
+  const trace = (stage: string) => {
+    if (typeof diagnostic === "function") diagnostic(stage);
+  };
+  trace("host:enter");
   if (!isAbsolute(directory) || !isAbsolute(profile))
     throw new Error("应用目录必须是明确的绝对路径。");
   loadServiceEnvironment();
   const store = new WorkspaceStore(join(directory, "workspace.sqlite"), {
     mode: "transport",
   });
+  trace("host:workspace-opened");
   const reportFailure = privateHostFailureReporter(profile);
   let runtime: RuntimeBridge | undefined;
   let tools: Awaited<ReturnType<typeof listenLocalHostTools>> | undefined;
@@ -122,6 +128,7 @@ export async function openEmbeddedApplication(
     Awaited<ReturnType<typeof openApplicationDomainsHost>> | undefined;
   try {
     const identity = await loadIdentity(store, directory);
+    trace("host:identity-loaded");
     const config = loadRuntimeConfig(directory);
     runtime = config
       ? new RuntimeBridge(store, config, identity, true, {
@@ -137,9 +144,11 @@ export async function openEmbeddedApplication(
       join(profile, "local-file-references.json"),
       store.identity(),
     );
+    trace("host:files-opened");
     domains = await openApplicationDomainsHost(directory, store, identity, {
       cognitiveApps: cognitiveAppLaunchConfig(),
     });
+    trace("host:domains-opened");
     const browser = new BrowserBroker(
       store,
       platformBrowserPageAuthority(domains),
@@ -189,6 +198,7 @@ export async function openEmbeddedApplication(
       cookie,
       reportFailure,
     );
+    trace("host:connection-opened");
     let manifest = config
       ? prepareLocalHostTools(
           directory,

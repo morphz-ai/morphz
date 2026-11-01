@@ -27,6 +27,7 @@ function record(stage, details = {}) {
   } catch {}
 }
 record("fixture-entry", { pid: process.pid });
+globalThis.__morphzStartupDiagnostic = record;
 app.on("gpu-info-update", () =>
   record("gpu-info", { features: app.getGPUFeatureStatus() }),
 );

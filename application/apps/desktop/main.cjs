@@ -298,10 +298,13 @@ else {
   app
     .whenReady()
     .then(async () => {
+      globalThis.__morphzStartupDiagnostic?.("main:imports-start");
       const { dataDirectory } =
         await import("../../dist/service/packages/application/src/paths.js");
+      globalThis.__morphzStartupDiagnostic?.("main:paths-loaded");
       const { openEmbeddedApplication, embeddedResources } =
         await import("../../dist/service/apps/desktop/application-host.js");
+      globalThis.__morphzStartupDiagnostic?.("main:host-module-loaded");
       connection = connectionFromArgs(process.argv, dataDirectory);
       if (hot) {
         if (connection.mode !== "remote")
@@ -316,8 +319,10 @@ else {
       }
       microphone = new MicrophoneGate(uiURL);
       const appSession = session.fromPartition(appPartition);
+      globalThis.__morphzStartupDiagnostic?.("main:session-opened");
       if (connection.mode === "local") {
         const { createReadingOcrEngine } = require("./reader-ocr.cjs");
+        globalThis.__morphzStartupDiagnostic?.("main:ocr-module-loaded");
         const ocrResources = embeddedResources(
           join(__dirname, "../../dist/web"),
           {
@@ -348,6 +353,7 @@ else {
             session.fromPartition("morphz-runtime-network", { cache: false }),
           ),
         );
+        globalThis.__morphzStartupDiagnostic?.("main:host-opened");
         application = host.connection;
       } else {
         const { RemoteApplicationConnection } =
