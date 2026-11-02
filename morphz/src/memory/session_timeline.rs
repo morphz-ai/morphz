@@ -53,6 +53,7 @@ pub(crate) struct TimelineMutation {
     pub visible_at_micros: i64,
     pub kind: MutationKind,
     pub display_kind: &'static str,
+    pub metadata_only: bool,
 }
 
 fn string<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
@@ -183,6 +184,7 @@ pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation>
         source_sequence: sequence,
         root_turn_id: root_turn_id.to_string(),
         attempt_id: attempt_id.map(str::to_string),
+        metadata_only: event.topic == "runtime/provider_recovered" && !has_text,
         visible_at_micros: visible_at.timestamp_micros(),
         kind,
         display_kind,

@@ -458,6 +458,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       const oldest = sorted.at(-1);
       return send(200, {
         entries: sorted.reverse(),
+        text_only: query.get("text_only") === "true",
         next_before:
           sorted.length === limit && oldest
             ? {

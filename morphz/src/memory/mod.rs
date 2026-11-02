@@ -6143,6 +6143,15 @@ pub trait SessionTimelineStore: Send + Sync {
         before: Option<&SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Read message-page members through the indexed text projection. Recovery
+    /// metadata remains available through the complete timeline and exact IDs.
+    async fn query_session_text_timeline(
+        &self,
+        session_id: &str,
+        before: Option<&SessionTimelineCursor>,
+        limit: usize,
+    ) -> Result<Vec<SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.

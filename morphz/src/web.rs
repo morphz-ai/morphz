@@ -809,6 +809,8 @@ struct SessionTimelineHttpQuery {
     principal_id: Option<String>,
     before_time_micros: Option<i64>,
     before_entry_id: Option<String>,
+    #[serde(default)]
+    text_only: bool,
     limit: Option<usize>,
 }
 
@@ -9298,11 +9300,18 @@ async fn handle_get_session_timeline(
         }
     };
     let limit = query.limit.unwrap_or(100).clamp(1, 100);
-    match state
-        .runtime
-        .query_session_timeline(&session_id, before.as_ref(), limit + 1)
-        .await
-    {
+    let page = if query.text_only {
+        state
+            .runtime
+            .query_session_text_timeline(&session_id, before.as_ref(), limit + 1)
+            .await
+    } else {
+        state
+            .runtime
+            .query_session_timeline(&session_id, before.as_ref(), limit + 1)
+            .await
+    };
+    match page {
         Ok(mut entries) => {
             let has_earlier = entries.len() > limit;
             if has_earlier {
@@ -9316,7 +9325,7 @@ async fn handle_get_session_timeline(
                         visible_at_micros: entry.visible_at_micros,
                         entry_id: entry.entry_id.clone(),
                     });
-            Json(json!({ "entries": entries, "next_before": next_before })).into_response()
+            Json(json!({ "entries": entries, "next_before": next_before, "text_only": query.text_only })).into_response()
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -21227,6 +21236,50 @@ account = "xai-account"
         assert_eq!(older["entries"].as_array().unwrap().len(), 1);
         assert_eq!(older["entries"][0]["entry_id"], "client-1");
         assert!(older["next_before"].is_null());
+        runtime
+            .publish(Event::new(
+                "timeline-http-recovery-metadata".into(),
+                "Runtime-ProviderRecovery".into(),
+                "tool_output".into(),
+                "runtime/provider_recovered".into(),
+                serde_json::from_value(json!({"context_id":runtime.identity().context_id,
+                "session_id":"timeline-http-session","root_turn_id":"timeline-http-input-3",
+                "runtime_force_evaluation":true,"dependency_id":"provider",
+                "recovery_event_id":"recovery"}))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        let text_page = handle_get_session_timeline(
+            State(Arc::clone(&state)),
+            Path("timeline-http-session".into()),
+            HeaderMap::new(),
+            Query(SessionTimelineHttpQuery {
+                text_only: true,
+                limit: Some(2),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(text_page.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(text_page.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text_page: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(text_page["text_only"], true);
+        assert_eq!(text_page["entries"], latest["entries"]);
+        assert_eq!(text_page["next_before"], latest["next_before"]);
+        let metadata = handle_get_session_timeline_entry(
+            State(Arc::clone(&state)),
+            Path((
+                "timeline-http-session".into(),
+                "timeline-http-recovery-metadata".into(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(metadata.status(), StatusCode::OK);
         let malformed = handle_get_session_timeline(
             State(state),
             Path("timeline-http-session".to_string()),

@@ -518,6 +518,86 @@ async fn assert_session_timeline_conformance<S: morphz::memory::RuntimeStore>(st
         .await
         .unwrap()
         .is_none());
+
+    // A wall larger than the old Host's eight raw windows must not occupy a
+    // readable message page. Keep every status available by its exact ID.
+    let mut readable_recovery = make_event(
+        "timeline-readable-recovery",
+        "runtime/provider_recovered",
+        "2026-09-28T02:00:00Z",
+        json!({"session_id":session_id,"root_turn_id":"timeline-root-one",
+            "runtime_force_evaluation":true,"dependency_id":"provider-dependency",
+            "recovery_event_id":"provider-recovered","text":"Service resumed; continuing work."}),
+    );
+    readable_recovery.actor = "Runtime-ProviderRecovery".into();
+    readable_recovery.event_type = "tool_output".into();
+    store.append(readable_recovery).await.unwrap();
+    let expected = store
+        .query_session_timeline(session_id, None, 100)
+        .await
+        .unwrap();
+    for ordinal in 0..1001 {
+        let mut event = make_event(
+            &format!("timeline-metadata-{ordinal:04}"),
+            "runtime/provider_recovered",
+            "2026-09-28T03:00:00Z",
+            json!({"session_id":session_id,"root_turn_id":"timeline-root-one",
+                "runtime_force_evaluation":true,"dependency_id":"provider-dependency",
+                "recovery_event_id":"provider-recovered"}),
+        );
+        event.actor = "Runtime-ProviderRecovery".into();
+        event.event_type = "tool_output".into();
+        store.append(event).await.unwrap();
+    }
+    let full = store
+        .query_session_timeline(session_id, None, 2)
+        .await
+        .unwrap();
+    assert_eq!(full.len(), 2);
+    assert!(full
+        .iter()
+        .all(|entry| entry.entry_id.starts_with("timeline-metadata-")));
+    assert!(store
+        .session_timeline_entry(session_id, "timeline-metadata-1000")
+        .await
+        .unwrap()
+        .is_some());
+    let mut before = None;
+    let mut observed = Vec::new();
+    for _ in 0..4 {
+        let page = store
+            .query_session_text_timeline(session_id, before.as_ref(), 2)
+            .await
+            .unwrap();
+        assert!(page.len() <= 2);
+        if page.is_empty() {
+            break;
+        }
+        let next = SessionTimelineCursor {
+            visible_at_micros: page[0].visible_at_micros,
+            entry_id: page[0].entry_id.clone(),
+        };
+        if let Some(old) = &before {
+            assert!(
+                (next.visible_at_micros, &next.entry_id) < (old.visible_at_micros, &old.entry_id)
+            );
+        }
+        observed.extend(page.into_iter().rev().map(|entry| entry.entry_id));
+        before = Some(next);
+    }
+    assert_eq!(
+        observed,
+        expected
+            .iter()
+            .rev()
+            .map(|entry| entry.entry_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(store
+        .query_session_text_timeline(session_id, before.as_ref(), 2)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[cfg(feature = "remote-store")]

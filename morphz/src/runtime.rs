@@ -7378,6 +7378,24 @@ impl MorphzRuntime {
         Ok(entries)
     }
 
+    /// Message pages seek past metadata-only recovery notices in the store.
+    /// Preserve the same exact input provenance and authorization boundary.
+    pub async fn query_session_text_timeline(
+        &self,
+        session_id: &str,
+        before: Option<&SessionTimelineCursor>,
+        limit: usize,
+    ) -> Result<Vec<SessionTimelineItem>, RuntimeError> {
+        let mut entries = self
+            .inner
+            .store
+            .query_session_text_timeline(session_id, before, limit)
+            .await?;
+        self.resolve_timeline_inputs(session_id, &mut entries)
+            .await?;
+        Ok(entries)
+    }
+
     /// Exact publication identity uses the existing timeline primary key, not
     /// an unbounded Event / history scan. Reading never starts or replays work.
     pub async fn session_timeline_entry(

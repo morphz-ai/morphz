@@ -629,6 +629,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20261102_01_session_timeline_text_pages",
+                    store.migrate_session_timeline_text_pages(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260730_01_context_token_budget",
                     store.migrate_context_token_budget(),
                 )
@@ -2347,7 +2353,8 @@ impl PostgresStore {
              root_turn_id TEXT NOT NULL, attempt_id TEXT, \
              visible_at_micros BIGINT NOT NULL, output_visible_at_micros BIGINT, \
              display_kind TEXT NOT NULL CHECK(display_kind IN ('input', 'reply', 'progress', 'error')), \
-             is_final BOOLEAN NOT NULL, PRIMARY KEY(session_id, entry_id))",
+             is_final BOOLEAN NOT NULL, metadata_only BOOLEAN NOT NULL DEFAULT FALSE, PRIMARY KEY(session_id, entry_id))",
+            "ALTER TABLE session_message_timeline ADD COLUMN IF NOT EXISTS metadata_only BOOLEAN NOT NULL DEFAULT FALSE",
             "CREATE INDEX IF NOT EXISTS idx_pg_session_message_timeline_page \
              ON session_message_timeline(session_id, visible_at_micros DESC, entry_id DESC)",
         ] {
@@ -2400,6 +2407,65 @@ impl PostgresStore {
             }
             tx.commit().await?;
         }
+        Ok(())
+    }
+
+    async fn migrate_session_timeline_text_pages(&self) -> Result<(), StoreError> {
+        sqlx::query("ALTER TABLE session_message_timeline ADD COLUMN IF NOT EXISTS metadata_only BOOLEAN NOT NULL DEFAULT FALSE")
+            .execute(&self.pool)
+            .await?;
+        let high_water = sqlx::query(
+            "SELECT session_id, entry_id FROM session_message_timeline ORDER BY session_id DESC, entry_id DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(high_water) = high_water else {
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_pg_session_message_timeline_text_page ON session_message_timeline(session_id, visible_at_micros DESC, entry_id DESC) WHERE NOT metadata_only")
+            .execute(&self.pool)
+            .await?;
+            return Ok(());
+        };
+        let high_session = high_water.get::<String, _>("session_id");
+        let high_entry = high_water.get::<String, _>("entry_id");
+        let mut cursor: Option<(String, String)> = None;
+        loop {
+            // Primary-key seeks and derived booleans bound the backfill's
+            // materialized rows and bytes even for large historical payloads.
+            let statement = "SELECT t.session_id, t.entry_id, t.metadata_only, \
+                (e.topic = 'runtime/provider_recovered' AND NOT (\
+                  COALESCE(jsonb_typeof(e.payload->'text') = 'string' AND e.payload->>'text' <> '', FALSE) OR \
+                  COALESCE(jsonb_typeof(e.payload->'error') = 'string' AND e.payload->>'error' <> '', FALSE) OR \
+                  COALESCE(jsonb_typeof(e.payload->'message') = 'string' AND e.payload->>'message' <> '', FALSE))) AS derived_metadata_only \
+              FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id ";
+            let rows = if let Some((session, entry)) = &cursor {
+                sqlx::query(&(statement.to_owned() + "WHERE (t.session_id, t.entry_id) > ($1, $2) AND (t.session_id, t.entry_id) <= ($3, $4) ORDER BY t.session_id, t.entry_id LIMIT 500"))
+                    .bind(session).bind(entry).bind(&high_session).bind(&high_entry)
+                    .fetch_all(&self.pool).await?
+            } else {
+                sqlx::query(&(statement.to_owned() + "WHERE (t.session_id, t.entry_id) <= ($1, $2) ORDER BY t.session_id, t.entry_id LIMIT 500"))
+                    .bind(&high_session).bind(&high_entry)
+                    .fetch_all(&self.pool).await?
+            };
+            if rows.is_empty() {
+                break;
+            }
+            let mut tx = self.pool.begin().await?;
+            for row in rows {
+                let session = row.get::<String, _>("session_id");
+                let entry = row.get::<String, _>("entry_id");
+                let flag = row.get::<bool, _>("derived_metadata_only");
+                if flag != row.get::<bool, _>("metadata_only") {
+                    sqlx::query("UPDATE session_message_timeline SET metadata_only = $1 WHERE session_id = $2 AND entry_id = $3")
+                        .bind(flag).bind(&session).bind(&entry)
+                        .execute(&mut *tx).await?;
+                }
+                cursor = Some((session, entry));
+            }
+            tx.commit().await?;
+        }
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_pg_session_message_timeline_text_page ON session_message_timeline(session_id, visible_at_micros DESC, entry_id DESC) WHERE NOT metadata_only")
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -5118,8 +5184,8 @@ async fn project_session_timeline_in_tx(
             sqlx::query(
                 "INSERT INTO session_message_timeline \
                  (session_id, entry_id, source_event_id, source_sequence, root_turn_id, \
-                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, TRUE) \
+                  attempt_id, visible_at_micros, output_visible_at_micros, display_kind, is_final, metadata_only) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, TRUE, $9) \
                  ON CONFLICT(session_id, entry_id) DO NOTHING",
             )
             .bind(&entry.session_id)
@@ -5130,6 +5196,7 @@ async fn project_session_timeline_in_tx(
             .bind(&entry.attempt_id)
             .bind(entry.visible_at_micros)
             .bind(entry.display_kind)
+            .bind(entry.metadata_only)
             .execute(&mut **tx)
             .await?;
         }
@@ -6453,7 +6520,7 @@ impl super::SessionTimelineStore for PostgresStore {
         entry_id: &str,
     ) -> Result<Option<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(self
-            .session_timeline_page(session_id, None, 1, Some(entry_id))
+            .session_timeline_page(session_id, None, 1, Some(entry_id), false)
             .await?
             .pop())
     }
@@ -6464,22 +6531,23 @@ impl super::SessionTimelineStore for PostgresStore {
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
-        self.session_timeline_page(session_id, before, limit, None)
+        self.session_timeline_page(session_id, before, limit, None, false)
             .await
     }
-}
-
-impl PostgresStore {
-    async fn session_timeline_page(
+    async fn query_session_text_timeline(
         &self,
         session_id: &str,
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
-        entry_id: Option<&str>,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
-        let limit = i64::try_from(limit.clamp(1, 1_000))?;
-        let statement = if entry_id.is_some() {
-            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+        self.session_timeline_page(session_id, before, limit, None, true)
+            .await
+    }
+}
+
+fn session_timeline_page_statement(entry_id: bool, has_before: bool, text_only: bool) -> String {
+    let statement = if entry_id {
+        "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
                     t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
                     e.timestamp, e.actor, e.type, e.topic, e.payload, \
                     r.sequence AS root_event_sequence, r.id AS root_event_id, \
@@ -6488,8 +6556,8 @@ impl PostgresStore {
              FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
              LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
              WHERE t.session_id = $1 AND t.entry_id = $2 LIMIT $3"
-        } else if before.is_some() {
-            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+    } else if has_before {
+        "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
                     t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
                     e.timestamp, e.actor, e.type, e.topic, e.payload, \
                     r.sequence AS root_event_sequence, r.id AS root_event_id, \
@@ -6500,8 +6568,8 @@ impl PostgresStore {
              WHERE t.session_id = $1 AND \
                (t.visible_at_micros, t.entry_id) < ($2, $3) \
              ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT $4"
-        } else {
-            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+    } else {
+        "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
                     t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
                     e.timestamp, e.actor, e.type, e.topic, e.payload, \
                     r.sequence AS root_event_sequence, r.id AS root_event_id, \
@@ -6511,8 +6579,41 @@ impl PostgresStore {
              LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
              WHERE t.session_id = $1 \
              ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT $2"
+    };
+    if text_only {
+        let parent = if entry_id {
+            "SELECT * FROM session_message_timeline WHERE NOT metadata_only AND session_id = $1 AND entry_id = $2 LIMIT $3"
+        } else if has_before {
+            "SELECT * FROM session_message_timeline WHERE NOT metadata_only AND session_id = $1 AND (visible_at_micros, entry_id) < ($2, $3) ORDER BY visible_at_micros DESC, entry_id DESC LIMIT $4"
+        } else {
+            "SELECT * FROM session_message_timeline WHERE NOT metadata_only AND session_id = $1 ORDER BY visible_at_micros DESC, entry_id DESC LIMIT $2"
         };
-        let mut query = sqlx::query(statement).bind(session_id);
+        // LIMIT belongs to the ordered parent seek, before payload joins.
+        // Each related root is an independent exact read, never a Session scan.
+        statement
+            .replace("FROM session_message_timeline t", &format!("FROM ({parent}) t"))
+            .replace("JOIN events e ON e.id = t.source_event_id",
+                "JOIN LATERAL (SELECT * FROM events WHERE id = t.source_event_id LIMIT 1) e ON TRUE")
+            .replace("LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id",
+                "LEFT JOIN LATERAL (SELECT * FROM events WHERE id = t.root_turn_id AND session_id = t.session_id AND id <> e.id LIMIT 1) r ON TRUE")
+    } else {
+        statement.to_owned()
+    }
+}
+
+impl PostgresStore {
+    async fn session_timeline_page(
+        &self,
+        session_id: &str,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+        entry_id: Option<&str>,
+        text_only: bool,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        let limit = i64::try_from(limit.clamp(1, 1_000))?;
+        let statement =
+            session_timeline_page_statement(entry_id.is_some(), before.is_some(), text_only);
+        let mut query = sqlx::query(&statement).bind(session_id);
         if let Some(entry_id) = entry_id {
             query = query.bind(entry_id);
         }
@@ -10689,6 +10790,169 @@ mod tests {
             );
         }
 
+        store.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+    #[tokio::test]
+    #[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
+    async fn session_text_timeline_pages_seek_past_metadata_postgres() {
+        use super::*;
+        use crate::memory::SessionTimelineStore;
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL required");
+        let schema = format!(
+            "morphz_text_pages_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        let admin = PgPool::connect(&url).await.unwrap();
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let scoped=format!("{url}{separator}options=-csearch_path%3D{schema}%2Cpublic%20-capplication_name%3D{schema}");
+        let store = PostgresStore::new(&scoped, 4).await.unwrap();
+        sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) SELECT 'text-page-status-'||i,'2026-11-01T01:00:00Z','Runtime-ProviderRecovery','tool_output','runtime/provider_recovered',jsonb_build_object('session_id','text-page-session','root_turn_id','root','runtime_force_evaluation',true,'dependency_id','dependency','recovery_event_id','recovery') FROM generate_series(0,4095) AS n(i)").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) VALUES ('text-page-one','2026-10-31T01:00:00Z','Human','session_message','chat/user_message','{}'),('text-page-two','2026-10-31T01:01:00Z','Model','session_message','chat/reply','{\"text\":\"readable\"}')").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO session_message_timeline(session_id,entry_id,source_event_id,source_sequence,root_turn_id,visible_at_micros,display_kind,is_final) SELECT 'text-page-session',id,id,sequence,'root',CASE WHEN topic='runtime/provider_recovered' THEN 1000000+sequence ELSE sequence END,'progress',TRUE FROM events WHERE id LIKE 'text-page-%'").execute(&store.pool).await.unwrap();
+        sqlx::query("DROP INDEX idx_pg_session_message_timeline_text_page")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.migrate_session_timeline_text_pages().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM session_message_timeline WHERE metadata_only"
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            4096
+        );
+        let page = store
+            .query_session_text_timeline("text-page-session", None, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.iter()
+                .map(|item| item.entry_id.as_str())
+                .collect::<Vec<_>>(),
+            ["text-page-one", "text-page-two"]
+        );
+        let before = super::super::SessionTimelineCursor {
+            visible_at_micros: page[0].visible_at_micros,
+            entry_id: page[0].entry_id.clone(),
+        };
+        assert!(store
+            .query_session_text_timeline("text-page-session", Some(&before), 2)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .query_session_timeline("text-page-session", None, 2)
+            .await
+            .unwrap()
+            .iter()
+            .all(|item| item.entry_id.starts_with("text-page-status-")));
+        assert!(store
+            .session_timeline_entry("text-page-session", "text-page-status-4095")
+            .await
+            .unwrap()
+            .is_some());
+        sqlx::query("ANALYZE session_message_timeline")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("ANALYZE events")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        for has_before in [false, true] {
+            let statement = session_timeline_page_statement(false, has_before, true);
+            let explain = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement}");
+            let mut query = sqlx::query_scalar::<_, JsonValue>(&explain).bind("text-page-session");
+            if has_before {
+                query = query.bind(before.visible_at_micros).bind(&before.entry_id);
+            }
+            let plan = query.bind(2_i64).fetch_one(&store.pool).await.unwrap();
+            let encoded = serde_json::to_string(&plan).unwrap();
+            assert!(
+                encoded.contains("idx_pg_session_message_timeline_text_page"),
+                "{encoded}"
+            );
+            fn inspect(node: &JsonValue) {
+                if let Some(object) = node.as_object() {
+                    if object.get("Relation Name").and_then(JsonValue::as_str)
+                        == Some("session_message_timeline")
+                    {
+                        assert_eq!(
+                            object
+                                .get("Rows Removed by Filter")
+                                .and_then(JsonValue::as_u64)
+                                .unwrap_or(0),
+                            0,
+                            "{node}"
+                        );
+                        assert!(
+                            object
+                                .get("Actual Rows")
+                                .and_then(JsonValue::as_u64)
+                                .unwrap_or(0)
+                                <= 2,
+                            "{node}"
+                        );
+                    }
+                    if object.get("Relation Name").and_then(JsonValue::as_str) == Some("events") {
+                        assert!(
+                            object
+                                .get("Actual Rows")
+                                .and_then(JsonValue::as_u64)
+                                .unwrap_or(0)
+                                <= 1,
+                            "{node}"
+                        );
+                        assert!(
+                            object
+                                .get("Actual Loops")
+                                .and_then(JsonValue::as_u64)
+                                .unwrap_or(0)
+                                <= 2,
+                            "{node}"
+                        );
+                        assert!(
+                            object
+                                .get("Index Cond")
+                                .and_then(JsonValue::as_str)
+                                .is_some_and(|condition| condition.contains("id =")),
+                            "{node}"
+                        );
+                    }
+                    for value in object.values() {
+                        inspect(value);
+                    }
+                } else if let Some(array) = node.as_array() {
+                    for value in array {
+                        inspect(value);
+                    }
+                }
+            }
+            inspect(&plan);
+        }
+        store.migrate_session_timeline_text_pages().await.unwrap();
+        assert_eq!(
+            store
+                .query_session_text_timeline("text-page-session", None, 2)
+                .await
+                .unwrap(),
+            page
+        );
         store.pool.close().await;
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&admin)

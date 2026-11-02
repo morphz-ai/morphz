@@ -313,6 +313,7 @@ const sessionTimelineItemSchema = z.object({
 });
 const sessionTimelinePageSchema = z.object({
   entries: z.array(sessionTimelineItemSchema),
+  text_only: z.boolean().optional(),
   next_before: z
     .object({
       visible_at_micros: z.number().int().safe(),
@@ -6266,6 +6267,9 @@ export class RuntimeBridge {
       if (before) {
         params.set("before_time_micros", String(before.visible_at_micros));
         params.set("before_entry_id", before.entry_id);
+        // Older message pages must seek past recovery-only metadata in SQL.
+        // The newest window still carries current waiting/resumed state.
+        params.set("text_only", "true");
       }
       let raw: unknown;
       try {
@@ -6294,6 +6298,11 @@ export class RuntimeBridge {
         throw error;
       }
       const batch = sessionTimelinePageSchema.parse(raw);
+      if (before && batch.text_only !== true)
+        throw new DomainError(
+          "invalid",
+          "Runtime 尚未提供按正文索引的历史分页，请更新 Runtime 后重试。",
+        );
       this.readRecovered("conversation-history");
       for (const item of [...batch.entries].reverse()) {
         const mapped = this.platformTimelineEntry(

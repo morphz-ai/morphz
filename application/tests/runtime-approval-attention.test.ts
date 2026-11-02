@@ -98,7 +98,14 @@ async function fixture() {
       };
     }
     if (path.includes("/timeline?"))
-      return { entries: [], has_more: false, next_before: null };
+      return {
+        entries: [],
+        has_more: false,
+        next_before: null,
+        text_only:
+          new URL(path, "http://localhost").searchParams.get("text_only") ===
+          "true",
+      };
     throw new Error(`Unexpected non-bounded read: ${path}`);
   };
   return { f, bridge, delivery, binding, approval, reads, dialogueId };

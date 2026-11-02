@@ -21,6 +21,7 @@ CASES = (
     "memory::postgres::tests::runtime_directory_keyset_pages_postgres",
     "memory::postgres::tests::thread_projection_dependencies_seek_current_edges_postgres",
     "memory::postgres::tests::thread_event_sources_seek_each_topic_before_limit_postgres",
+    "memory::postgres::tests::session_text_timeline_pages_seek_past_metadata_postgres",
     "runtime::session_approval::tests::session_approval_postgres_contract",
     "runtime::tests::postgres_dialogue_interrupt_retains_exact_input_handoff",
     "steering::tests::postgres_directed_input_and_question_race",

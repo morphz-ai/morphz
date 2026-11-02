@@ -385,6 +385,8 @@ type TimelineEvent = {
   sequence: number;
   timestamp: string;
   topic: string;
+  actor?: string;
+  type?: string;
   payload: Record<string, unknown>;
 };
 type TimelineFixtureEntry = {
@@ -536,6 +538,7 @@ function timelineBridge(
   let fetches = 0;
   let largestResponse = 0;
   let publicationReads = 0;
+  const historyRequests: string[] = [];
   const request = bridge as unknown as {
     request: (path: string) => Promise<unknown>;
   };
@@ -547,6 +550,7 @@ function timelineBridge(
     }
     assert.ok(path.startsWith("/api/sessions/") && path.includes("/timeline?"));
     fetches++;
+    historyRequests.push(path);
     const url = new URL(path, "http://localhost");
     const sessionId = url.pathname.split("/")[3]!;
     const limit = Number(url.searchParams.get("limit") ?? 100);
@@ -554,7 +558,19 @@ function timelineBridge(
       url.searchParams.get("before_time_micros") ?? Infinity,
     );
     const beforeId = url.searchParams.get("before_entry_id") ?? "";
+    const textOnly = url.searchParams.get("text_only") === "true";
+    if (Number.isFinite(beforeMicros)) assert.equal(textOnly, true);
     const sorted = makeEntries(bridge, sessionId)
+      .filter(
+        (entry) =>
+          !textOnly ||
+          entry.event.topic !== "runtime/provider_recovered" ||
+          ["text", "error", "message"].some(
+            (key) =>
+              typeof entry.event.payload[key] === "string" &&
+              entry.event.payload[key] !== "",
+          ),
+      )
       .filter(
         (entry) =>
           entry.visible_at_micros < beforeMicros ||
@@ -571,6 +587,7 @@ function timelineBridge(
     const oldest = sorted.at(-1);
     return {
       entries: sorted.reverse(),
+      text_only: textOnly,
       next_before:
         sorted.length === limit && oldest
           ? {
@@ -583,8 +600,134 @@ function timelineBridge(
   return {
     bridge,
     metrics: () => ({ fetches, largestResponse, publicationReads }),
+    historyRequests,
   };
 }
+
+test("旧消息页通过 Runtime 正文索引跳过恢复状态墙，首屏状态和原消息身份保留", async () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const { bridge, historyRequests } = timelineBridge(
+    store,
+    (value, sessionId) => {
+      const old = timelinePair(
+        value,
+        sessionId,
+        0,
+        "2026-10-31T00:00:00Z",
+        "2026-10-31T00:00:01Z",
+        "2026-10-31T00:00:02Z",
+        "Earlier readable reply",
+      );
+      const latest = timelinePair(
+        value,
+        sessionId,
+        1,
+        "2026-11-02T00:00:00Z",
+        "2026-11-02T00:00:01Z",
+        "2026-11-02T00:00:02Z",
+        "Latest readable reply",
+      );
+      const metadata: TimelineFixtureEntry[] = Array.from(
+        { length: 4096 },
+        (_, index) => {
+          const at = new Date(
+            Date.parse("2026-11-01T00:00:00Z") + index * 1000,
+          ).toISOString();
+          const id = "recovery-metadata-" + index;
+          return {
+            ...old[1]!,
+            entry_id: id,
+            attempt_id: null,
+            display_kind: "progress",
+            visible_at: at,
+            visible_at_micros: Date.parse(at) * 1000,
+            event: {
+              id,
+              sequence: index + 10,
+              timestamp: at,
+              topic: "runtime/provider_recovered",
+              actor: "Runtime-ProviderRecovery",
+              type: "tool_output",
+              payload: {
+                session_id: sessionId,
+                root_turn_id: old[0]!.root_turn_id,
+                runtime_force_evaluation: true,
+                dependency_id: "provider",
+                recovery_event_id: "recovered",
+              },
+            },
+          };
+        },
+      );
+      return [...old, ...metadata, ...latest];
+    },
+  );
+  (bridge as unknown as { state: { connected: boolean } }).state.connected =
+    true;
+  try {
+    const scope = { projectId: "project", conversationId: "conversation" };
+    const head = await bridge.platformConversationHistory(scope, localAccess);
+    assert.ok(head.inputs.some((input) => input.id === "input-1"));
+    assert.ok(
+      head.runtime.messages.some((message) => message.providerRecovery),
+    );
+    assert.ok(head.nextCursor);
+    const older = await bridge.platformConversationHistory(scope, localAccess, {
+      before: head.nextCursor,
+    });
+    assert.deepEqual(
+      older.inputs.map((input) => input.id),
+      ["input-0"],
+    );
+    assert.deepEqual(
+      older.runtime.messages.map((message) => message.text),
+      ["Earlier readable reply"],
+    );
+    assert.equal(older.nextCursor, null);
+    assert.equal(
+      historyRequests.length,
+      3,
+      "a metadata wall cannot require one request per invisible page",
+    );
+    assert.equal(
+      new URL(historyRequests[0]!, "http://localhost").searchParams.has(
+        "text_only",
+      ),
+      false,
+      "head status is retained",
+    );
+    assert.ok(
+      historyRequests
+        .slice(1)
+        .every(
+          (path) =>
+            new URL(path, "http://localhost").searchParams.get("text_only") ===
+            "true",
+        ),
+    );
+    const internal = bridge as unknown as {
+      request: (path: string) => Promise<unknown>;
+    };
+    const actual = internal.request.bind(bridge);
+    internal.request = async (path) => {
+      const response = (await actual(path)) as Record<string, unknown>;
+      if (path.includes("text_only=true")) {
+        const { text_only: ignored, ...withoutCapability } = response;
+        void ignored;
+        return withoutCapability;
+      }
+      return response;
+    };
+    await assert.rejects(
+      bridge.platformConversationHistory(scope, localAccess, {
+        before: head.nextCursor,
+      }),
+      /按正文索引的历史分页/,
+    );
+  } finally {
+    store.close();
+  }
+});
 
 test("持久对话查找跨过首屏，有界分页可继续，且不写 Host 消息副本", async (t) => {
   const store = new WorkspaceStore(":memory:", { mode: "transport" });
