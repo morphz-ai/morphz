@@ -17015,7 +17015,10 @@ mod tests {
             .await
             .expect("isolated Runtime pool did not drain before schema teardown");
         assert!(store.pool().is_closed());
-        assert_eq!(store.pool().size(), 0);
+        assert!(matches!(
+            store.pool().acquire().await,
+            Err(sqlx::Error::PoolClosed)
+        ));
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&admin)
             .await
