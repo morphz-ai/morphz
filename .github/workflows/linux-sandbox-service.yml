@@ -82,7 +82,7 @@ jobs:
         run: /usr/local/libexec/morphz-runtime-ci/native --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/native-admission.log"
       - name: Preserve early admission failures before the full inventory
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: ./.github/actions/upload-ci-artifact
         with:
           name: native-admission-${{ github.run_id }}
           path: ${{ runner.temp }}/native-admission.log
@@ -120,7 +120,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/installed-sandbox-evidence"
           sudo journalctl -u morphz-sandbox.service --no-pager | tee "$RUNNER_TEMP/installed-sandbox-evidence/service.log" > /dev/null
           sudo dmesg | tail -300 | tee "$RUNNER_TEMP/installed-sandbox-evidence/kernel.log" > /dev/null || true
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - uses: ./.github/actions/upload-ci-artifact
         if: always()
         with:
           name: installed-runtime-sandbox-${{ github.run_id }}
@@ -184,7 +184,7 @@ jobs:
           done
       - name: Preserve failed and successful kernel evidence
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        uses: ./.github/actions/upload-ci-artifact
         with:
           name: linux-sandbox-compiler-kernel-${{ github.run_id }}
           path: ${{ runner.temp }}/linux-sandbox-evidence/*.tar.gz
