@@ -46798,8 +46798,30 @@ mod tests {
             );
             assert!(!plan.contains("TEMP B-TREE"), "{plan}");
         }
-        let recovery=Event::new("text-page-new-status".into(),"Runtime-ProviderRecovery".into(),"tool_output".into(),"runtime/provider_recovered".into(),serde_json::from_value(serde_json::json!({"session_id":"text-page-session","root_turn_id":"root","runtime_force_evaluation":true,"dependency_id":"dependency","recovery_event_id":"recovery"})).unwrap());
-        store.append(recovery).await.unwrap();
+        // Exercise the real append path as well as the historical backfill.
+        // These rows belong only to this test's isolated database.
+        for (id, text) in [
+            ("text-page-new-status", None),
+            (
+                "text-page-readable-status",
+                Some("Service resumed; continuing work."),
+            ),
+        ] {
+            let mut payload = serde_json::json!({"session_id":"text-page-session","root_turn_id":"root","runtime_force_evaluation":true,"dependency_id":"dependency","recovery_event_id":"recovery"});
+            if let Some(text) = text {
+                payload["text"] = serde_json::json!(text);
+            }
+            store
+                .append(Event::new(
+                    id.into(),
+                    "Runtime-ProviderRecovery".into(),
+                    "tool_output".into(),
+                    "runtime/provider_recovered".into(),
+                    serde_json::from_value(payload).unwrap(),
+                ))
+                .await
+                .unwrap();
+        }
         assert!(sqlx::query_scalar::<_, bool>(
             "SELECT metadata_only FROM session_message_timeline WHERE session_id=? AND entry_id=?"
         )
@@ -46808,16 +46830,47 @@ mod tests {
         .fetch_one(&store.pool)
         .await
         .unwrap());
+        let readable_page = store
+            .query_session_text_timeline("text-page-session", None, 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            readable_page
+                .iter()
+                .map(|item| item.entry_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "text-page-one",
+                "text-page-two",
+                "text-page-readable-status"
+            ]
+        );
+        let newest_page = store
+            .query_session_text_timeline("text-page-session", None, 2)
+            .await
+            .unwrap();
+        assert_eq!(newest_page, readable_page[1..]);
+        let cursor = super::super::SessionTimelineCursor {
+            visible_at_micros: newest_page[0].visible_at_micros,
+            entry_id: newest_page[0].entry_id.clone(),
+        };
+        assert_eq!(
+            store
+                .query_session_text_timeline("text-page-session", Some(&cursor), 2)
+                .await
+                .unwrap(),
+            readable_page[..1]
+        );
         // A repeated migration is a no-op and exact metadata remains readable.
         migrate_session_timeline_text_pages(&store.pool)
             .await
             .unwrap();
         assert_eq!(
             store
-                .query_session_text_timeline("text-page-session", None, 2)
+                .query_session_text_timeline("text-page-session", None, 3)
                 .await
                 .unwrap(),
-            page
+            readable_page
         );
     }
 }
