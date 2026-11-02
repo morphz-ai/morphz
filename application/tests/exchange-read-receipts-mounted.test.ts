@@ -1,18 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import test, { type TestContext } from "node:test";
-import react from "@vitejs/plugin-react";
+import { createServer, type Server } from "node:http";
+import { once } from "node:events";
+import { build } from "esbuild";
 import { chromium, type Browser } from "@playwright/test";
-import {
-  createLogger,
-  createServer,
-  transformWithOxc,
-  type ViteDevServer,
-} from "vite";
 import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
 
 // Real React/StrictMode and actual Conversation, with in-memory presentation
@@ -106,101 +101,146 @@ async function mountReceiptFixture(context: TestContext) {
     context,
     "exchange-read-receipts",
   );
-  const cache = await mkdtemp(resolve(tmpdir(), "morphz-read-receipts-vite-"));
-  let server: ViteDevServer | undefined, browser: Browser | undefined;
+  let server: Server | undefined, browser: Browser | undefined;
   context.after(async () => {
     try {
       await browser?.close();
     } finally {
-      try {
-        await server?.close();
-      } finally {
-        await rm(cache, { recursive: true, force: true });
+      if (server?.listening) {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server!.close((error) => (error ? reject(error) : resolve())),
+        );
       }
     }
   });
-  const compileErrors: string[] = [];
-  const logger = createLogger();
-  observation.stage("cold fixture server setup");
-  server = await createServer({
-    configFile: false,
-    root: resolve("apps/web"),
-    // Each case starts cold, independent of another fixture's Vite config or
-    // optimized dependencies. Scan this fixture's source, not the app entry.
-    cacheDir: cache,
-    optimizeDeps: {
-      entries: [
-        resolve("apps/web/src/Conversation.tsx"),
-        resolve("apps/web/src/host/use-exchange-read-receipts.ts"),
-        resolve("tests/fixtures/exchange-read-receipts-4ce98b64.ts"),
-      ],
-      include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime"],
+  observation.stage("cold fixture bundle compilation");
+  const preparedAt = performance.now();
+  // Compile all actual imports afresh for each case. A development server's
+  // dependency scanner/HMR and 150+ module requests are not receipt behavior.
+  const bundle = await build({
+    stdin: {
+      contents: source,
+      sourcefile: "read-receipts.tsx",
+      loader: "tsx",
+      resolveDir: resolve("."),
     },
-    customLogger: {
-      ...logger,
-      error(message, options) {
-        compileErrors.push(message);
-        logger.error(message, options);
-      },
-    },
+    bundle: true,
+    platform: "browser",
+    format: "esm",
+    target: "es2023",
+    jsx: "automatic",
+    define: { "process.env.NODE_ENV": JSON.stringify("development") },
+    write: false,
+    outfile: resolve("tests/.receipt-fixture/read-receipts.js"),
+    metafile: true,
     plugins: [
-      react(),
       {
-        name: "isolated-exchange-read-lifecycle",
-        resolveId(id) {
-          if (id === "/__read-receipts.tsx") return "\0" + id;
-        },
-        async load(id) {
-          if (id === "\0/__read-receipts.tsx")
-            return transformWithOxc(source, "read-receipts.tsx");
-        },
-        configureServer(vite) {
-          vite.middlewares.use(async (request, response, next) => {
-            if (request.url !== "/__read-receipts") return next();
-            response.setHeader("Content-Type", "text/html");
-            response.end(
-              await vite.transformIndexHtml(
-                request.url,
-                '<!doctype html><html><head><style>main{display:flex;gap:20px}.test-lane{width:45%;min-width:0}.conversation{height:180px;overflow:auto}.conversation-message{padding:12px}.conversation-return{position:sticky;bottom:0}</style></head><body><div id="root"></div><script type="module" src="/__read-receipts.tsx"></script></body></html>',
-              ),
-            );
+        name: "actual-mounted-receipt-imports",
+        setup(builder) {
+          builder.onResolve({ filter: /\?url$/ }, async (args) => {
+            const result = await builder.resolve(args.path.slice(0, -4), {
+              resolveDir: args.resolveDir,
+              kind: args.kind,
+            });
+            if (result.errors.length) return { errors: result.errors };
+            return { path: result.path, namespace: "receipt-asset" };
           });
+          builder.onLoad(
+            { filter: /.*/, namespace: "receipt-asset" },
+            async (args) => ({
+              contents: await readFile(args.path),
+              loader: "file",
+            }),
+          );
+          builder.onResolve({ filter: /^\/(?:src|@fs)\// }, ({ path }) => ({
+            path: path.startsWith("/src/")
+              ? resolve("apps/web", path.slice(1))
+              : path.slice("/@fs/".length),
+          }));
         },
       },
     ],
-    server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
   });
-  await server.listen();
-  observation.stage("fixture module preparation");
-  const preparedAt = performance.now();
-  const client = server.environments.client!;
-  assert.ok(await client.transformRequest("/__read-receipts.tsx"));
-  await client.waitForRequestsIdle();
-  assert.deepEqual(
-    compileErrors,
-    [],
-    "Read receipt fixture compilation failed",
+  const compiled = new Set(
+    Object.keys(bundle.metafile.inputs).map((path) => resolve(path)),
   );
+  for (const path of [
+    "apps/web/src/Conversation.tsx",
+    "apps/web/src/host/use-exchange-read-receipts.ts",
+    "tests/fixtures/exchange-read-receipts-4ce98b64.ts",
+  ])
+    assert.ok(
+      compiled.has(resolve(path)),
+      `Cold bundle must include actual receipt owner ${path}`,
+    );
   context.diagnostic(
     JSON.stringify({
       receiptFixturePreparation: {
         coldCache: true,
         compileMs: Math.round(performance.now() - preparedAt),
+        bundleInputCount: compiled.size,
       },
     }),
   );
+  const javascript = bundle.outputFiles.find((file) =>
+    file.path.endsWith(".js"),
+  );
+  const stylesheet = bundle.outputFiles.find((file) =>
+    file.path.endsWith(".css"),
+  );
+  assert.ok(
+    javascript && stylesheet,
+    "Actual component JavaScript and CSS must both be served",
+  );
+  const assets = new Map(
+    bundle.outputFiles.map((file) => [
+      "/" + basename(file.path),
+      file.contents,
+    ]),
+  );
+  const html =
+    '<!doctype html><html><head><style>main{display:flex;gap:20px}.test-lane{width:45%;min-width:0}.conversation{height:180px;overflow:auto}.conversation-message{padding:12px}.conversation-return{position:sticky;bottom:0}</style><link rel="stylesheet" href="/__read-receipts.css"></head><body><div id="root"></div><script type="module" src="/__read-receipts.js"></script></body></html>';
+  server = createServer((request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    if (request.url === "/__read-receipts") {
+      response.setHeader("Content-Type", "text/html; charset=utf-8");
+      response.end(html);
+    } else if (request.url === "/__read-receipts.js") {
+      response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+      response.end(javascript.contents);
+    } else if (request.url === "/__read-receipts.css") {
+      response.setHeader("Content-Type", "text/css; charset=utf-8");
+      response.end(stylesheet.contents);
+    } else if (assets.has(request.url ?? "")) {
+      response.setHeader(
+        "Content-Type",
+        request.url!.endsWith(".mjs")
+          ? "text/javascript; charset=utf-8"
+          : "application/octet-stream",
+      );
+      response.end(assets.get(request.url!));
+    } else {
+      response.writeHead(404);
+      response.end();
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
   observation.stage("fixture modules prepared");
   browser = await chromium.launch({
     headless: true,
     executablePath: executable || undefined,
   });
-  const address = server.httpServer!.address();
+  const address = server.address();
   assert(address && typeof address !== "string");
   const browserContext = await browser.newContext();
   context.after(() => browserContext.close());
   const page = await browserContext.newPage(),
     errors: string[] = [],
-    queries: string[] = [];
+    queries: string[] = [],
+    scripts: string[] = [],
+    styles: string[] = [];
   let phase = "initial module mount",
     complete = false;
   context.after(() => {
@@ -210,6 +250,8 @@ async function mountReceiptFixture(context: TestContext) {
   observation.observe(page, "receipts");
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => {
+    if (request.resourceType() === "script") scripts.push(request.url());
+    if (request.resourceType() === "stylesheet") styles.push(request.url());
     if (
       ["fetch", "xhr"].includes(request.resourceType()) &&
       !request.url().includes("/@vite/")
@@ -220,6 +262,24 @@ async function mountReceiptFixture(context: TestContext) {
   await page.goto(`http://127.0.0.1:${address.port}/__read-receipts`);
   await page.waitForSelector("#lane-production");
   observation.stage("receipt lanes mounted");
+  assert.equal(
+    scripts.length,
+    1,
+    "Cold mounted receipt tests load one complete actual source bundle, not a development-server module waterfall",
+  );
+  assert.equal(
+    styles.length,
+    1,
+    "Actual imported component styles must be loaded",
+  );
+  context.diagnostic(
+    JSON.stringify({
+      receiptFixtureStartup: {
+        scriptRequests: scripts.length,
+        stylesheetRequests: styles.length,
+      },
+    }),
+  );
   const report = () =>
     page.evaluate(() =>
       Reflect.get(window, "receiptFixture").report(),
