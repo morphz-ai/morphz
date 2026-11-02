@@ -50,6 +50,7 @@ import {
   packCognitiveNotesGui,
   startNotesGuiAuthor,
 } from "./cognitive-notes-gui-package.js";
+import { waitForFixtureReadySignal } from "./fixture-ready-signal.js";
 
 export type NotesGuiAdapter = "Web" | "Local" | "Remote";
 export type NotesGuiPack = ReturnType<typeof packCognitiveNotesGui>;
@@ -558,6 +559,11 @@ export async function openNotesGuiTransports(
             adapter: string;
           }[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
+        let resolveReady!: () => void;
+        const ready = new Promise<void>((resolve) => (resolveReady = resolve));
+        await page.exposeBinding("notifyNotesGuiReady", ({ frame }) => {
+          if (frame === page.mainFrame()) resolveReady();
+        });
         const dispose = async () => {
           closes.delete(dispose);
           await context.close();
@@ -637,9 +643,52 @@ export async function openNotesGuiTransports(
           route.fulfill({ contentType: "text/javascript", body: ownerCode }),
         );
         await page.goto(origin + "/");
-        await page.waitForFunction(
-          () => Reflect.get(window, "notesGuiOwner")?.ready === true,
-        );
+        try {
+          await waitForFixtureReadySignal(
+            ready,
+            8_000,
+            "Actual Notes GUI readiness",
+          );
+          assert.equal(
+            await page.evaluate(
+              () => Reflect.get(window, "notesGuiOwner")?.ready,
+            ),
+            true,
+          );
+        } catch (error) {
+          console.error(
+            "Notes GUI readiness failure: " +
+              JSON.stringify({
+                adapter,
+                error: String(error),
+                errors,
+                calls: calls.map(({ method, ok }) => ({ method, ok })),
+                resources,
+                page: await page
+                  .evaluate(() => {
+                    const owner = Reflect.get(window, "notesGuiOwner");
+                    const snapshot = owner?.snapshot();
+                    return {
+                      readyState: document.readyState,
+                      visibility: document.visibilityState,
+                      ownerPresent: !!owner,
+                      ready: owner?.ready,
+                      mounted: snapshot?.mounted,
+                      retired: snapshot?.retired,
+                      refused: snapshot?.refused,
+                      body: document.body.textContent?.slice(0, 500),
+                      frames: [...document.querySelectorAll("iframe")].map(
+                        (frame) => new URL(frame.src, location.href).pathname,
+                      ),
+                    };
+                  })
+                  .catch((diagnosticError) => ({
+                    diagnosticError: String(diagnosticError),
+                  })),
+              }),
+          );
+          throw error;
+        }
         const outer = page.mainFrame().childFrames()[0];
         assert.ok(outer);
         const guest = outer.childFrames()[0];

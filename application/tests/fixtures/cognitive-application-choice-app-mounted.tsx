@@ -752,6 +752,9 @@ Object.assign(window, {
     },
   },
 });
+const notifyReady = Reflect.get(window, "notifyCognitiveChoiceFixtureReady");
+if (typeof notifyReady === "function")
+  void notifyReady(new URL(location.href).searchParams.get("fixtureReady"));
 if (import.meta.hot)
   import.meta.hot.dispose(() => {
     root.unmount();

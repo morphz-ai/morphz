@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { createLogger, createServer, type ViteDevServer } from "vite";
+import { waitForFixtureReadySignal } from "./fixtures/fixture-ready-signal.js";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -124,13 +126,76 @@ test(
       });
     });
     page.on("pageerror", (error) => errors.push(error.message));
+    let pendingReady: { token: string; resolve: () => void } | null = null;
+    await page.exposeBinding(
+      "notifyCognitiveChoiceFixtureReady",
+      ({ frame }, token: unknown) => {
+        if (
+          frame === page.mainFrame() &&
+          pendingReady &&
+          pendingReady.token === token
+        )
+          pendingReady.resolve();
+      },
+    );
     async function load(mode = "fresh") {
       authorResources.length = 0;
+      const token = randomUUID();
+      const ready = new Promise<void>((resolve) => {
+        pendingReady = { token, resolve };
+      });
       // Cold compilation of the full App is not a five-second UI action.
-      await page.goto(`${serverUrl}?mode=${mode}`, { timeout: 60_000 });
-      await page.waitForFunction(
-        () => !!Reflect.get(window, "cognitiveChoiceAppFixture"),
-      );
+      await page.goto(`${serverUrl}?mode=${mode}&fixtureReady=${token}`, {
+        timeout: 60_000,
+      });
+      try {
+        // Subscribe before navigation, but retain the same post-navigation
+        // five-second boundary. Late signals from an old document cannot win.
+        await waitForFixtureReadySignal(
+          ready,
+          5_000,
+          "Choice fixture registration",
+        );
+        assert.equal(
+          await page.evaluate(
+            () => !!Reflect.get(window, "cognitiveChoiceAppFixture"),
+          ),
+          true,
+        );
+      } catch (error) {
+        console.error(
+          "Choice fixture registration failure: " +
+            JSON.stringify({
+              mode,
+              error: String(error),
+              pageErrors: errors,
+              page: await page
+                .evaluate(() => ({
+                  readyState: document.readyState,
+                  fixturePresent: !!Reflect.get(
+                    window,
+                    "cognitiveChoiceAppFixture",
+                  ),
+                  visibility: document.visibilityState,
+                  body: document.body.textContent?.slice(0, 500),
+                  resources: performance
+                    .getEntriesByType("resource")
+                    .slice(-40)
+                    .map((entry) => ({
+                      path: new URL(entry.name).pathname,
+                      start: entry.startTime,
+                      duration: entry.duration,
+                    })),
+                }))
+                .catch((diagnosticError) => ({
+                  diagnosticError: String(diagnosticError),
+                })),
+            }),
+        );
+        throw error;
+      } finally {
+        if (pendingReady?.token === token) pendingReady = null;
+      }
       try {
         await page
           .getByRole("textbox", { name: "AI 输入内容", exact: true })

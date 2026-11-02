@@ -292,7 +292,11 @@ function Frame() {
       onRetire: () => report.retired++,
     });
     consumer.ready.then((value) => {
-      if (value) report.ready = true;
+      if (value && !controller.signal.aborted) {
+        report.ready = true;
+        const notifyReady = Reflect.get(window, "notifyNotesGuiReady");
+        if (typeof notifyReady === "function") void notifyReady();
+      }
     });
     return () => {
       mounted = false;
