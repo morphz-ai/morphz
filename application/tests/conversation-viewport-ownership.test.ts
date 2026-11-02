@@ -72,6 +72,7 @@ const stateNames = [
   "scroller",
   "prependPosition",
   "loadingEarlier",
+  "earlierCompletion",
   "earlierError",
   "revealedQuote",
   "loadingQuote",
@@ -104,6 +105,8 @@ const registrationNames = [
   "positionKey",
   "saved",
   "setLoadingEarlier",
+  "earlierCompletion",
+  "setEarlierCompletion",
   "setEarlierError",
   "setAwayFromLatest",
 ];
@@ -474,7 +477,10 @@ function directFields(
 const reference = parse({
   Reference:
     "function registration(){\n" +
-    stateNames.map((name) => fixedViewportSpans[name]).join("\n") +
+    stateNames
+      .filter((name) => name !== "earlierCompletion")
+      .map((name) => fixedViewportSpans[name])
+      .join("\n") +
     "\n}\n" +
     ["loadEarlier", "acknowledgeVisibleReplies", "updateLatestIndicator"]
       .map(
@@ -501,6 +507,31 @@ const reference = parse({
 // checks all registrations/actions and the other three effect phases. Actual
 // before-paint geometry/focus/read behavior is exercised with native RO in the
 // mounted suite, including StrictMode, prepend and quote navigation.
+// The paging receipt is a private commit trigger, not a new visible fact or
+// read port. A fast empty/duplicate window can batch loading true/false away;
+// the unchanged timeline must still consume and release its reading anchor.
+const completionReference = parse({
+  Completion: `
+function registration() {
+  const [earlierCompletion, setEarlierCompletion] = useState(0);
+}
+function effects() {
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const old = prependPosition.current;
+    if (!el || !old || old.key !== positionKey || loadingEarlier) return;
+    following.current = false;
+    el.scrollTop = old.top + el.scrollHeight - old.height;
+    positions.set(positionKey, {
+      top: el.scrollTop,
+      following: false,
+      revealed: revealed.current,
+    });
+    setAwayFromLatest(true);
+    prependPosition.current = null;
+  }, [contentVersion, loadingEarlier, earlierCompletion, positionKey]);
+}`,
+}).get("Completion")!;
 const postLayoutReference = parse({
   PostLayout: `function effects() {
   useLayoutEffect(() => {
@@ -576,7 +607,10 @@ async function loadEarlier() {
   catch (error) {
     prependPosition.current = null;
     setEarlierError(error instanceof Error ? error.message : "旧消息暂时无法读取，请重试。");
-  } finally { setLoadingEarlier(false); }
+  } finally {
+    setLoadingEarlier(false);
+    setEarlierCompletion((value) => value + 1);
+  }
 }
 const onScroll = () => {
   const el = scroller.current;
@@ -757,7 +791,13 @@ function validate(sources: Sources) {
     } else
       same(
         statement,
-        fn(reference, "registration").body!.statements[index]!,
+        stateNames[index] === "earlierCompletion"
+          ? fn(completionReference, "registration").body!.statements[0]!
+          : fn(reference, "registration").body!.statements[
+              stateNames
+                .slice(0, index)
+                .filter((name) => name !== "earlierCompletion").length
+            ]!,
         owner,
         "state-register-phase:" + stateNames[index],
       );
@@ -909,9 +949,11 @@ function validate(sources: Sources) {
     const expected =
       index === 0
         ? postLayoutEffects[0]!
-        : index === 3
-          ? postLayoutEffects[1]!
-          : originalEffects[index]!;
+        : index === 1
+          ? fn(completionReference, "effects").body!.statements[0]!
+          : index === 3
+            ? postLayoutEffects[1]!
+            : originalEffects[index]!;
     same(actual, expected, owner, "viewport-effect:" + index);
   }
   for (const [index, name] of ["onScroll", "returnLatest"].entries()) {
@@ -1723,6 +1765,12 @@ test("viewport permits unrelated JSX/comments/type annotations/domain exports an
 test("viewport state rejects mirrored Maps, changed initialization/timing and extra registration", () => {
   rejects(
     "Owner",
+    "      setEarlierCompletion((value) => value + 1);",
+    "",
+    "viewport-action:loadEarlier",
+  );
+  rejects(
+    "Owner",
     "const saved = positions.get(positionKey);",
     "const saved = new Map(positions).get(positionKey);",
     "state-register-phase:saved",
@@ -1853,8 +1901,14 @@ test("viewport commits preserve five effect phases/dependencies and quote cleanu
   );
   rejects(
     "Owner",
-    "[contentVersion, loadingEarlier, positionKey]",
+    "[contentVersion, loadingEarlier, earlierCompletion, positionKey]",
     "[]",
+    "viewport-effect:1",
+  );
+  rejects(
+    "Owner",
+    "[contentVersion, loadingEarlier, earlierCompletion, positionKey]",
+    "[contentVersion, loadingEarlier, positionKey]",
     "viewport-effect:1",
   );
   rejects(

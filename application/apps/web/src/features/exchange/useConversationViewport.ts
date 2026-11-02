@@ -49,6 +49,7 @@ export function useConversationViewportState({
     top: number;
   } | null>(null);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [earlierCompletion, setEarlierCompletion] = useState(0);
   const [earlierError, setEarlierError] = useState("");
   const revealedQuote = useRef<string | null>(null);
   const loadingQuote = useRef<string | null>(null);
@@ -86,6 +87,8 @@ export function useConversationViewportState({
       positionKey,
       saved,
       setLoadingEarlier,
+      earlierCompletion,
+      setEarlierCompletion,
       setEarlierError,
       setAwayFromLatest,
     },
@@ -146,6 +149,8 @@ export function useConversationViewportCommit(
     positionKey,
     saved,
     setLoadingEarlier,
+    earlierCompletion,
+    setEarlierCompletion,
     setEarlierError,
     setAwayFromLatest,
   } = viewport[viewportRegistration];
@@ -184,6 +189,10 @@ export function useConversationViewportCommit(
       );
     } finally {
       setLoadingEarlier(false);
+      // A fast page can keep the same visible content while React batches
+      // loading true/false away. Its completion must still commit the saved
+      // reading anchor and release the synchronous next-page guard.
+      setEarlierCompletion((value) => value + 1);
     }
   }
   function acknowledgeVisibleReplies() {
@@ -254,7 +263,7 @@ export function useConversationViewportCommit(
     });
     setAwayFromLatest(true);
     prependPosition.current = null;
-  }, [contentVersion, loadingEarlier, positionKey]);
+  }, [contentVersion, loadingEarlier, earlierCompletion, positionKey]);
   useEffect(() => {
     const read = () => acknowledgeVisibleReplies();
     document.addEventListener("visibilitychange", read);

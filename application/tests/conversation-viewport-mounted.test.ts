@@ -48,8 +48,9 @@ Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>focused})
 const NativeResizeObserver=window.ResizeObserver;
 window.ResizeObserver=class { constructor(callback){this.callback=callback;this.active=true;this.observer=new NativeResizeObserver(entries=>{if(this.active)this.callback(entries);});observers.push(this);} observe(node){this.observer.observe(node);} disconnect(){this.active=false;this.observer.disconnect();} };
 function deferred(kind,label,id){let accept,reject;const promise=new Promise((a,b)=>{accept=a;reject=b;});requests.push({kind,label,id,accept,reject,settled:false});events.push([kind,label,id]);return promise;}
+function readEarlier(label,immediate){if(!immediate)return deferred('earlier',label,null);requests.push({kind:'earlier',label,id:null,settled:true});events.push(['earlier',label,null]);return Promise.resolve();}
 function Fixture({initial}) {
- const [config,setConfig]=useState({scope:'conversation-A',focus:null,reveal:null,quote:null,earlier:false,composer:'focus',epoch:0,readEpoch:0,...initial});
+ const [config,setConfig]=useState({scope:'conversation-A',focus:null,reveal:null,quote:null,earlier:false,immediateEarlier:false,composer:'focus',epoch:0,readEpoch:0,...initial});
  const [messages,setMessages]=useState(viewportMessages()),[mounted,setMounted]=useState(true),[toolbar,setToolbar]=useState(null),[tick,setTick]=useState(0);
  const state=initialWorkspace(viewportTime); state.inputs=[viewportInput('input-A'),viewportInput('input-B','object-B')];
  const runtime={...disconnectedRuntime,messages};
@@ -59,7 +60,7 @@ function Fixture({initial}) {
  const onRead=useCallback(receipts=>events.push(['read',receipts]),[config.readEpoch]);
  const onFocusComposer=()=>{events.push(['composer',label]);if(config.composer==='focus')document.getElementById('composer').focus({preventScroll:true});};
  api={config,messages,run(action,value){if(action==='config')setConfig(c=>({...c,...value}));else if(action==='append')setMessages(m=>[...m,{...viewportReply(value.id,value.text,value.inputId),createdAt:'2026-10-04T01:00:00.000Z'}]);else if(action==='prepend')setMessages(m=>[{...viewportReply(value.id,value.text,value.inputId),createdAt:'2026-10-03T23:00:00.000Z'},...m]);else if(action==='mount')setMounted(value);else if(action==='tick')setTick(t=>t+1);else throw Error('unknown fixture action '+action);}};
- return <article data-tick={tick}><header ref={setToolbar}/><input id="composer" aria-label="Fixture composer" defaultValue="Unsent draft"/><button id="outside" type="button">Outside control</button><dialog id="modal"><button type="button">Modal control</button></dialog>{mounted&&<Component inputs={state.inputs} state={state} runtime={runtime} messages={messages} streamConnected={false} seenReplies={{}} onRead={onRead} conversationId={config.scope} onRetry={()=>{throw Error('unexpected retry');}} client={client} onOpen={()=>{throw Error('unexpected object open');}} positions={positions} revealInputId={config.reveal} focusedArtifactId={config.focus??undefined} toolbarTarget={toolbar} onFocusComposer={config.composer==='absent'?undefined:onFocusComposer} quoteReveal={config.quote} onQuoteUnavailable={reason=>events.push(['unavailable',label,reason??null])} hasEarlierHistory={config.earlier} onLoadEarlierHistory={()=>deferred('earlier',label,null)}/>}</article>;
+ return <article data-tick={tick}><header ref={setToolbar}/><input id="composer" aria-label="Fixture composer" defaultValue="Unsent draft"/><button id="outside" type="button">Outside control</button><dialog id="modal"><button type="button">Modal control</button></dialog>{mounted&&<Component inputs={state.inputs} state={state} runtime={runtime} messages={messages} streamConnected={false} seenReplies={{}} onRead={onRead} conversationId={config.scope} onRetry={()=>{throw Error('unexpected retry');}} client={client} onOpen={()=>{throw Error('unexpected object open');}} positions={positions} revealInputId={config.reveal} focusedArtifactId={config.focus??undefined} toolbarTarget={toolbar} onFocusComposer={config.composer==='absent'?undefined:onFocusComposer} quoteReveal={config.quote} onQuoteUnavailable={reason=>events.push(['unavailable',label,reason??null])} hasEarlierHistory={config.earlier} onLoadEarlierHistory={()=>readEarlier(label,config.immediateEarlier)}/>}</article>;
 }
 function reset(initial={}) {
  holdNativeScroll=false;nativeScrollQueue=[];
@@ -591,6 +592,65 @@ test(
               value.requests.length,
               0,
               "an exhausted cursor makes no request",
+            );
+          },
+        );
+      if (!migration)
+        await context.test(
+          lane +
+            ": fast unchanged page completions release the anchor for five consecutive explicit pages",
+          async () => {
+            phase = "fast unchanged pagination";
+            await reset({ earlier: true, immediateEarlier: true });
+            await call(page, "scroll", 180);
+            let value = await call(page, "scroll", 0);
+            assert.equal(value.requests.length, 1);
+            assert.equal(value.olderDisabled, false);
+            const anchor = await page.evaluate(() =>
+              Reflect.get(window, "viewportFixture").rect("reply-0"),
+            );
+            for (const expected of [2, 3, 4]) {
+              await page
+                .getByRole("button", { name: "查看更早消息", exact: true })
+                .click();
+              value = await settle(page);
+              assert.equal(
+                value.requests.length,
+                expected,
+                "a settled page with unchanged visible content cannot block the next explicit page: " +
+                  JSON.stringify(value),
+              );
+              assert.equal(value.olderDisabled, false);
+              assert.equal(value.error, null);
+              assert.equal(value.draft, "Unsent draft");
+              const retained = await page.evaluate(() =>
+                Reflect.get(window, "viewportFixture").rect("reply-0"),
+              );
+              near(retained.top, anchor.top, "unchanged pages retain reading");
+              assert.equal((await settle(page)).requests.length, expected);
+            }
+            await run("config", { immediateEarlier: false });
+            await page
+              .getByRole("button", { name: "查看更早消息", exact: true })
+              .click();
+            value = await settle(page);
+            assert.equal(value.requests.length, 5);
+            assert.equal(value.olderDisabled, true);
+            await run("prepend", {
+              id: "visible-after-unchanged-pages",
+              text: "Earlier actual message ".repeat(60),
+            });
+            value = await call(page, "settle", 4, undefined, null);
+            assert.equal(value.olderDisabled, false);
+            assert.equal(value.requests.length, 5);
+            assert.equal(value.draft, "Unsent draft");
+            const retained = await page.evaluate(() =>
+              Reflect.get(window, "viewportFixture").rect("reply-0"),
+            );
+            near(
+              retained.top,
+              anchor.top,
+              "the next real page retains reading",
             );
           },
         );
