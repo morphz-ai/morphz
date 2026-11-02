@@ -10,6 +10,7 @@ import { chromium, type Page } from "@playwright/test";
 import { build, createServer, transformWithOxc } from "vite";
 import { controlRoleBrowserFixture } from "./fixtures/control-role-57e7d4ce.js";
 import { compareExchangePaint } from "./exchange-paint-comparison.js";
+import { captureControlRolePaint } from "./fixtures/control-role-capture.js";
 
 // Current contracts mount complete real components. Historical equality is an
 // explicit one-time lane, not a permanent lock of adjacent component sources.
@@ -300,6 +301,7 @@ test(
         });
         try {
           const page = await browserContext.newPage();
+          const inputSession = await browserContext.newCDPSession(page);
           page.on("pageerror", (error) => errors.push(error.message));
           await page.route("**/api/**", (route) => {
             business.push(route.request().url());
@@ -340,7 +342,13 @@ test(
             );
             if (!configuration.outside)
               assert.equal(value.facts.accent, configuration.accent);
-            images.push(await page.screenshot());
+            images.push(
+              await captureControlRolePaint(
+                page,
+                inputSession,
+                configuration.coarse,
+              ),
+            );
             coverage.push(
               [
                 lane,
@@ -546,5 +554,109 @@ test(
           "actual controlled React/native HTML modal, not Electron guest/native compositor, business authorization, or original user window",
       }),
     );
+  },
+);
+
+test(
+  "control paint capture preserves actual touch and mouse capabilities without manufacturing a missing device",
+  { timeout: 60_000 },
+  async (check) => {
+    const executable = process.env.MORPHZ_TEST_BROWSER_EXECUTABLE;
+    assert.ok(existsSync(executable || chromium.executablePath()));
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: executable || undefined,
+    });
+    try {
+      for (const hasTouch of [false, true])
+        for (const isMobile of [false, true])
+          await check.test(JSON.stringify({ hasTouch, isMobile }), async () => {
+            const context = await browser.newContext({
+              viewport: { width: 390, height: 660 },
+              hasTouch,
+              isMobile,
+            });
+            try {
+              const page = await context.newPage();
+              const inputSession = await context.newCDPSession(page);
+              await page.setContent(
+                '<meta name="viewport" content="width=device-width, initial-scale=1"><button>Native input probe</button><div style="height:3000px">Synthetic capture fixture</div>',
+              );
+              await page.evaluate(() => {
+                Reflect.set(window, "nativeInputEvents", []);
+                Reflect.set(window, "nativeClickEvents", []);
+                document
+                  .querySelector("button")!
+                  .addEventListener("click", (event) => {
+                    Reflect.get(window, "nativeClickEvents").push(
+                      event.isTrusted,
+                    );
+                  });
+                document
+                  .querySelector("button")!
+                  .addEventListener("pointerdown", (event) => {
+                    Reflect.get(window, "nativeInputEvents").push({
+                      pointer: event.pointerType,
+                      trusted: event.isTrusted,
+                    });
+                  });
+              });
+              const button = page.getByRole("button", {
+                name: "Native input probe",
+                exact: true,
+              });
+              await button.hover();
+              await page.mouse.down();
+              await captureControlRolePaint(page, inputSession, hasTouch);
+              await page.mouse.up();
+              assert.deepEqual(
+                await page.evaluate(() =>
+                  Reflect.get(window, "nativeClickEvents"),
+                ),
+                [true],
+                "viewport capture preserves activation from a held native gesture",
+              );
+              for (const fullPage of [false, true]) {
+                const image = await captureControlRolePaint(
+                  page,
+                  inputSession,
+                  hasTouch,
+                  { fullPage },
+                );
+                assert.ok(image.length > 0, "real screenshot bytes");
+                if (hasTouch) await button.tap();
+                else await button.click();
+              }
+              assert.deepEqual(
+                await page.evaluate(() =>
+                  Reflect.get(window, "nativeInputEvents"),
+                ),
+                [
+                  { pointer: "mouse", trusted: true },
+                  ...Array.from({ length: 2 }, () => ({
+                    pointer: hasTouch ? "touch" : "mouse",
+                    trusted: true,
+                  })),
+                ],
+                "native events still come from the requested real input device",
+              );
+              if (!hasTouch) {
+                await assert.rejects(
+                  captureControlRolePaint(page, inputSession, true),
+                  /native input premise/,
+                );
+                assert.equal(
+                  await page.evaluate(() => navigator.maxTouchPoints),
+                  0,
+                  "an absent touch premise is rejected, never repaired into a pass",
+                );
+              }
+            } finally {
+              await context.close();
+            }
+          });
+    } finally {
+      await browser.close();
+    }
   },
 );
