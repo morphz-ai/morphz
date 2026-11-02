@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { build } from "esbuild";
 import { chromium, type Page, type Frame } from "@playwright/test";
 import { appContentSecurityPolicy } from "../packages/core/src/resource-policy.js";
@@ -28,24 +29,54 @@ async function action(
     { method, value },
   );
 }
+async function authorPhase(
+  page: Page,
+  phase: string,
+  accent?: string,
+): Promise<number> {
+  const id = randomUUID();
+  const started = performance.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      page.evaluate(
+        ({ id, phase, accent }) =>
+          Reflect.get(window, "documentViewFixture").observeAuthor(
+            id,
+            phase,
+            accent,
+          ),
+        { id, phase, accent },
+      ),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Document author ${phase} acknowledgment missed 5000ms wall deadline`,
+              ),
+            ),
+          5_000,
+        );
+      }),
+    ]);
+    const elapsed = performance.now() - started;
+    assert.ok(
+      elapsed <= 5_000,
+      "Actual protocol observation must meet the original 5s wall deadline",
+    );
+    return elapsed;
+  } finally {
+    clearTimeout(timer);
+    await page.evaluate(
+      (id) =>
+        Reflect.get(window, "documentViewFixture").cancelAuthorObservation(id),
+      id,
+    );
+  }
+}
 async function connected(page: Page): Promise<Frame> {
-  await page.waitForFunction(
-    () => {
-      const state = Reflect.get(window, "documentViewFixture").report();
-      const frame = state.frames[0];
-      return (
-        frame?.className === "cognitive-application-frame" &&
-        state.authorEvents.some(
-          (item: any) =>
-            item.proof ===
-              new URL(frame.src).searchParams.get("documentProof") &&
-            item.event.phase === "connected",
-        )
-      );
-    },
-    undefined,
-    protocolObservation,
-  );
+  await authorPhase(page, "connected");
   // Resolve the currently mounted native Frame from its actual iframe element,
   // not an index in asynchronously retiring StrictMode childFrames().
   const outerElement = await page
@@ -144,6 +175,7 @@ test(
         initiallyValid?: boolean;
         holdAuthorize?: boolean;
         pausePaint?: boolean;
+        pollingProbe?: boolean;
       } = {},
     ) {
       await withViewTransport(
@@ -256,6 +288,7 @@ test(
             route.fulfill({ contentType: "text/javascript", body: host }),
           );
           try {
+            if (settings.pollingProbe) await page.clock.install();
             await page.goto(f.origin + "/");
             await page.waitForFunction(
               () => Reflect.get(window, "documentViewFixture"),
@@ -326,6 +359,7 @@ test(
               preferences: "原应用现场",
             });
             assert.deepEqual(errors, []);
+            assert.equal((await report(page)).authorObserverCount, 0);
           } finally {
             for (const controller of pending.values()) controller.abort();
             await context.close();
@@ -387,16 +421,7 @@ test(
             await guest.evaluate(() =>
               Reflect.get(window, "documentViewAuthor").save(),
             );
-            await page.waitForFunction(
-              () =>
-                Reflect.get(window, "documentViewFixture")
-                  .report()
-                  .authorEvents.some(
-                    (item: any) => item.event.phase === "saved",
-                  ),
-              undefined,
-              protocolObservation,
-            );
+            await authorPhase(page, "saved");
             assert.deepEqual(
               await guest.evaluate(
                 () => Reflect.get(window, "documentViewAuthor").outcomes.save,
@@ -407,18 +432,7 @@ test(
               },
             );
             await action(page, "presentation", light);
-            await page.waitForFunction(
-              () =>
-                Reflect.get(window, "documentViewFixture")
-                  .report()
-                  .authorEvents.some(
-                    (item: any) =>
-                      item.event.phase === "context" &&
-                      item.event.context.theme.accent === "coral",
-                  ),
-              undefined,
-              protocolObservation,
-            );
+            await authorPhase(page, "context", "coral");
             assert.equal((await report(page)).sameFrame, true);
             assert.equal(
               await guest.evaluate(
@@ -488,16 +502,7 @@ test(
             await guest.evaluate(() =>
               Reflect.get(window, "documentViewAuthor").save(),
             );
-            await page.waitForFunction(
-              () =>
-                Reflect.get(window, "documentViewFixture")
-                  .report()
-                  .authorEvents.some(
-                    (item: any) => item.event.phase === "saved",
-                  ),
-              undefined,
-              protocolObservation,
-            );
+            await authorPhase(page, "saved");
             assert.deepEqual(
               await guest.evaluate(
                 () => Reflect.get(window, "documentViewAuthor").outcomes.save,
@@ -510,6 +515,130 @@ test(
             assert.equal(await paintWait, "TimeoutError");
           },
           { holdAuthorize: true, pausePaint: true },
+        );
+      },
+    );
+    await t.test(
+      "real saved acknowledgment is observed without browser timer polling under the same wall deadline",
+      async () => {
+        await run(
+          "postgres",
+          async (page) => {
+            const guest = await connected(page);
+            let armed!: () => void;
+            const intervalArmed = new Promise<void>((resolve) => {
+              armed = resolve;
+            });
+            await page.exposeFunction("documentViewIntervalArmed", () =>
+              armed(),
+            );
+            await page.evaluate(() => {
+              // Clock's pinned native builtins are also used by Playwright's
+              // interval observer. Starve only its exact 25ms polling timer;
+              // real browser work, MessagePorts, SDK and SQL keep running.
+              const clock = Reflect.get(window, "__pwClock");
+              if (!clock?.builtins?.setTimeout)
+                throw new Error("Native polling probe is unavailable");
+              const native = clock.builtins.setTimeout;
+              Reflect.set(window, "documentViewBlockedPolls", 0);
+              clock.builtins.setTimeout = (
+                callback: (...args: any[]) => void,
+                delay: number,
+                ...args: any[]
+              ) => {
+                if (delay === 25) {
+                  Reflect.set(
+                    window,
+                    "documentViewBlockedPolls",
+                    Reflect.get(window, "documentViewBlockedPolls") + 1,
+                  );
+                  return -1;
+                }
+                return native(callback, delay, ...args);
+              };
+            });
+            const intervalWait = page
+              .waitForFunction(
+                () => {
+                  if (!Reflect.get(window, "documentViewIntervalWaitStarted")) {
+                    Reflect.set(
+                      window,
+                      "documentViewIntervalWaitStarted",
+                      true,
+                    );
+                    void Reflect.get(window, "documentViewIntervalArmed")();
+                  }
+                  const state = Reflect.get(
+                    window,
+                    "documentViewFixture",
+                  ).report();
+                  const frame = state.frames[0];
+                  return (
+                    frame?.className === "cognitive-application-frame" &&
+                    state.authorEvents.some(
+                      (item: any) =>
+                        item.proof ===
+                          new URL(frame.src).searchParams.get(
+                            "documentProof",
+                          ) && item.event.phase === "saved",
+                    )
+                  );
+                },
+                undefined,
+                protocolObservation,
+              )
+              .then(
+                () => "unexpected success",
+                (error: Error) => error.name,
+              );
+            let armTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              await Promise.race([
+                intervalArmed,
+                new Promise<never>((_resolve, reject) => {
+                  armTimer = setTimeout(
+                    () =>
+                      reject(
+                        new Error(
+                          "Native polling probe did not arm within 5000ms",
+                        ),
+                      ),
+                    5_000,
+                  );
+                }),
+              ]);
+            } finally {
+              clearTimeout(armTimer);
+            }
+            assert.ok(
+              (await page.evaluate(() =>
+                Reflect.get(window, "documentViewBlockedPolls"),
+              )) >= 1,
+            );
+            const actualSaved = authorPhase(page, "saved");
+            await guest.evaluate(() =>
+              Reflect.get(window, "documentViewAuthor").save(),
+            );
+            const acknowledgmentMs = await actualSaved;
+            assert.deepEqual(
+              await guest.evaluate(
+                () => Reflect.get(window, "documentViewAuthor").outcomes.save,
+              ),
+              {
+                ok: true,
+                value: { revision: 2, state: { view: "warm-original" } },
+              },
+            );
+            assert.equal(await intervalWait, "TimeoutError");
+            t.diagnostic(
+              JSON.stringify({
+                acknowledgmentMs,
+                wallDeadlineMs: 5_000,
+                oldIntervalObserver: "TimeoutError",
+              }),
+            );
+          },
+          { pollingProbe: true },
         );
       },
     );

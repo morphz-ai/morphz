@@ -43,7 +43,15 @@ const calls: Array<{
 }> = [];
 const guards: Array<{ captured: string; published: string | null }> = [];
 const publications: string[] = [];
-const authorEvents: Array<{ proof: string; event: unknown }> = [];
+const authorEvents: Array<{
+  proof: string;
+  event: {
+    phase: string;
+    context?: { theme: { accent: string } };
+    [key: string]: unknown;
+  };
+}> = [];
+const authorObservers = new Map<string, { check(): void; cancel(): void }>();
 window.addEventListener("message", (event) => {
   if (event.data?.kind !== "document-view-author-observation") return;
   const outer = document.querySelector<HTMLIFrameElement>(
@@ -57,6 +65,7 @@ window.addEventListener("message", (event) => {
     proof: new URL(outer.src).searchParams.get("documentProof")!,
     event: structuredClone(event.data),
   });
+  for (const observer of authorObservers.values()) observer.check();
 });
 const waiting: Array<() => void> = [];
 const actions = { retry: 0, close: 0, abort: 0 };
@@ -164,6 +173,43 @@ function Parent() {
 const root = createRoot(document.getElementById("mount")!);
 function controls() {
   return {
+    observeAuthor(id: string, phase: string, accent?: string) {
+      if (authorObservers.has(id)) throw new Error("Duplicate author observer");
+      return new Promise<void>((resolve, reject) => {
+        const check = () => {
+          const outer = document.querySelector<HTMLIFrameElement>(
+            ".cognitive-document-container>iframe",
+          );
+          if (outer?.className !== "cognitive-application-frame") return;
+          const proof = new URL(outer.src).searchParams.get("documentProof");
+          if (
+            !authorEvents.some(
+              (item) =>
+                item.proof === proof &&
+                item.event.phase === phase &&
+                (accent === undefined ||
+                  item.event.context!.theme.accent === accent),
+            )
+          )
+            return;
+          authorObservers.delete(id);
+          resolve();
+        };
+        authorObservers.set(id, {
+          check,
+          cancel() {
+            authorObservers.delete(id);
+            reject(new Error("Author observation cancelled"));
+          },
+        });
+        // Subscribe before the initial check: an already accepted receipt is
+        // observable without a timer, paint or a second protocol operation.
+        check();
+      });
+    },
+    cancelAuthorObservation(id: string) {
+      authorObservers.get(id)?.cancel();
+    },
     report() {
       const frames = [
         ...document.querySelectorAll<HTMLIFrameElement>(
@@ -175,6 +221,7 @@ function controls() {
         guards,
         publications,
         authorEvents,
+        authorObserverCount: authorObservers.size,
         actions,
         visible,
         frames: frames.map((frame) => ({
