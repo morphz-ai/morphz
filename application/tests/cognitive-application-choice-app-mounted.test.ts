@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
-import react from "@vitejs/plugin-react";
+import { build } from "esbuild";
 import { chromium, type Browser, type Page } from "@playwright/test";
-import { createLogger, createServer, type ViteDevServer } from "vite";
 import { waitForFixtureReadySignal } from "./fixtures/fixture-ready-signal.js";
-import { prepareDynamicAppFixture } from "./fixtures/prepare-dynamic-app-fixture.js";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -43,68 +44,137 @@ test(
       existsSync(executable || chromium.executablePath()),
       "formal entry prepares actual Chromium",
     );
-    const cacheDir = await mkdtemp(
-      resolve(tmpdir(), "morphz-choice-app-vite-"),
-    );
-    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    let server: Server | undefined, browser: Browser | undefined;
     t.after(async () => {
       try {
         await browser?.close();
       } finally {
-        try {
-          await server?.close();
-        } finally {
-          await rm(cacheDir, { recursive: true, force: true });
+        if (server?.listening) {
+          server.closeAllConnections();
+          await new Promise<void>((resolve, reject) => {
+            server!.close((error) => (error ? reject(error) : resolve()));
+          });
         }
       }
     });
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choice-app-mounted.tsx",
     );
-    const compileErrors: string[] = [];
-    const logger = createLogger();
-    server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir,
-      customLogger: {
-        ...logger,
-        error(message, options) {
-          compileErrors.push(message);
-          logger.error(message, options);
-        },
+    const preparedAt = performance.now();
+    // Keep the actual dynamic App import after the fixture installs transport.
+    // A fresh non-splitting bundle preserves its lazy module initialization,
+    // without making each document traverse a development-server waterfall.
+    const bundle = await build({
+      entryPoints: [fixture],
+      bundle: true,
+      platform: "browser",
+      format: "esm",
+      target: "es2023",
+      jsx: "automatic",
+      define: {
+        "process.env.NODE_ENV": JSON.stringify("development"),
+        "import.meta.env": JSON.stringify({
+          BASE_URL: "/",
+          DEV: true,
+          MODE: "development",
+          PROD: false,
+          SSR: false,
+        }),
       },
-      optimizeDeps: {
-        entries: [fixture],
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
-      },
+      write: false,
+      outfile: resolve("tests/.choice-fixture/choice-app.js"),
+      metafile: true,
       plugins: [
-        react(),
         {
-          name: "complete-choice-app-controlled",
-          configureServer(vite) {
-            vite.middlewares.use(async (request, response, next) => {
-              if (request.url?.split("?")[0] !== "/__choice-app") return next();
-              response.setHeader("Content-Type", "text/html");
-              response.end(
-                await vite.transformIndexHtml(
-                  request.url!,
-                  `<!doctype html><html><head><link rel="icon" href="data:,"/></head><body><div id="root"></div><script type="module" src="/@fs/${fixture}"></script></body></html>`,
-                ),
-              );
+          name: "actual-choice-app-assets",
+          setup(builder) {
+            builder.onResolve({ filter: /\?url$/ }, async (args) => {
+              const result = await builder.resolve(args.path.slice(0, -4), {
+                resolveDir: args.resolveDir,
+                kind: args.kind,
+              });
+              if (result.errors.length) return { errors: result.errors };
+              return { path: result.path, namespace: "choice-asset" };
             });
+            builder.onLoad(
+              { filter: /.*/, namespace: "choice-asset" },
+              async (args) => ({
+                contents: await readFile(args.path),
+                loader: "file",
+              }),
+            );
+            builder.onResolve({ filter: /^\/(?:src|@fs)\// }, ({ path }) => ({
+              path: path.startsWith("/src/")
+                ? resolve("apps/web", path.slice(1))
+                : path.slice("/@fs/".length),
+            }));
           },
         },
       ],
-      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    await server.listen();
-    // App is dynamically imported only after this fixture installs transport.
-    // Compile that graph without executing it before measuring real UI boot.
-    const client = server.environments.client!;
-    await prepareDynamicAppFixture(client, "/src/App.tsx", `/@fs/${fixture}`);
-    assert.deepEqual(compileErrors, [], "Choice App compilation failed");
-    const address = server.httpServer!.address();
+    const compiled = new Set(
+      Object.keys(bundle.metafile.inputs).map((path) => resolve(path)),
+    );
+    for (const path of [fixture, resolve("apps/web/src/App.tsx")])
+      assert.ok(
+        compiled.has(path),
+        `Cold bundle must include actual App source ${path}`,
+      );
+    const javascript = bundle.outputFiles.find((file) =>
+      file.path.endsWith(".js"),
+    );
+    const stylesheet = bundle.outputFiles.find((file) =>
+      file.path.endsWith(".css"),
+    );
+    assert.ok(
+      javascript && stylesheet,
+      "Actual App script and CSS must both be served",
+    );
+    t.diagnostic(
+      JSON.stringify({
+        choiceFixturePreparation: {
+          coldCache: true,
+          compileMs: Math.round(performance.now() - preparedAt),
+          bundleInputCount: compiled.size,
+        },
+      }),
+    );
+    const assets = new Map(
+      bundle.outputFiles.map((file) => [
+        "/" + basename(file.path),
+        file.contents,
+      ]),
+    );
+    const html =
+      '<!doctype html><html><head><link rel="icon" href="data:,"/><link rel="stylesheet" href="/__choice-app.css"/></head><body><div id="root"></div><script type="module" src="/__choice-app.js"></script></body></html>';
+    server = createServer((request, response) => {
+      response.setHeader("Cache-Control", "no-store");
+      const path = request.url?.split("?")[0];
+      if (path === "/__choice-app") {
+        response.setHeader("Content-Type", "text/html; charset=utf-8");
+        response.end(html);
+      } else if (path === "/__choice-app.js") {
+        response.setHeader("Content-Type", "text/javascript; charset=utf-8");
+        response.end(javascript.contents);
+      } else if (path === "/__choice-app.css") {
+        response.setHeader("Content-Type", "text/css; charset=utf-8");
+        response.end(stylesheet.contents);
+      } else if (assets.has(path ?? "")) {
+        response.setHeader(
+          "Content-Type",
+          path!.endsWith(".mjs")
+            ? "text/javascript; charset=utf-8"
+            : "application/octet-stream",
+        );
+        response.end(assets.get(path!));
+      } else {
+        response.writeHead(404);
+        response.end();
+      }
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
     assert(address && typeof address !== "string");
     const serverUrl = `http://127.0.0.1:${address.port}/__choice-app`;
     browser = await chromium.launch({
@@ -143,7 +213,7 @@ test(
       const ready = new Promise<void>((resolve) => {
         pendingReady = { token, resolve };
       });
-      // Cold compilation of the full App is not a five-second UI action.
+      // Each document loads the freshly compiled, uncached actual App bundle.
       await page.goto(`${serverUrl}?mode=${mode}&fixtureReady=${token}`, {
         timeout: 60_000,
       });
@@ -160,6 +230,24 @@ test(
             () => !!Reflect.get(window, "cognitiveChoiceAppFixture"),
           ),
           true,
+        );
+        const resources = await page.evaluate(() =>
+          performance.getEntriesByType("resource").map((entry) => ({
+            path: new URL(entry.name).pathname,
+            type: (entry as PerformanceResourceTiming).initiatorType,
+          })),
+        );
+        assert.deepEqual(
+          resources
+            .filter((entry) => entry.type === "script")
+            .map((entry) => entry.path),
+          ["/__choice-app.js"],
+        );
+        assert.deepEqual(
+          resources
+            .filter((entry) => entry.path.endsWith(".css"))
+            .map((entry) => entry.path),
+          ["/__choice-app.css"],
         );
       } catch (error) {
         console.error(
