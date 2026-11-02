@@ -188,8 +188,10 @@ class ReleaseCiTests(unittest.TestCase):
         self.assertIn("/runs/10/attempts/2/jobs?per_page=100", calls[1])
         self.assertIn(f"head_sha={COMMIT}&event=push&per_page=100", calls[0])
 
-    def test_macos_requires_both_complete_node_shards_native_acceptance_and_their_fan_in(self):
-        required = {"Complete macOS Node inventory (1/2)", "Complete macOS Node inventory (2/2)",
+    def test_every_complete_node_shard_native_acceptance_and_their_fan_in_are_required(self):
+        required = {"Complete Linux Node inventory (1/2)", "Complete Linux Node inventory (2/2)",
+                    *{f"Complete macOS Node inventory ({index}/4)" for index in range(1, 5)},
+                    "Shared application full Node inventory", "Shared application and Web",
                     "Embedded Desktop (macOS)", "Embedded Desktop native (macOS)"}
         self.assertLessEqual(required, CI.REQUIRED_JOBS["application.yml"])
         for name in required:

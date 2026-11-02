@@ -415,10 +415,30 @@ test("native foreground/background coverage is required rather than indefinitely
 
 function verifyCompleteWebPartitions(source) {
   const node = jobSource(source, "web-node");
+  const complete = jobSource(source, "web-node-complete");
   const browser = jobSource(source, "web-browser");
   const required = jobSource(source, "web");
-  assert.match(node, /^          xvfb-run -a npm test -- --test-concurrency=1\s*$/m);
+  assert.match(node, /^            xvfb-run -a npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2\s*$/m);
+  assert.match(node, /fail-fast: false\s+matrix:\s+shard: \[1, 2\]/);
+  assert.match(node, /timeout-minutes: 90/);
+  assert.match(node, /id: coverage/);
+  assert.match(node, /MORPHZ_TEST_COVERAGE_LOG="\$RUNNER_TEMP\/linux-node-shard-\$\{\{ matrix.shard \}\}\.log"/);
+  assert.match(node, /verify-application-node-shards\.py capture/);
+  assert.ok(node.includes('--shard "${{ matrix.shard }}/2" --commit "$GITHUB_SHA"'));
+  assert.ok(node.includes('--github-output "$GITHUB_OUTPUT"'));
+  assert.doesNotMatch(node, /(?:include|exclude):|continue-on-error|--test-name-pattern|--test-skip-pattern|\|\s*tee/);
   assert.doesNotMatch(node, /npm run test:e2e/);
+  assert.match(complete, /name: Shared application full Node inventory\n/);
+  assert.match(complete, /needs: \[web-node\]/);
+  assert.match(complete, /if: \$\{\{ always\(\) \}\}/);
+  assert.ok(complete.includes('NODE_RESULT: ${{ needs.web-node.result }}'));
+  assert.ok(complete.includes('test "$NODE_RESULT" = success'));
+  assert.ok(complete.includes('verify-application-node-shards.py verify --report-prefix WEB_NODE --total 2 --commit "$GITHUB_SHA"'));
+  assert.doesNotMatch(complete, /continue-on-error|actions\/download-artifact|--directory/);
+  for (const index of [1, 2]) {
+    assert.ok(node.includes(`report_${index}: \${{ steps.coverage.outputs.report_${index} }}`));
+    assert.ok(complete.includes(`WEB_NODE_REPORT_${index}: \${{ needs.web-node.outputs.report_${index} }}`));
+  }
   assert.doesNotMatch(browser, /\bnpm test\b/);
   assert.match(browser, /fail-fast: false\s+matrix:\s+shard: \[1, 2\]/);
   assert.doesNotMatch(
@@ -434,10 +454,10 @@ function verifyCompleteWebPartitions(source) {
     /name: application-web-failures-\$\{\{ matrix.shard \}\}/,
   );
   assert.match(required, /name: Shared application and Web\n/);
-  assert.match(required, /needs: \[web-node, web-browser\]/);
+  assert.match(required, /needs: \[web-node-complete, web-browser\]/);
   assert.match(required, /if: \$\{\{ always\(\) \}\}/);
   for (const [variable, dependency] of [
-    ["NODE", "web-node"],
+    ["NODE", "web-node-complete"],
     ["BROWSER", "web-browser"],
   ]) {
     assert.ok(
@@ -452,14 +472,20 @@ function verifyCompleteWebPartitions(source) {
 
 test("full Node and complementary browser shards cannot be cancelled behind a green required check", () => {
   verifyCompleteWebPartitions(workflow);
+  const nodeCommand = "xvfb-run -a npm test -- --test-concurrency=1 --test-shard=${{ matrix.shard }}/2";
   for (const [before, after] of [
-    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test"],
-    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test -- --test-concurrency=4"],
-    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test -- --test-concurrency=1 tests/only-one.test.ts"],
-    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test -- --test-concurrency=1 --test-name-pattern=focused"],
+    [nodeCommand, "xvfb-run -a npm test"],
+    [nodeCommand, nodeCommand.replace("--test-concurrency=1", "--test-concurrency=4")],
+    [nodeCommand, nodeCommand + " tests/only-one.test.ts"],
+    [nodeCommand, nodeCommand + " --test-name-pattern=focused"],
+    [nodeCommand, nodeCommand + " | tee ignored.log"],
     ["shard: [1, 2]", "shard: [1]"],
     ["fail-fast: false", "fail-fast: true"],
-    ["needs: [web-node, web-browser]", "needs: [web-node]"],
+    ["MORPHZ_TEST_COVERAGE_LOG=", "OMITTED_LOG="],
+    ["verify-application-node-shards.py capture", "echo omitted"],
+    ['--github-output "$GITHUB_OUTPUT"', "--omitted-output"],
+    ["steps.coverage.outputs.report_2", "steps.coverage.outputs.report_1"],
+    ["needs: [web-node-complete, web-browser]", "needs: [web-node-complete]"],
     ['test "$BROWSER_RESULT" = success', "true"],
     ["/2 --forbid-only", "/3 --forbid-only"],
     ["/2 --forbid-only", "/2 --forbid-only --grep focused"],
@@ -467,6 +493,20 @@ test("full Node and complementary browser shards cannot be cancelled behind a gr
     assert.throws(() =>
       verifyCompleteWebPartitions(workflow.replace(before, after)),
     );
+  const complete = jobSource(workflow, "web-node-complete");
+  for (const changed of [
+    complete.replace("needs: [web-node]", "needs: [web-browser]"),
+    complete.replace('test "$NODE_RESULT" = success', "true"),
+    complete.replace("verify-application-node-shards.py verify", "echo omitted"),
+    complete.replace("--report-prefix WEB_NODE", "--report-prefix MACOS_NODE"),
+    complete.replace("--total 2", "--total 4"),
+    complete.replace("needs.web-node.outputs.report_2", "needs.web-node.outputs.report_1"),
+  ]) assert.throws(() => verifyCompleteWebPartitions(workflow.replace(complete, changed)));
+  const browser = jobSource(workflow, "web-browser");
+  for (const changed of [
+    browser.replace("shard: [1, 2]", "shard: [1]"),
+    browser.replace("fail-fast: false", "fail-fast: true"),
+  ]) assert.throws(() => verifyCompleteWebPartitions(workflow.replace(browser, changed)));
 });
 
 function macBrowserFiles(

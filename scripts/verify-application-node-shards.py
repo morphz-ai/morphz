@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require both native Node shards to cover this checkout's full file inventory."""
+"""Require every configured Node shard to cover the full current file inventory."""
 
 import argparse
 import json
@@ -8,9 +8,8 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-COORDINATES = frozenset({"1/2", "2/2"})
 # GitHub allows 1 MiB of UTF-16 outputs per job. Bound each record below a
-# quarter of that budget; two matrix records still leave ample headroom.
+# quarter of that budget; four matrix records still leave bounded headroom.
 MAX_OUTPUT_BYTES = 240 * 1024
 
 
@@ -18,7 +17,13 @@ def inventory(root=ROOT):
     return sorted(f"tests/{path.name}" for path in (root / "application/tests").glob("*.test.ts"))
 
 
-def validate(record, expected, commit):
+def coordinates(total):
+    if total not in (2, 4):
+        raise ValueError("Only the configured two or four complete shards are supported")
+    return frozenset(f"{index}/{total}" for index in range(1, total + 1))
+
+
+def validate(record, expected, commit, total=2):
     if not re.fullmatch(r"[0-9a-f]{40}", commit) or record.get("source_commit") != commit:
         raise ValueError("Shard evidence belongs to another source commit")
     coverage = record["coverage"]
@@ -37,7 +42,7 @@ def validate(record, expected, commit):
     shard = coverage["shard"]
     if shard.get("unexpectedFiles") != []:
         raise ValueError("Unexpected native file summaries cannot be ignored")
-    if shard["coordinate"] not in COORDINATES or shard["inventory"] != expected:
+    if shard["coordinate"] not in coordinates(total) or shard["inventory"] != expected:
         raise ValueError("Shard must identify the complete current test inventory")
     executed = shard["executedFiles"]
     if not executed or executed != sorted(set(executed)) or not set(executed) <= set(expected):
@@ -45,24 +50,25 @@ def validate(record, expected, commit):
     return shard["coordinate"], set(executed)
 
 
-def verify(records, expected, commit):
-    if len(records) != 2 or not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise ValueError("Exactly two reports and one complete source commit are required")
-    coordinates, executed = set(), set()
+def verify(records, expected, commit, total=2):
+    required_coordinates = coordinates(total)
+    if len(records) != total or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Every configured report and one complete source commit are required")
+    seen_coordinates, executed = set(), set()
     for record in records:
-        coordinate, files = validate(record, expected, commit)
-        if coordinate in coordinates or files & executed:
+        coordinate, files = validate(record, expected, commit, total)
+        if coordinate in seen_coordinates or files & executed:
             raise ValueError("Duplicate shard or overlapping executed files")
-        coordinates.add(coordinate)
+        seen_coordinates.add(coordinate)
         executed.update(files)
-    if coordinates != COORDINATES or executed != set(expected):
+    if seen_coordinates != required_coordinates or executed != set(expected):
         raise ValueError("The shards did not execute every current test file exactly once")
-    return {"source_commit": commit, "files": len(executed), "shards": sorted(coordinates),
+    return {"source_commit": commit, "files": len(executed), "shards": sorted(seen_coordinates),
             "passed": sum(record["coverage"]["counts"]["passed"] for record in records),
             "explicit_optional_omissions": sum(record["coverage"]["counts"]["skipped"] for record in records)}
 
 
-def capture(log, coordinate, expected, commit):
+def capture(log, coordinate, expected, commit, total=2):
     coverage = None
     with log.open() as stream:
         for line in stream:
@@ -71,14 +77,14 @@ def capture(log, coordinate, expected, commit):
     if coverage is None:
         raise ValueError("The native test process produced no final coverage receipt")
     record = {"source_commit": commit, "coverage": coverage}
-    actual, _ = validate(record, expected, commit)
+    actual, _ = validate(record, expected, commit, total)
     if actual != coordinate:
         raise ValueError("The report does not belong to the requested matrix shard")
     return record
 
 
-def write_output(path, record, expected, commit):
-    coordinate, files = validate(record, expected, commit)
+def write_output(path, record, expected, commit, total=2):
+    coordinate, files = validate(record, expected, commit, total)
     payload = json.dumps(record, ensure_ascii=True, separators=(",", ":"))
     size = len(payload.encode("utf-16-le"))
     if size > MAX_OUTPUT_BYTES:
@@ -89,16 +95,19 @@ def write_output(path, record, expected, commit):
     return {"shard": coordinate, "executed_files": len(files), "output_utf16_bytes": size}
 
 
-def read_outputs(env):
+def read_outputs(env, total=2, prefix="MACOS_NODE"):
+    coordinates(total)
+    if prefix not in ("MACOS_NODE", "WEB_NODE"):
+        raise ValueError("Unknown shard evidence owner")
     records = []
-    for index in (1, 2):
-        payload = env.get(f"MACOS_NODE_REPORT_{index}")
+    for index in range(1, total + 1):
+        payload = env.get(f"{prefix}_REPORT_{index}")
         if not payload:
-            raise ValueError(f"Missing native shard output {index}/2")
+            raise ValueError(f"Missing native shard output {index}/{total}")
         if len(payload.encode("utf-16-le")) > MAX_OUTPUT_BYTES:
             raise ValueError("Native shard output exceeds its UTF-16 byte budget")
         record = json.loads(payload)
-        if record["coverage"]["shard"]["coordinate"] != f"{index}/2":
+        if record["coverage"]["shard"]["coordinate"] != f"{index}/{total}":
             raise ValueError("Native matrix output does not match its shard coordinate")
         records.append(record)
     return records
@@ -109,20 +118,23 @@ def main():
     commands = parser.add_subparsers(dest="operation", required=True)
     record = commands.add_parser("capture")
     record.add_argument("--log", type=Path, required=True)
-    record.add_argument("--shard", choices=sorted(COORDINATES), required=True)
+    record.add_argument("--shard", required=True)
+    record.add_argument("--total", type=int, choices=(2, 4), default=2)
     record.add_argument("--github-output", type=Path, required=True)
     record.add_argument("--commit", required=True)
     complete = commands.add_parser("verify")
     complete.add_argument("--commit", required=True)
+    complete.add_argument("--total", type=int, choices=(2, 4), default=2)
+    complete.add_argument("--report-prefix", choices=("MACOS_NODE", "WEB_NODE"), default="MACOS_NODE")
     args = parser.parse_args()
     expected = inventory()
     try:
         if args.operation == "capture":
-            result = capture(args.log, args.shard, expected, args.commit)
-            print(json.dumps(write_output(args.github_output, result, expected, args.commit)))
+            result = capture(args.log, args.shard, expected, args.commit, args.total)
+            print(json.dumps(write_output(args.github_output, result, expected, args.commit, args.total)))
         else:
-            reports = read_outputs(os.environ)
-            print(json.dumps(verify(reports, expected, args.commit), indent=2))
+            reports = read_outputs(os.environ, args.total, args.report_prefix)
+            print(json.dumps(verify(reports, expected, args.commit, args.total), indent=2))
     except (KeyError, TypeError, ValueError, OSError) as error:
         parser.exit(1, f"Node shard coverage rejected: {error}\n")
 

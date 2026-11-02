@@ -1,4 +1,4 @@
-"""A partial, duplicated, failed or stale macOS inventory cannot pass admission."""
+"""A partial, duplicated, failed or stale Node inventory cannot pass admission."""
 
 from copy import deepcopy
 import importlib.util
@@ -29,7 +29,64 @@ def reports():
     return [record("1/2", [FILES[0], FILES[2]]), record("2/2", [FILES[1], FILES[3]])]
 
 
+def four_reports():
+    return [record(f"{index}/4", [file]) for index, file in enumerate(FILES, 1)]
+
+
 class NodeShardAdmissionTests(unittest.TestCase):
+    def test_four_native_partitions_cover_every_file_once(self):
+        result = SHARDS.verify(list(reversed(four_reports())), FILES, COMMIT, total=4)
+        self.assertEqual(result["files"], 4)
+        self.assertEqual(result["passed"], 12)
+        self.assertEqual(result["shards"], ["1/4", "2/4", "3/4", "4/4"])
+
+    def test_four_shards_reject_missing_duplicate_overlap_stale_and_wrong_total(self):
+        rows = four_reports()
+        overlap = deepcopy(rows)
+        overlap[3]["coverage"]["shard"]["executedFiles"] = [FILES[0]]
+        stale = deepcopy(rows)
+        stale[3]["source_commit"] = "b" * 40
+        for changed in [rows[:3], rows + rows[:1], rows[:3] + rows[:1], overlap, stale, reports()]:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                SHARDS.verify(changed, FILES, COMMIT, total=4)
+        for total in [0, 1, 2, 3, 5]:
+            with self.subTest(total=total), self.assertRaises(ValueError):
+                SHARDS.verify(rows, FILES, COMMIT, total=total)
+
+    def test_four_matrix_outputs_remain_distinct_complete_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = {}
+            for index, row in enumerate(four_reports(), 1):
+                path = Path(directory) / f"output-{index}"
+                SHARDS.write_output(path, row, FILES, COMMIT, total=4)
+                key, payload = path.read_text().strip().split("=", 1)
+                self.assertEqual(key, f"report_{index}")
+                env[f"MACOS_NODE_REPORT_{index}"] = payload
+            self.assertEqual(SHARDS.verify(SHARDS.read_outputs(env, total=4), FILES, COMMIT, total=4)["files"], 4)
+            self.assertLess(4 * SHARDS.MAX_OUTPUT_BYTES, 1024 * 1024)
+            del env["MACOS_NODE_REPORT_4"]
+            with self.assertRaises(ValueError):
+                SHARDS.read_outputs(env, total=4)
+
+    def test_linux_and_macos_output_owners_cannot_substitute_for_each_other(self):
+        env = {f"WEB_NODE_REPORT_{index}": json.dumps(row)
+               for index, row in enumerate(reports(), 1)}
+        self.assertEqual(SHARDS.verify(SHARDS.read_outputs(env, prefix="WEB_NODE"), FILES, COMMIT)["files"], 4)
+        with self.assertRaises(ValueError):
+            SHARDS.read_outputs(env)
+        with self.assertRaises(ValueError):
+            SHARDS.read_outputs(env, prefix="OTHER_NODE")
+
+    def test_four_shard_capture_requires_its_exact_configured_coordinate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run.log"
+            path.write_text("[test coverage] " + json.dumps(four_reports()[3]["coverage"]) + "\n")
+            self.assertEqual(SHARDS.capture(path, "4/4", FILES, COMMIT, total=4), four_reports()[3])
+            with self.assertRaises(ValueError):
+                SHARDS.capture(path, "3/4", FILES, COMMIT, total=4)
+            with self.assertRaises(ValueError):
+                SHARDS.capture(path, "4/4", FILES, COMMIT)
+
     def test_both_native_file_inventories_cover_the_same_exact_commit(self):
         result = SHARDS.verify(list(reversed(reports())), FILES, COMMIT)
         self.assertEqual(result["files"], 4)

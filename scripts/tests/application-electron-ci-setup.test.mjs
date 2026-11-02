@@ -142,7 +142,7 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
 test("small macOS runner bounds file workers without narrowing the full test inventory", () => {
   const workflow = readFileSync(new URL("../../.github/workflows/application.yml", import.meta.url), "utf8");
   const node = jobSource(workflow, "macos-node");
-  assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2\n/);
+  assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/4\n/);
   assert.doesNotMatch(node, /npm test -- .*\.test\.ts/);
 });
 
@@ -154,8 +154,9 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     const node = jobSource(source, "macos-node");
     assert.match(node, /timeout-minutes: 90/);
     assert.match(node, /fail-fast: false/);
-    assert.match(node, /shard: \[1, 2\]/);
-    assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/2\n/);
+    assert.match(node, /shard: \[1, 2, 3, 4\]/);
+    assert.match(node, /npm test -- --test-concurrency=1 --test-shard=\$\{\{ matrix.shard \}\}\/4\n/);
+    assert.ok(node.includes('--shard "${{ matrix.shard }}/4" --total 4 --commit "$GITHUB_SHA"'));
     assert.match(node, /MORPHZ_TEST_COVERAGE_LOG="\$RUNNER_TEMP\/mac-node-shard-\$\{\{ matrix.shard \}\}\.log"/);
     assert.doesNotMatch(node, /\|\s*tee|continue-on-error/);
     assert.doesNotMatch(node, /npm test -- .*\.test\.ts|--test-name-pattern|--test-skip-pattern/);
@@ -166,13 +167,13 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     assert.match(complete, /if: \$\{\{ always\(\) \}\}/);
     assert.match(complete, /test "\$NODE_RESULT" = success/);
     assert.match(complete, /test "\$NATIVE_RESULT" = success/);
-    assert.match(complete, /verify-application-node-shards\.py verify .*--commit "\$GITHUB_SHA"/);
+    assert.match(complete, /verify-application-node-shards\.py verify --total 4 --commit "\$GITHUB_SHA"/);
     assert.match(node, /verify-application-node-shards\.py capture/);
     assert.match(node, /id: coverage/);
     assert.ok(node.includes('--github-output "$GITHUB_OUTPUT"'));
     assert.doesNotMatch(node, /actions\/upload-artifact/);
     assert.doesNotMatch(complete, /actions\/download-artifact|--directory/);
-    for (const index of [1, 2]) {
+    for (const index of [1, 2, 3, 4]) {
       assert.ok(node.includes(`report_${index}: \${{ steps.coverage.outputs.report_${index} }}`));
       assert.ok(complete.includes(`MACOS_NODE_REPORT_${index}: \${{ needs.macos-node.outputs.report_${index} }}`));
     }
@@ -197,15 +198,17 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     assert.throws(() => verifyBudget(workflow.replace(desktop, changed)));
   const node = jobSource(workflow, "macos-node");
   for (const changed of [
-    node.replace("shard: [1, 2]", "shard: [1]"),
+    node.replace("shard: [1, 2, 3, 4]", "shard: [1, 2, 3]"),
     node.replace("fail-fast: false", "fail-fast: true"),
-    node.replace("--test-shard=${{ matrix.shard }}/2", "tests/only-one.test.ts"),
-    node.replace("--test-shard=${{ matrix.shard }}/2", "--test-shard=${{ matrix.shard }}/2 --test-name-pattern=one"),
+    node.replace("--test-shard=${{ matrix.shard }}/4", "tests/only-one.test.ts"),
+    node.replace("--test-shard=${{ matrix.shard }}/4", "--test-shard=${{ matrix.shard }}/4 --test-name-pattern=one"),
+    node.replace("--total 4", "--total 2"),
     node.replace("verify-application-node-shards.py capture", "echo omitted"),
     node.replace("MORPHZ_TEST_COVERAGE_LOG=", "OMITTED_LOG="),
     node.replace('--github-output "$GITHUB_OUTPUT"', "--omitted-output"),
     node.replace("steps.coverage.outputs.report_2", "steps.coverage.outputs.report_1"),
-    node.replace("--test-shard=${{ matrix.shard }}/2\n", "--test-shard=${{ matrix.shard }}/2 | tee ignored.log\n"),
+    node.replace("steps.coverage.outputs.report_4", "steps.coverage.outputs.report_3"),
+    node.replace("--test-shard=${{ matrix.shard }}/4\n", "--test-shard=${{ matrix.shard }}/4 | tee ignored.log\n"),
   ]) assert.throws(() => verifyBudget(workflow.replace(node, changed)));
   const complete = jobSource(workflow, "macos");
   for (const changed of [
@@ -213,7 +216,9 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     complete.replace('test "$NODE_RESULT" = success', "true"),
     complete.replace('test "$NATIVE_RESULT" = success', "true"),
     complete.replace("verify-application-node-shards.py verify", "echo omitted"),
+    complete.replace("--total 4", "--total 2"),
     complete.replace("needs.macos-node.outputs.report_2", "needs.macos-node.outputs.report_1"),
+    complete.replace("needs.macos-node.outputs.report_4", "needs.macos-node.outputs.report_3"),
   ]) assert.throws(() => verifyBudget(workflow.replace(complete, changed)));
 });
 

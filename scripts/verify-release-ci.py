@@ -33,11 +33,12 @@ REQUIRED_JOBS = {
     }),
     "application.yml": frozenset({
         "Shared application full Node inventory",
+        "Complete Linux Node inventory (1/2)", "Complete Linux Node inventory (2/2)",
         "Complete Web browser inventory (1/2)", "Complete Web browser inventory (2/2)",
         "Shared application and Web", "Application storage (PostgreSQL)",
         "Embedded Desktop (macOS)", "Cognitive application and actual Runtime contracts",
         "Application and Runtime contract",
-        "Complete macOS Node inventory (1/2)", "Complete macOS Node inventory (2/2)",
+        *{f"Complete macOS Node inventory ({index}/4)" for index in range(1, 5)},
         "Embedded Desktop native (macOS)",
     }),
 }
