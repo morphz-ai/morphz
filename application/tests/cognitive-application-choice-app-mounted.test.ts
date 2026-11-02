@@ -9,6 +9,7 @@ import react from "@vitejs/plugin-react";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { createLogger, createServer, type ViteDevServer } from "vite";
 import { waitForFixtureReadySignal } from "./fixtures/fixture-ready-signal.js";
+import { prepareDynamicAppFixture } from "./fixtures/prepare-dynamic-app-fixture.js";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -101,9 +102,7 @@ test(
     // App is dynamically imported only after this fixture installs transport.
     // Compile that graph without executing it before measuring real UI boot.
     const client = server.environments.client!;
-    assert.ok(await client.transformRequest(`/@fs/${fixture}`));
-    assert.ok(await client.transformRequest("/src/App.tsx"));
-    await client.waitForRequestsIdle();
+    await prepareDynamicAppFixture(client, "/src/App.tsx", `/@fs/${fixture}`);
     assert.deepEqual(compileErrors, [], "Choice App compilation failed");
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");

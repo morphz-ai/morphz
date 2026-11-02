@@ -7,6 +7,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, type Browser, type Page } from "@playwright/test";
 import { createLogger, createServer, type ViteDevServer } from "vite";
+import { prepareDynamicAppFixture } from "./fixtures/prepare-dynamic-app-fixture.js";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -99,9 +100,7 @@ test(
     // Compile its actual graph in setup; do not spend the 5s UI deadline doing
     // dev-server work or execute App/Host effects ahead of the mounted test.
     const client = server.environments.client!;
-    assert.ok(await client.transformRequest(`/@fs/${fixture}`));
-    assert.ok(await client.transformRequest("/src/App.tsx"));
-    await client.waitForRequestsIdle();
+    await prepareDynamicAppFixture(client, "/src/App.tsx", `/@fs/${fixture}`);
     assert.deepEqual(
       compileErrors,
       [],
