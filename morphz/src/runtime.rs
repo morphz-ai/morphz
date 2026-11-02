@@ -17007,11 +17007,20 @@ mod tests {
             .await
             .unwrap(),
         );
-        assert_dialogue_interrupt_replays_inputs(store, false).await;
+        assert_dialogue_interrupt_replays_inputs(store.clone(), false).await;
+        // The mock Runtime starts asynchronous event / scheduler writers.
+        // Quiesce its fixture pool before DDL: an in-flight transaction can
+        // otherwise acquire another table after DROP owns its first lock.
+        tokio::time::timeout(std::time::Duration::from_secs(5), store.pool().close())
+            .await
+            .expect("isolated Runtime pool did not drain before schema teardown");
+        assert!(store.pool().is_closed());
+        assert_eq!(store.pool().size(), 0);
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&admin)
             .await
             .unwrap();
+        admin.close().await;
     }
 
     async fn assert_dialogue_interrupt_replays_inputs<S: RuntimeStore + 'static>(

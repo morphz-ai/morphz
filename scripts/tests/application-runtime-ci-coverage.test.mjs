@@ -417,7 +417,7 @@ function verifyCompleteWebPartitions(source) {
   const node = jobSource(source, "web-node");
   const browser = jobSource(source, "web-browser");
   const required = jobSource(source, "web");
-  assert.match(node, /^          xvfb-run -a npm test\s*$/m);
+  assert.match(node, /^          xvfb-run -a npm test -- --test-concurrency=1\s*$/m);
   assert.doesNotMatch(node, /npm run test:e2e/);
   assert.doesNotMatch(browser, /\bnpm test\b/);
   assert.match(browser, /fail-fast: false\s+matrix:\s+shard: \[1, 2\]/);
@@ -453,6 +453,10 @@ function verifyCompleteWebPartitions(source) {
 test("full Node and complementary browser shards cannot be cancelled behind a green required check", () => {
   verifyCompleteWebPartitions(workflow);
   for (const [before, after] of [
+    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test"],
+    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test -- --test-concurrency=4"],
+    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test -- --test-concurrency=1 tests/only-one.test.ts"],
+    ["xvfb-run -a npm test -- --test-concurrency=1", "xvfb-run -a npm test -- --test-concurrency=1 --test-name-pattern=focused"],
     ["shard: [1, 2]", "shard: [1]"],
     ["fail-fast: false", "fail-fast: true"],
     ["needs: [web-node, web-browser]", "needs: [web-node]"],
