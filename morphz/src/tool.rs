@@ -3440,6 +3440,69 @@ impl ThreadScheduler {
             .get_thread(&current.thread_id)
             .await?
             .ok_or_else(|| format!("Target Thread for Schedule '{}' does not exist", current.id))?;
+        if current.interval_seconds.is_none() && owner.lifecycle.is_terminal() {
+            // A one-shot wake addresses this exact Thread; its terminal identity
+            // must never be revived or rebound. Retain the unfulfilled Schedule
+            // for inspection, but settle this physical timer generation once.
+            // The immutable exception survives a crash before Timer completion;
+            // neither this diagnostic nor a restart creates a Thread Signal.
+            let diagnostic = Event::new(
+                format!("schedule_rejected_{}_r{}", current.id, current.revision),
+                "Runtime-Scheduler".to_string(),
+                crate::event::TYPE_EXCEPTION.to_string(),
+                "runtime/schedule_rejected".to_string(),
+                serde_json::json!({
+                    "agent_id": owner.agent_id,
+                    "context_id": owner.context_id,
+                    "session_id": owner.session_id,
+                    "principal_id": owner.initiating_principal_id,
+                    "root_turn_id": owner.root_turn_id,
+                    "thread_id": owner.id,
+                    "schedule_id": current.id,
+                    "schedule_revision": current.revision,
+                    "reason": "target_thread_terminal",
+                    "thread_lifecycle": owner.lifecycle.as_str(),
+                    "message": "One-shot Schedule cannot deliver to an already terminal Thread; the original Schedule remains unfulfilled and inspectable."
+                })
+                .as_object()
+                .expect("Schedule rejection diagnostic is an object")
+                .clone(),
+            );
+            let previous = self
+                .events
+                .query(QueryFilter {
+                    event_id: Some(diagnostic.id.clone()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await?;
+            if let Some(previous) = previous.first() {
+                // A crash may leave this exception committed while its Timer
+                // is still claimed. Keep the original occurrence timestamp;
+                // appending a new timestamp under the same ID would conflict.
+                if previous.actor != diagnostic.actor
+                    || previous.event_type != diagnostic.event_type
+                    || previous.topic != diagnostic.topic
+                    || previous.payload != diagnostic.payload
+                {
+                    return Err(
+                        "Schedule rejection diagnostic conflicts with its immutable owner boundary"
+                            .into(),
+                    );
+                }
+            } else {
+                self.events.append(diagnostic).await?;
+            }
+            tracing::warn!(
+                event_code = "schedule.dispatch.target_terminal",
+                schedule_id = %current.id,
+                schedule_revision = current.revision,
+                thread_id = %owner.id,
+                thread_lifecycle = owner.lifecycle.as_str(),
+                "One-shot Schedule cannot reach its terminal Thread; retaining the intent without a retry loop"
+            );
+            return Ok(TimerDisposition::Complete);
+        }
         let root_turn_id = if current.interval_seconds.is_some() {
             scheduled_occurrence_root(&current.id, occurrence_revision)
         } else {
@@ -12677,6 +12740,258 @@ Body
                 .unwrap();
         }
         store
+    }
+
+    #[tokio::test]
+    async fn scheduler_terminal_one_shot_retains_intent_and_diagnostic_without_retry_or_revival() {
+        for lifecycle in [
+            ThreadLifecycle::Completed,
+            ThreadLifecycle::Failed,
+            ThreadLifecycle::Cancelled,
+        ] {
+            let database = TempSqliteDb::new().unwrap();
+            let store = scheduler_store_with_threads(
+                &database,
+                &[("thread-terminal-one-shot", "root-terminal-one-shot")],
+            )
+            .await;
+            let owner = store
+                .get_thread("thread-terminal-one-shot")
+                .await
+                .unwrap()
+                .unwrap();
+            store
+                .update_thread(
+                    &owner.id,
+                    owner.revision,
+                    None,
+                    Some(lifecycle),
+                    Some("Original terminal result"),
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            let terminal_owner = store.get_thread(&owner.id).await.unwrap().unwrap();
+            // Reproduce the legacy persisted row: an already terminal owner is
+            // referenced by a queued one-shot. Updating must not execute it.
+            let intent = seed_test_schedule(
+                &store,
+                "schedule-terminal-one-shot",
+                &owner.id,
+                chrono::Utc::now() - chrono::Duration::seconds(1),
+            )
+            .await;
+            let (scheduler, timers) =
+                build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+            scheduler.arm(intent.clone()).await.unwrap();
+            let timer_id = schedule_timer_id(&intent.id);
+            let mut exception_before_retry = None;
+            if lifecycle == ThreadLifecycle::Failed {
+                let now = chrono::Utc::now();
+                let claim = store
+                    .claim_due_runtime_timers(
+                        now,
+                        "interrupted-rejection",
+                        now + chrono::Duration::seconds(30),
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(claim.len(), 1);
+                assert_eq!(
+                    scheduler
+                        .clone()
+                        .dispatch_timer(claim[0].clone())
+                        .await
+                        .unwrap(),
+                    TimerDisposition::Complete
+                );
+                // Inject the real persistence boundary: the exception committed,
+                // but the worker did not persist physical Timer completion.
+                exception_before_retry = Some(
+                    store
+                        .query(QueryFilter {
+                            event_id: Some(format!(
+                                "schedule_rejected_{}_r{}",
+                                intent.id, intent.revision
+                            )),
+                            top_k: Some(1),
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap()
+                        .remove(0),
+                );
+                assert!(store
+                    .retry_runtime_timer(
+                        &timer_id,
+                        intent.revision,
+                        "interrupted-rejection",
+                        now - chrono::Duration::seconds(1),
+                        Some("interrupted before Timer completion"),
+                    )
+                    .await
+                    .unwrap());
+            }
+            assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+            let timer = store.get_runtime_timer(&timer_id).await.unwrap().unwrap();
+            assert_eq!(
+                timer.status,
+                crate::memory::RuntimeTimerStatus::Fired,
+                "A permanent owner boundary must not become a one-second retry"
+            );
+            assert_eq!(store.get_schedule(&intent.id).await.unwrap().unwrap(), intent,
+                "An undelivered intent remains inspectable, without a fabricated completion or cancellation");
+            assert_eq!(
+                store.get_thread(&owner.id).await.unwrap().unwrap(),
+                terminal_owner
+            );
+            let diagnostic_id = format!("schedule_rejected_{}_r{}", intent.id, intent.revision);
+            let diagnostics = store
+                .query(QueryFilter {
+                    event_id: Some(diagnostic_id.clone()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(diagnostics[0].event_type, crate::event::TYPE_EXCEPTION);
+            assert_eq!(diagnostics[0].topic, "runtime/schedule_rejected");
+            assert_eq!(diagnostics[0].payload["reason"], "target_thread_terminal");
+            assert_eq!(
+                diagnostics[0].payload["thread_lifecycle"],
+                lifecycle.as_str()
+            );
+            assert_eq!(diagnostics[0].payload["schedule_revision"], intent.revision);
+            let exception = diagnostics[0].clone();
+            if let Some(before_retry) = exception_before_retry {
+                assert_eq!(
+                    exception, before_retry,
+                    "Retry must reuse the original immutable exception, including its timestamp"
+                );
+            }
+            assert!(store
+                .query(QueryFilter {
+                    event_id: Some(format!("schedule_due_{}_r{}", intent.id, intent.revision)),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(store
+                .list_context_thread_signals("context-scheduler-test", None)
+                .await
+                .unwrap()
+                .is_empty());
+            assert_eq!(timers.dispatch_due_once().await.unwrap(), 0);
+            drop(scheduler);
+            drop(timers);
+            // A real scheduler restart must not re-arm this settled generation
+            // or erase its failure evidence while the source intent is retained.
+            let (recovered, recovered_timers) =
+                build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+            recovered.recover().await.unwrap();
+            assert_eq!(recovered_timers.dispatch_due_once().await.unwrap(), 0);
+            assert_eq!(
+                store.get_runtime_timer(&timer_id).await.unwrap().unwrap(),
+                timer
+            );
+            assert_eq!(
+                store
+                    .query(QueryFilter {
+                        event_id: Some(diagnostic_id),
+                        top_k: Some(1),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap(),
+                vec![exception]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduler_terminal_recurring_template_still_creates_a_fresh_occurrence() {
+        let database = TempSqliteDb::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-terminal-template", "root-terminal-template")],
+        )
+        .await;
+        let owner = store
+            .get_thread("thread-terminal-template")
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .update_thread(
+                &owner.id,
+                owner.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                Some("Original occurrence completed"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let terminal_owner = store.get_thread(&owner.id).await.unwrap().unwrap();
+        let intent = store
+            .ensure_schedule(NewSchedule {
+                id: "schedule-terminal-template".to_string(),
+                thread_id: owner.id.clone(),
+                source_turn_id: owner.root_turn_id.clone(),
+                intent: "Run only the new periodic occurrence".to_string(),
+                model_alias: None,
+                reasoning_effort: None,
+                not_before: Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                interval_seconds: Some(3600),
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let (scheduler, timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+        scheduler.arm(intent.clone()).await.unwrap();
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        assert_eq!(
+            store.get_thread(&owner.id).await.unwrap().unwrap(),
+            terminal_owner
+        );
+        let occurrence_root = scheduled_occurrence_root(&intent.id, intent.revision);
+        let occurrence = store
+            .get_thread_by_root(&occurrence_root)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(occurrence.id, owner.id);
+        assert_eq!(occurrence.lifecycle, ThreadLifecycle::Open);
+        let signals = store
+            .list_context_thread_signals("context-scheduler-test", None)
+            .await
+            .unwrap();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].thread_id, occurrence.id);
+        let current = store.get_schedule(&intent.id).await.unwrap().unwrap();
+        assert_eq!(current.status, ScheduleStatus::Queued);
+        assert_eq!(current.revision, intent.revision + 1);
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(format!(
+                    "schedule_rejected_{}_r{}",
+                    intent.id, intent.revision
+                )),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     async fn seed_test_schedule(
