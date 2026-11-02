@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { basename, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import test from "node:test";
-import react from "@vitejs/plugin-react";
+import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import { automaticTestBrowser } from "../scripts/test-capabilities.mjs";
 
@@ -37,90 +39,142 @@ createRoot(document.getElementById('root')).render(<Frame/>);
 test(
   "real control dialogs keep long-goal actions reachable and do not await unrelated view refresh",
   { timeout: 120000 },
-  async () => {
+  async (t) => {
     const env = await automaticTestBrowser();
     const executable = env.MORPHZ_TEST_BROWSER_EXECUTABLE;
     assert.ok(
       existsSync(executable || chromium.executablePath()),
       "installed test browser required; no skip fallback",
     );
-    const cache = mkdtempSync(join(tmpdir(), "morphz-control-dialog-"));
     const captures = process.env.MORPHZ_CONTROL_SCREENSHOT_DIR;
     if (captures) mkdirSync(captures, { recursive: true, mode: 0o700 });
-    const server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir: cache,
-      logLevel: "error",
-      resolve: {
-        dedupe: ["react", "react-dom"],
-        alias: [
+    const assets = new Map<string, Uint8Array>();
+    // Prepare both real component graphs without running their effects. The
+    // timed browser cases retain all existing 5s assertions and real CSS.
+    for (const lane of ["dashboard", "desktop"] as const) {
+      const started = performance.now();
+      const bundle = await build({
+        stdin: {
+          contents: fixture(lane === "dashboard"),
+          sourcefile: `control-${lane}.tsx`,
+          loader: "tsx",
+          resolveDir: resolve("."),
+        },
+        bundle: true,
+        platform: "browser",
+        format: "esm",
+        target: "es2023",
+        jsx: "automatic",
+        alias: {
+          react: resolve("node_modules/react"),
+          "react-dom": resolve("node_modules/react-dom"),
+        },
+        define: {
+          "process.env.NODE_ENV": JSON.stringify("development"),
+          "import.meta.env": JSON.stringify({
+            BASE_URL: "/",
+            DEV: true,
+            MODE: "development",
+            PROD: false,
+            SSR: false,
+          }),
+        },
+        write: false,
+        outfile: resolve(`tests/.control-fixture/control-${lane}.js`),
+        metafile: true,
+        plugins: [
           {
-            find: /^react$/,
-            replacement: resolve("node_modules/react/index.js"),
-          },
-          {
-            find: /^react\/jsx-runtime$/,
-            replacement: resolve("node_modules/react/jsx-runtime.js"),
-          },
-          {
-            find: /^react\/jsx-dev-runtime$/,
-            replacement: resolve("node_modules/react/jsx-dev-runtime.js"),
+            name: "actual-control-component-imports",
+            setup(builder) {
+              builder.onResolve({ filter: /\?url$/ }, async (args) => {
+                const result = await builder.resolve(args.path.slice(0, -4), {
+                  resolveDir: args.resolveDir,
+                  kind: args.kind,
+                });
+                if (result.errors.length) return { errors: result.errors };
+                return { path: result.path, namespace: "control-asset" };
+              });
+              builder.onLoad(
+                { filter: /.*/, namespace: "control-asset" },
+                async (args) => ({
+                  contents: await readFile(args.path),
+                  loader: "file",
+                }),
+              );
+              builder.onResolve({ filter: /^\/(?:src|@fs)\// }, ({ path }) => ({
+                path: path.startsWith("/src/")
+                  ? resolve("apps/web", path.slice(1))
+                  : path.slice("/@fs/".length),
+              }));
+            },
           },
         ],
-      },
-      optimizeDeps: {
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
-      },
-      plugins: [
-        {
-          name: "control-dialog-fixture",
-          resolveId(id) {
-            if (id.startsWith("/__control-") && id.endsWith(".tsx"))
-              return "\0" + id;
+      });
+      const compiled = new Set(
+        Object.keys(bundle.metafile.inputs).map((path) => resolve(path)),
+      );
+      for (const path of lane === "dashboard"
+        ? [
+            "../dashboard/src/App.tsx",
+            "../dashboard/src/index.css",
+            "../dashboard/src/App.css",
+          ]
+        : [
+            "apps/web/src/SubjectObjectiveDialog.tsx",
+            "apps/web/src/SubjectObjectives.tsx",
+            "apps/web/src/ExecutionSidebar.tsx",
+          ])
+        assert.ok(
+          compiled.has(resolve(path)),
+          `Actual control source is required: ${path}`,
+        );
+      assert.ok(
+        bundle.outputFiles.some((file) => file.path.endsWith(".js")) &&
+          bundle.outputFiles.some((file) => file.path.endsWith(".css")),
+      );
+      for (const file of bundle.outputFiles)
+        assets.set("/" + basename(file.path), file.contents);
+      t.diagnostic(
+        JSON.stringify({
+          controlFixturePreparation: {
+            lane,
+            coldCache: true,
+            compileMs: Math.round(performance.now() - started),
+            bundleInputCount: compiled.size,
           },
-          load(id) {
-            if (id.startsWith("\0/__control-"))
-              return transformWithOxc(
-                fixture(id.includes("dashboard")),
-                id.slice(1),
-              );
-          },
-          configureServer(vite) {
-            vite.middlewares.use(async (req, res, next) => {
-              if (
-                !req.url?.startsWith("/__control/") ||
-                req.url.includes(".tsx")
-              )
-                return next();
-              const lane = req.url.includes("dashboard")
-                ? "dashboard"
-                : "desktop";
-              res.setHeader("Content-Type", "text/html");
-              res.end(
-                await vite.transformIndexHtml(
-                  req.url,
-                  '<!doctype html><html data-color-mode="light"><head><base href="/"><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module" src="/__control-' +
-                    lane +
-                    '.tsx"></script></body></html>',
-                ),
-              );
-            });
-          },
-        },
-        react(),
-      ],
-      server: {
-        host: "127.0.0.1",
-        port: 0,
-        hmr: false,
-        fs: { allow: [resolve("..")] },
-      },
+        }),
+      );
+    }
+    const server = createServer((request, response) => {
+      response.setHeader("Cache-Control", "no-store");
+      const path = request.url?.split("?")[0] ?? "";
+      if (path.startsWith("/__control/")) {
+        const lane = path.includes("dashboard") ? "dashboard" : "desktop";
+        response.setHeader("Content-Type", "text/html; charset=utf-8");
+        response.end(
+          `<!doctype html><html data-color-mode="light"><head><base href="/"><link rel="icon" href="data:,"><link rel="stylesheet" href="/control-${lane}.css"></head><body><div id="root"></div><script type="module" src="/control-${lane}.js"></script></body></html>`,
+        );
+      } else if (assets.has(path)) {
+        response.setHeader(
+          "Content-Type",
+          path.endsWith(".css")
+            ? "text/css; charset=utf-8"
+            : /\.(?:js|mjs)$/.test(path)
+              ? "text/javascript; charset=utf-8"
+              : "application/octet-stream",
+        );
+        response.end(assets.get(path));
+      } else {
+        response.writeHead(404);
+        response.end();
+      }
     });
     let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    let diagnose: (() => Promise<void>) | undefined;
     try {
-      await server.listen();
-      const address = server.httpServer!.address();
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
       assert.ok(address && typeof address !== "string");
       const base = `http://127.0.0.1:${address.port}`;
       browser = await chromium.launch({
@@ -129,7 +183,51 @@ test(
       });
       const page = await browser.newPage({ locale: "zh-CN" });
       const errors: string[] = [];
+      const consoleErrors: string[] = [],
+        failedRequests: string[] = [],
+        scripts: string[] = [],
+        styles: string[] = [];
       page.on("pageerror", (e) => errors.push(e.message));
+      page.on("console", (message) => {
+        if (message.type() === "error")
+          consoleErrors.push(message.text().slice(0, 500));
+      });
+      page.on("requestfailed", (request) =>
+        failedRequests.push(new URL(request.url()).pathname),
+      );
+      page.on("request", (request) => {
+        const url = new URL(request.url());
+        if (url.origin !== base) return;
+        if (request.resourceType() === "script") scripts.push(url.pathname);
+        if (url.pathname.endsWith(".css")) styles.push(url.pathname);
+      });
+      diagnose = async () => {
+        t.diagnostic(
+          JSON.stringify({
+            controlFixtureFailure: {
+              errors,
+              consoleErrors: consoleErrors.slice(-10),
+              failedRequests: failedRequests.slice(-20),
+              page: await page
+                .evaluate(() => ({
+                  path: location.pathname,
+                  readyState: document.readyState,
+                  fixturePresent: !!Reflect.get(window, "controlFixture"),
+                  dialogs: document.querySelectorAll('[role="dialog"]').length,
+                  body: document.body.textContent?.slice(0, 500),
+                  resources: performance
+                    .getEntriesByType("resource")
+                    .slice(-20)
+                    .map((entry) => ({
+                      path: new URL(entry.name).pathname,
+                      duration: entry.duration,
+                    })),
+                }))
+                .catch((error) => ({ unavailable: String(error) })),
+            },
+          }),
+        );
+      };
       for (const viewport of [
         { width: 1440, height: 900 },
         { width: 375, height: 600 },
@@ -322,10 +420,41 @@ test(
         }
       }
       assert.deepEqual(errors, []);
+      assert.deepEqual(
+        scripts.filter(
+          (path) =>
+            path !== "/control-dashboard.js" && path !== "/control-desktop.js",
+        ),
+        [],
+      );
+      assert.equal(
+        scripts.filter((path) => path === "/control-dashboard.js").length,
+        3,
+      );
+      assert.equal(
+        scripts.filter((path) => path === "/control-desktop.js").length,
+        6,
+      );
+      assert.equal(
+        styles.filter((path) => path === "/control-dashboard.css").length,
+        3,
+      );
+      assert.equal(
+        styles.filter((path) => path === "/control-desktop.css").length,
+        6,
+      );
+    } catch (error) {
+      await diagnose?.();
+      throw error;
     } finally {
-      await browser?.close();
-      await server.close();
-      rmSync(cache, { recursive: true, force: true });
+      try {
+        await browser?.close();
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
     }
   },
 );
