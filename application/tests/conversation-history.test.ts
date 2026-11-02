@@ -283,6 +283,46 @@ test("fixed original oracle: any visible input/message ends earlier paging; scri
   }
 });
 
+test("metadata-only recovery windows retain their cursor and one click budget until readable text arrives", async () => {
+  const f = fixture(createConversationHistory);
+  try {
+    let page = 0;
+    f.page(async () => {
+      page++;
+      const value = history(undefined, String(9 - page));
+      value.runtime = {
+        ...disconnectedRuntime,
+        messages: [
+          {
+            ...reply("recovery-" + page),
+            kind: "progress",
+            text: page === 4 ? "Earlier real message" : "",
+            providerRecovery: {
+              startedAt: "2026-10-04T00:00:00.000Z",
+              phase: "resumed",
+              reason: "unknown",
+            },
+          },
+        ],
+      };
+      return value;
+    });
+    await f.owner.loadEarlier();
+    assert.equal(page, 4);
+    assert.equal(f.signals.size, 1);
+    assert.deepEqual(f.owner.olderCursor, cursor("5"));
+    assert.equal(f.owner.cachedForCatalog(1)?.value.runtime.messages.length, 4);
+    await ticks();
+    assert.equal(page, 4, "completion must not drain more windows while idle");
+    await f.owner.loadEarlier();
+    assert.equal(page, 8, "another explicit click owns a fresh bounded budget");
+    assert.equal(f.signals.size, 2);
+    assert.deepEqual(f.owner.olderCursor, cursor("1"));
+  } finally {
+    f.finish();
+  }
+});
+
 test("fixed original oracle: exact source jump does not wait workspace refresh; uses independent 15s page budgets", async () => {
   await compare(async (f) => {
     f.pending(new Promise<boolean>(() => {}));

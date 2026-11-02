@@ -173,7 +173,13 @@ export function createConversationHistory(ports: {
         if (!stillCurrent(captured, connection)) return;
         history = mergePlatformHistories(history, older, older.nextCursor);
         before = older.nextCursor;
-        if (older.inputs.length || older.runtime.messages.length) break;
+        // Recovery metadata remains available to status presentation, but its
+        // empty body cannot satisfy a request for earlier readable messages.
+        if (
+          older.inputs.length ||
+          older.runtime.messages.some((message) => message.text.trim())
+        )
+          break;
       }
       cache = { ...captured, value: history };
       ports.invalidateProjectionReuse();
