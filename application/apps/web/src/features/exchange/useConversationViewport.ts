@@ -157,12 +157,22 @@ export function useConversationViewportCommit(
     )
       return;
     const el = scroller.current;
-    if (el)
+    if (el) {
+      const top = el.scrollTop;
       prependPosition.current = {
         key: positionKey,
         height: el.scrollHeight,
-        top: el.scrollTop,
+        top,
       };
+      // The explicit button may have just scrolled into view, before its
+      // native scroll event is delivered. Consume that position now so a
+      // late event cannot request another page after this request settles.
+      positions.set(positionKey, {
+        top,
+        following: following.current,
+        revealed: revealed.current,
+      });
+    }
     setLoadingEarlier(true);
     setEarlierError("");
     try {

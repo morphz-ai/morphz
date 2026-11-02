@@ -35,6 +35,10 @@ const Component=historical?HistoricalConversation:CurrentConversation;
 const root=createRoot(document.getElementById('root'));
 const observers=[]; let serial=0,api,events=[],requests=[],positions,originalPositions,originalNode,originalMessage,controls,visible=true,focused=true;
 let geometryReads=0,commitGeometryReads=0;
+// A scroll-into-view event may arrive after the explicit page request has
+// failed. Hold real native events to exercise that browser ordering exactly.
+let holdNativeScroll=false,nativeScrollQueue=[];
+document.addEventListener('scroll',event=>{if(holdNativeScroll&&event.isTrusted&&event.target instanceof Element&&event.target.classList.contains('conversation')){event.stopImmediatePropagation();nativeScrollQueue.push(event.target);}},{capture:true});
 const scrollHeightDescriptor=Object.getOwnPropertyDescriptor(Element.prototype,'scrollHeight');
 Object.defineProperty(Element.prototype,'scrollHeight',{...scrollHeightDescriptor,get(){if(this.classList.contains('conversation'))geometryReads++;return scrollHeightDescriptor.get.call(this);}});
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>visible?'visible':'hidden'});
@@ -58,6 +62,7 @@ function Fixture({initial}) {
  return <article data-tick={tick}><header ref={setToolbar}/><input id="composer" aria-label="Fixture composer" defaultValue="Unsent draft"/><button id="outside" type="button">Outside control</button><dialog id="modal"><button type="button">Modal control</button></dialog>{mounted&&<Component inputs={state.inputs} state={state} runtime={runtime} messages={messages} streamConnected={false} seenReplies={{}} onRead={onRead} conversationId={config.scope} onRetry={()=>{throw Error('unexpected retry');}} client={client} onOpen={()=>{throw Error('unexpected object open');}} positions={positions} revealInputId={config.reveal} focusedArtifactId={config.focus??undefined} toolbarTarget={toolbar} onFocusComposer={config.composer==='absent'?undefined:onFocusComposer} quoteReveal={config.quote} onQuoteUnavailable={reason=>events.push(['unavailable',label,reason??null])} hasEarlierHistory={config.earlier} onLoadEarlierHistory={()=>deferred('earlier',label,null)}/>}</article>;
 }
 function reset(initial={}) {
+ holdNativeScroll=false;nativeScrollQueue=[];
  visible=true;focused=true;events=[];requests=[];positions=new Map(initial.seed??[]);originalPositions=positions;
  flushSync(()=>root.render(<StrictMode><Fixture key={++serial} initial={initial}/></StrictMode>));
  originalNode=document.querySelector('.conversation');originalMessage=document.querySelector('[data-message-id="reply-0"]');
@@ -65,6 +70,7 @@ function reset(initial={}) {
 function run(action,value){const before=geometryReads;flushSync(()=>api.run(action,value));commitGeometryReads=geometryReads-before;}
 function report(){const el=document.querySelector('.conversation');return {top:el?.scrollTop??null,height:el?.scrollHeight??null,clientHeight:el?.clientHeight??null,positions:[...positions],sameMap:positions===originalPositions,sameNode:el===originalNode,sameMessage:document.querySelector('[data-message-id="reply-0"]')===originalMessage,events,requests:requests.map(({kind,label,id,settled})=>({kind,label,id,settled})),active:document.activeElement?.id||document.activeElement?.className||document.activeElement?.tagName,away:!!document.querySelector('.conversation-return'),older:document.querySelector('.conversation-load-older')?.textContent,olderDisabled:document.querySelector('.conversation-load-older')?.disabled??null,error:document.querySelector('.conversation-load-error')?.textContent??null,markers:[...document.querySelectorAll('[data-quote-revealed]')].map(n=>n.dataset.messageId),selected:window.getSelection()?.toString(),observerActive:observers.filter(o=>o.active).length,draft:document.getElementById('composer')?.value};}
 Object.assign(window,{viewportFixture:{reset,run,report,clear(){events=[];},scroll(top){const el=document.querySelector('.conversation');el.scrollTop=top;el.dispatchEvent(new Event('scroll'));},fireResize(){for(const o of observers)if(o.active)o.callback([]);},height(value){document.querySelector('.conversation').style.height=value+'px';},readGate(kind,value){if(kind==='visible')visible=value;else focused=value;document.dispatchEvent(new Event('visibilitychange'));window.dispatchEvent(new Event('focus'));},quote(id,token,text,createdAt){const message=api.messages.find(m=>m.id===id);const quote=viewportQuote(id,text);if(message)quote.source={...quote.source,inputId:message.inputId,createdAt:message.createdAt};else if(createdAt)quote.source={...quote.source,createdAt};run('config',{quote:{quote,token}});},nonMessageQuote(){const quote={...viewportQuote('reply-2'),source:{kind:'artifact',artifactId:'object-A',revision:1,projectId:'first-project',title:'Artifact'}};run('config',{quote:{quote,token:'artifact-token'}});},settle(index,result,error){const r=requests[index];if(!r||r.settled)throw Error('invalid deferred request');r.settled=true;if(error==='nonerror')r.reject('fixture rejection');else if(error)r.reject(Error(error));else r.accept(result);},rect(id){const el=document.querySelector('.conversation'),message=[...document.querySelectorAll('[data-message-id]')].find(n=>n.dataset.messageId===id);return {top:message.getBoundingClientRect().top-el.getBoundingClientRect().top,scroll:el.scrollTop};}}});
+Object.assign(window.viewportFixture,{holdNativeScroll(){holdNativeScroll=true;nativeScrollQueue=[];},flushNativeScroll(){holdNativeScroll=false;const queued=nativeScrollQueue.splice(0);for(const target of queued)target.dispatchEvent(new Event('scroll'));},nativeScrollQueued(){return nativeScrollQueue.length;}});
 reset();
 window.viewportFixture.commitGeometryReads=()=>commitGeometryReads;
 `;
@@ -628,11 +634,29 @@ test(
             after.top,
             value.positions,
           ]);
-          await page
-            .getByRole("button", { name: "查看更早消息", exact: true })
-            .click();
-          value = await call(page, "settle", 1, undefined, "history failure");
-          assert.equal(value.error, "history failure");
+          await call(page, "holdNativeScroll");
+          try {
+            await page
+              .getByRole("button", { name: "查看更早消息", exact: true })
+              .click();
+            value = await call(page, "settle", 1, undefined, "history failure");
+            assert.equal(value.error, "history failure", JSON.stringify(value));
+            assert(
+              await page.evaluate(() =>
+                Reflect.get(window, "viewportFixture").nativeScrollQueued(),
+              ),
+              "the real button scroll-into-view queued a native scroll event",
+            );
+          } finally {
+            value = await call(page, "flushNativeScroll");
+          }
+          assert.equal(
+            value.error,
+            "history failure",
+            "a late native scroll cannot clear the failed explicit page: " +
+              JSON.stringify(value),
+          );
+          assert.equal(value.requests.length, 2);
           assert.equal(value.olderDisabled, false);
           await page
             .getByRole("button", { name: "查看更早消息", exact: true })

@@ -554,14 +554,22 @@ const postLayoutReference = parse({
 // Keep the immutable archive and every other action/effect unchanged. This
 // reviewed contract adds the synchronous pending-anchor guard and directional
 // trigger; complete mounted tests exercise real scroll events and geometry.
+// 2026-11-02: a button request also consumes its actual scroll position before
+// waiting, so a delayed native scroll cannot turn one read into two requests.
 const paginationReference = parse({
   Pagination: `
 async function loadEarlier() {
   if (!onLoadEarlierHistory || loadingEarlier || prependPosition.current?.key === positionKey) return;
   const el = scroller.current;
-  if (el) prependPosition.current = {
-    key: positionKey, height: el.scrollHeight, top: el.scrollTop,
-  };
+  if (el) {
+    const top = el.scrollTop;
+    prependPosition.current = {
+      key: positionKey, height: el.scrollHeight, top,
+    };
+    positions.set(positionKey, {
+      top, following: following.current, revealed: revealed.current,
+    });
+  }
   setLoadingEarlier(true);
   setEarlierError("");
   try { await onLoadEarlierHistory(); }
@@ -1777,6 +1785,16 @@ test("viewport private registration rejects public writers, clones and substitut
   );
 });
 test("viewport actions preserve exact preload, read/focus ordering and return-latest behavior", () => {
+  rejects(
+    "Owner",
+    `      positions.set(positionKey, {
+        top,
+        following: following.current,
+        revealed: revealed.current,
+      });`,
+    "",
+    "viewport-action:loadEarlier",
+  );
   rejects(
     "Owner",
     "if (\n      !onLoadEarlierHistory ||\n      loadingEarlier ||\n      prependPosition.current?.key === positionKey\n    )\n      return;",
