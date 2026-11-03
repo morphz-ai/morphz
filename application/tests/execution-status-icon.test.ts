@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { CircleStop } from "lucide-react";
 import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { chromium, type Browser } from "@playwright/test";
@@ -32,6 +33,8 @@ const kinds: readonly (FixedKind | undefined)[] = [
   undefined,
 ];
 const render = renderToStaticMarkup;
+const approvedCancelledGlyph = (size: 18 | 19) =>
+  render(createElement(CircleStop, { size, "aria-hidden": "true" }));
 
 test("fixed 14ae1de6 oracle is the independently verified original maps/ternaries and waveform, not a production import", () => {
   // Recorded only after comparing the original two maps/ternaries and running
@@ -46,15 +49,17 @@ test("fixed 14ae1de6 oracle is the independently verified original maps/ternarie
   );
 });
 
-test("all seven kinds and undefined keep exact original SVG bytes, with consumer-specific 18/19 static sizes and no wrapper", () => {
+test("only the approved cancelled stop glyph changes; other kinds retain exact original SVG bytes, 18/19 sizes and no wrapper", () => {
   for (const size of [18, 19] as const)
     for (const kind of kinds) {
       const expected =
-        size === 18
-          ? render(createElement(FixedDialogGlyph, { kind }))
-          : render(
-              createElement(FixedSidebarGlyph, { kind: kind ?? "unknown" }),
-            );
+        kind === "cancelled"
+          ? approvedCancelledGlyph(size)
+          : size === 18
+            ? render(createElement(FixedDialogGlyph, { kind }))
+            : render(
+                createElement(FixedSidebarGlyph, { kind: kind ?? "unknown" }),
+              );
       // Undefined is a real old Dialog fallback. At 19 it is the same old
       // Sidebar unknown glyph; Sidebar itself never supplied undefined.
       const actual = render(createElement(ExecutionStatusIcon, { kind, size }));
@@ -123,9 +128,9 @@ function Fixture() {
 }
 Object.assign(window, { statusIconFixture: {
   run(patch) { command(patch); },
-  remember() { for (const lane of lanes) { const span = document.getElementById(lane), svg = span.querySelector('svg'); remembered.set(lane, { span, svg, paths: [...svg.querySelectorAll('path')] }); } },
+  remember() { for (const lane of lanes) { const span = document.getElementById(lane), svg = span.querySelector('svg'); remembered.set(lane, { span, svg, paths: [...svg.children] }); } },
   report() { return { ...current, lanes: lanes.map(lane => {
-    const span = document.getElementById(lane), svg = span?.querySelector('svg'), old = remembered.get(lane), paths = [...(svg?.querySelectorAll('path') ?? [])];
+    const span = document.getElementById(lane), svg = span?.querySelector('svg'), old = remembered.get(lane), paths = [...(svg?.children ?? [])];
     return { lane, html: span?.innerHTML, outerSame: old?.span === span, svgSame: old?.svg === svg,
       pathsSame: old?.paths.map((path, index) => path === paths[index]), oldConnected: old?.span.isConnected ?? false,
       oldSvgConnected: old?.svg.isConnected ?? false, oldPathsConnected: old?.paths.map(path => path.isConnected),
@@ -136,6 +141,8 @@ createRoot(document.getElementById('root')).render(<StrictMode><Fixture/></Stric
 `;
 type MountedReport = {
   sequence: number;
+  kind?: FixedKind;
+  size: 18 | 19 | null;
   lanes: {
     lane: string;
     html?: string;
@@ -266,8 +273,24 @@ test(
       return report();
     };
     const parity = (value: MountedReport) => {
-      assert.equal(value.lanes[1]!.html, value.lanes[0]!.html);
-      assert.equal(value.lanes[3]!.html, value.lanes[2]!.html);
+      if (value.kind === "cancelled") {
+        for (const [index, size] of [
+          [1, 19],
+          [3, 18],
+        ] as const) {
+          assert.equal(
+            value.lanes[index]!.html,
+            approvedCancelledGlyph(value.size ?? size),
+          );
+          assert.notEqual(
+            value.lanes[index]!.html,
+            value.lanes[index - 1]!.html,
+          );
+        }
+      } else {
+        assert.equal(value.lanes[1]!.html, value.lanes[0]!.html);
+        assert.equal(value.lanes[3]!.html, value.lanes[2]!.html);
+      }
       for (const [oldIndex, newIndex] of [
         [0, 1],
         [2, 3],
