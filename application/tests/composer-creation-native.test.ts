@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
-import react from "@vitejs/plugin-react";
 import { _electron, expect } from "@playwright/test";
-import { createLogger, createServer } from "vite";
+import {
+  prepareMountedAppFixture,
+  assertPreparedAppDocument,
+} from "./fixtures/mounted-app-fixture.js";
 import { nativeTestEnvironment } from "./fixtures/native-test-environment.js";
 
 test(
@@ -16,9 +18,6 @@ test(
     const observation = mountedFixtureObservation(
       t,
       "composer-creation-native",
-    );
-    const cacheDir = await mkdtemp(
-      resolve(tmpdir(), "morphz-creation-native-vite-"),
     );
     const profile = await mkdtemp(
       resolve(tmpdir(), "morphz-creation-native-profile-"),
@@ -35,79 +34,28 @@ test(
         observation.stage("cleanup.desktop.end");
       } finally {
         try {
-          observation.stage("cleanup.vite.begin");
+          observation.stage("cleanup.fixture.begin");
           await closeServer();
-          observation.stage("cleanup.vite.end");
+          observation.stage("cleanup.fixture.end");
         } finally {
-          await Promise.all([
-            rm(cacheDir, { recursive: true, force: true }),
-            rm(profile, { recursive: true, force: true }),
-          ]);
+          await rm(profile, { recursive: true, force: true });
         }
       }
     });
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choice-app-mounted.tsx",
     );
-    const compileErrors: string[] = [];
-    const logger = createLogger();
-    observation.stage("vite.create.begin");
-    const server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir,
-      customLogger: {
-        ...logger,
-        error(message, options) {
-          compileErrors.push(message);
-          logger.error(message, options);
-        },
-      },
-      optimizeDeps: {
-        entries: [fixture],
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
-      },
-      plugins: [
-        react(),
-        {
-          name: "native-creation-menu-controlled-app",
-          configureServer(vite) {
-            vite.middlewares.use(async (req, res, next) => {
-              if (req.url?.split("?")[0] !== "/__new-menu-native")
-                return next();
-              res.setHeader("Content-Type", "text/html");
-              res.end(
-                await vite.transformIndexHtml(
-                  req.url!,
-                  `<!doctype html><html><head><link rel="icon" href="data:,"/></head><body><div id="root"></div><script type="module" src="/@fs/${fixture}"></script></body></html>`,
-                ),
-              );
-            });
-          },
-        },
-      ],
-      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
-    });
-    closeServer = () => server.close();
-    observation.stage("vite.listen.begin");
-    await server.listen();
-    observation.stage("vite.listen.end");
-    // The same fixture's browser test prepares this exact dynamic App graph.
-    // Transform only; transport installation and App execution still occur in Electron.
-    observation.stage("vite.compile.begin");
-    const client = server.environments.client!;
-    assert.ok(await client.transformRequest(`/@fs/${fixture}`));
-    assert.ok(await client.transformRequest("/src/App.tsx"));
-    await client.waitForRequestsIdle();
-    assert.deepEqual(
-      compileErrors,
-      [],
-      "Native creation App compilation failed",
+    observation.stage("bundle.prepare.begin");
+    const server = await prepareMountedAppFixture(
+      fixture,
+      "/__new-menu-native",
     );
-    observation.stage("vite.compile.end");
-    const address = server.httpServer!.address();
-    assert(address && typeof address !== "string");
-    const url = `http://127.0.0.1:${address.port}/__new-menu-native?mode=fresh`;
+    closeServer = () => server.close();
+    t.diagnostic(
+      JSON.stringify({ nativeCreationFixturePreparation: server.preparation }),
+    );
+    observation.stage("bundle.prepare.end");
+    const url = `${server.url}?mode=fresh`;
     observation.stage("electron.launch.begin");
     const desktop = await _electron.launch({
       args: [resolve("tests/fixtures/composer-creation-native-entry.cjs")],
@@ -117,7 +65,7 @@ test(
         MORPHZ_CREATION_NATIVE_URL: url,
       },
     });
-    // Close owned Electron before removing its private profile and Vite cache.
+    // Close owned Electron before removing its private profile and prepared server.
     closeDesktop = () => desktop.close();
     observation.stage("electron.launch.end");
     const ownedElectronPid = await desktop.evaluate(() => process.pid);
@@ -137,6 +85,7 @@ test(
         throw error;
       });
     observation.stage("textbox.wait.end");
+    await assertPreparedAppDocument(page, "/__new-menu-native");
     await page.waitForFunction(
       () =>
         Reflect.get(window, "cognitiveChoiceAppFixture")

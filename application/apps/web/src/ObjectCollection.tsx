@@ -399,7 +399,7 @@ export function ObjectCollection({
                       </time>
                     </div>
                   </button>
-                  <div className="content-item-actions">
+                  <div className="content-item-actions" key="content-actions">
                     <ComposerOptions
                       label={`内容操作：${script.title}`}
                       menuLabel="内容操作"
@@ -480,7 +480,7 @@ export function ObjectCollection({
                       </time>
                     </div>
                   </button>
-                  <div className="content-item-actions">
+                  <div className="content-item-actions" key="content-actions">
                     <button
                       className="icon-button"
                       aria-label={`让智能体处理：${a.title}`}
@@ -515,7 +515,7 @@ export function ObjectCollection({
             if (entry.kind === "script") {
               const p = entry.value;
               return (
-                <article className="artifact-card" key={p.id}>
+                <article className="artifact-card" key={p.contentId ?? p.id}>
                   <button
                     className="artifact-card-open"
                     aria-label={`打开内容：${p.title}`}
@@ -544,7 +544,7 @@ export function ObjectCollection({
                       </time>
                     </div>
                   </button>
-                  <div className="content-item-actions">
+                  <div className="content-item-actions" key="content-actions">
                     <ComposerOptions
                       label={`内容操作：${p.title}`}
                       menuLabel="内容操作"
@@ -630,7 +630,7 @@ export function ObjectCollection({
                     {tasks.length > 1 && <span>等 {tasks.length} 项</span>}
                   </div>
                 )}
-                <div className="content-item-actions">
+                <div className="content-item-actions" key="content-actions">
                   <button
                     className="icon-button"
                     aria-label={`让智能体处理：${a.title}`}

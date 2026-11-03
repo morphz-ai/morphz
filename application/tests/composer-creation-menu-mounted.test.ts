@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
-import react from "@vitejs/plugin-react";
 import { chromium } from "@playwright/test";
-import { createServer } from "vite";
+import {
+  prepareMountedAppFixture,
+  assertPreparedAppDocument,
+} from "./fixtures/mounted-app-fixture.js";
 
 test(
   "production App + menu prepares guarded drafts only; real mounted keyboard/geometry with controlled transport, not SQL/native/manual App",
@@ -17,47 +19,17 @@ test(
       existsSync(executable || chromium.executablePath()),
       "formal entry supplies Chromium",
     );
-    const cacheDir = await mkdtemp(
-      resolve(tmpdir(), "morphz-creation-menu-vite-"),
-    );
     const evidenceDir = await mkdtemp(
       resolve(tmpdir(), "morphz-creation-menu-evidence-"),
     );
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choice-app-mounted.tsx",
     );
-    const server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir,
-      optimizeDeps: {
-        entries: [fixture],
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
-      },
-      plugins: [
-        react(),
-        {
-          name: "new-menu-mounted",
-          configureServer(vite) {
-            vite.middlewares.use(async (req, res, next) => {
-              if (req.url?.split("?")[0] !== "/__new-menu") return next();
-              res.setHeader("Content-Type", "text/html");
-              res.end(
-                await vite.transformIndexHtml(
-                  req.url!,
-                  `<!doctype html><html><head><link rel="icon" href="data:,"/></head><body><div id="root"></div><script type="module" src="/@fs/${fixture}"></script></body></html>`,
-                ),
-              );
-            });
-          },
-        },
-      ],
-      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
-    });
-    await server.listen();
-    const address = server.httpServer!.address();
-    assert(address && typeof address !== "string");
-    const url = `http://127.0.0.1:${address.port}/__new-menu`;
+    const server = await prepareMountedAppFixture(fixture, "/__new-menu");
+    t.diagnostic(
+      JSON.stringify({ creationMenuFixturePreparation: server.preparation }),
+    );
+    const url = server.url;
     const browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
@@ -66,11 +38,7 @@ test(
       try {
         await browser.close();
       } finally {
-        try {
-          await server.close();
-        } finally {
-          await rm(cacheDir, { recursive: true, force: true });
-        }
+        await server.close();
       }
     });
     const page = await browser.newPage({
@@ -135,6 +103,7 @@ test(
     async function load(mode = "fresh") {
       await page.goto(`${url}?mode=${mode}`);
       await input().waitFor({ timeout: 15_000 });
+      await assertPreparedAppDocument(page, "/__new-menu");
       await page.waitForFunction(
         () =>
           Reflect.get(window, "cognitiveChoiceAppFixture")

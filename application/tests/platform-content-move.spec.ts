@@ -239,34 +239,68 @@ test("内容改名冲突保留未提交名称，不覆盖应用原件", async ({
     markdown: "原件正文保持不变",
   })) as { contentId: string };
 
-  await page.goto("/");
-  await page
-    .getByRole("navigation", { name: "主导航" })
-    .getByRole("button", { name: "内容库", exact: true })
-    .click();
-  await page.getByRole("button", { name: `内容操作：${title}` }).click();
-  await page.getByRole("button", { name: "重命名", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "重命名内容" });
-  const field = dialog.getByRole("textbox", { name: "内容名称" });
-  await field.fill(draftTitle);
+  let bodyReadStarted!: () => void;
+  const bodyRead = new Promise<void>((resolve) => (bodyReadStarted = resolve));
+  let releaseBody!: () => void;
+  const released = new Promise<void>((resolve) => (releaseBody = resolve));
+  await page.route(
+    (url) => url.pathname === `/api/platform/objects/${created.contentId}`,
+    async (route) => {
+      const response = await route.fetch();
+      bodyReadStarted();
+      await released;
+      await route.fulfill({ response });
+    },
+  );
 
-  await source.reviseDocument({
-    commandId: randomUUID(),
-    contentId: created.contentId,
-    expectedRevision: 1,
-    title: remoteTitle,
-    markdown: "原件正文保持不变",
-  });
-  await dialog.getByRole("button", { name: "保存" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("变化");
-  await expect(field).toHaveValue(draftTitle);
-  await expect(source.readDocument(created.contentId)).resolves.toMatchObject({
-    title: remoteTitle,
-    markdown: "原件正文保持不变",
-    revision: 2,
-  });
-  await expect(source.getContent(created.contentId)).resolves.toMatchObject({
-    title: remoteTitle,
-    revision: 2,
-  });
+  try {
+    await page.goto("/");
+    await page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: "内容库", exact: true })
+      .click();
+    await page.getByRole("button", { name: `内容操作：${title}` }).click();
+    const rename = page.getByRole("button", { name: "重命名", exact: true });
+    await expect(rename).toBeVisible();
+    const originalMenuItem = await rename.elementHandle();
+    await bodyRead;
+    releaseBody();
+    await expect(
+      page
+        .locator(".artifact-card")
+        .filter({ hasText: title })
+        .locator(".content-origin"),
+    ).toBeVisible();
+    expect(await originalMenuItem!.evaluate((node) => node.isConnected)).toBe(
+      true,
+    );
+    await page.getByRole("button", { name: "重命名", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "重命名内容" });
+    const field = dialog.getByRole("textbox", { name: "内容名称" });
+    await field.fill(draftTitle);
+
+    await source.reviseDocument({
+      commandId: randomUUID(),
+      contentId: created.contentId,
+      expectedRevision: 1,
+      title: remoteTitle,
+      markdown: "原件正文保持不变",
+    });
+    await dialog.getByRole("button", { name: "保存" }).click();
+    await expect(dialog.getByRole("alert")).toContainText("变化");
+    await expect(field).toHaveValue(draftTitle);
+    await expect(source.readDocument(created.contentId)).resolves.toMatchObject(
+      {
+        title: remoteTitle,
+        markdown: "原件正文保持不变",
+        revision: 2,
+      },
+    );
+    await expect(source.getContent(created.contentId)).resolves.toMatchObject({
+      title: remoteTitle,
+      revision: 2,
+    });
+  } finally {
+    releaseBody();
+  }
 });

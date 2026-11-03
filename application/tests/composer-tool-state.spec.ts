@@ -240,18 +240,29 @@ test("生产 Desktop 的交流选中态在窄窗和真实 200% 缩放下清晰�
         },
         { width: width!, zoom: zoom! },
       );
-      // Match the real panel decision, not a guessed outer-window breakpoint.
+      // Native resize/zoom returns before the renderer has applied its new
+      // viewport. An old panel can still match its old compact marker then.
       await expect
         .poll(() =>
-          controls.evaluate((element) => {
-            const panel = element.closest<HTMLElement>(".exchange-panel")!;
-            return (
-              element.hasAttribute("data-compact") === panel.clientWidth <= 620
-            );
-          }),
+          desktop.evaluate(
+            ({ BrowserWindow }) =>
+              BrowserWindow.getAllWindows()
+                .find(
+                  (window) => window.webContents.getURL() === "morphz://app/",
+                )!
+                .getSize()[0],
+          ),
         )
-        .toBe(true);
-      const compact = (await controls.getAttribute("data-compact")) === "true";
+        .toBe(width);
+      const contentWidth = await desktop.evaluate(
+        ({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()
+            .find((window) => window.webContents.getURL() === "morphz://app/")!
+            .getContentSize()[0],
+      );
+      await expect
+        .poll(() => page.evaluate(() => innerWidth))
+        .toBe(Math.round(contentWidth! / zoom!));
       for (const appearance of ["light", "dark"])
         for (const accent of ["cyan", "iris", "coral", "mono"]) {
           await page.locator(".app").evaluate(
@@ -263,6 +274,21 @@ test("生产 Desktop 的交流选中态在窄窗和真实 200% 缩放下清晰�
           );
           await input.focus();
           await input.hover();
+          // Match the live panel after focus/layout, for every captured theme.
+          // Keep the exact compact/wide button counts and paint assertions.
+          await expect
+            .poll(() =>
+              controls.evaluate((element) => {
+                const panel = element.closest<HTMLElement>(".exchange-panel")!;
+                return (
+                  element.hasAttribute("data-compact") ===
+                  panel.clientWidth <= 620
+                );
+              }),
+            )
+            .toBe(true);
+          const compact =
+            (await controls.getAttribute("data-compact")) === "true";
           for (const button of await controls
             .locator(":scope > button")
             .all()) {

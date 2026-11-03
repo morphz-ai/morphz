@@ -132,7 +132,7 @@ test("活动结束保留对勾但不隐藏失败，步骤按真实时间正序�
   ).toHaveCount(1);
   await expect(
     panel.locator(
-      '[data-thread-id="TEST-cancelled"] .execution-activity-icon svg.lucide-circle-slash',
+      '[data-thread-id="TEST-cancelled"] .execution-activity-icon svg.lucide-circle-stop',
     ),
   ).toHaveCount(1);
   await panel.screenshot({

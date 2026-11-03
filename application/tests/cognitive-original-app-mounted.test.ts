@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
-import react from "@vitejs/plugin-react";
 import { chromium, type Browser, type Page } from "@playwright/test";
-import { createLogger, createServer, type ViteDevServer } from "vite";
-import { prepareDynamicAppFixture } from "./fixtures/prepare-dynamic-app-fixture.js";
+import {
+  prepareMountedAppFixture,
+  assertPreparedAppDocument,
+  type MountedAppFixture,
+} from "./fixtures/mounted-app-fixture.js";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -35,77 +35,22 @@ test(
       existsSync(executable || chromium.executablePath()),
       "formal test entry must prepare actual Chromium",
     );
-    const cacheDir = await mkdtemp(
-      resolve(tmpdir(), "morphz-original-app-vite-"),
-    );
-    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    let server: MountedAppFixture | undefined, browser: Browser | undefined;
     t.after(async () => {
       try {
         await browser?.close();
       } finally {
-        try {
-          await server?.close();
-        } finally {
-          await rm(cacheDir, { recursive: true, force: true });
-        }
+        await server?.close();
       }
     });
     const fixture = resolve(
       "tests/fixtures/cognitive-original-app-mounted.tsx",
     );
-    const compileErrors: string[] = [];
-    const logger = createLogger();
-    server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir,
-      customLogger: {
-        ...logger,
-        error(message, options) {
-          compileErrors.push(message);
-          logger.error(message, options);
-        },
-      },
-      optimizeDeps: {
-        entries: [fixture],
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
-      },
-      plugins: [
-        react(),
-        {
-          name: "complete-original-app-controlled",
-          configureServer(vite) {
-            vite.middlewares.use(async (request, response, next) => {
-              if (request.url?.split("?")[0] !== "/__original-app")
-                return next();
-              response.setHeader("Content-Type", "text/html");
-              response.end(
-                await vite.transformIndexHtml(
-                  request.url!,
-                  `<!doctype html><html><head><link rel="icon" href="data:,"/></head><body><div id="root"></div><script type="module" src="/@fs/${fixture}"></script></body></html>`,
-                ),
-              );
-            });
-          },
-        },
-      ],
-      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
-    });
-    await server.listen();
-    const address = server.httpServer!.address();
-    assert(address && typeof address !== "string");
-    const serverUrl = `http://127.0.0.1:${address.port}/__original-app`;
-    // The fixture installs its controlled transport before a dynamic App
-    // import. Browser load does not wait for that import's cold transformations.
-    // Compile its actual graph in setup; do not spend the 5s UI deadline doing
-    // dev-server work or execute App/Host effects ahead of the mounted test.
-    const client = server.environments.client!;
-    await prepareDynamicAppFixture(client, "/src/App.tsx", `/@fs/${fixture}`);
-    assert.deepEqual(
-      compileErrors,
-      [],
-      "Actual fixture/App compilation failed",
+    server = await prepareMountedAppFixture(fixture, "/__original-app");
+    t.diagnostic(
+      JSON.stringify({ originalAppFixturePreparation: server.preparation }),
     );
+    const serverUrl = server.url;
     browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
@@ -125,6 +70,7 @@ test(
       await page.waitForSelector('textarea[aria-label="AI 输入内容"]', {
         timeout: 10_000,
       });
+      await assertPreparedAppDocument(page, "/__original-app");
       assert.deepEqual(errors, []);
       const r = await report(page);
       assert.deepEqual(r.unknown, [], JSON.stringify(r));
