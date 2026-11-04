@@ -844,6 +844,14 @@ function historyOrder(
   );
 }
 
+export class RuntimeInputAdmissionUnconfirmed extends Error {
+  constructor() {
+    super(
+      "Runtime 尚未确认接收这条讨论。原文和消息已保留，重试会核对同一个请求。",
+    );
+  }
+}
+
 class UpstreamError extends Error {
   constructor(
     public status: number,
@@ -1642,11 +1650,13 @@ export class RuntimeBridge {
     if (scope.discussionId && !this.supportsCommentDiscussions)
       throw new DomainError("invalid", "请更新 Runtime 后打开讨论。");
     let grant = await authorizeRead(baseScope, access);
-    const sessionId = this.objectSessionId(
-      scope.projectId,
-      scope.conversationId,
-      grant.personalDefault,
-    );
+    const sessionId = scope.discussionId
+      ? this.discussionSessionId(baseScope, grant)
+      : this.objectSessionId(
+          scope.projectId,
+          scope.conversationId,
+          grant.personalDefault,
+        );
     // Capture the durable Event head before the baseline. The WebSocket is
     // subscribed before catching up from this cursor, so no accepted frame is
     // lost while the Platform read awaits authorization.
@@ -1837,7 +1847,11 @@ export class RuntimeBridge {
             if (
               (route.evaluationOnly && raw.kind !== "evaluation") ||
               (source
-                ? source.sharedDefault !== grant.personalDefault ||
+                ? source.sharedDefault !==
+                    (scope.discussionId
+                      ? grant.personalDefault &&
+                        baseScope.projectId !== baseScope.conversationId
+                      : grant.personalDefault) ||
                   !this.platformSourceReadable(source, baseScope, access, grant)
                 : !scope.discussionId)
             )
@@ -2812,6 +2826,7 @@ export class RuntimeBridge {
   );
   private state: z.infer<typeof storedSchema>;
   private dirtyDeliveries = new Map<string, StoredDelivery>();
+  private inputAdmissionListeners = new Map<string, Set<() => void>>();
   // Ephemeral: approvals must be refreshed after restart, never restored as live.
   private attention: ExecutionAttention = { available: false, approvals: [] };
   private attentionNextCursor: string | null = null;
@@ -3135,7 +3150,10 @@ export class RuntimeBridge {
     );
     // Keep the dirty set if SQLite fails; a later save retries the same queue
     // records together with their Event and connection cursors.
+    const admittedKeys = [...this.dirtyDeliveries.keys()];
     this.dirtyDeliveries.clear();
+    for (const key of admittedKeys)
+      for (const wake of this.inputAdmissionListeners.get(key) ?? []) wake();
     this.notifyWorkspaceChanges();
     this.syncExecutionObserverSessions();
   }
@@ -6334,16 +6352,39 @@ export class RuntimeBridge {
       );
     const authorize = () => this.authorizePlatformRead!(scope, access);
     const grant = await authorize();
-    const sessionId = this.objectSessionId(
-      scope.projectId,
-      scope.conversationId,
-      grant.personalDefault,
-    );
+    const sessionId = this.discussionSessionId(scope, grant);
     return {
       path: `/api/sessions/${encodeURIComponent(sessionId)}`,
       sessionId,
       authorize,
     };
+  }
+  private discussionSessionId(
+    scope: { projectId: string; conversationId: string },
+    grant: PlatformReadGrant,
+  ) {
+    // A personal read grant may span projects. Same-project admission still
+    // uses the canonical project route; only cross-project default input uses
+    // shared transport. Match the existing Native write route, not read breadth.
+    return this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault && scope.projectId !== scope.conversationId,
+    );
+  }
+  private async discussionRead(path: string, access: AccessContext) {
+    try {
+      return await this.request(path, "GET", undefined, access, undefined);
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404)
+        throw new DomainError(
+          "not_found",
+          "当前讨论不存在或已不可读，请重新打开。",
+        );
+      if (error instanceof UpstreamError && [401, 403].includes(error.status))
+        throw new DomainError("forbidden", error.message);
+      throw new RuntimeConversationHistoryUnavailable(error);
+    }
   }
   async platformCommentDiscussions(
     scope: { projectId: string; conversationId: string },
@@ -6372,12 +6413,9 @@ export class RuntimeBridge {
           .nullable(),
       })
       .parse(
-        await this.request(
+        await this.discussionRead(
           `${route.path}/discussions?${params}`,
-          "GET",
-          undefined,
           access,
-          undefined,
         ),
       );
     await route.authorize();
@@ -6403,12 +6441,9 @@ export class RuntimeBridge {
         source: nativeDiscussionSourceSchema,
       })
       .parse(
-        await this.request(
+        await this.discussionRead(
           `${route.path}/discussions/${encodeURIComponent(id)}`,
-          "GET",
-          undefined,
           access,
-          undefined,
         ),
       );
     if (
@@ -6524,13 +6559,7 @@ export class RuntimeBridge {
       params.set("before_entry_id", before.id);
     }
     const page = sessionTimelinePageSchema.parse(
-      await this.request(
-        `${route.path}/timeline?${params}`,
-        "GET",
-        undefined,
-        access,
-        undefined,
-      ),
+      await this.discussionRead(`${route.path}/timeline?${params}`, access),
     );
     await route.authorize();
     const result = discussionTimelinePage(
@@ -6579,12 +6608,9 @@ export class RuntimeBridge {
     const result = z
       .object({ message: commentDiscussionChunkSchema })
       .parse(
-        await this.request(
+        await this.discussionRead(
           `${route.path}/discussions/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}?${query}`,
-          "GET",
-          undefined,
           access,
-          undefined,
         ),
       );
     await route.authorize();
@@ -10223,6 +10249,52 @@ export class RuntimeBridge {
     delivery.error = null;
     this.save(delivery);
     void this.reconcile();
+  }
+  /** A local queue receipt is not Native admission. Wait on this exact command's
+   * committed delivery row; no timers query data or run background reconciliation.
+   * The original immutable command remains retryable if the deadline expires. */
+  async confirmPlatformDiscussion(inputId: string) {
+    const actor = this.actor();
+    if (
+      this.inputAdmissionListeners.size >= 128 &&
+      !this.inputAdmissionListeners.has(inputId)
+    )
+      throw new RuntimeInputAdmissionUnconfirmed();
+    await new Promise<void>((resolve, reject) => {
+      const listeners =
+        this.inputAdmissionListeners.get(inputId) ?? new Set<() => void>();
+      this.inputAdmissionListeners.set(inputId, listeners);
+      const finish = (error?: unknown) => {
+        clearTimeout(deadline);
+        listeners.delete(check);
+        if (!listeners.size) this.inputAdmissionListeners.delete(inputId);
+        if (error) reject(error);
+        else resolve();
+      };
+      const check = () => {
+        try {
+          const admission = this.store.runtimeInputAdmission(inputId);
+          if (
+            !admission?.discussion_id ||
+            admission.principal_id !== actor.principalId ||
+            admission.actant_id !== actor.actantId
+          )
+            return finish(
+              new DomainError("forbidden", "讨论投递不属于当前身份。"),
+            );
+          if (admission.root_id) finish();
+        } catch (error) {
+          finish(error);
+        }
+      };
+      const deadline = setTimeout(
+        () => finish(new RuntimeInputAdmissionUnconfirmed()),
+        8000,
+      );
+      // Subscribe before the point read, including acceptance racing with enqueue.
+      listeners.add(check);
+      check();
+    });
   }
   platformInputFingerprint(inputId: string) {
     const actor = this.actor();

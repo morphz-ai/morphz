@@ -91,6 +91,26 @@ export class RuntimeLedger {
     return this.readState(true);
   }
 
+  inputAdmission(inputId: string) {
+    return this.db
+      .prepare(
+        `SELECT
+      json_extract(body,'$.rootId') AS root_id,
+      json_extract(body,'$.platformSource.author.principalId') AS principal_id,
+      json_extract(body,'$.platformSource.author.actantId') AS actant_id,
+      json_extract(body,'$.platformSource.commentDiscussion.id') AS discussion_id
+      FROM runtime_deliveries WHERE key=?`,
+      )
+      .get(inputId) as
+      | {
+          root_id: string | null;
+          principal_id: string | null;
+          actant_id: string | null;
+          discussion_id: string | null;
+        }
+      | undefined;
+  }
+
   readEnvelope(): unknown {
     const row = this.db
       .prepare("SELECT body FROM runtime_state WHERE id=1")

@@ -137,6 +137,12 @@
 .discussion-compose textarea::placeholder {
   color: var(--muted);
 }
+.app .comment-discussion .discussion-compose textarea:focus,
+.app .comment-discussion .discussion-compose textarea:focus-visible {
+  outline: none;
+  border: 0;
+  box-shadow: none;
+}
 .discussion-compose-footer {
   display: flex;
   align-items: center;

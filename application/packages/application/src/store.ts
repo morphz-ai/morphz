@@ -168,6 +168,9 @@ export class WorkspaceStore {
   saveRuntimeBridgeState(value: unknown, deliveries?: BridgeDeliveryChanges) {
     this.runtimeLedger.saveBridge(value, deliveries);
   }
+  runtimeInputAdmission(inputId: string) {
+    return this.runtimeLedger.inputAdmission(inputId);
+  }
   close() {
     this.db.close();
   }

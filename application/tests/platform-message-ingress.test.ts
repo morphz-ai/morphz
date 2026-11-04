@@ -148,6 +148,8 @@ test("Platform-only project sends a durable Runtime input without a legacy works
   const approvalDecisions: string[] = [];
   let jobListReads = 0;
   let failNextMessageId: string | null = null;
+  let discussionAdmission:
+    { entered: () => void; gate: Promise<void> } | undefined;
   let clientMetadataAvailable = true;
   let capabilityProbeStatus = 200;
   const sentSessions = new Map<string, string>();
@@ -637,6 +639,10 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       });
     }
     if (path.endsWith("/io/messages")) {
+      if (body.discussion && discussionAdmission) {
+        discussionAdmission.entered();
+        await discussionAdmission.gate;
+      }
       if (body.client_message_id === failNextMessageId) {
         failNextMessageId = null;
         return send(503, { error: "temporary dispatch failure" });
@@ -4378,7 +4384,45 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         commentDiscussion: { id: discussionId, publishToConversation: false },
       },
     };
-    await session().platformMessage(nativeDiscussionCommand);
+    let entered!: () => void, admit!: () => void;
+    const enteredNative = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    discussionAdmission = {
+      entered,
+      gate: new Promise<void>((resolve) => {
+        admit = resolve;
+      }),
+    };
+    let commandReturned = false;
+    const submittingDiscussion = session()
+      .platformMessage(nativeDiscussionCommand)
+      .then((receipt) => {
+        commandReturned = true;
+        return receipt;
+      });
+    await enteredNative;
+    assert.equal(
+      commandReturned,
+      false,
+      "local enqueue must not masquerade as Native discussion admission",
+    );
+    admit();
+    await submittingDiscussion;
+    discussionAdmission = undefined;
+    const immediatelyReadable =
+      await session().platformCommentDiscussionHistory({
+        projectId: commentProject,
+        conversationId: commentProject,
+        id: discussionId,
+        limit: 20,
+      });
+    assert.ok(
+      immediatelyReadable.messages.some(
+        (message) => message.id === discussionId,
+      ),
+      "receipt opens a committed discussion without a polling/read retry",
+    );
     await runtime.tick();
     const wire = sent.find((item) => item.client_message_id === discussionId)!;
     assert.equal((wire.discussion as any).id, discussionId);
@@ -4416,6 +4460,75 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       !ordinaryHistory.inputs.some((item) => item.id === discussionId),
       "discussion-only inputs must not enter main history",
     );
+    for (const projectId of [spaces.dialogueId, commentProject]) {
+      const candidate = input(
+        randomUUID(),
+        projectId,
+        "TEST personal-default discussion route",
+      );
+      await session().platformMessage({
+        ...candidate,
+        operation: {
+          ...candidate.operation,
+          conversationId: spaces.dialogueId,
+          textQuotes: [discussionQuote],
+          dispatchMode: "parallel",
+          commentDiscussion: {
+            id: candidate.commandId,
+            publishToConversation: false,
+          },
+        },
+      });
+      const page = await session().platformCommentDiscussionHistory({
+        projectId,
+        conversationId: spaces.dialogueId,
+        id: candidate.commandId,
+        limit: 20,
+      });
+      assert.ok(
+        page.messages.some((message) => message.id === candidate.commandId),
+        "personal read breadth must not change the Native route chosen by same-project or cross-project admission",
+      );
+      const reply = page.messages.find((message) => message.kind === "reply");
+      assert.ok(reply);
+      let observed!: () => void;
+      const publicFrame = new Promise<void>((resolve) => {
+        observed = resolve;
+      });
+      const close = await runtime.observePlatformConversation(
+        {
+          projectId,
+          conversationId: spaces.dialogueId,
+          discussionId: candidate.commandId,
+        },
+        localAccess,
+        (frame) => {
+          if (frame.messages.some((message) => message.text === reply.text))
+            observed();
+        },
+        () => {},
+      );
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          publicFrame,
+          new Promise((_, reject) => {
+            deadline = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "authorized discussion frame was filtered by read breadth",
+                  ),
+                ),
+              1500,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
+        close();
+      }
+    }
     // Retiring the current source cannot turn a continuation of an accepted
     // snapshot into another original-body fetch or a new discussion.
     acceptedRoots.delete(commentCommand.commandId);

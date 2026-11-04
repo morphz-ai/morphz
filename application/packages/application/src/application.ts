@@ -74,6 +74,7 @@ import type { ConversationStream } from "../../../packages/core/src/live-convers
 import type { WorkspaceStore } from "./store.js";
 import {
   RuntimeConversationHistoryUnavailable,
+  RuntimeInputAdmissionUnconfirmed,
   type RuntimeBridge,
 } from "./runtime.js";
 import type { BrowserBroker } from "./browser.js";
@@ -282,6 +283,12 @@ export class ApplicationUnavailable extends Error {
   readonly status = 503;
 }
 export function applicationFailure(error: unknown): ApplicationFailure {
+  if (error instanceof RuntimeInputAdmissionUnconfirmed)
+    return {
+      status: 503,
+      code: "runtime_input_unconfirmed",
+      message: error.message,
+    };
   if (error instanceof RuntimeConversationHistoryUnavailable)
     return {
       status: 503,
@@ -2684,6 +2691,10 @@ export class ApplicationSession {
     }
     if (isDirectedContinuation(op.continuation))
       await runtime.as(this.access, () => runtime.confirmSupplement(entityId));
+    if (op.commentDiscussion)
+      await runtime.as(this.access, () =>
+        runtime.confirmPlatformDiscussion(entityId),
+      );
     this.active();
     return { commandId: command.commandId, entityId };
   }
