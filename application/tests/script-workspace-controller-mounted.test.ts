@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, expect, type Browser, type Page } from "@playwright/test";
-import { createServer, type ViteDevServer } from "vite";
+import { build } from "vite";
 import { selectScriptOption } from "./script-studio-ui-helpers.js";
 import {
   emptyScriptBrief,
@@ -61,16 +61,12 @@ const cssImports = [
 ]
   .map((match) => `import ${JSON.stringify("/src/" + match[1]!.slice(2))};`)
   .join("\n");
-const fixtureId =
-  "/@fs" + resolve("tests/fixtures/script-workspace-controller-mounted.tsx");
-const historyId =
-  "/@fs" +
-  resolve("tests/fixtures/script-workspace-controller-13dbe571-component.tsx");
-const entry = `${cssImports}
-import {mountScriptWorkspace} from ${JSON.stringify(fixtureId)};
-const historical=${migration}&&new URL(location.href).searchParams.get('lane')==='historical';
-const {ScriptStudio}=await import(historical?${JSON.stringify(historyId)}:'/src/ScriptStudio.tsx');
-mountScriptWorkspace(ScriptStudio);`;
+const fixtureId = resolve(
+  "tests/fixtures/script-workspace-controller-mounted.tsx",
+);
+const historyId = resolve(
+  "tests/fixtures/script-workspace-controller-13dbe571-component.tsx",
+);
 
 test(
   "complete ScriptStudio workspace lifecycle, actual consumers and controlled export",
@@ -84,87 +80,129 @@ test(
     const cache = await mkdtemp(
       resolve(tmpdir(), "morphz-script-workspace-vite-"),
     );
-    let server: ViteDevServer | undefined, browser: Browser | undefined;
-    context.after(async () => {
-      try {
-        await browser?.close();
-      } finally {
-        try {
-          await server?.close();
-        } finally {
-          await rm(cache, { recursive: true, force: true });
-        }
-      }
-    });
-    server = await createServer({
-      configFile: false,
-      root: resolve("apps/web"),
-      cacheDir: cache,
-      plugins: [
-        react(),
-        {
-          name: "complete-script-workspace-mounted",
-          resolveId(id) {
-            if (id === "/__script_workspace_entry.js")
-              return "\0script_workspace_entry.js";
-          },
-          load(id) {
-            if (id === "\0script_workspace_entry.js") return entry;
-          },
-          configureServer(vite) {
-            vite.middlewares.use(async (request, response, next) => {
-              if (request.url?.split("?")[0] !== "/__script_workspace")
-                return next();
-              response.setHeader("Content-Type", "text/html");
-              response.end(
-                await vite.transformIndexHtml(
-                  request.url!,
-                  '<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><style>body{margin:0}.workspace{height:820px;max-width:100vw}.workspace-body,.primary-panel{height:100%;min-width:0}.script-studio{height:100%}</style></head><body><button id="outside">较新的操作</button><div id="root"></div><script type="module" src="/__script_workspace_entry.js"></script></body></html>',
-                ),
-              );
-            });
-          },
-        },
-      ],
-      // Hot-refresh signature instrumentation can remount the archived local
-      // useId component differently from the extracted custom hook. This is a
-      // finite initial mount, not a hot-editing session; keep actual React
-      // StrictMode but disable Vite HMR for both independent pages.
-      server: {
-        host: "127.0.0.1",
-        port: 0,
-        hmr: false,
-        fs: { allow: [resolve(".")] },
-      },
-      logLevel: "error",
-    });
-    await server.listen();
-    const address = server.httpServer!.address();
-    assert(address && typeof address !== "string");
-    browser = await chromium.launch({
-      headless: true,
-      executablePath: executable || undefined,
-    });
     const pages: Page[] = [],
       errors: string[] = [],
       requests: string[] = [],
-      ledger: { name: string; reports: Report[] }[] = [];
-    let phase = "setup";
+      ledger: { name: string; reports: Report[] }[] = [],
+      preparations: { lane: string; modules: number; milliseconds: number }[] =
+        [];
+    let phase = "prepare actual components",
+      browser: Browser | undefined;
+    // Register diagnostics before resource cleanup: an initialization failure
+    // must remain visible even when a browser/compiler cleanup is delayed.
     context.after(() =>
       context.diagnostic(
         JSON.stringify({
           migration,
           phase,
+          preparations,
           observations: ledger.length,
           errors,
           businessRequests: requests,
         }),
       ),
     );
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        await rm(cache, { recursive: true, force: true });
+      }
+    });
+    const prepared = new Map<
+      string,
+      { javascript: string; stylesheet: string | Uint8Array }
+    >();
+    // Like the actual navigation mounting fixture, prepare the real complete
+    // component before installing its paused browser clock. This is not an
+    // HTTP/HMR test; no optimizer or remote module may gate its first commit.
+    // The original 60-second parent and four-second ready deadline remain.
     for (const lane of migration ? ["historical", "current"] : ["current"]) {
+      const started = performance.now();
+      const component =
+        lane === "historical"
+          ? historyId
+          : resolve("apps/web/src/ScriptStudio.tsx");
+      const entry = `${cssImports}
+import {mountScriptWorkspace} from ${JSON.stringify(fixtureId)};
+import {ScriptStudio} from ${JSON.stringify(component)};
+mountScriptWorkspace(ScriptStudio);`;
+      const built = await build({
+        configFile: false,
+        root: resolve("apps/web"),
+        cacheDir: cache,
+        mode: "development",
+        define: {
+          "process.env.NODE_ENV": JSON.stringify("development"),
+          "import.meta.env.DEV": "true",
+          "import.meta.env.PROD": "false",
+        },
+        build: {
+          write: false,
+          minify: false,
+          cssMinify: false,
+          lib: {
+            entry: "/__script_workspace_entry.js",
+            name: "ScriptWorkspaceFixture",
+            formats: ["iife"],
+          },
+        },
+        plugins: [
+          react(),
+          {
+            name: "complete-script-workspace-mounted",
+            resolveId(id) {
+              if (id === "/__script_workspace_entry.js")
+                return "\0script_workspace_entry.js";
+            },
+            load(id) {
+              if (id === "\0script_workspace_entry.js") return entry;
+            },
+          },
+        ],
+        logLevel: "error",
+      });
+      const builds = Array.isArray(built) ? built : [built];
+      assert.equal(builds.length, 1);
+      const result = builds[0]!;
+      assert.ok("output" in result);
+      const chunks = result.output.filter((item) => item.type === "chunk");
+      const styles = result.output
+        .filter((item) => item.type === "asset")
+        .filter((item) => item.fileName.endsWith(".css"));
+      assert.equal(
+        chunks.length,
+        1,
+        "one complete actual fixture, no late modules",
+      );
+      assert.equal(styles.length, 1, "the original full CSS must be prepared");
+      const modules = Object.keys(chunks[0]!.modules);
+      for (const source of [fixtureId, component])
+        assert.ok(
+          modules.includes(source),
+          `actual source required: ${source}`,
+        );
+      prepared.set(lane, {
+        javascript: chunks[0]!.code,
+        stylesheet: styles[0]!.source,
+      });
+      preparations.push({
+        lane,
+        modules: modules.length,
+        milliseconds: Math.round(performance.now() - started),
+      });
+    }
+    phase = "launch browser";
+    browser = await chromium.launch({
+      headless: true,
+      executablePath: executable || undefined,
+    });
+    for (const lane of migration ? ["historical", "current"] : ["current"]) {
+      phase = `${lane}: create browser context`;
       const session = await browser.newContext({
         viewport: { width: 1440, height: 960 },
       });
+      await session.setOffline(true);
       // Fix only the test-owned draft-window identity; useId/DOM/ARIA are not
       // normalized or removed to obtain equality between the independent pages.
       await session.addInitScript(() =>
@@ -174,9 +212,35 @@ test(
         ),
       );
       const page = await session.newPage();
+      const compiled = prepared.get(lane)!;
+      const resources: string[] = [];
       page.setDefaultTimeout(4000);
+      await page.route("**/*", async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === "/__script_workspace")
+          await route.fulfill({
+            contentType: "text/html; charset=utf-8",
+            body: '<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"><link rel="stylesheet" href="/__script_workspace.css"><style>body{margin:0}.workspace{height:820px;max-width:100vw}.workspace-body,.primary-panel{height:100%;min-width:0}.script-studio{height:100%}</style></head><body><button id="outside">较新的操作</button><div id="root"></div><script src="/__script_workspace_entry.js"></script></body></html>',
+          });
+        else if (path === "/__script_workspace_entry.js")
+          await route.fulfill({
+            contentType: "text/javascript; charset=utf-8",
+            body: compiled.javascript,
+          });
+        else if (path === "/__script_workspace.css")
+          await route.fulfill({
+            contentType: "text/css; charset=utf-8",
+            body:
+              typeof compiled.stylesheet === "string"
+                ? compiled.stylesheet
+                : Buffer.from(compiled.stylesheet),
+          });
+        else await route.abort();
+      });
       page.on("pageerror", (error) => errors.push(lane + ": " + error.message));
       page.on("request", (request) => {
+        if (["script", "stylesheet"].includes(request.resourceType()))
+          resources.push(new URL(request.url()).pathname);
         if (
           ["fetch", "xhr"].includes(request.resourceType()) &&
           !request.url().includes("/@vite/")
@@ -185,14 +249,16 @@ test(
       });
       // pauseAt installs the clock itself. Installing it running at this exact
       // instant first races real elapsed time and can make pauseAt go backwards.
+      phase = `${lane}: install paused clock`;
       await page.clock.pauseAt(new Date("2026-10-04T00:00:00Z"));
-      await page.goto(
-        `http://127.0.0.1:${address.port}/__script_workspace?lane=${lane}`,
-        { timeout: 60_000 },
-      );
+      phase = `${lane}: open prepared document`;
+      await page.goto(`http://127.0.0.1/__script_workspace?lane=${lane}`, {
+        timeout: 60_000,
+      });
       // Initialization must not depend on the rAF clock we deliberately froze.
       // Poll from Node without advancing any application timer or weakening
       // the ready condition or its existing four-second deadline.
+      phase = `${lane}: await real fixture`;
       await expect
         .poll(
           () =>
@@ -202,6 +268,12 @@ test(
           { timeout: 4000 },
         )
         .toBe(true);
+      // Observe actual requests from Node: the deliberately installed browser
+      // clock replaces Performance and does not expose native resource entries.
+      assert.deepEqual(resources.sort(), [
+        "/__script_workspace.css",
+        "/__script_workspace_entry.js",
+      ]);
       pages.push(page);
     }
     async function tick() {
