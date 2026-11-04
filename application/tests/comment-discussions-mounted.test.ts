@@ -318,6 +318,32 @@ test(
             () => Reflect.get(window, "discussionFixture").report().active,
           );
           assert.notEqual(first, second);
+          await expect(page.locator(".discussion-source-mark")).toHaveCount(2);
+          const markRects = await page
+            .locator(".discussion-source-mark")
+            .evaluateAll((elements) =>
+              elements.map((element) => {
+                const r = element.getBoundingClientRect();
+                return {
+                  left: r.left,
+                  right: r.right,
+                  top: r.top,
+                  bottom: r.bottom,
+                };
+              }),
+            );
+          const [markA, markB] = markRects;
+          assert.ok(
+            markA &&
+              markB &&
+              !(
+                Math.min(markA.right, markB.right) >
+                  Math.max(markA.left, markB.left) &&
+                Math.min(markA.bottom, markB.bottom) >
+                  Math.max(markA.top, markB.top)
+              ),
+            JSON.stringify({ lane, theme, width, markRects }),
+          );
           if (lane === "dashboard") {
             await page.evaluate(
               (id) =>

@@ -60,6 +60,7 @@
 @media (pointer: coarse) {
   .app [data-discussion-marked] {
     padding-inline-end: 56px;
+    min-block-size: calc(44px + var(--ui-space-1, 4px));
   }
 }
 .app .discussion-source-mark:focus-visible {
