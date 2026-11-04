@@ -79,6 +79,7 @@ export const platformBootSchema = z.object({
     runtime: z.boolean(),
     teamAuthentication: z.boolean(),
     directedInput: z.boolean(),
+    commentDiscussions: z.boolean().default(false),
     localFiles: z.boolean(),
     browserBookmarks: z.boolean(),
     modelSettings: z.boolean(),

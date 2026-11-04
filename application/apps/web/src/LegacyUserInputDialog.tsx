@@ -63,7 +63,7 @@ export function LegacyUserInputDialog({
         <header>
           <MessageSquarePlus size={16} aria-hidden="true" />
           <span className="user-input-composer-target" title={title}>
-            补充给：{title}
+            {title}
           </span>
           <button
             type="button"

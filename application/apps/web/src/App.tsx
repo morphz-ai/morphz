@@ -3525,7 +3525,6 @@ function WorkspaceApp({
                               )?.body
                             }
                           >
-                            补充给：
                             {draft.continuationLabel ||
                               state.inputs.find(
                                 (i) => i.id === draft.continuation!.inputId,

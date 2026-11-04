@@ -989,18 +989,20 @@ export function Conversation({
                   >
                     {item?.continuation && (
                       <button
-                        className="message-source"
+                        className="message-source response-source"
+                        aria-label={
+                          item.continuation.mode === "reply"
+                            ? "查看回复来源"
+                            : "查看补充来源"
+                        }
                         onClick={() => onInspect?.(item.continuation!.inputId)}
                       >
-                        {item.continuation.mode === "reply"
-                          ? "回复给："
-                          : item.continuation.mode === "supplement"
-                            ? "补充给："
-                            : "接着处理："}
-                        {stateInputById
-                          .get(item.continuation!.inputId)
-                          ?.body.slice(0, 50) || "原工作"}
-                        <ChevronRight size={12} />
+                        <span>
+                          {stateInputById
+                            .get(item.continuation!.inputId)
+                            ?.body.slice(0, 50) || "原工作"}
+                        </span>
+                        <ChevronRight size={12} aria-hidden />
                       </button>
                     )}
                     {reply?.inputId &&

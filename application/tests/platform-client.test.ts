@@ -224,6 +224,36 @@ test("原交互表格编辑走应用原件命令，保持创建 ID 和确切修�
   ]);
 });
 
+test("启动校验保留原生讨论能力，不额外探测 Runtime", async () => {
+  for (const supported of [true, false]) {
+    const calls: string[] = [];
+    const source = await PlatformClient.connect({
+      async call(method) {
+        calls.push(method);
+        assert.equal(method, "platform.bootstrap");
+        return {
+          centerId: randomUUID(),
+          csrfToken: "generation-one",
+          principalId: "human",
+          actantId: "human-actant",
+          displayName: "我",
+          capabilities: {
+            runtime: true,
+            teamAuthentication: false,
+            directedInput: false,
+            commentDiscussions: supported,
+            localFiles: false,
+            browserBookmarks: false,
+            modelSettings: false,
+          },
+        };
+      },
+    });
+    assert.equal(source.boot.capabilities.commentDiscussions, supported);
+    assert.deepEqual(calls, ["platform.bootstrap"]);
+  }
+});
+
 test("剧本概览保留元数据 CAS，不把活动修订用作编辑前提", async () => {
   const writes: unknown[] = [];
   const source = await PlatformClient.connect({

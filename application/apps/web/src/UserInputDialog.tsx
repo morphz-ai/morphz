@@ -138,7 +138,7 @@ export function UserInputDialog({
             tabIndex={0}
             title={title}
           >
-            补充给：{title}
+            {title}
           </span>
           <Tooltip label="关闭，稍后回复">
             <button
