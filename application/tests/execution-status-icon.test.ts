@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CircleStop } from "lucide-react";
+import { CircleSlash } from "lucide-react";
 import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { chromium, type Browser } from "@playwright/test";
@@ -34,7 +34,7 @@ const kinds: readonly (FixedKind | undefined)[] = [
 ];
 const render = renderToStaticMarkup;
 const approvedCancelledGlyph = (size: 18 | 19) =>
-  render(createElement(CircleStop, { size, "aria-hidden": "true" }));
+  render(createElement(CircleSlash, { size, "aria-hidden": "true" }));
 
 test("fixed 14ae1de6 oracle is the independently verified original maps/ternaries and waveform, not a production import", () => {
   // Recorded only after comparing the original two maps/ternaries and running
@@ -49,7 +49,7 @@ test("fixed 14ae1de6 oracle is the independently verified original maps/ternarie
   );
 });
 
-test("only the approved cancelled stop glyph changes; other kinds retain exact original SVG bytes, 18/19 sizes and no wrapper", () => {
+test("cancelled uses the approved circle-slash glyph; other kinds retain exact original SVG bytes, 18/19 sizes and no wrapper", () => {
   for (const size of [18, 19] as const)
     for (const kind of kinds) {
       const expected =
@@ -282,10 +282,7 @@ test(
             value.lanes[index]!.html,
             approvedCancelledGlyph(value.size ?? size),
           );
-          assert.notEqual(
-            value.lanes[index]!.html,
-            value.lanes[index - 1]!.html,
-          );
+          assert.equal(value.lanes[index]!.html, value.lanes[index - 1]!.html);
         }
       } else {
         assert.equal(value.lanes[1]!.html, value.lanes[0]!.html);

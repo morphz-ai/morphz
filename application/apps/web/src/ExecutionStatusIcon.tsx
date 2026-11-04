@@ -1,7 +1,7 @@
 import {
   CircleCheck,
   CircleHelp,
-  CircleStop,
+  CircleSlash,
   CircleX,
   Clock3,
   Pause,
@@ -27,7 +27,7 @@ export function ExecutionStatusIcon({
     paused: Pause,
     ended: CircleCheck,
     failed: CircleX,
-    cancelled: CircleStop,
+    cancelled: CircleSlash,
     unknown: CircleHelp,
   }[kind ?? "unknown"];
   return <Icon size={size} aria-hidden="true" />;

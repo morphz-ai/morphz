@@ -89,7 +89,7 @@ const glyphs = [
   "ShieldAlert",
 ];
 const expectedIcon = `
-import { CircleCheck, CircleHelp, CircleStop, CircleX, Clock3, Pause, ShieldAlert } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleSlash, CircleX, Clock3, Pause, ShieldAlert } from "lucide-react";
 import type { ActivityStatus } from "./execution-activity.js";
 import { RunningActivityIcon } from "./RunningActivityIcon.js";
 export function ExecutionStatusIcon({kind, size}: Readonly<{
@@ -97,7 +97,7 @@ export function ExecutionStatusIcon({kind, size}: Readonly<{
 }>) {
   if (kind === "running") return <RunningActivityIcon />;
   const Icon = { waiting: Clock3, approval: ShieldAlert, paused: Pause, ended: CircleCheck,
-    failed: CircleX, cancelled: CircleStop, unknown: CircleHelp }[kind ?? "unknown"];
+    failed: CircleX, cancelled: CircleSlash, unknown: CircleHelp }[kind ?? "unknown"];
   return <Icon size={size} aria-hidden="true" />;
 }`;
 const originalFragments = `function original() {
@@ -1042,7 +1042,7 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
       'return <span><Icon size={size} aria-hidden="true" /></span>',
     ],
     ["waiting: Clock3", "waiting: Pause"],
-    ["cancelled: CircleStop", "cancelled: CircleSlash"],
+    ["cancelled: CircleSlash", "cancelled: CircleStop"],
     ["size: 18 | 19", "size?: number"],
     ["const Icon = {", 'fetch("/state"); const Icon = {'],
   );
