@@ -411,7 +411,7 @@ export function CommentDiscussionMarks({
           type="button"
           data-size="icon-xs"
           key={mark.key}
-          className="discussion-source-mark"
+          className="icon-button discussion-source-mark"
           title={`查看讨论 · ${mark.preview}`}
           aria-label={`查看此处讨论（${mark.count}${mark.more ? "+" : ""}）`}
           onClick={() => owner.open(mark)}

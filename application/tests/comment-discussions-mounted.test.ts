@@ -96,6 +96,7 @@ test(
         for (const width of [1440, 760]) {
           const page = await browser.newPage({
               viewport: { width, height: 900 },
+              hasTouch: width === 760,
             }),
             errors: string[] = [];
           page.setDefaultTimeout(5000);
@@ -204,6 +205,26 @@ test(
             );
           }
           await expect(page.locator(".discussion-source-mark")).toHaveCount(1);
+          const markerHit = await page
+            .locator(".discussion-source-mark")
+            .evaluate((element) => {
+              const rect = element.getBoundingClientRect();
+              return {
+                width: rect.width,
+                height: rect.height,
+                coarse: matchMedia("(pointer: coarse)").matches,
+              };
+            });
+          assert.equal(
+            markerHit.coarse,
+            width === 760,
+            "narrow captures exercise actual coarse-pointer CSS",
+          );
+          assert.ok(
+            markerHit.width >= (markerHit.coarse ? 44 : 24) &&
+              markerHit.height >= (markerHit.coarse ? 44 : 24),
+            JSON.stringify(markerHit),
+          );
           await expect(page.locator("#source-a")).toHaveAttribute(
             "data-discussion-marked",
             "true",

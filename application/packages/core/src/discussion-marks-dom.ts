@@ -103,6 +103,7 @@ export class DiscussionMarks<Q> {
           this.roots.delete(root);
           this.visible.delete(root);
         }
+      this.pump();
       this.layout();
     });
     this.mutations.observe(document.body, {
@@ -207,6 +208,7 @@ export class DiscussionMarks<Q> {
         )
       )
         return;
+      if (this.pages.size >= 64) return;
       page = { source, items: [], loaded: false, more: false };
       this.pages.set(source.key, page);
     }
@@ -262,13 +264,14 @@ export class DiscussionMarks<Q> {
         }
       }
       const first = page.items[0]!;
+      const hitSize = matchMedia("(pointer: coarse)").matches ? 44 : 24;
       this.marks.push({
         key: `${source.key}:${this.ids.get(root)}`,
         id: first.id,
         quote: source.quote,
         count: page.items.length,
         more: page.more,
-        x: Math.min(innerWidth - 40, box.right - 34),
+        x: Math.min(innerWidth - hitSize - 4, box.right - hitSize - 4),
         y: Math.max(0, box.top),
         preview: first.preview,
       });
