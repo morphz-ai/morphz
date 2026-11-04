@@ -162,7 +162,7 @@ async function openQueuedInputComment(page: import("@playwright/test").Page) {
     selection.addRange(range);
     document.dispatchEvent(new Event("selectionchange"));
   });
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话", exact: true }).click();
   const comment = page.getByLabel("引用 1 的评论（可选）");
   await expect(comment).toBeFocused();
   return { input, comment, original };

@@ -651,7 +651,7 @@ test(
         );
         await p.run("select");
         const comment = await p.click(
-          '.selection-actions button[aria-label="评论选中文字"]',
+          '.selection-actions button[aria-label="将选文加入对话"]',
         );
         assert.equal(comment.quotes.length, 1);
         assert.deepEqual(comment.quotes[0]?.source, {

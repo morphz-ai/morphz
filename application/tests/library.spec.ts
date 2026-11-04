@@ -41,7 +41,7 @@ test("导入副本可阅读、引用和打开历史版本，但不进入 Agent �
     .filter({ hasText: "蝴蝶资料检索" })
     .click({ clickCount: 3 });
   await page
-    .getByRole("button", { name: "评论选中文字", exact: true })
+    .getByRole("button", { name: "将选文加入对话", exact: true })
     .click();
   await expect(
     page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),

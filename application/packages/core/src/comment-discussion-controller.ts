@@ -1,7 +1,7 @@
 import type {
   CommentDiscussionMessage,
   CommentDiscussionPage,
-} from "./comment-discussions.js";
+} from "./comment-discussion-types.js";
 import {
   canonicalDiscussionSource,
   discussionCommandId,

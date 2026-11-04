@@ -1,4 +1,12 @@
 import { z } from "zod";
+import type {
+  CommentDiscussionMessage,
+  CommentDiscussionPage,
+} from "./comment-discussion-types.js";
+export type {
+  CommentDiscussionMessage,
+  CommentDiscussionPage,
+} from "./comment-discussion-types.js";
 import {
   textQuoteSchema,
   textQuoteSourceSchema,
@@ -100,23 +108,19 @@ export const commentDiscussionMessageSchema = z.object({
   truncated: z.boolean().optional(),
   threadId: z.string().optional(),
   generation: z.number().int().positive().optional(),
-});
+}) satisfies z.ZodType<CommentDiscussionMessage>;
 export const commentDiscussionPageSchema = z.object({
   id: z.string(),
   messages: z.array(commentDiscussionMessageSchema).max(50),
   nextCursor: z
     .object({ createdAt: z.iso.datetime({ offset: true }), id: z.string() })
     .nullable(),
-});
+}) satisfies z.ZodType<CommentDiscussionPage>;
 export const commentDiscussionSchema = z.object({
   descriptor: nativeDiscussionDescriptorSchema,
   quote: textQuoteSchema,
 });
 export type CommentDiscussion = z.infer<typeof commentDiscussionSchema>;
-export type CommentDiscussionMessage = z.infer<
-  typeof commentDiscussionMessageSchema
->;
-export type CommentDiscussionPage = z.infer<typeof commentDiscussionPageSchema>;
 
 export function commentDiscussionSourceKey(source: TextQuoteSource): string {
   switch (source.kind) {

@@ -1,5 +1,5 @@
 import { internalModelOutput } from "./model-publication.js";
-import type { CommentDiscussionPage } from "./comment-discussions.js";
+import type { CommentDiscussionPage } from "./comment-discussion-types.js";
 
 type NativeEvent = {
   id: string;

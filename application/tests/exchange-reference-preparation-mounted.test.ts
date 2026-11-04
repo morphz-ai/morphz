@@ -548,7 +548,7 @@ test(
         await h.dom((page) =>
           page
             .locator(".selection-actions")
-            .getByRole("button", { name: "评论选中文字" })
+            .getByRole("button", { name: "将选文加入对话", exact: true })
             .click(),
         );
         let result = await h.read();
@@ -593,7 +593,7 @@ test(
         await h.dom((page) =>
           page
             .locator(".selection-actions")
-            .getByRole("button", { name: "评论选中文字" })
+            .getByRole("button", { name: "将选文加入对话", exact: true })
             .click(),
         );
         assert.ok((await h.read()).dom.quote);
@@ -617,7 +617,7 @@ test(
         result = await h.dom((page) =>
           page
             .locator(".selection-actions")
-            .getByRole("button", { name: "评论选中文字" })
+            .getByRole("button", { name: "将选文加入对话", exact: true })
             .click(),
         );
         assert.equal(result.dom.quote, null);

@@ -6,13 +6,17 @@ import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { platformInputState } from "./platform-input-state-fixture.js";
 
-async function action(control: Locator, label: string) {
+async function action(
+  control: Locator,
+  label: string,
+  surface: Locator = control,
+) {
   await expect(control).toHaveText(label);
   await expect(control.locator("svg")).toHaveCount(1);
-  await expect(control).toHaveCSS("border-style", "solid");
-  await expect(control).toHaveCSS("border-width", "1px");
+  await expect(surface).toHaveCSS("border-style", "solid");
+  await expect(surface).toHaveCSS("border-width", "1px");
   expect(
-    await control.evaluate((el) => getComputedStyle(el).backgroundColor),
+    await surface.evaluate((el) => getComputedStyle(el).backgroundColor),
   ).not.toBe("rgba(0, 0, 0, 0)");
   expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(28);
 }
@@ -62,10 +66,17 @@ test("常用操作用图标与短标签区分正文，完整语义及未发送�
     .filter({ hasText: "正文、辅助信息与操作不应混为一谈。" })
     .click({ clickCount: 3 });
   const comment = page.getByRole("button", {
-    name: "评论选中文字",
+    name: "加入对话",
     exact: true,
   });
-  await action(comment, "评论");
+  // The paired selection actions share one outlined surface; each action still
+  // keeps its own visible label, icon and original minimum hit height.
+  await action(
+    comment,
+    "加入对话",
+    page.getByRole("toolbar", { name: "选文操作", exact: true }),
+  );
+  await expect(comment).toHaveCSS("border-width", "0px");
   await comment.click();
   await expect(
     page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
