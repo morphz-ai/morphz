@@ -204,6 +204,26 @@ function Fixture() {
         active: discussions.controller.activeId,
       }),
       connection: setConnected,
+      long(id: string) {
+        const e = entries.get(id);
+        const reply = e.messages.find((m: any) => m.kind === "reply");
+        if (reply)
+          reply.text +=
+            "\n\n" +
+            Array.from(
+              { length: 40 },
+              (_, i) =>
+                `长回复 ${i + 1}：保持上下文，正文仅在讨论内滚动，不遮挡选文或主输入区。`,
+            ).join("\n\n");
+        saveEntries();
+        for (const socket of sockets)
+          socket.onmessage?.({
+            data: JSON.stringify({
+              topic: "chat/reply",
+              payload: { session_id: "test-session", root_turn_id: id },
+            }),
+          });
+      },
       open: (name: string) =>
         discussions.open(source(name), { x: 520, y: 160 }),
       prefix: (id: string, delta: string) => {
@@ -276,8 +296,12 @@ function Fixture() {
           </p>
         </article>
         <div
+          data-text-popover-blocker="true"
           style={{
-            marginTop: 80,
+            position: "fixed",
+            bottom: 16,
+            left: 32,
+            right: 32,
             paddingTop: 20,
             borderTop: "1px solid var(--line)",
           }}

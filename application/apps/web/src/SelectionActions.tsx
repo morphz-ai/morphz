@@ -1,4 +1,14 @@
-import { useEffect, useState, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
+import {
+  observeTextPopover,
+  positionTextPopover,
+} from "../../../packages/core/src/text-popover-layout.js";
 import { createPortal } from "react-dom";
 import { MessageCircle, Highlighter, Volume2 } from "lucide-react";
 import { useTextQuotes } from "./TextQuotes.js";
@@ -12,6 +22,7 @@ export function SelectionActions({
   onAction(action: "ask" | "annotate" | "read", text: string): void;
 }) {
   const quotes = useTextQuotes();
+  const panel = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<{
     text: string;
     x: number;
@@ -45,14 +56,26 @@ export function SelectionActions({
       document.removeEventListener("scroll", refresh, true);
     };
   }, [root]);
+  useLayoutEffect(() => {
+    const element = panel.current;
+    if (!selection || !element) return;
+    return observeTextPopover(element, () => {
+      const rect = selection.quote?.range?.getBoundingClientRect();
+      void positionTextPopover(
+        element,
+        { x: selection.x, y: selection.y, ...(rect ? { rect } : {}) },
+        "top-start",
+      );
+    });
+  }, [selection]);
   return (
     selection &&
     createPortal(
       <div
+        ref={panel}
         className="selection-actions"
         role="toolbar"
         aria-label="选中文本操作"
-        style={{ left: selection.x, top: selection.y }}
         onPointerDown={(e) => e.preventDefault()}
       >
         {quotes?.discuss && (

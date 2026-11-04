@@ -113,3 +113,13 @@ small reply input. One active reading panel can switch between independently
 running discussions. Narrow layouts keep the panel inside the content viewport.
 No modal, nested decorative cards, duplicate source paragraphs, or new global
 navigation. Running and failed states reflect native facts and preserve drafts.
+
+Selection actions, quote editors and discussion panels share Floating UI
+placement against the actual selected-text rectangle. The visible content
+canvas excludes navigation/inspector rails, the topbar, application dock and
+main composer. Discussions prefer either side of the source, then available
+space above or below; long replies scroll inside a capped panel. Resize,
+scroll, source layout and CSS zoom update geometry without any product reads.
+Coarse-pointer panel controls retain 44px hit areas. Both frontends render
+public Session IO prefixes before final publication, without reloading history
+for each delta; final native messages retain their original identities.

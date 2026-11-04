@@ -42,3 +42,5 @@
 .dashboard-discussion a{color:var(--accent-strong);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px;}
 .dashboard-discussion a:hover{color:var(--accent);}
 .dashboard-discussion code{font-family:var(--mono,ui-monospace,monospace);font-size:.92em;}
+@media(pointer:coarse){.dashboard-discussion button,.dashboard-discussion .discussion-source,.dashboard-discussion .discussion-send{min-width:44px;min-height:44px;}.dashboard-discussion header{flex-shrink:0;}}
+.dashboard-discussion[data-text-compact=true] form:not(:has(label)){position:relative;}.dashboard-discussion[data-text-compact=true] form:not(:has(label)) textarea{padding-inline-end:52px;}.dashboard-discussion[data-text-compact=true] form:not(:has(label)) .discussion-compose-footer{position:absolute;right:7px;bottom:5px;}

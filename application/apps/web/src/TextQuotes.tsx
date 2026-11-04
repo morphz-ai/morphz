@@ -169,7 +169,7 @@ export function TextQuoteProvider({
       point:
         point ??
         (rect && rect.bottom > 0 && rect.top < innerHeight
-          ? { x: rect.right, y: rect.bottom }
+          ? { x: rect.right, y: rect.bottom, rect }
           : { x: innerWidth / 2, y: innerHeight / 2 }),
     });
   }
@@ -288,6 +288,7 @@ export function TextQuoteProvider({
           ? {
               x: offer.range.getBoundingClientRect().right,
               y: offer.range.getBoundingClientRect().bottom,
+              rect: offer.range.getBoundingClientRect(),
             }
           : offer.point,
       ),

@@ -27,6 +27,33 @@ const saveEntries = () =>
     "test-discussion-entries",
     JSON.stringify([...entries]),
   );
+const prefixes = new Map<string, string>();
+const emitPrefix = (id: string) => {
+  for (const [subscription, scope] of subscriptions)
+    if (scope.discussionId === id)
+      for (const listener of listeners)
+        listener({
+          id: subscription,
+          value: {
+            connected: true,
+            messages: [
+              {
+                id: `stream:${id}`,
+                rootId: id,
+                inputId: id,
+                projectId: "test-project",
+                conversationId: "test-chat",
+                artifactId: null,
+                kind: "reply",
+                commentDiscussion: { id },
+                text: prefixes.get(id) ?? "",
+                streaming: true,
+                createdAt: "2026-11-04T08:00:00Z",
+              },
+            ],
+          },
+        });
+};
 const source = (name: string) => ({
   kind: "message" as const,
   projectId: "test-project",
@@ -136,6 +163,8 @@ const bridge = {
     queueMicrotask(() => {
       for (const listener of listeners)
         listener({ id, value: { connected: true, messages: [] } });
+      if (scope.discussionId && prefixes.has(scope.discussionId))
+        emitPrefix(scope.discussionId);
     });
   },
   unsubscribe(id: string) {
@@ -170,7 +199,26 @@ function Fixture() {
         active: discussions.controller.activeId,
       }),
       connection: setConnected,
+      long(id: string) {
+        const e = entries.get(id);
+        const reply = e.messages.find((m: any) => m.kind === "reply");
+        if (reply)
+          reply.text +=
+            "\n\n" +
+            Array.from(
+              { length: 40 },
+              (_, i) =>
+                `长回复 ${i + 1}：保持上下文，正文仅在讨论内滚动，不遮挡选文或主输入区。`,
+            ).join("\n\n");
+        saveEntries();
+        discussions.controller.invalidate(id);
+      },
+      prefix(id: string, delta: string) {
+        prefixes.set(id, (prefixes.get(id) ?? "") + delta);
+        emitPrefix(id);
+      },
       finish(id: string) {
+        prefixes.delete(id);
         const entry = entries.get(id);
         entry.messages.push({
           id: `publication:${id}`,
@@ -268,8 +316,12 @@ function Fixture() {
             不同段落的讨论可以同时推进，互不打断。
           </p>
           <div
+            data-text-popover-blocker="true"
             style={{
-              marginTop: 80,
+              position: "fixed",
+              bottom: 16,
+              left: 32,
+              right: 32,
               paddingTop: 20,
               borderTop: "1px solid var(--line)",
             }}

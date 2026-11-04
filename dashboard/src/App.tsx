@@ -1,5 +1,6 @@
 import { CommentDiscussionPanel, CommentDiscussionMarks } from './components/CommentDiscussions'
 import { useCommentDiscussions } from './components/useCommentDiscussions'
+import {observeTextPopover,positionTextPopover} from '../../application/packages/core/src/text-popover-layout'
 import { sessionReadPlan } from './app/sessionReadPlan'
 import { readDirectoryPage, readNavigationHead, mergeDirectoryPage } from './app/directoryPage'
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
@@ -1274,6 +1275,7 @@ interface SelectionPopup {
   relTop: number
   relLeft: number
   anchor?: {start:number;end:number;prefix:string;suffix:string}
+  range?:Range
 }
 
 interface ContextFrame {
@@ -2362,6 +2364,8 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
   onAdd: (popup: SelectionPopup) => void
 }) {
   const [popup, setPopup] = useState<SelectionPopup | null>(null)
+  const floating=useRef<HTMLDivElement>(null)
+  useLayoutEffect(()=>{const element=floating.current;if(!popup||!element)return;return observeTextPopover(element,()=>{const rect=popup.range?.getBoundingClientRect();void positionTextPopover(element,{x:popup.x,y:popup.y,...(rect?{rect}:{})},'top-start')})},[popup])
 
   useEffect(() => {
     let rafId: number | null = null
@@ -2410,6 +2414,7 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
         eventTime: article.getAttribute('data-event-time') || '',
         relTop: rect.top - articleRect.top + rect.height / 2 - 9,
         relLeft: rect.right - articleRect.left + 6,
+        range:range.cloneRange(),
         anchor:{start,end:start+selectedText.length,prefix:all.slice(Math.max(0,start-40),start),suffix:all.slice(start+selectedText.length,start+selectedText.length+40)},
       })
     }
@@ -2426,7 +2431,7 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
 
   if (!popup) return null
   return (
-    <div className="selection-popup" style={{left:popup.x,top:popup.y}} role="toolbar" aria-label={label} onPointerDown={event=>event.preventDefault()}>
+    <div ref={floating} className="selection-popup" role="toolbar" aria-label={label} onPointerDown={event=>event.preventDefault()}>
       <button type="button" onClick={()=>{onAdd(popup);setPopup(null);window.getSelection()?.removeAllRanges()}}><MessageSquarePlus size={13}/><span>{label}</span></button>
       {onDiscuss&&popup.eventId&&<button type="button" onClick={()=>{onDiscuss(popup);setPopup(null);window.getSelection()?.removeAllRanges()}}><MessageSquare size={13}/><span>{discussionLabel}</span></button>}
     </div>

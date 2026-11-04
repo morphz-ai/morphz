@@ -54,11 +54,9 @@ import {
   type QuotePoint,
   type QuoteSelection,
 } from "./text-quote-dom.js";
-import {
-  observeTextQuoteLayout,
-  positionTextQuote,
-} from "./text-quote-layout.js";
+import { observeTextQuoteLayout } from "./text-quote-layout.js";
 import "./comment-discussions.css";
+import { positionTextPopover } from "../../../packages/core/src/text-popover-layout.js";
 
 export function useCommentDiscussions(options: {
   projectId: string;
@@ -456,7 +454,11 @@ export function CommentDiscussionPanel({
     const node = panel.current;
     return observeTextQuoteLayout(node, () => {
       const rect = locateTextQuote(view.quote)?.getBoundingClientRect();
-      positionTextQuote(node, rect ? { x: rect.right, y: rect.bottom } : point);
+      void positionTextPopover(
+        node,
+        rect ? { x: rect.right, y: rect.bottom, rect } : point,
+        "right-start",
+      );
     });
   }, [view?.id, point]);
   const lastMessage = view?.messages.at(-1);

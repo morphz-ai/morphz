@@ -63,6 +63,25 @@
     min-block-size: calc(44px + var(--ui-space-1, 4px));
   }
 }
+.app
+  .comment-discussion[data-text-compact="true"]
+  .discussion-compose:not(:has(label)) {
+  position: relative;
+}
+.app
+  .comment-discussion[data-text-compact="true"]
+  .discussion-compose:not(:has(label))
+  textarea {
+  padding-inline-end: 52px;
+}
+.app
+  .comment-discussion[data-text-compact="true"]
+  .discussion-compose:not(:has(label))
+  .discussion-compose-footer {
+  position: absolute;
+  right: 7px;
+  bottom: 5px;
+}
 .app .discussion-source-mark:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -279,4 +298,15 @@
 .app .text-quote-select[role="toolbar"] {
   gap: 2px;
   padding: 3px;
+}
+@media (pointer: coarse) {
+  .app .comment-discussion button,
+  .app .comment-discussion .discussion-source,
+  .app .comment-discussion .discussion-send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .comment-discussion-header {
+    flex-shrink: 0;
+  }
 }

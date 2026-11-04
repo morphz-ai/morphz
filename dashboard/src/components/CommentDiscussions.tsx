@@ -6,7 +6,8 @@ import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import type { CommentDiscussionController } from '../../../application/packages/core/src/comment-discussion-controller'
 import type { DashboardDiscussionSource } from './useCommentDiscussions'
-import type { DiscussionMarks } from '../../../application/packages/core/src/discussion-marks-dom'
+import {discussionRange,type DiscussionMarks} from '../../../application/packages/core/src/discussion-marks-dom'
+import {observeTextPopover,positionTextPopover,type TextAnchor} from '../../../application/packages/core/src/text-popover-layout'
 import './comment-discussions.css'
 
 export function CommentDiscussionMarks({owner}:{owner:DiscussionMarks<DashboardDiscussionSource>}) {
@@ -16,7 +17,7 @@ export function CommentDiscussionMarks({owner}:{owner:DiscussionMarks<DashboardD
   return <div ref={layer} className="discussion-mark-layer" data-discussion-ui="true">{owner.marks.map(mark=><button type="button" key={mark.key} className="discussion-source-mark" title={`${t('discussion.title')} · ${mark.preview}`} aria-label={`${t('discussion.title')} (${mark.count}${mark.more?'+':''})`} onClick={()=>owner.open(mark)}><MessageCircle size={14}/>{(mark.count>1||mark.more)&&<span>{mark.count}{mark.more?'+':''}</span>}</button>)}</div>
 }
 
-export function CommentDiscussionPanel({controller,point,readOnly}:{controller:CommentDiscussionController<DashboardDiscussionSource>;point:{x:number;y:number};readOnly:boolean}) {
+export function CommentDiscussionPanel({controller,point,readOnly}:{controller:CommentDiscussionController<DashboardDiscussionSource>;point:TextAnchor;readOnly:boolean}) {
   const {t}=useTranslation()
   useSyncExternalStore(controller.subscribe,controller.snapshot,controller.snapshot)
   const view=controller.active,panel=useRef<HTMLElement>(null)
@@ -26,16 +27,14 @@ export function CommentDiscussionPanel({controller,point,readOnly}:{controller:C
   useEffect(()=>{if(!opened)return;const outside=(event:PointerEvent)=>{if(event.target instanceof Node&&!panel.current?.contains(event.target)){setDirectoryFor(null);controller.close()}};document.addEventListener('pointerdown',outside,true);return()=>document.removeEventListener('pointerdown',outside,true)},[controller,opened])
   useLayoutEffect(()=>{
     const element=panel.current;if(!view||!element)return
-    const position=()=>{
-      const zoom=(element as HTMLElement&{currentCSSZoom?:number}).currentCSSZoom??1
-      element.style.maxWidth=`${innerWidth/zoom-24}px`;element.style.maxHeight=`${innerHeight/zoom-24}px`
-      element.style.left=`${Math.max(12,Math.min(point.x/zoom-element.offsetWidth/2,innerWidth/zoom-element.offsetWidth-12))}px`
-      const below=point.y/zoom+16
-      element.style.top=`${Math.max(12,Math.min(below,innerHeight/zoom-element.offsetHeight-12))}px`
-    }
-    const observer=new ResizeObserver(position);observer.observe(element)
-    window.addEventListener('resize',position);position()
-    return()=>{observer.disconnect();window.removeEventListener('resize',position)}
+    return observeTextPopover(element,()=>{
+      const id=view.quote.locator.event_id;
+      const article=[...document.querySelectorAll<HTMLElement>('article[data-event-id]')].find(node=>node.dataset.eventId===id);
+      const body=article?.querySelector<HTMLElement>('.message-body');
+      const range=body&&discussionRange(body,{id:view.id,title:'',preview:Array.from(view.quote.text).slice(0,160).join(''),text:view.quote.text,locator:view.quote.locator,created_at_micros:0,publish_to_session:view.publish});
+      const rect=range?.getBoundingClientRect();
+      void positionTextPopover(element,rect?{x:rect.right,y:rect.bottom,rect}:point,'right-start');
+    })
   },[view,point])
   if(!view)return null
   const known=new Map(view.directory.map(item=>[item.id,item.title||item.preview]))

@@ -9,126 +9,128 @@ This bundle covers production npm dependencies used to build the Dashboard embed
 
 | Package | Declared license | Included texts |
 |---|---|---|
-| `@babel/runtime 7.29.7` | `MIT` | L011 |
-| `@types/debug 4.1.13` | `MIT` | L039 |
-| `@types/estree 1.0.9` | `MIT` | L039 |
-| `@types/estree-jsx 1.0.5` | `MIT` | L039 |
-| `@types/hast 3.0.5` | `MIT` | L039 |
-| `@types/mdast 4.0.4` | `MIT` | L039 |
-| `@types/ms 2.1.0` | `MIT` | L039 |
-| `@types/react 19.2.17` | `MIT` | L039 |
-| `@types/unist 2.0.11` | `MIT` | L039 |
-| `@types/unist 3.0.3` | `MIT` | L039 |
+| `@babel/runtime 7.29.7` | `MIT` | L012 |
+| `@floating-ui/core 1.8.0` | `MIT` | L011 |
+| `@floating-ui/utils 0.2.12` | `MIT` | L011 |
+| `@types/debug 4.1.13` | `MIT` | L040 |
+| `@types/estree 1.0.9` | `MIT` | L040 |
+| `@types/estree-jsx 1.0.5` | `MIT` | L040 |
+| `@types/hast 3.0.5` | `MIT` | L040 |
+| `@types/mdast 4.0.4` | `MIT` | L040 |
+| `@types/ms 2.1.0` | `MIT` | L040 |
+| `@types/react 19.2.17` | `MIT` | L040 |
+| `@types/unist 2.0.11` | `MIT` | L040 |
+| `@types/unist 3.0.3` | `MIT` | L040 |
 | `@ungap/structured-clone 1.3.3` | `ISC` | L006 |
-| `bail 2.0.2` | `MIT` | L023 |
-| `ccount 2.0.1` | `MIT` | L023 |
-| `character-entities 2.0.2` | `MIT` | L023 |
-| `character-entities-html4 2.1.0` | `MIT` | L023 |
-| `character-entities-legacy 3.0.0` | `MIT` | L023 |
-| `character-reference-invalid 2.0.1` | `MIT` | L023 |
-| `comma-separated-tokens 2.0.3` | `MIT` | L029 |
-| `cookie 1.1.1` | `MIT` | L020 |
+| `bail 2.0.2` | `MIT` | L024 |
+| `ccount 2.0.1` | `MIT` | L024 |
+| `character-entities 2.0.2` | `MIT` | L024 |
+| `character-entities-html4 2.1.0` | `MIT` | L024 |
+| `character-entities-legacy 3.0.0` | `MIT` | L024 |
+| `character-reference-invalid 2.0.1` | `MIT` | L024 |
+| `comma-separated-tokens 2.0.3` | `MIT` | L030 |
+| `cookie 1.1.1` | `MIT` | L021 |
 | `csstype 3.2.3` | `MIT` | L010 |
-| `debug 4.4.3` | `MIT` | L030 |
-| `decode-named-character-reference 1.3.0` | `MIT` | L036 |
-| `dequal 2.0.3` | `MIT` | L027 |
+| `debug 4.4.3` | `MIT` | L031 |
+| `decode-named-character-reference 1.3.0` | `MIT` | L037 |
+| `dequal 2.0.3` | `MIT` | L028 |
 | `devlop 1.1.0` | `MIT` | L004 |
 | `escape-string-regexp 5.0.0` | `MIT` | L002 |
 | `estree-util-is-identifier-name 3.0.0` | `MIT` | L001 |
-| `extend 3.0.2` | `MIT` | L018 |
-| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L036 |
-| `hast-util-whitespace 3.0.0` | `MIT` | L029 |
-| `html-parse-stringify 3.0.1` | `MIT` | L031 |
+| `extend 3.0.2` | `MIT` | L019 |
+| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L037 |
+| `hast-util-whitespace 3.0.0` | `MIT` | L030 |
+| `html-parse-stringify 3.0.1` | `MIT` | L032 |
 | `html-url-attributes 3.0.1` | `MIT` | L007 |
-| `i18next 26.3.6` | `MIT` | L012 |
-| `i18next-browser-languagedetector 8.2.1` | `MIT` | L015 |
-| `inline-style-parser 0.2.7` | `MIT` | L014 |
-| `is-alphabetical 2.0.1` | `MIT` | L029 |
-| `is-alphanumerical 2.0.1` | `MIT` | L029 |
-| `is-decimal 2.0.1` | `MIT` | L029 |
-| `is-hexadecimal 2.0.1` | `MIT` | L029 |
+| `i18next 26.3.6` | `MIT` | L013 |
+| `i18next-browser-languagedetector 8.2.1` | `MIT` | L016 |
+| `inline-style-parser 0.2.7` | `MIT` | L015 |
+| `is-alphabetical 2.0.1` | `MIT` | L030 |
+| `is-alphanumerical 2.0.1` | `MIT` | L030 |
+| `is-decimal 2.0.1` | `MIT` | L030 |
+| `is-hexadecimal 2.0.1` | `MIT` | L030 |
 | `is-plain-obj 4.1.0` | `MIT` | L002 |
 | `longest-streak 3.1.0` | `MIT` | L008 |
-| `lucide-react 1.18.0` | `ISC` | L037 |
-| `markdown-table 3.0.4` | `MIT` | L036 |
-| `mdast-util-find-and-replace 3.0.2` | `MIT` | L036 |
-| `mdast-util-from-markdown 2.0.3` | `MIT` | L036 |
-| `mdast-util-gfm 3.1.0` | `MIT` | L036 |
+| `lucide-react 1.18.0` | `ISC` | L038 |
+| `markdown-table 3.0.4` | `MIT` | L037 |
+| `mdast-util-find-and-replace 3.0.2` | `MIT` | L037 |
+| `mdast-util-from-markdown 2.0.3` | `MIT` | L037 |
+| `mdast-util-gfm 3.1.0` | `MIT` | L037 |
 | `mdast-util-gfm-autolink-literal 2.0.1` | `MIT` | L001 |
-| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L036 |
+| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L037 |
 | `mdast-util-gfm-strikethrough 2.0.0` | `MIT` | L001 |
 | `mdast-util-gfm-table 2.0.0` | `MIT` | L001 |
 | `mdast-util-gfm-task-list-item 2.0.0` | `MIT` | L001 |
 | `mdast-util-mdx-expression 2.0.1` | `MIT` | L001 |
 | `mdast-util-mdx-jsx 3.2.0` | `MIT` | L001 |
 | `mdast-util-mdxjs-esm 2.0.1` | `MIT` | L001 |
-| `mdast-util-newline-to-break 2.0.0` | `MIT` | L025 |
-| `mdast-util-phrasing 4.1.0` | `MIT` | L032 |
-| `mdast-util-to-hast 13.2.1` | `MIT` | L029 |
-| `mdast-util-to-markdown 2.1.2` | `MIT` | L036 |
-| `mdast-util-to-string 4.0.0` | `MIT` | L023 |
-| `micromark 4.0.2` | `MIT` | L036 |
-| `micromark-core-commonmark 2.0.3` | `MIT` | L036 |
+| `mdast-util-newline-to-break 2.0.0` | `MIT` | L026 |
+| `mdast-util-phrasing 4.1.0` | `MIT` | L033 |
+| `mdast-util-to-hast 13.2.1` | `MIT` | L030 |
+| `mdast-util-to-markdown 2.1.2` | `MIT` | L037 |
+| `mdast-util-to-string 4.0.0` | `MIT` | L024 |
+| `micromark 4.0.2` | `MIT` | L037 |
+| `micromark-core-commonmark 2.0.3` | `MIT` | L037 |
 | `micromark-extension-gfm 3.0.0` | `MIT` | L001 |
 | `micromark-extension-gfm-autolink-literal 2.1.0` | `MIT` | L001 |
 | `micromark-extension-gfm-footnote 2.1.0` | `MIT` | L009 |
 | `micromark-extension-gfm-strikethrough 2.1.0` | `MIT` | L001 |
-| `micromark-extension-gfm-table 2.1.1` | `MIT` | L036 |
+| `micromark-extension-gfm-table 2.1.1` | `MIT` | L037 |
 | `micromark-extension-gfm-tagfilter 2.0.0` | `MIT` | L001 |
 | `micromark-extension-gfm-task-list-item 2.1.0` | `MIT` | L001 |
-| `micromark-factory-destination 2.0.1` | `MIT` | L036 |
-| `micromark-factory-label 2.0.1` | `MIT` | L036 |
-| `micromark-factory-space 2.0.1` | `MIT` | L036 |
-| `micromark-factory-title 2.0.1` | `MIT` | L036 |
-| `micromark-factory-whitespace 2.0.1` | `MIT` | L036 |
-| `micromark-util-character 2.1.1` | `MIT` | L036 |
-| `micromark-util-chunked 2.0.1` | `MIT` | L036 |
-| `micromark-util-classify-character 2.0.1` | `MIT` | L036 |
-| `micromark-util-combine-extensions 2.0.1` | `MIT` | L036 |
-| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L036 |
-| `micromark-util-decode-string 2.0.1` | `MIT` | L036 |
-| `micromark-util-encode 2.0.1` | `MIT` | L036 |
-| `micromark-util-html-tag-name 2.0.1` | `MIT` | L036 |
-| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L036 |
-| `micromark-util-resolve-all 2.0.1` | `MIT` | L036 |
-| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L036 |
-| `micromark-util-subtokenize 2.1.0` | `MIT` | L036 |
-| `micromark-util-symbol 2.0.1` | `MIT` | L036 |
-| `micromark-util-types 2.0.2` | `MIT` | L036 |
-| `ms 2.1.3` | `MIT` | L035 |
-| `parse-entities 4.0.2` | `MIT` | L024 |
-| `property-information 7.2.0` | `MIT` | L024 |
-| `react 19.2.7` | `MIT` | L026 |
-| `react-dom 19.2.7` | `MIT` | L026 |
-| `react-i18next 17.0.10` | `MIT` | L017 |
-| `react-markdown 10.1.0` | `MIT` | L019 |
-| `react-router 7.18.3` | `MIT` | L013 |
-| `react-router-dom 7.18.3` | `MIT` | L013 |
-| `remark-breaks 4.0.0` | `MIT` | L025 |
-| `remark-gfm 4.0.1` | `MIT` | L036 |
-| `remark-parse 11.0.0` | `MIT` | L038 |
-| `remark-rehype 11.1.2` | `MIT` | L036 |
-| `remark-stringify 11.0.0` | `MIT` | L038 |
-| `scheduler 0.27.0` | `MIT` | L026 |
+| `micromark-factory-destination 2.0.1` | `MIT` | L037 |
+| `micromark-factory-label 2.0.1` | `MIT` | L037 |
+| `micromark-factory-space 2.0.1` | `MIT` | L037 |
+| `micromark-factory-title 2.0.1` | `MIT` | L037 |
+| `micromark-factory-whitespace 2.0.1` | `MIT` | L037 |
+| `micromark-util-character 2.1.1` | `MIT` | L037 |
+| `micromark-util-chunked 2.0.1` | `MIT` | L037 |
+| `micromark-util-classify-character 2.0.1` | `MIT` | L037 |
+| `micromark-util-combine-extensions 2.0.1` | `MIT` | L037 |
+| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L037 |
+| `micromark-util-decode-string 2.0.1` | `MIT` | L037 |
+| `micromark-util-encode 2.0.1` | `MIT` | L037 |
+| `micromark-util-html-tag-name 2.0.1` | `MIT` | L037 |
+| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L037 |
+| `micromark-util-resolve-all 2.0.1` | `MIT` | L037 |
+| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L037 |
+| `micromark-util-subtokenize 2.1.0` | `MIT` | L037 |
+| `micromark-util-symbol 2.0.1` | `MIT` | L037 |
+| `micromark-util-types 2.0.2` | `MIT` | L037 |
+| `ms 2.1.3` | `MIT` | L036 |
+| `parse-entities 4.0.2` | `MIT` | L025 |
+| `property-information 7.2.0` | `MIT` | L025 |
+| `react 19.2.7` | `MIT` | L027 |
+| `react-dom 19.2.7` | `MIT` | L027 |
+| `react-i18next 17.0.10` | `MIT` | L018 |
+| `react-markdown 10.1.0` | `MIT` | L020 |
+| `react-router 7.18.3` | `MIT` | L014 |
+| `react-router-dom 7.18.3` | `MIT` | L014 |
+| `remark-breaks 4.0.0` | `MIT` | L026 |
+| `remark-gfm 4.0.1` | `MIT` | L037 |
+| `remark-parse 11.0.0` | `MIT` | L039 |
+| `remark-rehype 11.1.2` | `MIT` | L037 |
+| `remark-stringify 11.0.0` | `MIT` | L039 |
+| `scheduler 0.27.0` | `MIT` | L027 |
 | `set-cookie-parser 2.7.2` | `MIT` | L003 |
-| `space-separated-tokens 2.0.2` | `MIT` | L029 |
+| `space-separated-tokens 2.0.2` | `MIT` | L030 |
 | `stringify-entities 4.0.4` | `MIT` | L008 |
-| `style-to-js 1.1.21` | `MIT` | L022 |
+| `style-to-js 1.1.21` | `MIT` | L023 |
 | `style-to-object 1.0.14` | `MIT` | L005 |
 | `trim-lines 3.0.1` | `MIT` | L008 |
-| `trough 2.2.0` | `MIT` | L033 |
-| `typescript 6.0.3` | `Apache-2.0` | L028 |
-| `unified 11.0.5` | `MIT` | L034 |
-| `unist-util-is 6.0.1` | `MIT` | L016 |
-| `unist-util-position 5.0.0` | `MIT` | L023 |
-| `unist-util-stringify-position 4.0.0` | `MIT` | L029 |
-| `unist-util-visit 5.1.0` | `MIT` | L023 |
-| `unist-util-visit-parents 6.0.2` | `MIT` | L029 |
-| `use-sync-external-store 1.6.0` | `MIT` | L026 |
-| `vfile 6.0.3` | `MIT` | L034 |
-| `vfile-message 4.0.3` | `MIT` | L036 |
-| `void-elements 3.1.0` | `MIT` | L021 |
-| `zwitch 2.0.4` | `MIT` | L029 |
+| `trough 2.2.0` | `MIT` | L034 |
+| `typescript 6.0.3` | `Apache-2.0` | L029 |
+| `unified 11.0.5` | `MIT` | L035 |
+| `unist-util-is 6.0.1` | `MIT` | L017 |
+| `unist-util-position 5.0.0` | `MIT` | L024 |
+| `unist-util-stringify-position 4.0.0` | `MIT` | L030 |
+| `unist-util-visit 5.1.0` | `MIT` | L024 |
+| `unist-util-visit-parents 6.0.2` | `MIT` | L030 |
+| `use-sync-external-store 1.6.0` | `MIT` | L027 |
+| `vfile 6.0.3` | `MIT` | L035 |
+| `vfile-message 4.0.3` | `MIT` | L037 |
+| `void-elements 3.1.0` | `MIT` | L022 |
+| `zwitch 2.0.4` | `MIT` | L030 |
 
 ## License texts
 
@@ -399,6 +401,33 @@ SOFTWARE.
 
 ### L011
 
+Applies to: `@floating-ui/core 1.8.0`, `@floating-ui/utils 0.2.12`
+
+~~~~text
+MIT License
+
+Copyright (c) 2021-present Floating UI contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+~~~~
+
+### L012
+
 Applies to: `@babel/runtime 7.29.7`
 
 ~~~~text
@@ -426,7 +455,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L012
+### L013
 
 Applies to: `i18next 26.3.6`
 
@@ -454,7 +483,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L013
+### L014
 
 Applies to: `react-router 7.18.3`, `react-router-dom 7.18.3`
 
@@ -484,7 +513,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L014
+### L015
 
 Applies to: `inline-style-parser 0.2.7`
 
@@ -500,7 +529,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L015
+### L016
 
 Applies to: `i18next-browser-languagedetector 8.2.1`
 
@@ -528,7 +557,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L016
+### L017
 
 Applies to: `unist-util-is 6.0.1`
 
@@ -557,7 +586,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L017
+### L018
 
 Applies to: `react-i18next 17.0.10`
 
@@ -585,7 +614,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L018
+### L019
 
 Applies to: `extend 3.0.2`
 
@@ -614,7 +643,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L019
+### L020
 
 Applies to: `react-markdown 10.1.0`
 
@@ -642,7 +671,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L020
+### L021
 
 Applies to: `cookie 1.1.1`
 
@@ -672,7 +701,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L021
+### L022
 
 Applies to: `void-elements 3.1.0`
 
@@ -701,7 +730,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L022
+### L023
 
 Applies to: `style-to-js 1.1.21`
 
@@ -730,7 +759,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L023
+### L024
 
 Applies to: `bail 2.0.2`, `ccount 2.0.1`, `character-entities 2.0.2`, `character-entities-html4 2.1.0`, `character-entities-legacy 3.0.0`, `character-reference-invalid 2.0.1`, `mdast-util-to-string 4.0.0`, `unist-util-position 5.0.0`, `unist-util-visit 5.1.0`
 
@@ -759,7 +788,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L024
+### L025
 
 Applies to: `parse-entities 4.0.2`, `property-information 7.2.0`
 
@@ -788,7 +817,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L025
+### L026
 
 Applies to: `mdast-util-newline-to-break 2.0.0`, `remark-breaks 4.0.0`
 
@@ -817,7 +846,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L026
+### L027
 
 Applies to: `react 19.2.7`, `react-dom 19.2.7`, `scheduler 0.27.0`, `use-sync-external-store 1.6.0`
 
@@ -845,7 +874,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L027
+### L028
 
 Applies to: `dequal 2.0.3`
 
@@ -873,7 +902,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L028
+### L029
 
 Applies to: `typescript 6.0.3`
 
@@ -935,7 +964,7 @@ If the Work includes a "NOTICE" text file as part of its distribution, then any 
 END OF TERMS AND CONDITIONS
 ~~~~
 
-### L029
+### L030
 
 Applies to: `comma-separated-tokens 2.0.3`, `hast-util-whitespace 3.0.0`, `is-alphabetical 2.0.1`, `is-alphanumerical 2.0.1`, `is-decimal 2.0.1`, `is-hexadecimal 2.0.1`, `mdast-util-to-hast 13.2.1`, `space-separated-tokens 2.0.2`, `unist-util-stringify-position 4.0.0`, `unist-util-visit-parents 6.0.2`, `zwitch 2.0.4`
 
@@ -964,7 +993,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L030
+### L031
 
 Applies to: `debug 4.4.3`
 
@@ -990,7 +1019,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L031
+### L032
 
 Applies to: `html-parse-stringify 3.0.1`
 
@@ -1018,7 +1047,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L032
+### L033
 
 Applies to: `mdast-util-phrasing 4.1.0`
 
@@ -1048,7 +1077,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L033
+### L034
 
 Applies to: `trough 2.2.0`
 
@@ -1076,7 +1105,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L034
+### L035
 
 Applies to: `unified 11.0.5`, `vfile 6.0.3`
 
@@ -1104,7 +1133,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L035
+### L036
 
 Applies to: `ms 2.1.3`
 
@@ -1132,7 +1161,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L036
+### L037
 
 Applies to: `decode-named-character-reference 1.3.0`, `hast-util-to-jsx-runtime 2.3.6`, `markdown-table 3.0.4`, `mdast-util-find-and-replace 3.0.2`, `mdast-util-from-markdown 2.0.3`, `mdast-util-gfm 3.1.0`, `mdast-util-gfm-footnote 2.1.0`, `mdast-util-to-markdown 2.1.2`, `micromark 4.0.2`, `micromark-core-commonmark 2.0.3`, `micromark-extension-gfm-table 2.1.1`, `micromark-factory-destination 2.0.1`, `micromark-factory-label 2.0.1`, `micromark-factory-space 2.0.1`, `micromark-factory-title 2.0.1`, `micromark-factory-whitespace 2.0.1`, `micromark-util-character 2.1.1`, `micromark-util-chunked 2.0.1`, `micromark-util-classify-character 2.0.1`, `micromark-util-combine-extensions 2.0.1`, `micromark-util-decode-numeric-character-reference 2.0.2`, `micromark-util-decode-string 2.0.1`, `micromark-util-encode 2.0.1`, `micromark-util-html-tag-name 2.0.1`, `micromark-util-normalize-identifier 2.0.1`, `micromark-util-resolve-all 2.0.1`, `micromark-util-sanitize-uri 2.0.1`, `micromark-util-subtokenize 2.1.0`, `micromark-util-symbol 2.0.1`, `micromark-util-types 2.0.2`, `remark-gfm 4.0.1`, `remark-rehype 11.1.2`, `vfile-message 4.0.3`
 
@@ -1161,7 +1190,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L037
+### L038
 
 Applies to: `lucide-react 1.18.0`
 
@@ -1211,7 +1240,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L038
+### L039
 
 Applies to: `remark-parse 11.0.0`, `remark-stringify 11.0.0`
 
@@ -1239,7 +1268,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L039
+### L040
 
 Applies to: `@types/debug 4.1.13`, `@types/estree 1.0.9`, `@types/estree-jsx 1.0.5`, `@types/hast 3.0.5`, `@types/mdast 4.0.4`, `@types/ms 2.1.0`, `@types/react 19.2.17`, `@types/unist 2.0.11`, `@types/unist 3.0.3`
 

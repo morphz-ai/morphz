@@ -160,7 +160,7 @@ test(
           const first = await page.evaluate(
             () => Reflect.get(window, "discussionFixture").report().active,
           );
-          if (lane === "dashboard") {
+          {
             await expect
               .poll(() =>
                 page.evaluate(
@@ -169,7 +169,7 @@ test(
                       .subscriptions.length,
                 ),
               )
-              .toBe(2);
+              .toBe(lane === "dashboard" ? 2 : 1);
             await page.evaluate(
               (id) =>
                 Reflect.get(window, "discussionFixture").prefix(
@@ -225,6 +225,31 @@ test(
               markerHit.height >= (markerHit.coarse ? 44 : 24),
             JSON.stringify(markerHit),
           );
+          if (markerHit.coarse) {
+            const controls = await page
+              .locator(
+                lane === "desktop"
+                  ? ".comment-discussion button"
+                  : ".dashboard-discussion button",
+              )
+              .evaluateAll((buttons) =>
+                buttons.map((button) => {
+                  const rect = button.getBoundingClientRect();
+                  return {
+                    name:
+                      button.getAttribute("aria-label") || button.textContent,
+                    width: rect.width,
+                    height: rect.height,
+                  };
+                }),
+              );
+            assert.ok(
+              controls.every(
+                (control) => control.width >= 44 && control.height >= 44,
+              ),
+              JSON.stringify({ lane, theme, width, controls }),
+            );
+          }
           await expect(page.locator("#source-a")).toHaveAttribute(
             "data-discussion-marked",
             "true",
@@ -483,6 +508,138 @@ test(
             await page.locator("#main-draft").inputValue(),
             "TEST：这段主聊天草稿必须保留。",
           );
+          await page.evaluate(
+            (id) => Reflect.get(window, "discussionFixture").long(id),
+            first,
+          );
+          for (const zoom of [1, 2]) {
+            await page.evaluate((zoom) => {
+              const host =
+                document.querySelector<HTMLElement>(".app,.page-shell")!;
+              host.style.zoom = String(zoom);
+              const source = document.querySelector<HTMLElement>("#source-a")!;
+              Object.assign(source.style, {
+                position: "fixed",
+                left: "32px",
+                top: `${Math.min(420, innerHeight / zoom - 200)}px`,
+                width: `${Math.min(330, innerWidth / zoom - 64)}px`,
+              });
+            }, zoom);
+            let lastLayout: unknown;
+            await expect
+              .poll(
+                async () =>
+                  (lastLayout = await page
+                    .locator(
+                      lane === "desktop"
+                        ? ".comment-discussion"
+                        : ".dashboard-discussion",
+                    )
+                    .evaluate((panel) => {
+                      const sourceRange = document.createRange();
+                      sourceRange.selectNodeContents(
+                        document.querySelector("#source-a")!,
+                      );
+                      const r = panel.getBoundingClientRect(),
+                        source = sourceRange.getBoundingClientRect(),
+                        composer = document
+                          .querySelector("[data-text-popover-blocker]")!
+                          .getBoundingClientRect();
+                      const body = panel.querySelector(".discussion-messages")!;
+                      const clear =
+                        r.width > 100 &&
+                        r.height > 100 &&
+                        (r.right <= source.left + 0.5 ||
+                          r.left >= source.right - 0.5 ||
+                          r.bottom <= source.top + 0.5 ||
+                          r.top >= source.bottom - 0.5) &&
+                        (r.right <= composer.left + 0.5 ||
+                          r.left >= composer.right - 0.5 ||
+                          r.bottom <= composer.top + 0.5 ||
+                          r.top >= composer.bottom - 0.5) &&
+                        r.left >= 0 &&
+                        r.right <= innerWidth + 1 &&
+                        r.top >= 0 &&
+                        r.bottom <= innerHeight + 1 &&
+                        body.scrollHeight > body.clientHeight &&
+                        body.clientHeight >=
+                          2 *
+                            Number.parseFloat(
+                              getComputedStyle(
+                                body.querySelector(".discussion-message")!,
+                              ).lineHeight,
+                            );
+                      return {
+                        clear,
+                        coarse: matchMedia("(pointer: coarse)").matches,
+                        controls: Array.from(
+                          panel.querySelectorAll("button"),
+                        ).map((button) => ({
+                          name:
+                            button.getAttribute("aria-label") ||
+                            button.textContent,
+                          width: button.getBoundingClientRect().width,
+                          height: button.getBoundingClientRect().height,
+                        })),
+                        panel: r.toJSON(),
+                        source: source.toJSON(),
+                        composer: composer.toJSON(),
+                        scrollHeight: body.scrollHeight,
+                        clientHeight: body.clientHeight,
+                        placement: (panel as HTMLElement).dataset.textPlacement,
+                      };
+                    })),
+              )
+              .toMatchObject({ clear: true })
+              .catch(async (error) => {
+                context.diagnostic(
+                  JSON.stringify({ lane, theme, width, zoom, lastLayout }),
+                );
+                if (screenshots)
+                  await page.screenshot({
+                    path: resolve(
+                      screenshots,
+                      `${lane}-${theme}-${width}-long-${zoom}x-failure.png`,
+                    ),
+                  });
+                throw error;
+              });
+            const targetLayout = lastLayout as {
+              coarse: boolean;
+              controls: { width: number; height: number }[];
+            };
+            assert.equal(
+              targetLayout.coarse,
+              width === 760,
+              JSON.stringify({ lane, theme, width, zoom, lastLayout }),
+            );
+            if (targetLayout.coarse)
+              assert.ok(
+                targetLayout.controls.every(
+                  (control) =>
+                    control.width >= 44 * zoom && control.height >= 44 * zoom,
+                ),
+                JSON.stringify({ lane, theme, width, zoom, lastLayout }),
+              );
+            geometry.push({
+              lane,
+              theme,
+              viewportWidth: width,
+              zoom,
+              ...(lastLayout as object),
+            });
+            if (screenshots)
+              await page.screenshot({
+                path: resolve(
+                  screenshots,
+                  `${lane}-${theme}-${width}-long-${zoom}x.png`,
+                ),
+                // The fixture itself becomes taller under CSS zoom. Keep the
+                //2x capture at the real viewport instead of changing device
+                //metrics for a full-page screenshot midway through hit testing.
+                fullPage: zoom === 1,
+              });
+          }
           await page.close();
         }
     }

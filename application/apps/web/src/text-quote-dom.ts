@@ -5,7 +5,11 @@ import {
   type TextQuoteSource,
 } from "../../../packages/core/src/text-quotes.js";
 
-export type QuotePoint = { x: number; y: number };
+export type QuotePoint = {
+  x: number;
+  y: number;
+  rect?: Pick<DOMRect, "x" | "y" | "width" | "height">;
+};
 export type QuoteSelection = {
   quote: TextQuote;
   point: QuotePoint;
@@ -111,7 +115,11 @@ export function captureTextQuote(): QuoteSelection | null {
               field: fieldKey(field, root),
             },
           },
-          point: { x: rect.right, y: Math.min(innerHeight - 50, rect.bottom) },
+          point: {
+            x: rect.right,
+            y: Math.min(innerHeight - 50, rect.bottom),
+            rect,
+          },
         };
       } catch {
         return null;
@@ -197,7 +205,11 @@ export function captureTextQuote(): QuoteSelection | null {
       },
     },
     range: range.cloneRange(),
-    point: { x: rect.right, y: rect.bottom },
+    point: {
+      x: rect.right,
+      y: rect.bottom,
+      rect: range.getBoundingClientRect(),
+    },
   };
 }
 

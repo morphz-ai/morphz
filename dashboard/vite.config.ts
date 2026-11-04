@@ -7,6 +7,7 @@ export default defineConfig({
   // emitted asset references relative so the same bundle works at any prefix.
   base: './',
   plugins: [react()],
+  resolve: { dedupe: ['@floating-ui/core'] },
   server: {
     host: '0.0.0.0',
     proxy: {
