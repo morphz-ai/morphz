@@ -16,6 +16,7 @@
 .dashboard-discussion form:focus-within{border-color:var(--accent);}
 .dashboard-discussion textarea{display:block;width:100%;min-height:44px;max-height:160px;margin:0;padding:3px 0;resize:none;border:0;outline:0;background:transparent;color:var(--text);font-family:inherit;font-size:13px;line-height:1.5;caret-color:var(--accent);}
 .dashboard-discussion textarea::placeholder{color:var(--text-secondary);}
+.dashboard-discussion textarea:focus,.dashboard-discussion textarea:focus-visible{outline:0;border:0;box-shadow:none;}
 .dashboard-discussion .discussion-compose-footer{display:flex;align-items:center;gap:8px;justify-content:space-between;min-height:30px;}
 .dashboard-discussion label{display:flex;align-items:center;gap:5px;color:var(--text-secondary);font-size:11px;}
 .dashboard-discussion input[type=checkbox]{width:12px;height:12px;margin:0;accent-color:var(--accent);}

@@ -304,6 +304,8 @@ test(
                 bottom: r.bottom,
                 viewport: innerWidth,
                 fontSize: style.fontSize,
+                focused: document.activeElement === input,
+                innerOutline: style.outlineStyle,
                 lineHeight: style.lineHeight,
                 overflow: element.scrollWidth > element.clientWidth,
               };
@@ -316,6 +318,12 @@ test(
             JSON.stringify(metrics),
           );
           assert(!metrics.overflow, JSON.stringify(metrics));
+          assert.equal(metrics.focused, true);
+          assert.equal(
+            metrics.innerOutline,
+            "none",
+            "composer boundary owns the single focus cue",
+          );
           geometry.push({ lane, theme, viewportWidth: width, ...metrics });
           assert.deepEqual(errors, []);
           if (screenshots)
