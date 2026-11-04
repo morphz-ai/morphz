@@ -1,4 +1,4 @@
-import { CommentDiscussionPanel } from './components/CommentDiscussions'
+import { CommentDiscussionPanel, CommentDiscussionMarks } from './components/CommentDiscussions'
 import { useCommentDiscussions } from './components/useCommentDiscussions'
 import { sessionReadPlan } from './app/sessionReadPlan'
 import { readDirectoryPage, readNavigationHead, mergeDirectoryPage } from './app/directoryPage'
@@ -1273,6 +1273,7 @@ interface SelectionPopup {
   eventTime: string
   relTop: number
   relLeft: number
+  anchor?: {start:number;end:number;prefix:string;suffix:string}
 }
 
 interface ContextFrame {
@@ -2395,6 +2396,9 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
         return
       }
       const range = selection.getRangeAt(0)
+      if(!messageBody.contains(range.startContainer)||!messageBody.contains(range.endContainer)){setPopup(null);return}
+      const before=range.cloneRange();before.selectNodeContents(messageBody);before.setEnd(range.startContainer,range.startOffset)
+      const start=before.toString().length+range.toString().indexOf(selectedText),all=messageBody.textContent??''
       const rect = range.getBoundingClientRect()
       const articleRect = article.getBoundingClientRect()
       setPopup({
@@ -2406,6 +2410,7 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
         eventTime: article.getAttribute('data-event-time') || '',
         relTop: rect.top - articleRect.top + rect.height / 2 - 9,
         relLeft: rect.right - articleRect.left + 6,
+        anchor:{start,end:start+selectedText.length,prefix:all.slice(Math.max(0,start-40),start),suffix:all.slice(start+selectedText.length,start+selectedText.length+40)},
       })
     }
     const handleSelectionChange = () => {
@@ -8055,7 +8060,7 @@ export default function App() {
     && reasoningEffortOptions.includes(selectedSession.reasoning_effort)
     ? selectedSession.reasoning_effort
     : 'default'
-  const commentDiscussions=useCommentDiscussions({api:DASHBOARD_API,sessionId:selectedSessionId,principalId:principalScope?.principal.id,actorIdentity:activePrincipalId??'',readOnly:observingForeignPrincipal||!activePrincipalId,model:effectiveSessionModel,reasoning:selectedReasoningEffort})
+  const commentDiscussions=useCommentDiscussions({api:DASHBOARD_API,sessionId:selectedSessionId,principalId:principalScope?.principal.id,actorIdentity:activePrincipalId??'',readOnly:observingForeignPrincipal||!activePrincipalId,model:effectiveSessionModel,reasoning:selectedReasoningEffort,visible:view==='dialogue',connected:wsStatus==='connected',sources:events,title:selectedSession?.title})
   useEffect(()=>{if(view!=='dialogue')commentDiscussions.controller.close()},[view,commentDiscussions.controller])
   const selectedPermissionMode: PermissionModeSetting = isPermissionModeSetting(selectedSession?.permission_mode)
     ? selectedSession.permission_mode
@@ -10430,9 +10435,9 @@ export default function App() {
           const clientId=payload?.client_message_id
           const attempt=payload?.publication_key??payload?.attempt_id??payload?.model_attempt_id
           const sourceKey=typeof clientId==='string'?`input:${clientId}`:typeof attempt==='string'?`publication:${attempt}`:`event:${popup.eventId}`
-          commentDiscussions.open({key:sourceKey,title:selectedSession?.title??t('discussion.title'),text:popup.text,locator:{kind:'runtime-event',event_id:popup.eventId}},popup)
+          commentDiscussions.open({key:sourceKey,title:selectedSession?.title??t('discussion.title'),text:popup.text,locator:{kind:'runtime-event',event_id:popup.eventId,anchor:popup.anchor}},popup)
         }:undefined}/>
-        {view==='dialogue'&&<CommentDiscussionPanel controller={commentDiscussions.controller} point={commentDiscussions.point} readOnly={observingForeignPrincipal||!activePrincipalId}/>}
+        {view==='dialogue'&&<><CommentDiscussionMarks owner={commentDiscussions.marks}/><CommentDiscussionPanel controller={commentDiscussions.controller} point={commentDiscussions.point} readOnly={observingForeignPrincipal||!activePrincipalId}/></>}
       </section>
       {sexprReader && (
         <SExpressionReader

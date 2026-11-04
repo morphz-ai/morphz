@@ -8,7 +8,11 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { ArrowUp, ChevronDown, MessageCircle, Plus, X } from "lucide-react";
+import { ArrowUp, ChevronDown, MessageCircle, X } from "lucide-react";
+import {
+  DiscussionMarks,
+  discussionRange,
+} from "../../../packages/core/src/discussion-marks-dom.js";
 import {
   CommentDiscussionController,
   type DiscussionCommand,
@@ -19,7 +23,11 @@ import {
   commentDiscussionChunkSchema,
   commentDiscussionSourceKey,
 } from "../../../packages/core/src/comment-discussions.js";
-import type { TextQuote } from "../../../packages/core/src/text-quotes.js";
+import {
+  quoteSourceKey,
+  textQuoteSourceSchema,
+  type TextQuote,
+} from "../../../packages/core/src/text-quotes.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import { applicationCall } from "./application-transport.js";
 import {
@@ -58,6 +66,7 @@ export function useCommentDiscussions(options: {
   identity: string;
   storageScope: string;
   enabled: boolean;
+  connected?: boolean;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
 }) {
@@ -139,14 +148,14 @@ export function useCommentDiscussions(options: {
     ) => applicationCall(method, params, { identityGeneration, signal });
     return new CommentDiscussionController<TextQuote>(
       {
-        list: async (quote, before, signal) =>
+        list: async (quote, before, signal, limit = 20) =>
           (await call(
             "discussions.list",
             {
               ...scope,
               source: quote.source,
               ...(before ? { before } : {}),
-              limit: 20,
+              limit,
             },
             signal,
           )) as { items: []; nextCursor: null },
@@ -220,6 +229,84 @@ export function useCommentDiscussions(options: {
     controller.snapshot,
   );
   const current = controller.active;
+  const marks = useMemo(
+    () =>
+      new DiscussionMarks<TextQuote>({
+        selector: "[data-text-source]",
+        describe: (root) => {
+          let raw: unknown;
+          try {
+            raw = JSON.parse(root.dataset.textSource ?? "null");
+          } catch {
+            return null;
+          }
+          const parsed = textQuoteSourceSchema.safeParse(raw);
+          if (!parsed.success) return null;
+          const source = parsed.data;
+          return {
+            key: commentDiscussionSourceKey(source),
+            quote: {
+              id: "00000000-0000-4000-8000-000000000000",
+              source,
+              text: "",
+              comment: "",
+            },
+          };
+        },
+        read: (quote, signal) => controller.sourcePage(quote, signal),
+        range: (root, mark) => {
+          const source = mark.locator?.source;
+          if (source) {
+            const parsed = textQuoteSourceSchema.safeParse(source);
+            if (
+              !parsed.success ||
+              quoteSourceKey(parsed.data) !==
+                quoteSourceKey(
+                  textQuoteSourceSchema.parse(
+                    JSON.parse(root.dataset.textSource!),
+                  ),
+                )
+            )
+              return null;
+          }
+          return discussionRange(root, mark);
+        },
+        open: (id, quote, at) => {
+          setPoint(at);
+          void controller.select(id, quote);
+        },
+      }),
+    [controller],
+  );
+  useEffect(() => {
+    if (!options.enabled) return;
+    marks.start();
+    return () => marks.dispose();
+  }, [marks, options.enabled]);
+  useEffect(
+    () => marks.connection(options.connected !== false),
+    [marks, options.connected],
+  );
+  useEffect(() => {
+    for (const view of controller.views.values())
+      if (view.submitted)
+        marks.accepted(
+          {
+            key: commentDiscussionSourceKey(view.quote.source),
+            quote: view.quote,
+          },
+          {
+            id: view.id,
+            title:
+              view.messages.find((m) => m.kind === "input")?.text ?? "讨论",
+            preview: Array.from(view.quote.text).slice(0, 160).join(""),
+            text: view.quote.text,
+            created_at_micros: 0,
+            publish_to_session: view.publish,
+            locator: { source: view.quote.source, anchor: view.quote.anchor },
+          },
+        );
+  }, [marks, controller, controller.version]);
   const stream = useConversationStream(
     options.projectId,
     options.conversationId,
@@ -267,6 +354,7 @@ export function useCommentDiscussions(options: {
     controller,
     point,
     enabled: options.enabled,
+    marks,
     open: (selection?: QuoteSelection | null) => {
       if (!latest.current.enabled) return;
       const selected = selection ?? captureTextQuote();
@@ -285,6 +373,60 @@ export function useCommentDiscussions(options: {
       window.getSelection()?.removeAllRanges();
     },
   };
+}
+
+export function CommentDiscussionMarks({
+  owner,
+}: {
+  owner: DiscussionMarks<TextQuote>;
+}) {
+  const version = useSyncExternalStore(
+    owner.subscribe,
+    owner.snapshot,
+    owner.snapshot,
+  );
+  const layer = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const node = layer.current;
+    if (!node) return;
+    const zoom =
+      (node as HTMLElement & { currentCSSZoom?: number }).currentCSSZoom ?? 1;
+    [...node.children].forEach((child, index) => {
+      const mark = owner.marks[index];
+      if (mark && child instanceof HTMLElement) {
+        child.style.left = `${mark.x / zoom}px`;
+        child.style.top = `${mark.y / zoom}px`;
+      }
+    });
+  }, [owner, version]);
+  return (
+    <div
+      ref={layer}
+      className="discussion-mark-layer"
+      data-discussion-ui="true"
+      data-quote-ui="true"
+    >
+      {owner.marks.map((mark) => (
+        <button
+          type="button"
+          data-size="icon-xs"
+          key={mark.key}
+          className="discussion-source-mark"
+          title={`查看讨论 · ${mark.preview}`}
+          aria-label={`查看此处讨论（${mark.count}${mark.more ? "+" : ""}）`}
+          onClick={() => owner.open(mark)}
+        >
+          <MessageCircle size={14} />
+          {(mark.count > 1 || mark.more) && (
+            <span>
+              {mark.count}
+              {mark.more ? "+" : ""}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function CommentDiscussionPanel({
@@ -327,6 +469,20 @@ export function CommentDiscussionPanel({
   useEffect(() => {
     setDirectoryOpen(false);
   }, [view?.id]);
+  useEffect(() => {
+    if (!view) return;
+    const outside = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !panel.current?.contains(event.target)
+      ) {
+        setDirectoryOpen(false);
+        controller.close();
+      }
+    };
+    document.addEventListener("pointerdown", outside, true);
+    return () => document.removeEventListener("pointerdown", outside, true);
+  }, [controller, view?.id]);
   if (!view) return null;
   const known = new Map(
     view.directory.map((item) => [item.id, item.title || item.preview]),
@@ -351,6 +507,7 @@ export function CommentDiscussionPanel({
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.stopPropagation();
+          setDirectoryOpen(false);
           controller.close();
         }
       }}
@@ -369,23 +526,27 @@ export function CommentDiscussionPanel({
         <span className="discussion-header-spacer" />
         <button
           type="button"
-          title="开始新的讨论"
-          aria-label="开始新的讨论"
-          onClick={() => controller.open(view.quote, true)}
-        >
-          <Plus size={16} />
-        </button>
-        <button
-          type="button"
           title="关闭讨论"
           aria-label="关闭讨论"
-          onClick={() => controller.close()}
+          onClick={() => {
+            setDirectoryOpen(false);
+            controller.close();
+          }}
         >
           <X size={16} />
         </button>
       </header>
       {directoryOpen && (
         <nav className="discussion-directory" aria-label="此来源的讨论">
+          <button
+            type="button"
+            onClick={() => {
+              setDirectoryOpen(false);
+              controller.open(view.quote, true);
+            }}
+          >
+            新建讨论
+          </button>
           {[...known].map(([id, preview]) => (
             <button
               type="button"

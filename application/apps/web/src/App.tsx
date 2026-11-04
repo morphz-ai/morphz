@@ -1,6 +1,7 @@
 import {
   useCommentDiscussions,
   CommentDiscussionPanel,
+  CommentDiscussionMarks,
 } from "./CommentDiscussions.js";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import {
@@ -1233,6 +1234,7 @@ function WorkspaceApp({
     conversationId,
     identity: client.boot!.csrfToken,
     storageScope: `${client.boot!.centerId}:${client.boot!.principalId}`,
+    connected: client.online && client.boot!.runtime.connected,
     enabled:
       !!client.boot!.capabilities.commentDiscussions &&
       !selectedDraft &&
@@ -2690,21 +2692,24 @@ function WorkspaceApp({
       onDiscuss: commentDiscussions.open,
       discussionDisabled: !commentDiscussions.enabled,
       discussionPanel: (
-        <CommentDiscussionPanel
-          controller={commentDiscussions.controller}
-          sendShortcut={prefs.sendShortcut}
-          point={commentDiscussions.point}
-          onOpen={(quote) => void openTextQuote(quote)}
-          renderMarkdown={(text, streaming) => (
-            <SafeMarkdown
-              state={state!}
-              onOpen={openUser}
-              streaming={streaming}
-            >
-              {text}
-            </SafeMarkdown>
-          )}
-        />
+        <>
+          <CommentDiscussionMarks owner={commentDiscussions.marks} />
+          <CommentDiscussionPanel
+            controller={commentDiscussions.controller}
+            sendShortcut={prefs.sendShortcut}
+            point={commentDiscussions.point}
+            onOpen={(quote) => void openTextQuote(quote)}
+            renderMarkdown={(text, streaming) => (
+              <SafeMarkdown
+                state={state!}
+                onOpen={openUser}
+                streaming={streaming}
+              >
+                {text}
+              </SafeMarkdown>
+            )}
+          />
+        </>
       ),
       quotes: draft.textQuotes,
       scope: conversationId,

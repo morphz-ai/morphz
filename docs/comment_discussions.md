@@ -9,6 +9,12 @@ existing local quote draft and shared composer. The latter opens a compact
 discussion beside that passage. Sending starts independent parallel work;
 switching passages, closing the panel, or navigating does not stop it. A user
 can return to the same passage and continue its discussion after a reply.
+Saved discussions leave a persistent source highlight and a small discussion
+marker. Clicking either reopens the accepted discussion without selecting the
+text again. Closing via the cross, Escape, or an outside click only folds the
+panel; it preserves accepted messages and the independent draft. Additional
+discussions for one source are created from the explicitly named directory
+action, rather than an unexplained plus in the header.
 There is no extra Session, Agent, or copy of the source document.
 
 Discussion is a presentation scope, distinct from a finite execution Thread.
@@ -65,6 +71,15 @@ and preserve invalidations received during a read. Idle has no polling.
 Source, Session, Principal and discussion scope fence every late result;
 closing the panel retires presentation reads, not execution. Ordinary message
 history remains available without silently deleting Events or business data.
+Source markers use the existing indexed source directory: one first page of at
+most ten descriptors per actually visible, loaded source, with at most two
+requests in flight and 64 cached source pages. They never preload discussion
+messages, read the original source again, or drain a directory. Continuation is
+explicit in the opened directory. Known local acceptances survive a late page;
+failed metadata reads retain known marks. Highlights use immutable offsets and
+source identity; ambiguous historical excerpts retain a source marker rather
+than highlighting a different occurrence. The DOM highlight is presentation,
+not a new message body, source grant, or authority store.
 
 There is no renderer database, workspace snapshot, or second accepted transcript.
 Unsent text and any unknown request envelope are a bounded local draft, point-keyed

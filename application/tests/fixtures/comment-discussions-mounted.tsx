@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   useCommentDiscussions,
   CommentDiscussionPanel,
+  CommentDiscussionMarks,
 } from "../../apps/web/src/CommentDiscussions.js";
 import { TextQuoteProvider } from "../../apps/web/src/TextQuotes.js";
 import { quoteSource } from "../../apps/web/src/text-quote-dom.js";
@@ -18,7 +19,14 @@ import type { TextQuote } from "../../packages/core/src/text-quotes.js";
 const requests: any[] = [],
   subscriptions = new Map<string, any>(),
   listeners = new Set<any>(),
-  entries = new Map<string, any>();
+  entries = new Map<string, any>(
+    JSON.parse(sessionStorage.getItem("test-discussion-entries") ?? "[]"),
+  );
+const saveEntries = () =>
+  sessionStorage.setItem(
+    "test-discussion-entries",
+    JSON.stringify([...entries]),
+  );
 const source = (name: string) => ({
   kind: "message" as const,
   projectId: "test-project",
@@ -57,6 +65,12 @@ const bridge = {
             preview: e.quote.text,
             created_at_micros: 1793779200000000,
             publish_to_session: e.publish,
+            source_key: commentDiscussionSourceKey(e.quote.source),
+            locator: {
+              kind: "platform-text",
+              source: e.quote.source,
+              anchor: e.quote.anchor,
+            },
           })),
         nextCursor: null,
       });
@@ -105,6 +119,7 @@ const bridge = {
           createdAt: new Date().toISOString(),
         });
       entries.set(id, entry);
+      saveEntries();
       return response({
         commandId: command.commandId,
         entityId: command.commandId,
@@ -131,12 +146,14 @@ Reflect.set(window, "morphzDesktop", { application: bridge });
 
 const state = initialWorkspace();
 function Fixture() {
+  const [connected, setConnected] = useState(true);
   const discussions = useCommentDiscussions({
     projectId: "test-project",
     conversationId: "test-chat",
     identity: "test-identity",
     storageScope: "test-center:test-human",
     enabled: true,
+    connected,
     model: "test-model",
     reasoningEffort: "max",
   });
@@ -144,6 +161,7 @@ function Fixture() {
   useLayoutEffect(() => {
     Reflect.set(window, "discussionFixture", {
       report: () => ({
+        connected,
         requests,
         subscriptions: [...subscriptions.values()],
         draft:
@@ -151,6 +169,7 @@ function Fixture() {
         model: document.querySelector("#main-model")!.textContent,
         active: discussions.controller.activeId,
       }),
+      connection: setConnected,
       finish(id: string) {
         const entry = entries.get(id);
         entry.messages.push({
@@ -162,6 +181,7 @@ function Fixture() {
           createdAt: new Date().toISOString(),
         });
         discussions.controller.invalidate(id);
+        saveEntries();
       },
       open(name: string) {
         discussions.open({
@@ -207,20 +227,23 @@ function Fixture() {
         onDiscuss={discussions.open}
         discussionDisabled={false}
         discussionPanel={
-          <CommentDiscussionPanel
-            controller={discussions.controller}
-            point={discussions.point}
-            onOpen={() => {}}
-            renderMarkdown={(text, streaming) => (
-              <SafeMarkdown
-                state={state}
-                onOpen={() => {}}
-                streaming={streaming}
-              >
-                {text}
-              </SafeMarkdown>
-            )}
-          />
+          <>
+            <CommentDiscussionMarks owner={discussions.marks} />
+            <CommentDiscussionPanel
+              controller={discussions.controller}
+              point={discussions.point}
+              onOpen={() => {}}
+              renderMarkdown={(text, streaming) => (
+                <SafeMarkdown
+                  state={state}
+                  onOpen={() => {}}
+                  streaming={streaming}
+                >
+                  {text}
+                </SafeMarkdown>
+              )}
+            />
+          </>
         }
       >
         <main style={{ maxWidth: 760, margin: "0 auto", paddingTop: 24 }}>

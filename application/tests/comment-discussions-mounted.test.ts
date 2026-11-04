@@ -203,6 +203,39 @@ test(
               "healthy deltas do not read history",
             );
           }
+          await expect(page.locator(".discussion-source-mark")).toHaveCount(1);
+          await expect(page.locator("#source-a")).toHaveAttribute(
+            "data-discussion-marked",
+            "true",
+          );
+          await expect
+            .poll(() =>
+              page.evaluate(() =>
+                Array.from(CSS.highlights.values())
+                  .flatMap((highlight) =>
+                    Array.from(highlight).map((range) => range.toString()),
+                  )
+                  .includes("每个评论都可以独立运行，并在原处继续追问。"),
+              ),
+            )
+            .toBe(true);
+          await expect(
+            page.getByRole("button", { name: "新建讨论", exact: true }),
+          ).toHaveCount(0);
+          await page.getByRole("button", { name: "讨论", exact: true }).click();
+          await expect(
+            page.getByRole("button", { name: "新建讨论", exact: true }),
+          ).toBeVisible();
+          await page
+            .getByRole("heading", { name: "让讨论留在内容旁", exact: true })
+            .click();
+          await expect(input).toHaveCount(0);
+          await expect(page.locator(".discussion-source-mark")).toHaveCount(1);
+          await page.locator(".discussion-source-mark").click();
+          await expect(input).toBeVisible();
+          await expect(
+            page.getByText("这段如何保留主线？", { exact: true }),
+          ).toBeVisible();
           await page
             .getByRole("button", { name: "关闭讨论", exact: true })
             .click();
@@ -230,6 +263,30 @@ test(
             count,
             "closed healthy owner must be silent",
           );
+          await page.evaluate(() =>
+            Reflect.get(window, "discussionFixture").connection(false),
+          );
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () =>
+                  Reflect.get(window, "discussionFixture").report().connected,
+              ),
+            )
+            .toBe(false);
+          await page.evaluate(() =>
+            Reflect.get(window, "discussionFixture").connection(true),
+          );
+          await expect
+            .poll(() =>
+              page.evaluate(
+                () =>
+                  Reflect.get(window, "discussionFixture").report().requests
+                    .length,
+              ),
+            )
+            .toBe(count + 2);
+          await expect(page.locator(".discussion-source-mark")).toHaveCount(1);
           await page.evaluate(() =>
             Reflect.get(window, "discussionFixture").open("b"),
           );
@@ -331,6 +388,54 @@ test(
               path: resolve(screenshots, `${lane}-${theme}-${width}.png`),
               fullPage: true,
             });
+          await page
+            .getByRole("button", { name: "关闭讨论", exact: true })
+            .click();
+          if (screenshots)
+            await page.screenshot({
+              path: resolve(
+                screenshots,
+                `${lane}-${theme}-${width}-closed.png`,
+              ),
+              fullPage: true,
+            });
+          await page.reload();
+          await expect(page.locator(".discussion-source-mark")).toHaveCount(2);
+          await expect(page.locator("#source-a")).toHaveAttribute(
+            "data-discussion-marked",
+            "true",
+          );
+          const afterReload = await page.evaluate(
+            () => Reflect.get(window, "discussionFixture").report().requests,
+          );
+          assert.equal(
+            afterReload.filter(
+              (request: any) =>
+                request.method === "discussions.history" ||
+                request.method === "discussions.read" ||
+                request.path?.includes("/timeline"),
+            ).length,
+            0,
+            "restoring source marks never preloads discussion bodies",
+          );
+          assert.equal(
+            afterReload.filter(
+              (request: any) =>
+                request.method === "discussions.list" ||
+                request.path?.includes("/discussions?"),
+            ).length,
+            2,
+            "one metadata page per visible source; no directory drain",
+          );
+          await page.locator(".discussion-source-mark").first().click();
+          await expect(
+            page.getByRole("link", { name: "查看来源" }),
+          ).toBeVisible();
+          await expect(input).toHaveValue("保持层次，继续说明");
+          assert.equal(
+            await page.locator("#main-draft").inputValue(),
+            "TEST：这段主聊天草稿必须保留。",
+          );
           await page.close();
         }
     }

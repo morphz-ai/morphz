@@ -13,6 +13,8 @@ export type DiscussionSummary = {
   preview: string;
   created_at_micros: number;
   publish_to_session: boolean;
+  source_key?: string;
+  locator?: Record<string, unknown>;
 };
 export type DiscussionDirectoryCursor = { createdAtMicros: number; id: string };
 export type DiscussionCommand<Q> = {
@@ -37,6 +39,7 @@ export type DiscussionTransport<Q> = {
     quote: Q,
     before: DiscussionDirectoryCursor | null,
     signal: AbortSignal,
+    limit?: number,
   ) => Promise<{
     items: DiscussionSummary[];
     nextCursor: DiscussionDirectoryCursor | null;
@@ -211,15 +214,19 @@ export class CommentDiscussionController<Q> {
     this.changed();
     if (view.submitted) this.invalidate(id);
   }
-  async select(id: string) {
+  /** A visible source owns one metadata page, never a transcript read. */
+  sourcePage(quote: Q, signal: AbortSignal) {
+    return this.transport.list(quote, null, signal, 10);
+  }
+  async select(id: string, source?: Q) {
     const signal = this.own(id);
     let view = this.views.get(id);
     // Keep the current source visible while the exact selected discussion is
     // loading. The new response cannot replace another selection's draft.
     if (!view) {
       const current = [...this.views.values()].at(-1);
-      if (!current) return;
-      view = this.create(id, current.quote);
+      if (!current && !source) return;
+      view = this.create(id, source ?? current!.quote);
     }
     view.loading = true;
     view.sourceReady = false;
@@ -242,6 +249,7 @@ export class CommentDiscussionController<Q> {
       if (typedWhileReading) view.draft = typedWhileReading;
       view.submitted = !view.pending?.first;
       view.sourceReady = true;
+      void this.directory(view, null, signal);
       await this.refresh(view, null, signal);
       this.saveDraft(view);
     } catch (error) {

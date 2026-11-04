@@ -1,12 +1,20 @@
-import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { ArrowUp, ChevronDown, MessageCircle, Plus, X } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { ArrowUp, ChevronDown, MessageCircle, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
 import type { CommentDiscussionController } from '../../../application/packages/core/src/comment-discussion-controller'
 import type { DashboardDiscussionSource } from './useCommentDiscussions'
+import type { DiscussionMarks } from '../../../application/packages/core/src/discussion-marks-dom'
 import './comment-discussions.css'
+
+export function CommentDiscussionMarks({owner}:{owner:DiscussionMarks<DashboardDiscussionSource>}) {
+  const {t}=useTranslation(),layer=useRef<HTMLDivElement>(null)
+  const version=useSyncExternalStore(owner.subscribe,owner.snapshot,owner.snapshot)
+  useLayoutEffect(()=>{const node=layer.current;if(!node)return;const zoom=(node as HTMLElement&{currentCSSZoom?:number}).currentCSSZoom??1;[...node.children].forEach((child,index)=>{const mark=owner.marks[index];if(mark&&child instanceof HTMLElement){child.style.left=`${mark.x/zoom}px`;child.style.top=`${mark.y/zoom}px`}})},[owner,version])
+  return <div ref={layer} className="discussion-mark-layer" data-discussion-ui="true">{owner.marks.map(mark=><button type="button" key={mark.key} className="discussion-source-mark" title={`${t('discussion.title')} · ${mark.preview}`} aria-label={`${t('discussion.title')} (${mark.count}${mark.more?'+':''})`} onClick={()=>owner.open(mark)}><MessageCircle size={14}/>{(mark.count>1||mark.more)&&<span>{mark.count}{mark.more?'+':''}</span>}</button>)}</div>
+}
 
 export function CommentDiscussionPanel({controller,point,readOnly}:{controller:CommentDiscussionController<DashboardDiscussionSource>;point:{x:number;y:number};readOnly:boolean}) {
   const {t}=useTranslation()
@@ -14,6 +22,8 @@ export function CommentDiscussionPanel({controller,point,readOnly}:{controller:C
   const view=controller.active,panel=useRef<HTMLElement>(null)
   const [directoryFor,setDirectoryFor]=useState<string|null>(null)
   const directory=!!view&&directoryFor===view.id
+  const opened=!!view
+  useEffect(()=>{if(!opened)return;const outside=(event:PointerEvent)=>{if(event.target instanceof Node&&!panel.current?.contains(event.target)){setDirectoryFor(null);controller.close()}};document.addEventListener('pointerdown',outside,true);return()=>document.removeEventListener('pointerdown',outside,true)},[controller,opened])
   useLayoutEffect(()=>{
     const element=panel.current;if(!view||!element)return
     const position=()=>{
@@ -32,9 +42,8 @@ export function CommentDiscussionPanel({controller,point,readOnly}:{controller:C
   for(const item of controller.views.values())if(item.quote.key===view.quote.key)known.set(item.id,item.messages.find(message=>message.kind==='input')?.text??item.quote.text)
   return <section ref={panel} className="dashboard-discussion" role="region" aria-label={t('discussion.title')} onKeyDown={event=>{if(event.key==='Escape'){event.stopPropagation();setDirectoryFor(null);controller.close()}}}>
     <header><button type="button" className="discussion-heading" aria-expanded={directory} onClick={()=>setDirectoryFor(directory?null:view.id)}><MessageCircle size={14}/><span>{t('discussion.title')}</span><ChevronDown size={12}/></button><span/>
-      <button type="button" title={t('discussion.new')} aria-label={t('discussion.new')} onClick={()=>controller.open(view.quote,true)}><Plus size={15}/></button>
       <button type="button" title={t('discussion.close')} aria-label={t('discussion.close')} onClick={()=>{setDirectoryFor(null);controller.close()}}><X size={15}/></button></header>
-    {directory&&<nav aria-label={t('discussion.directory')}>{[...known].map(([id,text])=><button type="button" key={id} aria-current={view.id===id?'true':undefined} onClick={()=>{setDirectoryFor(null);void controller.select(id)}}>{text}</button>)}{view.directoryCursor&&<button type="button" disabled={view.directoryLoading} onClick={()=>controller.olderDiscussions()}>{t('discussion.olderDiscussions')}</button>}</nav>}
+    {directory&&<nav aria-label={t('discussion.directory')}><button type="button" onClick={()=>{setDirectoryFor(null);controller.open(view.quote,true)}}>{t('discussion.new')}</button>{[...known].map(([id,text])=><button type="button" key={id} aria-current={view.id===id?'true':undefined} onClick={()=>{setDirectoryFor(null);void controller.select(id)}}>{text}</button>)}{view.directoryCursor&&<button type="button" disabled={view.directoryLoading} onClick={()=>controller.olderDiscussions()}>{t('discussion.olderDiscussions')}</button>}</nav>}
     <blockquote className="discussion-source" title={view.quote.text}>{view.quote.text}</blockquote>
     <div className="discussion-messages" aria-live="polite">
       {view.nextCursor&&<button type="button" disabled={view.loading} onClick={()=>void controller.older()}>{t('discussion.older')}</button>}

@@ -1,6 +1,9 @@
-import { StrictMode, useLayoutEffect } from "react";
+import { StrictMode, useLayoutEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { CommentDiscussionPanel } from "../../../dashboard/src/components/CommentDiscussions";
+import {
+  CommentDiscussionPanel,
+  CommentDiscussionMarks,
+} from "../../../dashboard/src/components/CommentDiscussions";
 import { useCommentDiscussions } from "../../../dashboard/src/components/useCommentDiscussions";
 import i18n from "../../../dashboard/src/i18n";
 void i18n.changeLanguage("zh");
@@ -45,7 +48,14 @@ const writePrefix = (
 };
 const requests: any[] = [],
   sockets = new Set<any>(),
-  entries = new Map<string, any>();
+  entries = new Map<string, any>(
+    JSON.parse(sessionStorage.getItem("test-discussion-entries") ?? "[]"),
+  );
+const saveEntries = () =>
+  sessionStorage.setItem(
+    "test-discussion-entries",
+    JSON.stringify([...entries]),
+  );
 class Socket {
   onopen?: () => void;
   onmessage?: (event: any) => void;
@@ -103,6 +113,8 @@ const api = {
             preview: e.quote.text,
             created_at_micros: 1793779200000000,
             publish_to_session: e.publish,
+            source_key: e.quote.key,
+            locator: e.quote.locator,
           })),
         next_before: null,
       };
@@ -162,21 +174,25 @@ const api = {
         createdAt: new Date().toISOString(),
       });
     entries.set(id, e);
+    saveEntries();
     return { status: "accepted", event_id: body.client_message_id };
   },
 };
 function Fixture() {
+  const [connected, setConnected] = useState(true);
   const discussions = useCommentDiscussions({
     api: api as any,
     sessionId: "test-session",
     actorIdentity: "test-human",
     readOnly: false,
+    connected,
     model: "test-model",
     reasoning: "max",
   });
   useLayoutEffect(() => {
     Reflect.set(window, "discussionFixture", {
       report: () => ({
+        connected,
         requests,
         subscriptions: [
           ...[...sockets].map((socket) => ({ url: socket.url })),
@@ -187,6 +203,7 @@ function Fixture() {
         model: document.querySelector("#main-model")!.textContent,
         active: discussions.controller.activeId,
       }),
+      connection: setConnected,
       open: (name: string) =>
         discussions.open(source(name), { x: 520, y: 160 }),
       prefix: (id: string, delta: string) => {
@@ -209,6 +226,7 @@ function Fixture() {
           text: "可以，保留原段落的主线。\n\n- **并行讨论**各自推进\n- 结果始终回到对应选文\n\n[查看来源](https://example.com/source)",
           createdAt: new Date().toISOString(),
         });
+        saveEntries();
         for (const socket of sockets)
           socket.onmessage?.({
             data: JSON.stringify({
@@ -239,12 +257,24 @@ function Fixture() {
         <h1 style={{ fontSize: 22, margin: "12px 0 28px" }}>
           让讨论留在内容旁
         </h1>
-        <p id="source-a" style={{ fontSize: 16, lineHeight: 1.9 }}>
-          {source("a").text}
-        </p>
-        <p id="source-b" style={{ fontSize: 16, lineHeight: 1.9 }}>
-          {source("b").text}
-        </p>
+        <article data-event-id="source-a">
+          <p
+            className="message-body"
+            id="source-a"
+            style={{ fontSize: 16, lineHeight: 1.9 }}
+          >
+            {source("a").text}
+          </p>
+        </article>
+        <article data-event-id="source-b">
+          <p
+            className="message-body"
+            id="source-b"
+            style={{ fontSize: 16, lineHeight: 1.9 }}
+          >
+            {source("b").text}
+          </p>
+        </article>
         <div
           style={{
             marginTop: 80,
@@ -261,6 +291,7 @@ function Fixture() {
           />
         </div>
       </div>
+      <CommentDiscussionMarks owner={discussions.marks} />
       <CommentDiscussionPanel
         controller={discussions.controller}
         point={discussions.point}
