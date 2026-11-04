@@ -1,3 +1,4 @@
+import { commentDiscussionReferenceSchema } from "./comment-discussions.js";
 import { z } from "zod";
 import {
   runtimeMessageFailureSchema,
@@ -29,6 +30,7 @@ export const liveMessageSchema = z.object({
   /** Host-verified excerpt of this input; independent of timeline pagination.
    * Disposable presentation only, never identity, authority or model output. */
   inputPreview: z.string().min(1).max(101).optional(),
+  commentDiscussion: commentDiscussionReferenceSchema.optional(),
   rootId: z.string().nullable(),
   createdAt: z.string(),
   text: z.string(),

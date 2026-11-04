@@ -20,6 +20,7 @@ pub mod job_header;
 pub mod wait_head;
 pub use directory::{RuntimeDirectoryKind, RuntimeDirectoryPage, RuntimeDirectoryQuery};
 mod activation_approval_wait;
+mod discussions;
 mod objective_approval_wait;
 mod session_timeline;
 pub mod terminal;
@@ -5878,6 +5879,10 @@ pub(crate) fn message_request_fingerprint(
 
 #[derive(Default, Debug, Clone)]
 pub struct QueryFilter {
+    /// Main human conversation only; discussion-only work is indexed out.
+    pub main_conversation_only: bool,
+    pub main_presentation_only: bool,
+    pub discussion_id: Option<String>,
     pub event_id: Option<String>,
     /// Exact Event IDs, usually returned by the asynchronous Recall lexical
     /// projection. Empty means no ID constraint.
@@ -6131,6 +6136,61 @@ pub trait EventStore: Send + Sync {
 /// check each returned input root against their own domain permissions.
 #[async_trait::async_trait]
 pub trait SessionTimelineStore: Send + Sync {
+    async fn discussion_message_chunk(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        discussion_id: &str,
+        entry_id: &str,
+        event_id: &str,
+        offset: i64,
+    ) -> Result<Option<crate::discussion::MessageChunk>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn session_event_sequence(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn discussion_root_route(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> Result<
+        Option<crate::discussion::DiscussionRootRoute>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
+
+    async fn query_scoped_session_timeline(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        scope: &crate::discussion::TimelineScope,
+        before: Option<&SessionTimelineCursor>,
+        limit: usize,
+        text_only: bool,
+    ) -> Result<Vec<SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn session_discussion(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        discussion_id: &str,
+    ) -> Result<
+        Option<crate::discussion::DiscussionDescriptor>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
+
+    async fn session_discussions(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        source_key: &str,
+        before: Option<&crate::discussion::DiscussionCursor>,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::discussion::DiscussionDescriptor>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
+
     async fn session_timeline_entry(
         &self,
         session_id: &str,

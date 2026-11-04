@@ -186,6 +186,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         enabled: true,
         resources: true,
         directed_input: true,
+        discussions: true,
         client_metadata: clientMetadataAvailable,
         harnesses: [scriptStudioApplication.harness],
         formats: [
@@ -327,6 +328,54 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         ? send(200, { event: accepted.event })
         : send(404, { error: "message not found" });
     }
+    if (request.method === "GET" && path.includes("/discussions")) {
+      const items = [...acceptedRoots.values()].filter(
+        (item) =>
+          item.sessionId === sessionId &&
+          item.event.payload.discussion &&
+          (item.event.payload.discussion as any).source,
+      );
+      const descriptor = (item: (typeof items)[number]) => {
+        const route = item.event.payload.discussion as any;
+        return {
+          id: route.id,
+          session_id: sessionId,
+          principal_id: "runtime-local-human",
+          source_event_id: item.event.id,
+          source_key: route.source.key,
+          title: "TEST discussion",
+          preview: route.source.text,
+          locator: route.source.locator,
+          publish_to_session: route.publish_to_session ?? false,
+          created_at_micros: Date.parse(item.event.timestamp) * 1000,
+        };
+      };
+      if (path.endsWith("/discussions")) {
+        const source = new URL(
+          request.url!,
+          "http://localhost",
+        ).searchParams.get("source_key");
+        return send(200, {
+          items: items
+            .filter(
+              (item) =>
+                (item.event.payload.discussion as any).source.key === source,
+            )
+            .map(descriptor),
+          next_before: null,
+        });
+      }
+      const id = decodeURIComponent(path.split("/").at(-1)!);
+      const item = items.find(
+        (item) => (item.event.payload.discussion as any).id === id,
+      );
+      return item
+        ? send(200, {
+            discussion: descriptor(item),
+            source: (item.event.payload.discussion as any).source,
+          })
+        : send(404, { error: "discussion not found" });
+    }
     if (
       request.method === "GET" &&
       (path.endsWith("/timeline") || path.includes("/timeline/entries/"))
@@ -442,6 +491,16 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       const beforeId = query.get("before_entry_id");
       const limit = Math.min(100, Number(query.get("limit") ?? 100));
       const sorted = entries
+        .filter((entry) => {
+          const route = (entry.input_event ?? entry.root_event ?? entry.event)
+            .payload.discussion as
+            { id: string; publish_to_session?: boolean } | undefined;
+          if (query.get("scope") === "discussion")
+            return route?.id === query.get("discussion_id");
+          if (query.get("scope") === "main")
+            return !route || route.publish_to_session === true;
+          return true;
+        })
         .filter(
           (entry) =>
             !beforeTime ||
@@ -614,11 +673,13 @@ test("Platform-only project sends a durable Runtime input without a legacy works
               // gateway-only Morphz principal mapping.
               principal_id: "runtime-local-human",
               client_message_id: body.client_message_id,
+              ...(body.discussion ? { discussion: body.discussion } : {}),
               ...(attachments.length ? { attachments } : {}),
               session_io: {
                 request: {
                   io_version: body.io_version,
                   client_message_id: body.client_message_id,
+                  ...(body.discussion ? { discussion: body.discussion } : {}),
                   client_metadata: storedData(body.client_metadata),
                   message: {
                     format: body.message.format,
@@ -4282,6 +4343,138 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       "history body is not rewritten to include comments twice",
     );
     assert.equal(acceptedHistory.inputs[0]!.textQuotes![0]!.comment, comment);
+
+    // New discussion operations pass through the actual Host, native wire
+    // adapter and immutable input/source proof. The fixture is not a Provider.
+    clientMetadataAvailable = true;
+    capabilityProbeStatus = 200;
+    await runtime.tick();
+    const discussionId = randomUUID();
+    const discussionQuote = {
+      id: randomUUID(),
+      source: {
+        kind: "message" as const,
+        projectId: commentProject,
+        conversationId: commentProject,
+        title: "TEST source",
+        messageId: commentCommand.commandId,
+        inputId: commentCommand.commandId,
+        createdAt: commentSource.createdAt,
+      },
+      text: "TEST 本人正文",
+      comment: "",
+    };
+    const firstDiscussion = input(
+      discussionId,
+      commentProject,
+      "TEST first independent question",
+    );
+    const nativeDiscussionCommand = {
+      ...firstDiscussion,
+      operation: {
+        ...firstDiscussion.operation,
+        textQuotes: [discussionQuote],
+        dispatchMode: "parallel" as const,
+        commentDiscussion: { id: discussionId, publishToConversation: false },
+      },
+    };
+    await session().platformMessage(nativeDiscussionCommand);
+    await runtime.tick();
+    const wire = sent.find((item) => item.client_message_id === discussionId)!;
+    assert.equal((wire.discussion as any).id, discussionId);
+    assert.equal((wire.discussion as any).source.text, discussionQuote.text);
+    assert.equal((wire.activation as any).dispatch_mode, "parallel");
+    assert.equal((wire.discussion as any).publish_to_session, false);
+    const discussionDirectory = await session().platformCommentDiscussions({
+      ...commentScope,
+      source: discussionQuote.source,
+      limit: 20,
+    });
+    assert.deepEqual(
+      discussionDirectory.items.map((item) => item.id),
+      [discussionId],
+    );
+    const restored = await session().platformCommentDiscussion({
+      ...commentScope,
+      id: discussionId,
+    });
+    assert.deepEqual(restored.quote, discussionQuote);
+    const discussionHistory = await session().platformCommentDiscussionHistory({
+      ...commentScope,
+      id: discussionId,
+      limit: 20,
+    });
+    assert.deepEqual(
+      discussionHistory.messages
+        .filter((message) => message.kind === "input")
+        .map((message) => message.text),
+      [firstDiscussion.operation.body],
+    );
+    const ordinaryHistory =
+      await session().platformConversationHistory(commentScope);
+    assert(
+      !ordinaryHistory.inputs.some((item) => item.id === discussionId),
+      "discussion-only inputs must not enter main history",
+    );
+    // Retiring the current source cannot turn a continuation of an accepted
+    // snapshot into another original-body fetch or a new discussion.
+    acceptedRoots.delete(commentCommand.commandId);
+    const beforeSourceReads = rootLookupReads;
+    const followup = input(
+      randomUUID(),
+      commentProject,
+      "TEST follow-up keeps the source snapshot",
+    );
+    await session().platformMessage({
+      ...followup,
+      operation: {
+        ...followup.operation,
+        textQuotes: [discussionQuote],
+        dispatchMode: "parallel",
+        commentDiscussion: { id: discussionId },
+      },
+    });
+    assert.equal(
+      rootLookupReads,
+      beforeSourceReads,
+      "continuing the accepted snapshot must not fetch the original source again",
+    );
+    await runtime.tick();
+    const followupWire = sent.find(
+      (item) => item.client_message_id === followup.commandId,
+    )!;
+    assert.deepEqual(followupWire.discussion, { id: discussionId });
+    await assert.rejects(
+      session().platformMessage({
+        ...input(randomUUID(), commentProject, "wrong source"),
+        operation: {
+          ...followup.operation,
+          textQuotes: [{ ...discussionQuote, text: "changed snapshot" }],
+          dispatchMode: "parallel",
+          commentDiscussion: { id: discussionId },
+        },
+      }),
+      /固定|引用/,
+    );
+    // Shared logical reads are exposed by the actual embedded IPC connection.
+    const discussionDesktop = new LocalApplicationConnection(
+      new Application(workspace, { runtime, platformWork: domains.work }),
+    );
+    const discussionBoot = (await discussionDesktop.call(
+      "platform.bootstrap",
+    )) as { csrfToken: string };
+    const ipcHistory = (await discussionDesktop.call(
+      "discussions.history",
+      { ...commentScope, id: discussionId, limit: 20 },
+      { identityGeneration: discussionBoot.csrfToken },
+    )) as { messages: unknown[] };
+    assert.equal(
+      (ipcHistory.messages as any[]).filter(
+        (message) => message.kind === "input",
+      ).length,
+      2,
+    );
+    discussionDesktop.close();
   } finally {
     stopPlatformStream?.();
     await secondRuntime?.stop();

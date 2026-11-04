@@ -126,6 +126,7 @@ const bootSchema = z.object({
     teamAuthentication: z.boolean(),
     conversationOnFirstInput: z.boolean().default(false),
     directedInput: z.boolean().default(false),
+    commentDiscussions: z.boolean().default(false),
     localFiles: z.boolean().default(false),
     agentDirectories: z.boolean().default(false),
     modelSettings: z.boolean().default(false),

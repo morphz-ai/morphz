@@ -340,6 +340,9 @@ impl Streams {
         event.payload.insert("session_io_stream".into(), update);
     }
     pub fn snapshots(&self, session: &str) -> Vec<Value> {
+        self.snapshots_for_roots(session, None)
+    }
+    pub fn snapshot_roots(&self, session: &str) -> Vec<String> {
         let state = self
             .state
             .lock()
@@ -348,6 +351,29 @@ impl Streams {
             .drafts
             .values()
             .filter(|draft| draft["session_id"] == session && draft["aborted"] != true)
+            .filter_map(|draft| draft["root_turn_id"].as_str().map(str::to_owned))
+            .collect()
+    }
+    pub fn snapshots_for_roots(
+        &self,
+        session: &str,
+        roots: Option<&std::collections::HashSet<String>>,
+    ) -> Vec<Value> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .drafts
+            .values()
+            .filter(|draft| draft["session_id"] == session && draft["aborted"] != true)
+            .filter(|draft| {
+                roots.is_none_or(|roots| {
+                    draft["root_turn_id"]
+                        .as_str()
+                        .is_some_and(|root| roots.contains(root))
+                })
+            })
             .cloned()
             .map(|mut draft| {
                 draft["snapshot"] = json!(true);

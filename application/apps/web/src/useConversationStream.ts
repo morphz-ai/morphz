@@ -18,6 +18,7 @@ export function useConversationStream(
   projectId: string,
   conversationId: string,
   enabled: boolean,
+  discussionId?: string,
 ) {
   const [stream, setStream] = useState<ConversationStream>({
     connected: false,
@@ -27,7 +28,12 @@ export function useConversationStream(
   useEffect(() => {
     setStream(empty);
     if (!enabled) return;
-    const key = JSON.stringify([identity, projectId, conversationId]);
+    const key = JSON.stringify([
+      identity,
+      projectId,
+      conversationId,
+      discussionId,
+    ]);
     let entry = subscriptions.get(key);
     if (!entry) {
       entry = { close: () => {}, value: empty, listeners: new Set() };
@@ -37,7 +43,11 @@ export function useConversationStream(
         for (const listener of entry!.listeners) listener(value);
       };
       entry.close = subscribeConversation(
-        { projectId, conversationId },
+        {
+          projectId,
+          conversationId,
+          ...(discussionId ? { discussionId } : {}),
+        },
         update,
       );
     }
@@ -50,6 +60,6 @@ export function useConversationStream(
         subscriptions.delete(key);
       }
     };
-  }, [identity, projectId, conversationId, enabled]);
+  }, [identity, projectId, conversationId, enabled, discussionId]);
   return stream;
 }

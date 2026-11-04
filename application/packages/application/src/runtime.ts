@@ -1,8 +1,23 @@
+import { discussionTimelinePage } from "../../core/src/native-comment-discussions.js";
 import {
   ActivityReadPages,
   type ActivityReadDemand,
 } from "./activity-read-page.js";
 import { boundedSourcePage } from "./bounded-source-page.js";
+import {
+  commentDiscussionReferenceSchema,
+  commentDiscussionSource,
+  commentDiscussionSourceKey,
+  nativeDiscussionDescriptorSchema,
+  nativeDiscussionSourceSchema,
+  commentDiscussionPageSchema,
+  commentDiscussionChunkSchema,
+  type CommentDiscussion,
+} from "../../core/src/comment-discussions.js";
+import {
+  textQuoteSchema,
+  type TextQuoteSource,
+} from "../../core/src/text-quotes.js";
 import { terminalCatalogPage } from "./terminal-catalog-page.js";
 import { createHash } from "node:crypto";
 import {
@@ -312,6 +327,18 @@ const sessionTimelineItemSchema = z.object({
   input_event: eventSchema.nullable(),
 });
 const sessionTimelinePageSchema = z.object({
+  content_boundary: z
+    .object({
+      entry_id: z.string(),
+      event_id: z.string(),
+      root_turn_id: z.string(),
+      visible_at_micros: z.number().int().safe(),
+      display_kind: z.enum(["input", "reply", "progress", "error"]),
+      attempt_id: z.string().nullable(),
+      final_event: z.boolean(),
+      content_bytes: z.number().int().nonnegative(),
+    })
+    .optional(),
   entries: z.array(sessionTimelineItemSchema),
   text_only: z.boolean().optional(),
   next_before: z
@@ -485,6 +512,7 @@ const platformInputSourceSchema = z.object({
   application: inputApplicationSchema.optional(),
   browser: browserReferenceSchema.optional(),
   textQuotes: textQuotesSchema.optional(),
+  commentDiscussion: commentDiscussionReferenceSchema.optional(),
   localFile: localFileReferenceSchema.optional(),
   directories: z.array(directoryGrantSchema).max(8).optional(),
   scriptGeneration: scriptGenerationSchema.optional(),
@@ -576,6 +604,26 @@ function platformSourceFromRuntimeRoot(
         source: platformInputSourceSchema,
       })
       .parse(storedDataValue(accepted.data.request.client_metadata, budget));
+    const native = z
+      .object({
+        request: z.object({
+          discussion: z.object({ id: z.string() }).optional(),
+        }),
+      })
+      .safeParse(event.payload.session_io);
+    const canonical = z
+      .object({ id: z.string() })
+      .safeParse(event.payload.discussion);
+    if (metadata.source.commentDiscussion) {
+      if (
+        !native.success ||
+        !canonical.success ||
+        native.data.request.discussion?.id !==
+          metadata.source.commentDiscussion.id ||
+        canonical.data.id !== metadata.source.commentDiscussion.id
+      )
+        return null;
+    } else if (native.success && native.data.request.discussion) return null;
     const value = storedDataValue(
       accepted.data.request.message.content.value,
       budget,
@@ -635,6 +683,7 @@ const storedSchema = z.object({
   endpoint: z.string(),
   connected: z.boolean(),
   directedInput: z.boolean().default(false),
+  commentDiscussions: z.boolean().default(false),
   model: z.string(),
   error: z.string(),
   publications: z
@@ -1577,7 +1626,7 @@ export class RuntimeBridge {
    * publication even when other projects share its Runtime Session.
    */
   async observePlatformConversation(
-    scope: { projectId: string; conversationId: string },
+    scope: { projectId: string; conversationId: string; discussionId?: string },
     access: AccessContext,
     changed: (value: ConversationStream) => void,
     failed: () => void,
@@ -1586,7 +1635,13 @@ export class RuntimeBridge {
     const authorizeRead = this.authorizePlatformRead;
     if (!authorizeRead)
       throw new DomainError("invalid", "Platform 对话读取尚未接入。");
-    let grant = await authorizeRead(scope, access);
+    const baseScope = {
+      projectId: scope.projectId,
+      conversationId: scope.conversationId,
+    };
+    if (scope.discussionId && !this.supportsCommentDiscussions)
+      throw new DomainError("invalid", "请更新 Runtime 后打开讨论。");
+    let grant = await authorizeRead(baseScope, access);
     const sessionId = this.objectSessionId(
       scope.projectId,
       scope.conversationId,
@@ -1603,7 +1658,8 @@ export class RuntimeBridge {
           await this.request(
             "/api/sessions/" +
               encodeURIComponent(sessionId) +
-              "/events?limit=1",
+              "/events?limit=1" +
+              (this.supportsCommentDiscussions ? "&head_only=true" : ""),
             "GET",
             undefined,
             access,
@@ -1617,14 +1673,34 @@ export class RuntimeBridge {
     }
     // A live subscription starts with a real latest page. An unavailable
     // Runtime must not turn the Host's old local queue into a fresh head.
-    const baseline = (
-      await this.platformConversationHistory(scope, access, {
-        requireAvailable: true,
-      })
-    ).runtime.messages;
+    const baseline: ConversationRuntime["messages"] = scope.discussionId
+      ? (
+          await this.platformCommentDiscussionHistory(
+            baseScope,
+            access,
+            scope.discussionId,
+          )
+        ).messages
+          .filter((message) => message.kind !== "input")
+          .map((message) => ({
+            id: message.id,
+            rootId: message.rootId,
+            text: message.text,
+            createdAt: message.createdAt,
+            kind: message.kind as "reply" | "progress" | "error",
+            projectId: scope.projectId,
+            conversationId: scope.conversationId,
+            artifactId: null,
+            commentDiscussion: { id: scope.discussionId! },
+          }))
+      : (
+          await this.platformConversationHistory(baseScope, access, {
+            requireAvailable: true,
+          })
+        ).runtime.messages;
     type RootRoute = {
       inputId: string;
-      source: PlatformInputSource;
+      source?: PlatformInputSource;
       evaluationOnly: boolean;
       textPath?: string[];
     };
@@ -1648,6 +1724,29 @@ export class RuntimeBridge {
         inputId,
         (id) => (this.teamIdentity ? this.principalId(id) : null),
       );
+      const native = z
+        .object({ id: z.string() })
+        .safeParse(event.payload.discussion);
+      if (scope.discussionId) {
+        const accepted = z
+          .object({
+            request: z.object({
+              discussion: z.object({ id: z.literal(scope.discussionId) }),
+            }),
+          })
+          .safeParse(event.payload.session_io);
+        if (
+          !native.success ||
+          native.data.id !== scope.discussionId ||
+          !accepted.success
+        )
+          return null;
+        return {
+          inputId,
+          ...(source ? { source } : {}),
+          evaluationOnly: false,
+        };
+      }
       return source ? { inputId, source, evaluationOnly: false } : null;
     };
     const rootRoute = (rootId: string): Promise<RootRoute | null> => {
@@ -1684,7 +1783,7 @@ export class RuntimeBridge {
                 evaluationOnly: root?.topic === "chat/infer_request",
                 textPath: harnessOutputTextPath(
                   root,
-                  route.source.application?.harness,
+                  route.source?.application?.harness,
                 ),
               }
             : null;
@@ -1709,7 +1808,7 @@ export class RuntimeBridge {
     let pendingAuthorization = Promise.resolve();
     const authorize = () => {
       pendingAuthorization = pendingAuthorization.then(async () => {
-        grant = await authorizeRead(scope, access);
+        grant = await authorizeRead(baseScope, access);
       });
       return pendingAuthorization;
     };
@@ -1737,8 +1836,10 @@ export class RuntimeBridge {
             const source = route.source;
             if (
               (route.evaluationOnly && raw.kind !== "evaluation") ||
-              source.sharedDefault !== grant.personalDefault ||
-              !this.platformSourceReadable(source, scope, access, grant)
+              (source
+                ? source.sharedDefault !== grant.personalDefault ||
+                  !this.platformSourceReadable(source, baseScope, access, grant)
+                : !scope.discussionId)
             )
               return [];
             const publicationKey = raw.publicationKey;
@@ -1755,7 +1856,9 @@ export class RuntimeBridge {
               !raw.id.startsWith("stream:") &&
               !raw.id.startsWith("tool:") &&
               (raw.kind === "reply" || raw.kind === "error");
-            const inputPreview = messageSourceSummary(source);
+            const inputPreview = source
+              ? messageSourceSummary(source)
+              : undefined;
             return [
               {
                 ...raw,
@@ -1776,10 +1879,15 @@ export class RuntimeBridge {
                   publicationKey && publicationTimes.has(publicationKey)
                     ? publicationTimes.get(publicationKey)!
                     : raw.createdAt,
-                projectId: source.projectId,
-                conversationId: source.conversationId,
+                projectId: source?.projectId ?? scope.projectId,
+                conversationId: source?.conversationId ?? scope.conversationId,
                 artifactId: null,
                 inputId: route.inputId,
+                ...(scope.discussionId
+                  ? { commentDiscussion: { id: scope.discussionId } }
+                  : source?.commentDiscussion
+                    ? { commentDiscussion: source.commentDiscussion }
+                    : {}),
                 ...(inputPreview ? { inputPreview } : {}),
                 rootId: raw.rootId!,
               },
@@ -1831,6 +1939,16 @@ export class RuntimeBridge {
       url: this.config.url,
       initialCursor: () => initialCursor,
       messageLimit: 100,
+      ...(this.supportsCommentDiscussions
+        ? {
+            readScope: scope.discussionId
+              ? {
+                  scope: "discussion" as const,
+                  discussion_id: scope.discussionId,
+                }
+              : { scope: "main" as const },
+          }
+        : {}),
       sessions: () => [sessionId],
       headers: () => ({
         Authorization: "Bearer " + this.config.token,
@@ -2958,6 +3076,7 @@ export class RuntimeBridge {
           ...(config.identityMode ? { identityMode: config.identityMode } : {}),
           connected: false,
           directedInput: false,
+          commentDiscussions: false,
           model: "",
           error: "",
           publications: {},
@@ -3045,6 +3164,9 @@ export class RuntimeBridge {
   }
   get supportsDirectedInput() {
     return this.state.connected && this.state.directedInput;
+  }
+  get supportsCommentDiscussions() {
+    return this.state.connected && this.state.commentDiscussions;
   }
   get isConnected() {
     return this.state.connected;
@@ -6013,6 +6135,9 @@ export class RuntimeBridge {
       conversationId: source.conversationId,
       artifactId: null,
       inputId,
+      ...(source.commentDiscussion
+        ? { commentDiscussion: source.commentDiscussion }
+        : {}),
       ...(inputPreview ? { inputPreview } : {}),
       rootId: item.root_turn_id,
       ...(threadId ? { threadId } : {}),
@@ -6198,6 +6323,273 @@ export class RuntimeBridge {
   /** Runtime owns accepted Session history; the local outbox contributes only
    * unaccepted inputs. Every immutable root is checked against the current
    * Platform grant before either the input or its output reaches a client. */
+  private async commentDiscussionRoute(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+  ) {
+    if (!this.supportsCommentDiscussions || !this.authorizePlatformRead)
+      throw new DomainError(
+        "invalid",
+        "请更新 Runtime 后打开讨论；草稿已保留。",
+      );
+    const authorize = () => this.authorizePlatformRead!(scope, access);
+    const grant = await authorize();
+    const sessionId = this.objectSessionId(
+      scope.projectId,
+      scope.conversationId,
+      grant.personalDefault,
+    );
+    return {
+      path: `/api/sessions/${encodeURIComponent(sessionId)}`,
+      sessionId,
+      authorize,
+    };
+  }
+  async platformCommentDiscussions(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    source: TextQuoteSource,
+    before?: { createdAtMicros: number; id: string },
+    limit = 20,
+  ) {
+    const route = await this.commentDiscussionRoute(scope, access);
+    const params = new URLSearchParams({
+      source_key: commentDiscussionSourceKey(source),
+      limit: String(limit),
+    });
+    if (before) {
+      params.set("before_time_micros", String(before.createdAtMicros));
+      params.set("before_id", before.id);
+    }
+    const page = z
+      .object({
+        items: z.array(nativeDiscussionDescriptorSchema).max(50),
+        next_before: z
+          .object({
+            created_at_micros: z.number().int().safe(),
+            id: z.string(),
+          })
+          .nullable(),
+      })
+      .parse(
+        await this.request(
+          `${route.path}/discussions?${params}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+    await route.authorize();
+    return {
+      items: page.items,
+      nextCursor: page.next_before
+        ? {
+            createdAtMicros: page.next_before.created_at_micros,
+            id: page.next_before.id,
+          }
+        : null,
+    };
+  }
+  async platformCommentDiscussion(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    id: string,
+  ): Promise<CommentDiscussion> {
+    const route = await this.commentDiscussionRoute(scope, access);
+    const value = z
+      .object({
+        discussion: nativeDiscussionDescriptorSchema,
+        source: nativeDiscussionSourceSchema,
+      })
+      .parse(
+        await this.request(
+          `${route.path}/discussions/${encodeURIComponent(id)}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+    if (
+      value.discussion.id !== id ||
+      value.discussion.session_id !== route.sessionId
+    )
+      throw new DomainError("conflict", "讨论归属不一致，请重新打开。");
+    const locator = value.source.locator;
+    let quote: CommentDiscussion["quote"];
+    if (locator.kind === "platform-text") {
+      quote = textQuoteSchema.parse({
+        id: locator.quoteId,
+        source: locator.source,
+        text: value.source.text,
+        comment: "",
+        ...(locator.anchor ? { anchor: locator.anchor } : {}),
+        ...(locator.draft ? { draft: true } : {}),
+      });
+    } else if (
+      locator.kind === "runtime-event" &&
+      typeof locator.event_id === "string"
+    ) {
+      // Resolve one requested source using its native input proof. A locator
+      // or an Event ID prefix cannot manufacture a Platform read grant.
+      const original = z
+        .object({ event: eventSchema, input_event: eventSchema.nullable() })
+        .parse(
+          await this.request(
+            `${route.path}/events/${encodeURIComponent(locator.event_id)}`,
+            "GET",
+            undefined,
+            access,
+            undefined,
+          ),
+        );
+      const root = original.input_event;
+      const inputId = root && payloadString(root, "client_message_id");
+      if (
+        !root ||
+        !inputId ||
+        !platformSourceFromRuntimeRoot(
+          root,
+          route.sessionId,
+          inputId,
+          (principal) =>
+            this.teamIdentity ? this.principalId(principal) : null,
+        )
+      )
+        throw new DomainError(
+          "forbidden",
+          "原消息不属于当前工作台的可读来源，请在 Dashboard 中打开这条讨论。",
+        );
+      const messageId =
+        original.event.id === root.id ? inputId : original.event.id;
+      const source = platformSourceFromRuntimeRoot(
+        root,
+        route.sessionId,
+        inputId,
+        (principal) => (this.teamIdentity ? this.principalId(principal) : null),
+      );
+      if (!source)
+        throw new DomainError("forbidden", "原消息的读取权限已变化。");
+      const quoteHash = createHash("sha256")
+        .update(
+          JSON.stringify([
+            "discussion-quote",
+            route.sessionId,
+            id,
+            value.discussion.source_event_id,
+          ]),
+        )
+        .digest("hex");
+      quote = textQuoteSchema.parse({
+        id: `${quoteHash.slice(0, 8)}-${quoteHash.slice(8, 12)}-5${quoteHash.slice(13, 16)}-8${quoteHash.slice(17, 20)}-${quoteHash.slice(20, 32)}`,
+        source: {
+          kind: "message",
+          projectId: source.projectId,
+          conversationId: source.conversationId,
+          title: value.source.title,
+          messageId,
+          inputId,
+          createdAt:
+            original.event.id === root.id
+              ? source.createdAt
+              : original.event.timestamp,
+        },
+        text: value.source.text,
+        comment: "",
+      });
+    } else throw new DomainError("invalid", "讨论来源格式不受当前客户端支持。");
+    await route.authorize();
+    return { descriptor: value.discussion, quote };
+  }
+  async platformCommentDiscussionHistory(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    id: string,
+    before?: { createdAt: string; id: string },
+    limit = 20,
+  ) {
+    const route = await this.commentDiscussionRoute(scope, access);
+    const params = new URLSearchParams({
+      scope: "discussion",
+      discussion_id: id,
+      limit: String(limit),
+      text_only: "true",
+    });
+    if (before) {
+      params.set(
+        "before_time_micros",
+        String(historyTimeMicros(before.createdAt)),
+      );
+      params.set("before_entry_id", before.id);
+    }
+    const page = sessionTimelinePageSchema.parse(
+      await this.request(
+        `${route.path}/timeline?${params}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      ),
+    );
+    await route.authorize();
+    const result = discussionTimelinePage(
+      id,
+      page.entries,
+      page.next_before
+        ? historyCursorAtMicros(
+            page.next_before.visible_at_micros,
+            page.next_before.entry_id,
+          )
+        : null,
+    );
+    if (page.content_boundary) {
+      const b = page.content_boundary;
+      result.messages.push({
+        id:
+          !b.final_event && b.attempt_id
+            ? `stream:${b.attempt_id}`
+            : b.entry_id,
+        entryId: b.entry_id,
+        eventId: b.event_id,
+        rootId: b.root_turn_id,
+        createdAt: historyCursorAtMicros(b.visible_at_micros, b.entry_id)
+          .createdAt,
+        kind: b.display_kind,
+        text: "",
+        contentOmitted: true,
+        nextOffset: 0,
+      });
+    }
+    return commentDiscussionPageSchema.parse(result);
+  }
+  async platformCommentDiscussionContent(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    id: string,
+    messageId: string,
+    eventId: string,
+    offset: number,
+  ) {
+    const route = await this.commentDiscussionRoute(scope, access);
+    const query = new URLSearchParams({
+      event_id: eventId,
+      offset: String(offset),
+    });
+    const result = z
+      .object({ message: commentDiscussionChunkSchema })
+      .parse(
+        await this.request(
+          `${route.path}/discussions/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}?${query}`,
+          "GET",
+          undefined,
+          access,
+          undefined,
+        ),
+      );
+    await route.authorize();
+    return result.message;
+  }
   async platformConversationHistory(
     scope: { projectId: string; conversationId: string },
     access: AccessContext,
@@ -6238,7 +6630,11 @@ export class RuntimeBridge {
     // IDs, not just the array: dispatch updates rootId in place. Delivery
     // status/errors can still reflect a dispatch which settled during the read.
     const local = this.platformReadDeliveries(scope, access, grant).filter(
-      (delivery) => delivery.sessionId === sessionId,
+      (delivery) =>
+        delivery.sessionId === sessionId &&
+        (!delivery.platformSource?.commentDiscussion ||
+          delivery.platformSource.commentDiscussion.publishToConversation ===
+            true),
     );
     const awaitingAcceptance = new Set(
       local
@@ -6263,7 +6659,10 @@ export class RuntimeBridge {
       scanPage < 8 && accepted.length <= limit;
       scanPage++
     ) {
-      const params = new URLSearchParams({ limit: "100" });
+      const params = new URLSearchParams({
+        limit: this.supportsCommentDiscussions ? "50" : "100",
+      });
+      if (this.supportsCommentDiscussions) params.set("scope", "main");
       if (before) {
         params.set("before_time_micros", String(before.visible_at_micros));
         params.set("before_entry_id", before.entry_id);
@@ -9507,6 +9906,9 @@ export class RuntimeBridge {
       ...(input.textQuotes?.length
         ? { textQuotes: textQuotesSchema.parse(input.textQuotes) }
         : {}),
+      ...(input.commentDiscussion
+        ? { commentDiscussion: input.commentDiscussion }
+        : {}),
       ...(input.attachments?.length
         ? {
             attachments: input.attachments.map((attachment) =>
@@ -9569,6 +9971,19 @@ export class RuntimeBridge {
     const typed = {
       ...prepared,
       activation,
+      ...(input.commentDiscussion
+        ? {
+            discussion:
+              input.commentDiscussion.id === input.id
+                ? {
+                    id: input.commentDiscussion.id,
+                    source: commentDiscussionSource(input.textQuotes![0]!),
+                    publish_to_session:
+                      input.commentDiscussion.publishToConversation ?? false,
+                  }
+                : { id: input.commentDiscussion.id },
+          }
+        : {}),
       client_metadata: {
         kind: "morphz.platform-input",
         version: 1,
@@ -10503,6 +10918,7 @@ export class RuntimeBridge {
             enabled: z.boolean(),
             directed_input: z.boolean().default(false),
             client_metadata: z.boolean().default(false),
+            discussions: z.boolean().default(false),
             harnesses: z
               .array(
                 z.object({
@@ -10532,6 +10948,7 @@ export class RuntimeBridge {
           .parse(await this.request("/api/session-io/capabilities"));
         clientMetadataCapability =
           io.enabled && io.client_metadata ? "supported" : "unsupported";
+        this.state.commentDiscussions = io.enabled && io.discussions;
         this.loadedHarnesses = io.enabled ? (io.harnesses ?? null) : null;
         this.retainedHarnesses = io.enabled ? io.retained_harnesses : null;
         this.state.directedInput =
@@ -10551,6 +10968,7 @@ export class RuntimeBridge {
         )
           clientMetadataCapability = "unsupported";
         this.state.directedInput = false;
+        this.state.commentDiscussions = false;
         this.loadedHarnesses = null;
         this.retainedHarnesses = null;
       }

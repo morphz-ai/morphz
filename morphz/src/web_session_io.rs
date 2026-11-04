@@ -145,6 +145,8 @@ pub(super) async fn send(
 #[derive(Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ReadQuery {
+    scope: Option<String>,
+    discussion_id: Option<String>,
     after: Option<String>,
     io_version: Option<String>,
     stream_version: Option<String>,
@@ -331,6 +333,30 @@ pub(super) async fn events(
     {
         return sdk_error_response(error);
     }
+    let read_scope = match comment_discussions_http::ReadScope::new(
+        &session,
+        Some(principal.principal_id.clone()),
+        query.scope.as_deref(),
+        query.discussion_id.as_deref(),
+    ) {
+        Ok(scope) => scope,
+        Err(error) => return io_error(IoError::new("invalid_content_syntax", error)),
+    };
+    match read_scope.available(&state.runtime).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return io_error(IoError::new(
+                "forbidden",
+                "Discussion is unavailable in this scope",
+            ))
+        }
+        Err(_) => {
+            return io_error(IoError::new(
+                "unavailable",
+                "Cannot authorize this discussion",
+            ))
+        }
+    }
     let preferences = match query.preferences() {
         Ok(value) => value,
         Err(error) => return io_error(error),
@@ -339,16 +365,14 @@ pub(super) async fn events(
         Ok(value) => value,
         Err(error) => return io_error(error),
     };
-    let events = match state
-        .runtime
-        .query_events(QueryFilter {
-            session_id: Some(session.clone()),
-            after_sequence: Some(after),
-            top_k: Some(256),
-            ..Default::default()
-        })
-        .await
-    {
+    let mut filter = QueryFilter {
+        session_id: Some(session.clone()),
+        after_sequence: Some(after),
+        top_k: Some(256),
+        ..Default::default()
+    };
+    read_scope.filter(&mut filter);
+    let events = match state.runtime.query_events(filter).await {
         Ok(value) => value,
         Err(_) => {
             return io_error(IoError::new(
@@ -386,6 +410,37 @@ pub(super) async fn stream(
         Ok(value) => value,
         Err(error) => return *error,
     };
+    if let Err(error) = state
+        .sdk
+        .authorize_session(&principal.principal_id, &session)
+        .await
+    {
+        return sdk_error_response(error);
+    }
+    let mut read_scope = match comment_discussions_http::ReadScope::new(
+        &session,
+        Some(principal.principal_id.clone()),
+        query.scope.as_deref(),
+        query.discussion_id.as_deref(),
+    ) {
+        Ok(scope) => scope,
+        Err(error) => return io_error(IoError::new("invalid_content_syntax", error)),
+    };
+    match read_scope.available(&state.runtime).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return io_error(IoError::new(
+                "forbidden",
+                "Discussion is unavailable in this scope",
+            ))
+        }
+        Err(_) => {
+            return io_error(IoError::new(
+                "unavailable",
+                "Cannot authorize this discussion",
+            ))
+        }
+    }
     let preferences = match query.preferences() {
         Ok(value) => value,
         Err(error) => return io_error(error),
@@ -399,14 +454,14 @@ pub(super) async fn stream(
         Ok(value) => value,
         Err(error) => return io_error(error),
     };
-    let mut live = match state
+    let mut live = state.broadcast_tx.subscribe();
+    if let Err(error) = state
         .sdk
-        .subscribe_session(&principal.principal_id, &session, 256)
+        .authorize_session(&principal.principal_id, &session)
         .await
     {
-        Ok(value) => value,
-        Err(error) => return sdk_error_response(error),
-    };
+        return sdk_error_response(error);
+    }
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<SseEvent, std::convert::Infallible>>(64);
     tokio::spawn(async move {
@@ -439,73 +494,94 @@ pub(super) async fn stream(
             let incoming = tokio::select! {
                 _ = sender.closed() => return,
                 _ = interval.tick() => None,
-                event = live.recv() => match event {Some(event) => Some(event), None => return},
+                event = live.recv() => match event {Ok(event) => Some(event), Err(_) => return},
             };
-            if state
-                .sdk
-                .authorize_session(&principal.principal_id, &session)
-                .await
-                .is_err()
-            {
-                return;
+            if incoming.as_ref().is_some_and(|event| {
+                event
+                    .payload
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(session.as_str())
+            }) {
+                continue;
             }
+            let relevant = if let Some(event) = incoming.as_ref() {
+                match read_scope.event(&state.runtime, event).await {
+                    Ok(value) => value,
+                    Err(_) => return,
+                }
+            } else {
+                false
+            };
+            let snapshot_needed = first || incoming.is_none();
+            let durable = first
+                || incoming.as_ref().is_some_and(|event| {
+                    relevant
+                        && !matches!(
+                            event.topic.as_str(),
+                            "runtime/model_stream"
+                                | "runtime/model_attempt_snapshot"
+                                | "runtime/model_request_snapshot"
+                        )
+                });
             // Drain the durable gap before transient drafts. This recovers dropped
             // notifications and fences late deltas after committed terminal state.
-            loop {
-                if state
-                    .sdk
-                    .authorize_session(&principal.principal_id, &session)
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                let records = match state
-                    .runtime
-                    .query_events(QueryFilter {
+            if durable {
+                loop {
+                    if state
+                        .sdk
+                        .authorize_session(&principal.principal_id, &session)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let mut filter = QueryFilter {
                         session_id: Some(session.clone()),
                         after_sequence: Some(after),
                         top_k: Some(256),
                         ..Default::default()
-                    })
-                    .await
-                {
-                    Ok(events) => events,
-                    Err(_) => return,
-                };
-                let count = records.len();
-                for event in records {
-                    after = after.max(event.sequence.unwrap_or(after));
-                    if matches!(
-                        event.topic.as_str(),
-                        "chat/reply" | "chat/no_reply" | "chat/cancelled" | "session/io_state"
-                    ) || event.payload.get("terminal_kind").is_some()
-                    {
-                        if let Some(root) = event
-                            .payload
-                            .get("root_turn_id")
-                            .and_then(serde_json::Value::as_str)
+                    };
+                    read_scope.filter(&mut filter);
+                    let records = match state.runtime.query_events(filter).await {
+                        Ok(events) => events,
+                        Err(_) => return,
+                    };
+                    let count = records.len();
+                    for event in records {
+                        after = after.max(event.sequence.unwrap_or(after));
+                        if matches!(
+                            event.topic.as_str(),
+                            "chat/reply" | "chat/no_reply" | "chat/cancelled" | "session/io_state"
+                        ) || event.payload.get("terminal_kind").is_some()
                         {
-                            terminal_roots.insert(root.into());
+                            if let Some(root) = event
+                                .payload
+                                .get("root_turn_id")
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                terminal_roots.insert(root.into());
+                            }
+                        }
+                        if let Some((kind, data)) = event_wire(&event, &preferences) {
+                            if sender
+                                .send(Ok(SseEvent::default()
+                                    .event(kind)
+                                    .id(cursor(&session, after))
+                                    .data(data)))
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
                         }
                     }
-                    if let Some((kind, data)) = event_wire(&event, &preferences) {
-                        if sender
-                            .send(Ok(SseEvent::default()
-                                .event(kind)
-                                .id(cursor(&session, after))
-                                .data(data)))
-                            .await
-                            .is_err()
-                        {
-                            return;
-                        }
+                    if count < 256 {
+                        break;
                     }
-                }
-                if count < 256 {
-                    break;
                 }
             }
+            first = false;
             let can_inspect_chat = preferences.receive_unknown == "inspect"
                 || preferences.receive_formats.as_ref().is_some_and(|formats| {
                     formats
@@ -515,10 +591,23 @@ pub(super) async fn stream(
             if !can_inspect_chat {
                 continue;
             }
-            if first || incoming.is_none() {
+            if snapshot_needed {
                 // Reconnect does not replay deltas as new text. Snapshots replace a
                 // draft up to delta_seq and are never output.committed.
-                for snapshot in state.runtime.session_io_snapshots(&session) {
+                let mut allowed = std::collections::HashSet::new();
+                for root in state.runtime.session_io_snapshot_roots(&session) {
+                    match read_scope.root(&state.runtime, &root).await {
+                        Ok(true) => {
+                            allowed.insert(root);
+                        }
+                        Ok(false) => {}
+                        Err(_) => return,
+                    }
+                }
+                for snapshot in state
+                    .runtime
+                    .session_io_snapshots_for_roots(&session, &allowed)
+                {
                     if terminal_roots
                         .contains(snapshot["root_turn_id"].as_str().unwrap_or_default())
                     {
@@ -541,6 +630,14 @@ pub(super) async fn stream(
                             return;
                         }
                     }
+                    if state
+                        .sdk
+                        .authorize_session(&principal.principal_id, &session)
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
                     seen.insert(id.into(), seq);
                     if sender
                         .send(Ok(SseEvent::default()
@@ -554,10 +651,21 @@ pub(super) async fn stream(
                 }
                 first = false;
             }
+            if !relevant {
+                continue;
+            }
             if let Some(update) = incoming
                 .as_ref()
                 .and_then(|event| event.payload.get("session_io_stream"))
             {
+                if state
+                    .sdk
+                    .authorize_session(&principal.principal_id, &session)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
                 if terminal_roots.contains(update["root_turn_id"].as_str().unwrap_or_default()) {
                     continue;
                 }

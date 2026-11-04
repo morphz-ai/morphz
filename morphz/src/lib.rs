@@ -27,6 +27,7 @@ pub mod context_state;
 pub mod context_store;
 pub mod context_tools;
 pub mod controllers;
+pub mod discussion;
 pub mod edge_app;
 pub mod edge_node;
 pub mod event;

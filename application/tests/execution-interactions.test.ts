@@ -69,6 +69,7 @@ function boot(csrfToken = "csrf-A"): Boot {
       teamAuthentication: false,
       conversationOnFirstInput: false,
       directedInput: false,
+      commentDiscussions: false,
       localFiles: false,
       agentDirectories: false,
       modelSettings: false,

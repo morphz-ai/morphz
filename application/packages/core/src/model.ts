@@ -16,6 +16,7 @@ import {
   coherentCognitiveAppInput,
 } from "./cognitive-app-object-locator.js";
 import { textQuotesSchema } from "./text-quotes.js";
+import { commentDiscussionReferenceSchema } from "./comment-discussions.js";
 import {
   cognitiveAppApplicationTargetSchema,
   coherentCognitiveAppApplicationInput,
@@ -428,6 +429,7 @@ export const stateSchema = z
           selection: z.string().max(10000),
           body: z.string().trim().max(30000),
           textQuotes: textQuotesSchema.optional(),
+          commentDiscussion: commentDiscussionReferenceSchema.optional(),
           attachments: z.array(inputAttachmentSchema).max(8).optional(),
           browser: browserReferenceSchema.optional(),
           localFile: localFileReferenceSchema.optional(),
@@ -703,6 +705,7 @@ export const operationSchema = z.discriminatedUnion("type", [
       selection: z.string().max(10000),
       body: z.string().trim().max(30000),
       textQuotes: textQuotesSchema.optional(),
+      commentDiscussion: commentDiscussionReferenceSchema.optional(),
       attachments: z.array(inputAttachmentSchema).max(8).optional(),
       browser: browserReferenceSchema.optional(),
       localFile: localFileReferenceSchema.optional(),

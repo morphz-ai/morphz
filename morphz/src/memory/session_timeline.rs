@@ -17,6 +17,9 @@ pub struct SessionTimelineCursor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionTimelineItem {
+    /// A scoped SQL byte window stopped before the requested row budget.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub earlier_omitted: bool,
     pub entry_id: String,
     pub visible_at: DateTime<Utc>,
     pub visible_at_micros: i64,
@@ -32,6 +35,9 @@ pub struct SessionTimelineItem {
     /// Goal provenance. It may differ from a synthetic execution root. Store
     /// queries leave this unset; no current page or Session-wide guess is used.
     pub input_event: Option<Event>,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

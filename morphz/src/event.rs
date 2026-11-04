@@ -385,6 +385,22 @@ impl InMemoryEventBus {
             .map(|streams| streams.snapshots(session))
             .unwrap_or_default()
     }
+    pub fn session_io_snapshot_roots(&self, session: &str) -> Vec<String> {
+        self.session_io_streams
+            .as_ref()
+            .map(|streams| streams.snapshot_roots(session))
+            .unwrap_or_default()
+    }
+    pub fn session_io_snapshots_for_roots(
+        &self,
+        session: &str,
+        roots: &std::collections::HashSet<String>,
+    ) -> Vec<JsonValue> {
+        self.session_io_streams
+            .as_ref()
+            .map(|streams| streams.snapshots_for_roots(session, Some(roots)))
+            .unwrap_or_default()
+    }
 
     #[cfg(feature = "remote-store")]
     pub(crate) fn has_hosted_in_flight_dispatch(&self) -> bool {

@@ -1,3 +1,5 @@
+import { CommentDiscussionPanel } from './components/CommentDiscussions'
+import { useCommentDiscussions } from './components/useCommentDiscussions'
 import { sessionReadPlan } from './app/sessionReadPlan'
 import { readDirectoryPage, readNavigationHead, mergeDirectoryPage } from './app/directoryPage'
 import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
@@ -2350,8 +2352,12 @@ function eventKind(event: MorphzEvent) {
 const SelectionQuotePopup = memo(function SelectionQuotePopup({
   label,
   onAdd,
+  onDiscuss,
+  discussionLabel,
 }: {
   label: string
+  discussionLabel: string
+  onDiscuss?: (popup: SelectionPopup) => void
   onAdd: (popup: SelectionPopup) => void
 }) {
   const [popup, setPopup] = useState<SelectionPopup | null>(null)
@@ -2415,19 +2421,10 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
 
   if (!popup) return null
   return (
-    <button
-      className="selection-popup"
-      style={{ left: popup.x, top: popup.y }}
-      type="button"
-      onClick={() => {
-        onAdd(popup)
-        setPopup(null)
-        window.getSelection()?.removeAllRanges()
-      }}
-    >
-      <MessageSquare size={13} />
-      <span>{label}</span>
-    </button>
+    <div className="selection-popup" style={{left:popup.x,top:popup.y}} role="toolbar" aria-label={label} onPointerDown={event=>event.preventDefault()}>
+      <button type="button" onClick={()=>{onAdd(popup);setPopup(null);window.getSelection()?.removeAllRanges()}}><MessageSquarePlus size={13}/><span>{label}</span></button>
+      {onDiscuss&&popup.eventId&&<button type="button" onClick={()=>{onDiscuss(popup);setPopup(null);window.getSelection()?.removeAllRanges()}}><MessageSquare size={13}/><span>{discussionLabel}</span></button>}
+    </div>
   )
 })
 
@@ -5130,7 +5127,7 @@ export default function App() {
       if (disposed) return
       reconnectTimer = undefined
       setWsStatus('connecting')
-      const params = new URLSearchParams({ session_id: selectedSessionId })
+      const params = new URLSearchParams({ session_id: selectedSessionId, scope:"main" })
       if (metadataOnly) params.set('changes_only','true')
       const token = getDashboardToken()
       if (token) params.set('token', token)
@@ -8058,6 +8055,8 @@ export default function App() {
     && reasoningEffortOptions.includes(selectedSession.reasoning_effort)
     ? selectedSession.reasoning_effort
     : 'default'
+  const commentDiscussions=useCommentDiscussions({api:DASHBOARD_API,sessionId:selectedSessionId,principalId:principalScope?.principal.id,actorIdentity:activePrincipalId??'',readOnly:observingForeignPrincipal||!activePrincipalId,model:effectiveSessionModel,reasoning:selectedReasoningEffort})
+  useEffect(()=>{if(view!=='dialogue')commentDiscussions.controller.close()},[view,commentDiscussions.controller])
   const selectedPermissionMode: PermissionModeSetting = isPermissionModeSetting(selectedSession?.permission_mode)
     ? selectedSession.permission_mode
     : selectedSession?.sandbox_mode === 'danger-full-access'
@@ -10424,7 +10423,16 @@ export default function App() {
             </div>
           )}
         </footer>
-        <SelectionQuotePopup label={t('conversation.addToChat')} onAdd={addQuote} />
+        <SelectionQuotePopup label={t('conversation.addToChat')} discussionLabel={t('discussion.title')} onAdd={addQuote} onDiscuss={selectedSessionId&&!observingForeignPrincipal?popup=>{
+          if(!popup.eventId)return
+          const event=events.find(item=>item.id===popup.eventId)
+          const payload=event?.payload
+          const clientId=payload?.client_message_id
+          const attempt=payload?.publication_key??payload?.attempt_id??payload?.model_attempt_id
+          const sourceKey=typeof clientId==='string'?`input:${clientId}`:typeof attempt==='string'?`publication:${attempt}`:`event:${popup.eventId}`
+          commentDiscussions.open({key:sourceKey,title:selectedSession?.title??t('discussion.title'),text:popup.text,locator:{kind:'runtime-event',event_id:popup.eventId}},popup)
+        }:undefined}/>
+        {view==='dialogue'&&<CommentDiscussionPanel controller={commentDiscussions.controller} point={commentDiscussions.point} readOnly={observingForeignPrincipal||!activePrincipalId}/>}
       </section>
       {sexprReader && (
         <SExpressionReader

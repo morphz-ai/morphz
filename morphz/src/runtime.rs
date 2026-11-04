@@ -2232,6 +2232,18 @@ impl MorphzRuntime {
     pub fn session_io_snapshots(&self, session: &str) -> Vec<serde_json::Value> {
         self.inner.bus.session_io_snapshots(session)
     }
+    pub fn session_io_snapshot_roots(&self, session: &str) -> Vec<String> {
+        self.inner.bus.session_io_snapshot_roots(session)
+    }
+    pub fn session_io_snapshots_for_roots(
+        &self,
+        session: &str,
+        roots: &std::collections::HashSet<String>,
+    ) -> Vec<serde_json::Value> {
+        self.inner
+            .bus
+            .session_io_snapshots_for_roots(session, roots)
+    }
 
     pub fn builder(config: AppConfig, client: Arc<dyn Client>) -> MorphzRuntimeBuilder {
         MorphzRuntimeBuilder::new(config, client)
@@ -7357,6 +7369,89 @@ impl MorphzRuntime {
 
     pub async fn query_events(&self, filter: QueryFilter) -> Result<Vec<Event>, RuntimeError> {
         self.inner.store.query(filter).await
+    }
+
+    pub async fn discussion_message_chunk(
+        &self,
+        session: &str,
+        principal: Option<&str>,
+        discussion: &str,
+        entry: &str,
+        event: &str,
+        offset: i64,
+    ) -> Result<Option<crate::discussion::MessageChunk>, RuntimeError> {
+        self.inner
+            .store
+            .discussion_message_chunk(session, principal, discussion, entry, event, offset)
+            .await
+    }
+    pub async fn session_event_sequence(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<u64>, RuntimeError> {
+        self.inner.store.session_event_sequence(session_id).await
+    }
+    pub async fn discussion_root_route(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<crate::discussion::DiscussionRootRoute>, RuntimeError> {
+        self.inner
+            .store
+            .discussion_root_route(session_id, root_turn_id)
+            .await
+    }
+
+    pub async fn query_scoped_session_timeline(
+        &self,
+        session_id: &str,
+        principal_scope: Option<&str>,
+        scope: &crate::discussion::TimelineScope,
+        before: Option<&SessionTimelineCursor>,
+        limit: usize,
+        text_only: bool,
+    ) -> Result<Vec<SessionTimelineItem>, RuntimeError> {
+        let mut entries = self
+            .inner
+            .store
+            .query_scoped_session_timeline(
+                session_id,
+                principal_scope,
+                scope,
+                before,
+                limit,
+                text_only,
+            )
+            .await?;
+        self.resolve_timeline_inputs(session_id, &mut entries)
+            .await?;
+        Ok(entries)
+    }
+
+    pub async fn session_discussion(
+        &self,
+        session_id: &str,
+        principal_scope: Option<&str>,
+        discussion_id: &str,
+    ) -> Result<Option<crate::discussion::DiscussionDescriptor>, RuntimeError> {
+        self.inner
+            .store
+            .session_discussion(session_id, principal_scope, discussion_id)
+            .await
+    }
+
+    pub async fn session_discussions(
+        &self,
+        session_id: &str,
+        principal_scope: Option<&str>,
+        source_key: &str,
+        before: Option<&crate::discussion::DiscussionCursor>,
+        limit: usize,
+    ) -> Result<Vec<crate::discussion::DiscussionDescriptor>, RuntimeError> {
+        self.inner
+            .store
+            .session_discussions(session_id, principal_scope, source_key, before, limit)
+            .await
     }
 
     /// Read one bounded page of the Runtime-owned Session message timeline.
@@ -13031,6 +13126,23 @@ impl SessionHandle {
         // read on every accepted message.
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         validate_client_message_id(&client_message_id)?;
+        let discussion = io
+            .as_ref()
+            .and_then(|input| input.request.discussion.clone());
+        if let Some(discussion) = discussion.as_ref() {
+            discussion.validate(&client_message_id).map_err(|message| {
+                Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    message,
+                )) as RuntimeError
+            })?;
+            if dispatch_mode != Some(MessageDispatchMode::Parallel) {
+                return Err(Box::new(MessageIngressError::new(
+                    MessageIngressErrorKind::InvalidArgument,
+                    "Discussion input requires an explicit parallel dispatch mode",
+                )));
+            }
+        }
         let effective_annotations =
             response_annotations.unwrap_or_else(|| self.runtime.default_response_annotations());
         let staged_attachments = self
@@ -13313,6 +13425,9 @@ impl SessionHandle {
             ("dispatch_mode".to_string(), json!(dispatch_mode.as_str())),
             ("coordination_mode".to_string(), json!(coordination_mode)),
         ]);
+        if let Some(discussion) = discussion {
+            payload.insert("discussion".into(), serde_json::to_value(discussion)?);
+        }
         if let Some(protocol) = response_annotations {
             payload.insert("requested_response_annotations".into(), json!(protocol));
         }

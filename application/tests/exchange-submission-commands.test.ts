@@ -98,6 +98,7 @@ function harness(
       teamAuthentication: false,
       conversationOnFirstInput: true,
       directedInput: true,
+      commentDiscussions: false,
       localFiles: false,
       agentDirectories: false,
       modelSettings: false,

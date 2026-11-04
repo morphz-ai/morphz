@@ -1,4 +1,6 @@
 use crate::approval::ApprovalDecision;
+#[path = "web_comment_discussions.rs"]
+mod comment_discussions_http;
 #[path = "web_session_io.rs"]
 mod session_io_http;
 use crate::artifact::ArtifactTransferStageKind;
@@ -792,6 +794,10 @@ struct MutateFrameLifecycleRequest {
 
 #[derive(Default, serde::Deserialize)]
 struct EventQuery {
+    #[serde(default)]
+    head_only: bool,
+    scope: Option<String>,
+    discussion_id: Option<String>,
     token: Option<String>,
     principal_id: Option<String>,
     after_sequence: Option<u64>,
@@ -812,6 +818,8 @@ struct SessionTimelineHttpQuery {
     #[serde(default)]
     text_only: bool,
     limit: Option<usize>,
+    scope: Option<String>,
+    discussion_id: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -1642,6 +1650,18 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/timeline",
                 get(handle_get_session_timeline),
+            )
+            .route(
+                "/api/sessions/:session_id/discussions",
+                get(comment_discussions_http::list),
+            )
+            .route(
+                "/api/sessions/:session_id/discussions/:discussion_id",
+                get(comment_discussions_http::detail),
+            )
+            .route(
+                "/api/sessions/:session_id/discussions/:discussion_id/messages/:entry_id",
+                get(comment_discussions_http::message_chunk),
             )
             .route(
                 "/api/sessions/:session_id/timeline/entries/:entry_id",
@@ -9209,12 +9229,68 @@ async fn handle_get_session_events(
     {
         return sdk_error_response(error);
     }
+    if query.head_only {
+        if query.after_sequence.is_some()
+            || query.before_sequence.is_some()
+            || query.root_turn_id.is_some()
+            || query.attempt_id.is_some()
+            || query.scope.is_some()
+            || query.discussion_id.is_some()
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "A Session head is a metadata-only append frontier",
+            );
+        }
+        return match state.runtime.session_event_sequence(&session_id).await {
+            Ok(sequence) => {
+                Json(json!({"events":[],"latest_sequence":sequence,"next_before_sequence":null}))
+                    .into_response()
+            }
+            Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        };
+    }
     let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
     if query.after_sequence.is_some() && query.before_sequence.is_some() {
         return error_response(
             StatusCode::BAD_REQUEST,
             "after_sequence and before_sequence cannot be used together",
         );
+    }
+    let read_principal = if query.scope.is_some() {
+        match comment_discussions_http::principal_scope(
+            &state,
+            &headers,
+            query.token.as_deref(),
+            query.principal_id.as_deref(),
+            &session_id,
+        )
+        .await
+        {
+            Ok(principal) => principal,
+            Err(error) => return error,
+        }
+    } else {
+        None
+    };
+    let read_scope = match comment_discussions_http::ReadScope::new(
+        &session_id,
+        read_principal,
+        query.scope.as_deref(),
+        query.discussion_id.as_deref(),
+    ) {
+        Ok(scope) => scope,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    match read_scope.available(&state.runtime).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "Discussion is unavailable in this scope",
+            )
+        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
     let mut filter = match (SessionEventsQuery {
         session_id,
@@ -9228,6 +9304,7 @@ async fn handle_get_session_events(
         Ok(filter) => filter,
         Err(error) => return sdk_error_response(error),
     };
+    read_scope.filter(&mut filter);
     if let Some(root_turn_id) = query.root_turn_id {
         if root_turn_id.is_empty() || root_turn_id.len() > 512 {
             return error_response(StatusCode::BAD_REQUEST, "Invalid root Turn ID");
@@ -9299,8 +9376,75 @@ async fn handle_get_session_timeline(
             )
         }
     };
-    let limit = query.limit.unwrap_or(100).clamp(1, 100);
-    let page = if query.text_only {
+    let scope = match (query.scope.as_deref(), query.discussion_id.as_deref()) {
+        (None, None) => None,
+        (Some("main"), None) => Some(crate::discussion::TimelineScope::Main),
+        (Some("discussion"), Some(id)) if !id.is_empty() && id.len() <= 128 => {
+            Some(crate::discussion::TimelineScope::Discussion { id: id.to_owned() })
+        }
+        _ => return error_response(StatusCode::BAD_REQUEST, "Invalid timeline discussion scope"),
+    };
+    let principal_scope = if scope.is_some() {
+        if is_operator_authorized(&state, &headers, query.token.as_deref())
+            && query.principal_id.is_none()
+        {
+            None
+        } else {
+            match request_read_principal(
+                &state,
+                &headers,
+                query.token.as_deref(),
+                query.principal_id.as_deref(),
+            ) {
+                Ok(principal) => Some(principal.principal_id),
+                Err(error) => return sdk_error_response(error),
+            }
+        }
+    } else {
+        None
+    };
+    let limit = query
+        .limit
+        .unwrap_or(if scope.is_some() { 20 } else { 100 })
+        .clamp(
+            1,
+            if scope.is_some() {
+                crate::discussion::MAX_PAGE_ROWS
+            } else {
+                100
+            },
+        );
+    if let Some(crate::discussion::TimelineScope::Discussion { id }) = scope.as_ref() {
+        match state
+            .runtime
+            .session_discussion(&session_id, principal_scope.as_deref(), id)
+            .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return error_response(
+                    StatusCode::NOT_FOUND,
+                    "Discussion is unavailable in this scope",
+                )
+            }
+            Err(error) => {
+                return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            }
+        }
+    }
+    let page = if let Some(scope) = scope.as_ref() {
+        state
+            .runtime
+            .query_scoped_session_timeline(
+                &session_id,
+                principal_scope.as_deref(),
+                scope,
+                before.as_ref(),
+                limit + 1,
+                query.text_only,
+            )
+            .await
+    } else if query.text_only {
         state
             .runtime
             .query_session_text_timeline(&session_id, before.as_ref(), limit + 1)
@@ -9313,9 +9457,52 @@ async fn handle_get_session_timeline(
     };
     match page {
         Ok(mut entries) => {
-            let has_earlier = entries.len() > limit;
-            if has_earlier {
+            let mut has_earlier =
+                entries.len() > limit || entries.first().is_some_and(|entry| entry.earlier_omitted);
+            if entries.len() > limit {
                 entries.remove(0);
+            }
+            if matches!(
+                scope,
+                Some(crate::discussion::TimelineScope::Discussion { .. })
+            ) {
+                let mut bytes = 0_usize;
+                let mut retained = 0_usize;
+                for entry in entries.iter().rev() {
+                    let size = match serde_json::to_vec(entry) {
+                        Ok(value) => value.len(),
+                        Err(error) => {
+                            return error_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                error.to_string(),
+                            )
+                        }
+                    };
+                    if retained == 0 && size > crate::discussion::MAX_PAGE_BYTES {
+                        return comment_discussions_http::boundary_response(
+                            &crate::discussion::PageBudgetBoundary {
+                                entry_id: entry.entry_id.clone(),
+                                event_id: entry.event.id.clone(),
+                                root_turn_id: entry.root_turn_id.clone(),
+                                visible_at_micros: entry.visible_at_micros,
+                                display_kind: entry.display_kind.clone(),
+                                attempt_id: entry.attempt_id.clone(),
+                                final_event: entry.final_event,
+                                content_bytes: i64::try_from(size).unwrap_or(i64::MAX),
+                            },
+                            query.text_only,
+                        );
+                    }
+                    if bytes.saturating_add(size) > crate::discussion::MAX_PAGE_BYTES {
+                        break;
+                    }
+                    bytes += size;
+                    retained += 1;
+                }
+                if retained < entries.len() {
+                    has_earlier = true;
+                    entries.drain(..entries.len() - retained);
+                }
             }
             let next_before =
                 has_earlier
@@ -9325,9 +9512,22 @@ async fn handle_get_session_timeline(
                         visible_at_micros: entry.visible_at_micros,
                         entry_id: entry.entry_id.clone(),
                     });
-            Json(json!({ "entries": entries, "next_before": next_before, "text_only": query.text_only })).into_response()
+            let mut response =
+                json!({"entries":entries,"next_before":next_before,"text_only":query.text_only});
+            if let Some(scope) = query.scope {
+                response["scope"] = json!(scope);
+            }
+            if let Some(id) = query.discussion_id {
+                response["discussion_id"] = json!(id);
+            }
+            Json(response).into_response()
         }
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => {
+            if let Some(boundary) = error.downcast_ref::<crate::discussion::PageBudgetBoundary>() {
+                return comment_discussions_http::boundary_response(boundary, query.text_only);
+            }
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
     }
 }
 
@@ -10571,6 +10771,8 @@ async fn handle_cancel_delegation(
 
 #[derive(serde::Deserialize)]
 struct WebSocketReadQuery {
+    scope: Option<String>,
+    discussion_id: Option<String>,
     #[serde(flatten)]
     auth: AuthQuery,
     #[serde(default)]
@@ -10589,6 +10791,8 @@ async fn handle_ws_upgrade(
     let WebSocketReadQuery {
         auth: query,
         changes_only,
+        scope,
+        discussion_id,
     } = query;
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return unauthorized_response();
@@ -10614,6 +10818,47 @@ async fn handle_ws_upgrade(
             "a non-Operator WebSocket subscription must specify session_id",
         );
     }
+    if query.session_id.is_none() && (scope.is_some() || discussion_id.is_some()) {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "A discussion transport requires its Session",
+        );
+    }
+    let principal = if scope.is_some() {
+        match comment_discussions_http::principal_scope(
+            &state,
+            &headers,
+            query.token.as_deref(),
+            query.principal_id.as_deref(),
+            query.session_id.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            Ok(principal) => principal,
+            Err(error) => return error,
+        }
+    } else {
+        None
+    };
+    let read_scope = match comment_discussions_http::ReadScope::new(
+        query.session_id.as_deref().unwrap_or_default(),
+        principal,
+        scope.as_deref(),
+        discussion_id.as_deref(),
+    ) {
+        Ok(scope) => scope,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
+    };
+    match read_scope.available(&state.runtime).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return error_response(
+                StatusCode::NOT_FOUND,
+                "Discussion is unavailable in this scope",
+            )
+        }
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
     #[cfg(feature = "remote-store")]
     let connection_permit = match gate {
         Some(axum::Extension(gate)) => match gate.enter(true) {
@@ -10631,6 +10876,7 @@ async fn handle_ws_upgrade(
             query.session_id,
             query.observe_model_requests && !changes_only,
             changes_only,
+            read_scope,
         )
         .await
     })
@@ -10920,6 +11166,7 @@ async fn handle_ws(
     session_filter: Option<String>,
     observe_model_requests: bool,
     changes_only: bool,
+    read_scope: comment_discussions_http::ReadScope,
 ) {
     let mut rx = state.broadcast_tx.subscribe();
     let observer_id = observe_model_requests
@@ -10945,6 +11192,7 @@ async fn handle_ws(
         observe_model_requests,
         changes_only,
         &mut rx,
+        read_scope,
     )
     .await;
 
@@ -11000,14 +11248,42 @@ async fn handle_ws_connection(
     observe_model_requests: bool,
     changes_only: bool,
     rx: &mut broadcast::Receiver<Event>,
+    mut read_scope: comment_discussions_http::ReadScope,
 ) {
     // Subscribe before reading the durable state. Events committed during the
     // snapshot query remain queued in `rx`, so the client sees a consistent
     // snapshot followed by its incremental suffix instead of losing the
     // transition that raced with reconnect.
-    if let Some(session_id) = session_filter.as_deref().filter(|_| !changes_only) {
+    if let Some(session_id) = session_filter.as_deref().filter(|_| {
+        !changes_only
+            && !matches!(
+                read_scope.selected,
+                Some(crate::discussion::TimelineScope::Discussion { .. })
+            )
+    }) {
         match model_attempt_snapshot_event(&state.runtime, session_id).await {
-            Ok(snapshot) => {
+            Ok(mut snapshot) => {
+                if read_scope.selected.is_some() {
+                    if let Some(attempts) = snapshot
+                        .payload
+                        .get_mut("attempts")
+                        .and_then(serde_json::Value::as_array_mut)
+                    {
+                        let previous = std::mem::take(attempts);
+                        for attempt in previous {
+                            if let Some(root) = attempt
+                                .get("root_turn_id")
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                match read_scope.root(&state.runtime, root).await {
+                                    Ok(true) => attempts.push(attempt),
+                                    Ok(false) => {}
+                                    Err(_) => return,
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Ok(json_str) = serde_json::to_string(&snapshot) {
                     if socket.send(WsMessage::Text(json_str)).await.is_err() {
                         return;
@@ -11052,6 +11328,7 @@ async fn handle_ws_connection(
                                 continue;
                             }
                         }
+                        match read_scope.event(&state.runtime,&ev).await {Ok(true)=>{if read_scope.authorized(&state).await.is_err(){break;}},Ok(false)=>continue,Err(_)=>break}
                         match websocket_event_text(&ev,changes_only) {
                             Ok(json_str) => if socket.send(WsMessage::Text(json_str)).await.is_err() { break; },
                             Err(error) => {tracing::warn!(%error,event_code="web.websocket.metadata_budget_exceeded","Closing invalidation stream for current-state resynchronization");break;}
@@ -21055,6 +21332,9 @@ account = "xai-account"
             Path("dialogue-page-session".to_string()),
             HeaderMap::new(),
             Query(EventQuery {
+                scope: None,
+                discussion_id: None,
+                head_only: false,
                 token: None,
                 principal_id: None,
                 after_sequence: None,
@@ -21088,6 +21368,9 @@ account = "xai-account"
             Path("dialogue-page-session".to_string()),
             HeaderMap::new(),
             Query(EventQuery {
+                scope: None,
+                discussion_id: None,
+                head_only: false,
                 token: None,
                 principal_id: None,
                 after_sequence: None,
@@ -21501,6 +21784,9 @@ account = "xai-account"
             Path("dialogue-tool-lifecycle-session".to_string()),
             HeaderMap::new(),
             Query(EventQuery {
+                scope: None,
+                discussion_id: None,
+                head_only: false,
                 token: None,
                 principal_id: None,
                 after_sequence: None,

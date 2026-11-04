@@ -3582,6 +3582,10 @@ async fn migrate_event_causal_columns(
     Ok(())
 }
 
+super::discussions::discussion_migration!(sqlx::Sqlite, true);
+super::discussions::discussion_projection!(sqlx::Sqlite);
+super::discussions::discussion_reads!(sqlx::Sqlite);
+
 async fn migrate_session_timeline(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -3613,6 +3617,7 @@ async fn migrate_session_timeline(
             .execute(pool)
             .await?;
     }
+    migrate_comment_discussions(pool).await?;
     if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version = ?")
         .bind(VERSION)
         .fetch_one(pool)
@@ -8421,6 +8426,7 @@ async fn project_session_timeline_in_transaction(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use super::session_timeline::MutationKind;
 
+    project_event_discussion_route(tx, event).await?;
     let Some(entry) = super::session_timeline::classify(event, sequence) else {
         return Ok(());
     };
@@ -8507,6 +8513,7 @@ async fn project_session_timeline_in_transaction(
             }
         }
     }
+    project_discussion_in_transaction(tx, event, &entry).await?;
     Ok(())
 }
 
@@ -8914,7 +8921,7 @@ async fn interrupt_dialogue_turn_in_transaction(
         r#"WITH predecessor AS (
              SELECT request.event_id
              FROM session_message_requests request
-             WHERE request.session_id = ? AND request.event_id != ?
+             WHERE request.discussion_id IS NULL AND request.session_id = ? AND request.event_id != ?
              ORDER BY request.created_at DESC, request.event_id DESC
              LIMIT 1
            )
@@ -8981,7 +8988,7 @@ async fn interrupt_dialogue_turn_in_transaction(
             r#"WITH predecessor AS (
                  SELECT request.event_id
                  FROM session_message_requests request
-                 WHERE request.session_id = ? AND request.event_id != ?
+                 WHERE request.discussion_id IS NULL AND request.session_id = ? AND request.event_id != ?
                  ORDER BY request.created_at DESC, request.event_id DESC
                  LIMIT 1
                )
@@ -20442,7 +20449,7 @@ impl DeliveryIngressStore for SqliteStore {
                        FROM session_message_requests request
                        JOIN thread_signals signal ON signal.event_id = request.event_id
                        JOIN threads thread ON thread.id = signal.thread_id
-                       WHERE request.session_id = ?
+                       WHERE request.discussion_id IS NULL AND request.session_id = ?
                          AND thread.session_id = request.session_id
                          AND thread.kind IN ('dialogue_turn', 'execution')
                          AND request.event_id != ?
@@ -28276,6 +28283,22 @@ impl EventStore for SqliteStore {
             .push(sqlite_event_query_source(&filter))
             .push(" WHERE 1=1");
 
+        if filter.main_presentation_only {
+            builder.push(" AND main_presentation = 1");
+        }
+        if let Some(discussion) = filter.discussion_id.as_ref() {
+            builder.push(" AND discussion_id = ").push_bind(discussion);
+        }
+        if filter.main_conversation_only {
+            let topics = crate::sdk::conversation_event_topics()
+                .iter()
+                .map(|topic| format!("'{topic}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            builder.push(format!(
+                " AND main_presentation = 1 AND topic IN ({topics})"
+            ));
+        }
         if let Some(event_id) = filter.event_id {
             builder.push(" AND id = ");
             builder.push_bind(event_id);
@@ -28881,6 +28904,12 @@ fn sqlite_event_query_source(filter: &QueryFilter) -> &'static str {
         "events INDEXED BY sqlite_autoindex_events_1"
     } else if filter.activation_id.is_some() {
         "events INDEXED BY idx_events_activation_topic"
+    } else if filter.session_id.is_some() && filter.discussion_id.is_some() {
+        "events INDEXED BY idx_events_discussion_page"
+    } else if filter.session_id.is_some() && filter.main_conversation_only {
+        "events INDEXED BY idx_events_main_conversation"
+    } else if filter.session_id.is_some() && filter.main_presentation_only {
+        "events INDEXED BY idx_events_main_page"
     } else {
         "events"
     }
@@ -29090,13 +29119,137 @@ async fn finish_sqlite_recall_claim(
 
 #[async_trait::async_trait]
 impl super::SessionTimelineStore for SqliteStore {
+    async fn discussion_message_chunk(
+        &self,
+        session: &str,
+        principal: Option<&str>,
+        discussion: &str,
+        entry: &str,
+        event: &str,
+        offset: i64,
+    ) -> Result<Option<crate::discussion::MessageChunk>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if self
+            .session_discussion(session, principal, discussion)
+            .await?
+            .is_none()
+        {
+            return Err(crate::steering::conflict(
+                "Discussion is unavailable in this scope",
+            ));
+        }
+        read_discussion_chunk(&self.pool, session, discussion, entry, event, offset).await
+    }
+    async fn session_event_sequence(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT rowid FROM events WHERE session_id = ? ORDER BY rowid DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(u64::try_from)
+        .transpose()?)
+    }
+    async fn discussion_root_route(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> Result<
+        Option<crate::discussion::DiscussionRootRoute>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        read_discussion_root_route(&self.pool, session_id, root_turn_id).await
+    }
+
+    async fn query_scoped_session_timeline(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        scope: &crate::discussion::TimelineScope,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+        text_only: bool,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        if let crate::discussion::TimelineScope::Discussion { id } = scope {
+            if self
+                .session_discussion(session_id, principal_id, id)
+                .await?
+                .is_none()
+            {
+                return Err(crate::steering::conflict(
+                    "Discussion is unavailable in this Principal/Session scope",
+                ));
+            }
+        }
+        self.session_timeline_page(
+            session_id,
+            before,
+            limit.clamp(1, crate::discussion::MAX_PAGE_ROWS + 1),
+            None,
+            text_only,
+            Some(scope),
+        )
+        .await
+    }
+
+    async fn session_discussion(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        discussion_id: &str,
+    ) -> Result<
+        Option<crate::discussion::DiscussionDescriptor>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        Ok(read_discussion_descriptors(
+            &self.pool,
+            session_id,
+            principal_id,
+            None,
+            Some(discussion_id),
+            None,
+            1,
+        )
+        .await?
+        .pop())
+    }
+
+    async fn session_discussions(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        source_key: &str,
+        before: Option<&crate::discussion::DiscussionCursor>,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::discussion::DiscussionDescriptor>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if source_key.is_empty() || source_key.len() > 512 {
+            return Err("A bounded source key is required".into());
+        }
+        read_discussion_descriptors(
+            &self.pool,
+            session_id,
+            principal_id,
+            Some(source_key),
+            None,
+            before,
+            limit,
+        )
+        .await
+    }
+
     async fn session_timeline_entry(
         &self,
         session_id: &str,
         entry_id: &str,
     ) -> Result<Option<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(self
-            .session_timeline_page(session_id, None, 1, Some(entry_id), false)
+            .session_timeline_page(session_id, None, 1, Some(entry_id), false, None)
             .await?
             .pop())
     }
@@ -29107,7 +29260,7 @@ impl super::SessionTimelineStore for SqliteStore {
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
-        self.session_timeline_page(session_id, before, limit, None, false)
+        self.session_timeline_page(session_id, before, limit, None, false, None)
             .await
     }
     async fn query_session_text_timeline(
@@ -29116,7 +29269,7 @@ impl super::SessionTimelineStore for SqliteStore {
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
-        self.session_timeline_page(session_id, before, limit, None, true)
+        self.session_timeline_page(session_id, before, limit, None, true, None)
             .await
     }
 }
@@ -29174,11 +29327,36 @@ impl SqliteStore {
         limit: usize,
         entry_id: Option<&str>,
         text_only: bool,
+        scope: Option<&crate::discussion::TimelineScope>,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         let limit = i64::try_from(limit.clamp(1, 1_000))?;
-        let statement =
-            session_timeline_page_statement(entry_id.is_some(), before.is_some(), text_only);
+        let (limit, earlier_omitted) =
+            if let Some(crate::discussion::TimelineScope::Discussion { id }) = scope {
+                discussion_page_budget(&self.pool, session_id, id, before, limit, text_only).await?
+            } else {
+                (limit, false)
+            };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let statement = if let Some(scope) = scope {
+            if entry_id.is_some() {
+                return Err("An exact entry read cannot also select a discussion page".into());
+            }
+            super::discussions::scoped_timeline_statement(
+                &session_timeline_page_statement(false, before.is_some(), false),
+                before.is_some(),
+                scope,
+                false,
+                text_only,
+            )
+        } else {
+            session_timeline_page_statement(entry_id.is_some(), before.is_some(), text_only)
+        };
         let mut query = sqlx::query(&statement).bind(session_id);
+        if let Some(crate::discussion::TimelineScope::Discussion { id }) = scope {
+            query = query.bind(id);
+        }
         if let Some(entry_id) = entry_id {
             query = query.bind(entry_id);
         }
@@ -29218,6 +29396,7 @@ impl SqliteStore {
                 })
                 .transpose()?;
             items.push(super::SessionTimelineItem {
+                earlier_omitted: false,
                 entry_id: row.get("entry_id"),
                 visible_at: chrono::DateTime::<Utc>::from_timestamp_micros(micros)
                     .ok_or("Invalid Session timeline timestamp")?,
@@ -29240,6 +29419,9 @@ impl SqliteStore {
             });
         }
         items.reverse();
+        if let Some(first) = items.first_mut() {
+            first.earlier_omitted = earlier_omitted;
+        }
         Ok(items)
     }
 }
@@ -46872,5 +47054,61 @@ mod tests {
                 .unwrap(),
             readable_page
         );
+    }
+}
+
+#[cfg(test)]
+mod discussion_query_tests {
+    use super::*;
+    #[tokio::test]
+    async fn discussion_scope_pages_use_indexed_keyset_before_payload_joins() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::new(directory.path().join("plans.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        sqlx::query("WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<8191) INSERT INTO events(id,timestamp,actor,type,topic,payload) SELECT 'discussion-plan-'||i,'2026-11-04T01:00:00Z','Model','session_message','chat/reply',json_object('session_id','plans','text','TEST') FROM n").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO session_message_timeline(session_id,entry_id,source_event_id,source_sequence,root_turn_id,visible_at_micros,display_kind,is_final,main_visible,discussion_id,metadata_only) SELECT 'plans',id,id,rowid,id,rowid,'reply',1,CASE WHEN rowid%1000=0 THEN 1 ELSE 0 END,CASE WHEN rowid%500=0 THEN 'requested' ELSE 'unrelated' END,CASE WHEN rowid%2=0 THEN 0 ELSE 1 END FROM events WHERE id LIKE 'discussion-plan-%'").execute(&store.pool).await.unwrap();
+        sqlx::query("ANALYZE").execute(&store.pool).await.unwrap();
+        for scope in [
+            crate::discussion::TimelineScope::Main,
+            crate::discussion::TimelineScope::Discussion {
+                id: "requested".into(),
+            },
+        ] {
+            for before in [false, true] {
+                let statement = super::super::discussions::scoped_timeline_statement(
+                    &session_timeline_page_statement(false, before, false),
+                    before,
+                    &scope,
+                    false,
+                    true,
+                );
+                let explain = format!("EXPLAIN QUERY PLAN {statement}");
+                let mut query = sqlx::query(&explain).bind("plans");
+                let index = if let crate::discussion::TimelineScope::Discussion { id } = &scope {
+                    query = query.bind(id);
+                    "idx_discussion_timeline_text_page"
+                } else {
+                    "idx_main_timeline_text_page"
+                };
+                if before {
+                    query = query.bind(7000_i64).bind("discussion-plan-7000");
+                }
+                let plan = query
+                    .bind(3_i64)
+                    .fetch_all(&store.pool)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|row| row.get::<String, _>("detail"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(plan.contains(index), "{plan}");
+                assert!(!plan.contains("SCAN session_message_timeline"), "{plan}");
+                if before {
+                    assert!(plan.contains("visible_at_micros"), "{plan}");
+                }
+            }
+        }
     }
 }

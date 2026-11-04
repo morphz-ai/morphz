@@ -1,4 +1,12 @@
 import { z, ZodError } from "zod";
+import { isDeepStrictEqual } from "node:util";
+import {
+  commentDiscussionsRequestSchema,
+  commentDiscussionReadSchema,
+  commentDiscussionHistoryRequestSchema,
+  commentDiscussionContentRequestSchema,
+} from "../../core/src/comment-discussions.js";
+
 import {
   terminalReadSchema,
   terminalCatalogRequestSchema,
@@ -838,6 +846,8 @@ export class ApplicationSession {
         runtime: this.options.runtime?.isConnected ?? false,
         teamAuthentication: !!this.options.identity,
         directedInput: this.options.runtime?.supportsDirectedInput ?? false,
+        commentDiscussions:
+          this.options.runtime?.supportsCommentDiscussions ?? false,
         localFiles: !!this.options.localFiles,
         browserBookmarks: !!this.options.bookmarkDomain,
         modelSettings: this.canManageModelSettings(),
@@ -2152,6 +2162,60 @@ export class ApplicationSession {
     const op = command.operation;
     if (op.type !== "record-input" || command.applicationInstanceId)
       throw new DomainError("invalid", "消息入口只接受输入。");
+    let savedDiscussion:
+      | Awaited<ReturnType<RuntimeBridge["platformCommentDiscussion"]>>
+      | undefined;
+    if (op.commentDiscussion) {
+      if (
+        op.dispatchMode !== "parallel" ||
+        op.newConversation ||
+        !op.textQuotes?.length
+      )
+        throw new DomainError(
+          "invalid",
+          "讨论需要原文引用，并以并行方式提交。",
+        );
+      if (
+        op.commentDiscussion.id === command.commandId &&
+        op.textQuotes.length !== 1
+      )
+        throw new DomainError("invalid", "请从一处选文开始讨论。");
+      if (
+        op.commentDiscussion.id !== command.commandId &&
+        op.commentDiscussion.publishToConversation !== undefined
+      )
+        throw new DomainError(
+          "conflict",
+          "已开始讨论的显示范围不能被后续消息替换。",
+        );
+      if (!runtime.supportsCommentDiscussions)
+        throw new DomainError(
+          "invalid",
+          "请更新 Runtime 后开始讨论；原文和输入已保留。",
+        );
+    }
+    if (op.commentDiscussion && op.commentDiscussion.id !== command.commandId) {
+      savedDiscussion = await runtime.platformCommentDiscussion(
+        {
+          projectId: op.projectId,
+          conversationId: op.conversationId ?? op.projectId,
+        },
+        this.access,
+        op.commentDiscussion.id,
+      );
+      const quote = op.textQuotes![0]!;
+      if (
+        op.textQuotes!.length !== 1 ||
+        quote.text !== savedDiscussion.quote.text ||
+        !isDeepStrictEqual(quote.source, savedDiscussion.quote.source) ||
+        !isDeepStrictEqual(quote.anchor, savedDiscussion.quote.anchor) ||
+        !!quote.draft !== !!savedDiscussion.quote.draft
+      )
+        throw new DomainError(
+          "conflict",
+          "讨论的原文引用已固定，请保留原引用后重试。",
+        );
+    }
     if (op.applicationInstanceId && !op.application)
       throw new DomainError(
         "invalid",
@@ -2310,6 +2374,9 @@ export class ApplicationSession {
       Awaited<ReturnType<RuntimeBridge["platformMessageSource"]>>
     >();
     for (const quote of op.textQuotes ?? []) {
+      // A continuation reuses the exact already accepted, owner-authorized
+      // snapshot. It grants no new access to the current source object.
+      if (savedDiscussion) continue;
       const source = quote.source;
       if (source.kind === "script") {
         const entryId = source.entryId;
@@ -2535,6 +2602,19 @@ export class ApplicationSession {
       ...(op.model ? { model: op.model } : {}),
       ...(op.reasoningEffort ? { reasoningEffort: op.reasoningEffort } : {}),
       ...(op.textQuotes?.length ? { textQuotes: op.textQuotes } : {}),
+      ...(op.commentDiscussion
+        ? {
+            commentDiscussion: {
+              ...op.commentDiscussion,
+              ...(savedDiscussion
+                ? {
+                    publishToConversation:
+                      savedDiscussion.descriptor.publish_to_session,
+                  }
+                : {}),
+            },
+          }
+        : {}),
       ...(op.attachments?.length ? { attachments: op.attachments } : {}),
       ...(op.continuation ? { continuation: op.continuation } : {}),
       ...(op.reading ? { reading: op.reading } : {}),
@@ -2606,6 +2686,56 @@ export class ApplicationSession {
       await runtime.as(this.access, () => runtime.confirmSupplement(entityId));
     this.active();
     return { commandId: command.commandId, entityId };
+  }
+  async platformCommentDiscussions(raw: unknown) {
+    const { source, before, limit, ...scope } =
+      commentDiscussionsRequestSchema.parse(raw);
+    const page = await this.runtime().platformCommentDiscussions(
+      scope,
+      this.access,
+      source,
+      before,
+      limit,
+    );
+    this.active();
+    return page;
+  }
+  async platformCommentDiscussion(raw: unknown) {
+    const { id, ...scope } = commentDiscussionReadSchema.parse(raw);
+    const value = await this.runtime().platformCommentDiscussion(
+      scope,
+      this.access,
+      id,
+    );
+    this.active();
+    return value;
+  }
+  async platformCommentDiscussionHistory(raw: unknown) {
+    const { id, before, limit, ...scope } =
+      commentDiscussionHistoryRequestSchema.parse(raw);
+    const page = await this.runtime().platformCommentDiscussionHistory(
+      scope,
+      this.access,
+      id,
+      before,
+      limit,
+    );
+    this.active();
+    return page;
+  }
+  async platformCommentDiscussionContent(raw: unknown) {
+    const { id, messageId, eventId, offset, ...scope } =
+      commentDiscussionContentRequestSchema.parse(raw);
+    const value = await this.runtime().platformCommentDiscussionContent(
+      scope,
+      this.access,
+      id,
+      messageId,
+      eventId,
+      offset,
+    );
+    this.active();
+    return value;
   }
   async searchPlatformConversation(raw: unknown) {
     const request = conversationSearchRequestSchema.parse(raw);
@@ -4124,7 +4254,9 @@ export class ApplicationSession {
     onClose: () => void,
     signal?: AbortSignal,
   ): Promise<() => void> {
-    const scope = conversationScope.parse(raw);
+    const scope = conversationScope
+      .extend({ discussionId: z.string().min(1).max(128).optional() })
+      .parse(raw);
     this.active();
     signal?.throwIfAborted();
     let closed = false;
@@ -4152,7 +4284,15 @@ export class ApplicationSession {
         },
         close,
         this.options.workspaceChanges
-          ? (wake) => this.observeWorkspaceChanges(() => wake(), close, signal)
+          ? (wake) =>
+              this.observeWorkspaceChanges(
+                (change) => {
+                  if (change.accessChanged || change.reason === "resync")
+                    wake();
+                },
+                close,
+                signal,
+              )
           : undefined,
       );
       if (closed) dispose();
@@ -4237,6 +4377,14 @@ export function invokeApplication(
       return session.platformConversationHistory(params);
     case "conversations.search":
       return session.searchPlatformConversation(params);
+    case "discussions.list":
+      return session.platformCommentDiscussions(params);
+    case "discussions.read":
+      return session.platformCommentDiscussion(params);
+    case "discussions.history":
+      return session.platformCommentDiscussionHistory(params);
+    case "discussions.message":
+      return session.platformCommentDiscussionContent(params);
     case "tasks.list":
       return session.listPlatformTasks(params);
     case "tasks.counts":

@@ -244,23 +244,37 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       );
     });
     await desktop.evaluate(({ webContents }, rect) => {
-      const site = webContents.getAllWebContents().find(
-        (content) => content.getURL() === "https://browser-overlay.invalid/",
-      )!;
+      const site = webContents
+        .getAllWebContents()
+        .find(
+          (content) => content.getURL() === "https://browser-overlay.invalid/",
+        )!;
       // Native guest input, in its own CSS coordinates. Do not depend on
       // another OS window staying frontmost during the full test run.
       site.focus();
-      const x = Math.floor(rect.x), y = Math.round(rect.y + rect.height / 2);
+      const x = Math.floor(rect.x),
+        y = Math.round(rect.y + rect.height / 2);
       site.sendInputEvent({ type: "mouseMove", x, y });
-      site.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x, y });
+      site.sendInputEvent({
+        type: "mouseDown",
+        button: "left",
+        clickCount: 1,
+        x,
+        y,
+      });
       for (let step = 1; step <= 10; step++)
         site.sendInputEvent({
-          type: "mouseMove", button: "left",
-          x: Math.ceil(rect.x + rect.width * step / 10), y,
+          type: "mouseMove",
+          button: "left",
+          x: Math.ceil(rect.x + (rect.width * step) / 10),
+          y,
         });
       site.sendInputEvent({
-        type: "mouseUp", button: "left", clickCount: 1,
-        x: Math.ceil(rect.x + rect.width), y,
+        type: "mouseUp",
+        button: "left",
+        clickCount: 1,
+        x: Math.ceil(rect.x + rect.width),
+        y,
       });
     }, selectionRect);
     // A drag emits intermediate selections too. Wait for the actual final
@@ -274,7 +288,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
         ),
       )
       .toBe("TEST 网页画布");
-    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await page.getByRole("button", { name: "加入对话" }).click();
     await expect(page.getByLabel("引用 1 的评论（可选）")).toBeFocused();
     await page.getByLabel("引用 1 的评论（可选）").fill("TEST 网页选文评论");
     const commentBounds = (await page
@@ -1257,7 +1271,7 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     });
     try {
       await page
-        .getByRole("button", { name: "评论选中文字" })
+        .getByRole("button", { name: "加入对话" })
         .click({ timeout: 5000 });
     } catch (error) {
       const selectionCode = createRequire(import.meta.url)(

@@ -17,6 +17,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = (
+    "memory::postgres::discussion_query_tests::discussion_scope_pages_use_indexed_keyset_postgres",
     "memory::postgres::tests::message_claim_locks_session_before_principal_binding_postgres",
     "memory::postgres::tests::runtime_directory_keyset_pages_postgres",
     "memory::postgres::tests::thread_projection_dependencies_seek_current_edges_postgres",
@@ -29,6 +30,7 @@ CASES = (
     "terminal::tests::terminal_postgres_store_and_real_pty_contract",
 )
 INTEGRATION_CASES = (
+    ("comment_discussions", "postgres_discussion_receipts_scopes_children_and_keyset_pages"),
     ("activation_approval_checkpoint", "postgres_approval_checkpoint_matches_sqlite"),
     ("activation_approval_checkpoint", "infer_children::postgres_infer_approval_dependencies_wake_ancestors"),
     ("activation_approval_checkpoint", "nested_plans::postgres_nested_plan_checkpoints_track_every_dependency"),

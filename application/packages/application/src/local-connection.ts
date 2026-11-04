@@ -417,6 +417,7 @@ export class LocalApplicationConnection {
           kind: z.literal("platform"),
           projectId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
           conversationId: z.string().regex(/^[a-zA-Z0-9_-]{1,200}$/),
+          discussionId: z.string().min(1).max(128).optional(),
         })
         .strict()
         .parse(scope);
@@ -424,6 +425,9 @@ export class LocalApplicationConnection {
         {
           projectId: platform.projectId,
           conversationId: platform.conversationId,
+          ...(platform.discussionId
+            ? { discussionId: platform.discussionId }
+            : {}),
         },
         emit,
         close,

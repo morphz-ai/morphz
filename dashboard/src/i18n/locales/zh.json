@@ -1,4 +1,22 @@
 {
+  "discussion": {
+    "expand": "展开消息",
+    "readMore": "继续读取",
+
+    "title": "讨论",
+    "new": "开始新的讨论",
+    "close": "关闭讨论",
+    "directory": "此来源的讨论",
+    "olderDiscussions": "更早的讨论",
+    "older": "查看更早消息",
+    "loading": "正在读取讨论…",
+    "retry": "重试",
+    "input": "讨论消息",
+    "followup": "继续讨论…",
+    "placeholder": "写下你的问题…",
+    "publish": "同时显示在对话中",
+    "send": "发送讨论消息"
+  },
   "userInput": {
     "legacy": "旧记录没有保存具体问题。请根据原任务填写回复，不会转交给其他线程。",
     "resuming": "正在恢复原线程",

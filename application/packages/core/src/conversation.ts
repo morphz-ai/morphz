@@ -1,3 +1,4 @@
+import { commentDiscussionReferenceSchema } from "./comment-discussions.js";
 import { z } from "zod";
 import { executionModelSchema } from "./inference.js";
 import { modelActivitySchema } from "./model-activity.js";
@@ -226,6 +227,7 @@ export const conversationRuntimeSchema = z.object({
       artifactId: z.string().nullable(),
       inputId: z.string().nullable().optional(),
       inputPreview: z.string().min(1).max(101).optional(),
+      commentDiscussion: commentDiscussionReferenceSchema.optional(),
       rootId: z.string().nullable().optional(),
       publicationKey: z.string().optional(),
       modelAttemptId: z.string().optional(),

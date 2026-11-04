@@ -1,4 +1,9 @@
 import {
+  useCommentDiscussions,
+  CommentDiscussionPanel,
+} from "./CommentDiscussions.js";
+import { SafeMarkdown } from "./SafeMarkdown.js";
+import {
   createElement,
   useEffect,
   useLayoutEffect,
@@ -939,8 +944,11 @@ function WorkspaceApp({
   });
   const { seenReplies } = readReceiptState;
   const inputs =
-    state?.inputs.filter((i) =>
-      inConversation(state!, conversationId, i, sharedDefault),
+    state?.inputs.filter(
+      (i) =>
+        (!i.commentDiscussion ||
+          i.commentDiscussion.publishToConversation === true) &&
+        inConversation(state!, conversationId, i, sharedDefault),
     ) ?? [];
   const historyScopeKey = JSON.stringify([
     conversationProjectId,
@@ -1219,6 +1227,22 @@ function WorkspaceApp({
         }),
         surfaceDraft,
       ),
+  });
+  const commentDiscussions = useCommentDiscussions({
+    projectId: conversationProjectId,
+    conversationId,
+    identity: client.boot!.csrfToken,
+    storageScope: `${client.boot!.centerId}:${client.boot!.principalId}`,
+    enabled:
+      !!client.boot!.capabilities.commentDiscussions &&
+      !selectedDraft &&
+      !selectedConversation?.archivedAt,
+    model: sessionEvaluation.enabled
+      ? sessionEvaluation.defaults.model
+      : draft.model,
+    reasoningEffort: sessionEvaluation.enabled
+      ? sessionEvaluation.defaults.reasoningEffort
+      : draft.reasoningEffort,
   });
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
@@ -2663,6 +2687,25 @@ function WorkspaceApp({
   return createElement(
     TextQuoteProvider,
     {
+      onDiscuss: commentDiscussions.open,
+      discussionDisabled: !commentDiscussions.enabled,
+      discussionPanel: (
+        <CommentDiscussionPanel
+          controller={commentDiscussions.controller}
+          sendShortcut={prefs.sendShortcut}
+          point={commentDiscussions.point}
+          onOpen={(quote) => void openTextQuote(quote)}
+          renderMarkdown={(text, streaming) => (
+            <SafeMarkdown
+              state={state!}
+              onOpen={openUser}
+              streaming={streaming}
+            >
+              {text}
+            </SafeMarkdown>
+          )}
+        />
+      ),
       quotes: draft.textQuotes,
       scope: conversationId,
       reveal: quoteReveal,

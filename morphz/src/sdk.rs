@@ -495,6 +495,7 @@ impl SessionEventsQuery {
         }
         let limit = self.limit.clamp(1, 1_000);
         Ok(QueryFilter {
+            main_conversation_only: self.conversation_only,
             session_id: Some(self.session_id),
             after_sequence: self.after_sequence,
             before_sequence: self.before_sequence,
@@ -511,7 +512,7 @@ impl SessionEventsQuery {
     }
 }
 
-fn conversation_event_topics() -> &'static [&'static str] {
+pub(crate) fn conversation_event_topics() -> &'static [&'static str] {
     &[
         "chat/steering",
         "chat/user_message",

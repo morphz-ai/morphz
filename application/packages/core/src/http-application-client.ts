@@ -370,6 +370,13 @@ export class HttpApplicationClient {
           });
         break;
       }
+      case "discussions.list":
+      case "discussions.read":
+      case "discussions.history":
+      case "discussions.message":
+        path = `/api/platform/discussions/${method.split(".")[1]}`;
+        post(params);
+        break;
       case "platform.message":
         path = "/api/platform/messages";
         post(params);

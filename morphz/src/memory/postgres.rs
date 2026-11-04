@@ -51,6 +51,9 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 type StoreError = Box<dyn std::error::Error + Send + Sync>;
+super::discussions::discussion_migration!(sqlx::Postgres, false);
+super::discussions::discussion_projection!(sqlx::Postgres);
+super::discussions::discussion_reads!(sqlx::Postgres);
 
 // Stable database-scoped lock for schema installation. It is held on a
 // dedicated connection so a Store configured with a one-connection pool can
@@ -631,6 +634,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20261102_01_session_timeline_text_pages",
                     store.migrate_session_timeline_text_pages(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20261104_01_comment_discussions",
+                    migrate_comment_discussions(&store.pool),
                 )
                 .await?;
             store
@@ -2360,6 +2369,7 @@ impl PostgresStore {
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
+        migrate_comment_discussions(&self.pool).await?;
         // Only the derived input identity changed. Keep every immutable Event
         // and rebuild its client-visible index key from that source.
         sqlx::query("DELETE FROM session_message_timeline WHERE display_kind = 'input'")
@@ -5176,6 +5186,7 @@ async fn project_session_timeline_in_tx(
 ) -> Result<(), StoreError> {
     use super::session_timeline::MutationKind;
 
+    project_event_discussion_route(tx, event).await?;
     let Some(entry) = super::session_timeline::classify(event, sequence) else {
         return Ok(());
     };
@@ -5262,6 +5273,7 @@ async fn project_session_timeline_in_tx(
             }
         }
     }
+    project_discussion_in_transaction(tx, event, &entry).await?;
     Ok(())
 }
 
@@ -5868,6 +5880,22 @@ impl EventStore for PostgresStore {
         let mut builder = QueryBuilder::<Postgres>::new(
             "SELECT sequence, id, timestamp, actor, type, topic, payload FROM events WHERE TRUE",
         );
+        if filter.main_presentation_only {
+            builder.push(" AND main_presentation = 1");
+        }
+        if let Some(discussion) = filter.discussion_id.as_ref() {
+            builder.push(" AND discussion_id = ").push_bind(discussion);
+        }
+        if filter.main_conversation_only {
+            let topics = crate::sdk::conversation_event_topics()
+                .iter()
+                .map(|topic| format!("'{topic}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            builder.push(format!(
+                " AND main_presentation = 1 AND topic IN ({topics})"
+            ));
+        }
         if let Some(event_id) = filter.event_id {
             builder.push(" AND id = ").push_bind(event_id);
         }
@@ -6514,13 +6542,137 @@ async fn finish_pg_recall_claim(
 
 #[async_trait::async_trait]
 impl super::SessionTimelineStore for PostgresStore {
+    async fn discussion_message_chunk(
+        &self,
+        session: &str,
+        principal: Option<&str>,
+        discussion: &str,
+        entry: &str,
+        event: &str,
+        offset: i64,
+    ) -> Result<Option<crate::discussion::MessageChunk>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if self
+            .session_discussion(session, principal, discussion)
+            .await?
+            .is_none()
+        {
+            return Err(crate::steering::conflict(
+                "Discussion is unavailable in this scope",
+            ));
+        }
+        read_discussion_chunk(&self.pool, session, discussion, entry, event, offset).await
+    }
+    async fn session_event_sequence(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT sequence FROM events WHERE session_id = $1 ORDER BY sequence DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(u64::try_from)
+        .transpose()?)
+    }
+    async fn discussion_root_route(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> Result<
+        Option<crate::discussion::DiscussionRootRoute>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        read_discussion_root_route(&self.pool, session_id, root_turn_id).await
+    }
+
+    async fn query_scoped_session_timeline(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        scope: &crate::discussion::TimelineScope,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+        text_only: bool,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        if let crate::discussion::TimelineScope::Discussion { id } = scope {
+            if self
+                .session_discussion(session_id, principal_id, id)
+                .await?
+                .is_none()
+            {
+                return Err(crate::steering::conflict(
+                    "Discussion is unavailable in this Principal/Session scope",
+                ));
+            }
+        }
+        self.session_timeline_page(
+            session_id,
+            before,
+            limit.clamp(1, crate::discussion::MAX_PAGE_ROWS + 1),
+            None,
+            text_only,
+            Some(scope),
+        )
+        .await
+    }
+
+    async fn session_discussion(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        discussion_id: &str,
+    ) -> Result<
+        Option<crate::discussion::DiscussionDescriptor>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        Ok(read_discussion_descriptors(
+            &self.pool,
+            session_id,
+            principal_id,
+            None,
+            Some(discussion_id),
+            None,
+            1,
+        )
+        .await?
+        .pop())
+    }
+
+    async fn session_discussions(
+        &self,
+        session_id: &str,
+        principal_id: Option<&str>,
+        source_key: &str,
+        before: Option<&crate::discussion::DiscussionCursor>,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::discussion::DiscussionDescriptor>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if source_key.is_empty() || source_key.len() > 512 {
+            return Err("A bounded source key is required".into());
+        }
+        read_discussion_descriptors(
+            &self.pool,
+            session_id,
+            principal_id,
+            Some(source_key),
+            None,
+            before,
+            limit,
+        )
+        .await
+    }
+
     async fn session_timeline_entry(
         &self,
         session_id: &str,
         entry_id: &str,
     ) -> Result<Option<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(self
-            .session_timeline_page(session_id, None, 1, Some(entry_id), false)
+            .session_timeline_page(session_id, None, 1, Some(entry_id), false, None)
             .await?
             .pop())
     }
@@ -6531,7 +6683,7 @@ impl super::SessionTimelineStore for PostgresStore {
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
-        self.session_timeline_page(session_id, before, limit, None, false)
+        self.session_timeline_page(session_id, before, limit, None, false, None)
             .await
     }
     async fn query_session_text_timeline(
@@ -6540,7 +6692,7 @@ impl super::SessionTimelineStore for PostgresStore {
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
-        self.session_timeline_page(session_id, before, limit, None, true)
+        self.session_timeline_page(session_id, before, limit, None, true, None)
             .await
     }
 }
@@ -6609,11 +6761,36 @@ impl PostgresStore {
         limit: usize,
         entry_id: Option<&str>,
         text_only: bool,
+        scope: Option<&crate::discussion::TimelineScope>,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         let limit = i64::try_from(limit.clamp(1, 1_000))?;
-        let statement =
-            session_timeline_page_statement(entry_id.is_some(), before.is_some(), text_only);
+        let (limit, earlier_omitted) =
+            if let Some(crate::discussion::TimelineScope::Discussion { id }) = scope {
+                discussion_page_budget(&self.pool, session_id, id, before, limit, text_only).await?
+            } else {
+                (limit, false)
+            };
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let statement = if let Some(scope) = scope {
+            if entry_id.is_some() {
+                return Err("An exact entry read cannot also select a discussion page".into());
+            }
+            super::discussions::scoped_timeline_statement(
+                &session_timeline_page_statement(false, before.is_some(), false),
+                before.is_some(),
+                scope,
+                true,
+                text_only,
+            )
+        } else {
+            session_timeline_page_statement(entry_id.is_some(), before.is_some(), text_only)
+        };
         let mut query = sqlx::query(&statement).bind(session_id);
+        if let Some(crate::discussion::TimelineScope::Discussion { id }) = scope {
+            query = query.bind(id);
+        }
         if let Some(entry_id) = entry_id {
             query = query.bind(entry_id);
         }
@@ -6657,6 +6834,7 @@ impl PostgresStore {
                 })
                 .transpose()?;
             items.push(super::SessionTimelineItem {
+                earlier_omitted: false,
                 entry_id: row.get("entry_id"),
                 visible_at: DateTime::<Utc>::from_timestamp_micros(micros)
                     .ok_or("Invalid Session timeline timestamp")?,
@@ -6682,6 +6860,9 @@ impl PostgresStore {
             });
         }
         items.reverse();
+        if let Some(first) = items.first_mut() {
+            first.earlier_omitted = earlier_omitted;
+        }
         Ok(items)
     }
 }
@@ -11016,6 +11197,97 @@ mod tests {
                 .unwrap(),
             readable_page
         );
+        store.pool.close().await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        admin.close().await;
+    }
+}
+
+#[cfg(test)]
+mod discussion_query_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires a dedicated MORPHZ_TEST_POSTGRES_URL; CI runs this explicitly"]
+    async fn discussion_scope_pages_use_indexed_keyset_postgres() {
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL")
+            .expect("dedicated PostgreSQL test database required");
+        let admin = sqlx::PgPool::connect(&url).await.unwrap();
+        let schema = format!(
+            "discussion_plans_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let scoped = format!(
+            "{url}{}options=-csearch_path%3D{schema}",
+            if url.contains('?') { '&' } else { '?' }
+        );
+        let store = PostgresStore::new(&scoped, 4).await.unwrap();
+        sqlx::query("INSERT INTO events(id,timestamp,actor,type,topic,payload) SELECT 'discussion-plan-'||i,'2026-11-04T01:00:00Z','Model','session_message','chat/reply',jsonb_build_object('session_id','plans','text','TEST') FROM generate_series(1,8192) i").execute(&store.pool).await.unwrap();
+        sqlx::query("INSERT INTO session_message_timeline(session_id,entry_id,source_event_id,source_sequence,root_turn_id,visible_at_micros,display_kind,is_final,main_visible,discussion_id,metadata_only) SELECT 'plans',id,id,sequence,id,sequence,'reply',true,CASE WHEN sequence%1000=0 THEN 1 ELSE 0 END,CASE WHEN sequence%500=0 THEN 'requested' ELSE 'unrelated' END,sequence%2<>0 FROM events WHERE id LIKE 'discussion-plan-%'").execute(&store.pool).await.unwrap();
+        sqlx::query("ANALYZE session_message_timeline")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("ANALYZE events")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        fn inspect(node: &serde_json::Value) {
+            if node["Relation Name"] == "session_message_timeline" {
+                assert_eq!(
+                    node["Rows Removed by Filter"].as_u64().unwrap_or(0),
+                    0,
+                    "{node}"
+                );
+                assert!(node["Actual Rows"].as_u64().unwrap() <= 3, "{node}");
+                assert_ne!(node["Node Type"], "Seq Scan", "{node}");
+            }
+            if let Some(children) = node["Plans"].as_array() {
+                for child in children {
+                    inspect(child);
+                }
+            }
+        }
+        for scope in [
+            crate::discussion::TimelineScope::Main,
+            crate::discussion::TimelineScope::Discussion {
+                id: "requested".into(),
+            },
+        ] {
+            for before in [false, true] {
+                let statement = super::super::discussions::scoped_timeline_statement(
+                    &session_timeline_page_statement(false, before, false),
+                    before,
+                    &scope,
+                    true,
+                    true,
+                );
+                let explain = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement}");
+                let mut query = sqlx::query_scalar::<_, serde_json::Value>(&explain).bind("plans");
+                let index = if let crate::discussion::TimelineScope::Discussion { id } = &scope {
+                    query = query.bind(id);
+                    "idx_discussion_timeline_text_page"
+                } else {
+                    "idx_main_timeline_text_page"
+                };
+                if before {
+                    query = query.bind(7000_i64).bind("discussion-plan-7000");
+                }
+                let plan = query.bind(3_i64).fetch_one(&store.pool).await.unwrap();
+                assert!(plan.to_string().contains(index), "{plan}");
+                inspect(&plan[0]["Plan"]);
+            }
+        }
         store.pool.close().await;
         sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
             .execute(&admin)

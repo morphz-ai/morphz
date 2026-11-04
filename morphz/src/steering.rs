@@ -544,6 +544,7 @@ mod tests {
             io_version: "1".into(),
             client_message_id: "typed-correction".into(),
             message: Message::chat("Keep the original interface and add a Chinese summary.".into()),
+            discussion: None,
             client_metadata: Some(crate::session_io::Data::from_value(
                 &json!({"source":"exact-human-input"}),
             )),

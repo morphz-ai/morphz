@@ -55,9 +55,21 @@ export function SelectionActions({
         style={{ left: selection.x, top: selection.y }}
         onPointerDown={(e) => e.preventDefault()}
       >
+        {quotes?.discuss && (
+          <button
+            aria-label="讨论选中文字"
+            onClick={() => {
+              quotes.discuss?.(selection.quote);
+              setSelection(null);
+            }}
+          >
+            <MessageCircle aria-hidden="true" />
+            讨论
+          </button>
+        )}
         {(
           [
-            ["ask", "评论", "评论选中文字", MessageCircle],
+            ["ask", "加入对话", "将选文加入对话", MessageCircle],
             ["annotate", "批注", "批注", Highlighter],
             ["read", "朗读", "朗读", Volume2],
           ] as const

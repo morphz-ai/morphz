@@ -244,7 +244,7 @@ export function cognitiveAppViewCall<
 
 /** The formal exchange and execution inspector share the Platform Session stream. */
 export function subscribeConversation(
-  scope: { projectId: string; conversationId: string },
+  scope: { projectId: string; conversationId: string; discussionId?: string },
   update: (value: ConversationStream) => void,
 ) {
   const bridge = window.morphzDesktop?.application;
@@ -332,7 +332,7 @@ export function subscribeConversation(
     };
   }
   const stream = new EventSource(
-    `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream`,
+    `/api/platform/projects/${encodeURIComponent(scope.projectId)}/conversations/${encodeURIComponent(scope.conversationId)}/stream${scope.discussionId ? `?discussionId=${encodeURIComponent(scope.discussionId)}` : ""}`,
   );
   stream.onmessage = (event) => {
     if (closed) return;

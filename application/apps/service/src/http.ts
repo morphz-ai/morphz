@@ -1558,7 +1558,8 @@ export function createAppServer(
             url.pathname,
           );
         if (platformStream) {
-          platformQuery(url, []);
+          const streamQuery = platformQuery(url, ["discussionId"]);
+          const discussionId = streamQuery.value("discussionId");
           const controller = new AbortController();
           let closed = false,
             dispose: (() => void) | undefined;
@@ -1616,6 +1617,7 @@ export function createAppServer(
               {
                 projectId: platformStream[1],
                 conversationId: platformStream[2],
+                ...(discussionId ? { discussionId } : {}),
               },
               send,
               close,
@@ -1645,6 +1647,25 @@ export function createAppServer(
             message: "请求验证已失效，请重新连接后再试。",
             code: "forbidden",
           });
+          return;
+        }
+        const commentDiscussionOperation =
+          /^\/api\/platform\/discussions\/(list|read|history|message)$/.exec(
+            url.pathname,
+          );
+        if (commentDiscussionOperation) {
+          const value = await jsonBody(req, 32 * 1024);
+          json(
+            res,
+            200,
+            await (commentDiscussionOperation[1] === "list"
+              ? business.platformCommentDiscussions(value)
+              : commentDiscussionOperation[1] === "read"
+                ? business.platformCommentDiscussion(value)
+                : commentDiscussionOperation[1] === "message"
+                  ? business.platformCommentDiscussionContent(value)
+                  : business.platformCommentDiscussionHistory(value)),
+          );
           return;
         }
         if (url.pathname === "/api/terminals/commands") {

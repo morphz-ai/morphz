@@ -145,7 +145,11 @@ export function conversationMessages(
     ...runtime.messages,
     ...live,
   ]))
-    if (inConversation(state, conversationId, m, sharedDefault)) {
+    if (
+      (!m.commentDiscussion ||
+        m.commentDiscussion.publishToConversation === true) &&
+      inConversation(state, conversationId, m, sharedDefault)
+    ) {
       // Only the Host-authorized initiating input attributes a live result.
       // Evaluation results remain distinct from a reply or execution status.
       // Unattributed durable history remains readable. The host can reconcile a

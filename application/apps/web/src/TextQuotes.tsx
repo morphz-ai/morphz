@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { MessageSquarePlus, X, ArrowUpLeft } from "lucide-react";
+import { MessageSquarePlus, MessageCircle, X, ArrowUpLeft } from "lucide-react";
 import type { InputDispatchMode } from "../../../packages/core/src/model.js";
 import { inputDispatchMode } from "./interface-preferences.js";
 import {
@@ -41,6 +41,7 @@ const markerGap = 4;
 type QuoteActions = {
   reveal?: { quote: TextQuote; token: string } | null;
   comment: (selection?: QuoteSelection | null) => string | undefined;
+  discuss?: (selection?: QuoteSelection | null) => void;
   offer: (selection: QuoteSelection | null) => void;
   edit: (id: string, point?: CommentPoint) => void;
   open: (id: string) => void;
@@ -61,6 +62,9 @@ export function TextQuoteProvider({
   onOpen,
   onNotice,
   onSubmit,
+  onDiscuss,
+  discussionDisabled = true,
+  discussionPanel,
   children,
 }: {
   reveal?: { quote: TextQuote; token: string } | null;
@@ -73,6 +77,9 @@ export function TextQuoteProvider({
   onOpen: (quote: TextQuote) => void;
   onNotice: (text: string) => void;
   onSubmit: (mode: InputDispatchMode) => void;
+  onDiscuss?: (selection?: QuoteSelection | null) => void;
+  discussionDisabled?: boolean;
+  discussionPanel?: ReactNode;
   children?: ReactNode;
 }) {
   const latest = useRef({
@@ -84,6 +91,8 @@ export function TextQuoteProvider({
     onOpen,
     onNotice,
     onSubmit,
+    onDiscuss,
+    discussionDisabled,
   });
   latest.current = {
     quotes,
@@ -94,6 +103,8 @@ export function TextQuoteProvider({
     onOpen,
     onNotice,
     onSubmit,
+    onDiscuss,
+    discussionDisabled,
   };
   const [offer, setOffer] = useState<QuoteSelection | null>(null);
   const [editing, setEditing] = useState<{
@@ -104,7 +115,7 @@ export function TextQuoteProvider({
     { id: string; index: number; point: QuotePoint }[]
   >([]);
   const panel = useRef<HTMLDivElement>(null);
-  const offerPanel = useRef<HTMLButtonElement>(null);
+  const offerPanel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setOffer(null);
     setEditing(null);
@@ -206,7 +217,11 @@ export function TextQuoteProvider({
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        if (dragging || latest.current.disabled) return;
+        if (
+          dragging ||
+          (latest.current.disabled && latest.current.discussionDisabled)
+        )
+          return;
         const selection = captureTextQuote();
         const root = selection?.range?.commonAncestorContainer;
         const el = root instanceof Element ? root : root?.parentElement;
@@ -407,26 +422,59 @@ export function TextQuoteProvider({
   const host = document.querySelector(".app");
   return (
     <Context.Provider
-      value={{ comment, offer: setOffer, edit, open, remove, reveal }}
+      value={{
+        comment,
+        discuss: discussionDisabled
+          ? undefined
+          : (selection) => {
+              setOffer(null);
+              setEditing(null);
+              onDiscuss?.(selection);
+            },
+        offer: setOffer,
+        edit,
+        open,
+        remove,
+        reveal,
+      }}
     >
       {children}
       {host &&
         createPortal(
           <>
-            {!disabled && !editing && offer && (
-              <button
+            {(!disabled || !discussionDisabled) && !editing && offer && (
+              <div
                 ref={offerPanel}
                 data-quote-ui="true"
-                type="button"
                 className="text-quote-select"
-                aria-label="评论选中文字"
+                role="toolbar"
+                aria-label="选文操作"
                 onPointerDown={(e) => e.preventDefault()}
-                onClick={() => comment(offer)}
               >
-                <MessageSquarePlus size={15} />
-                评论
-              </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => comment(offer)}
+                >
+                  <MessageSquarePlus size={15} />
+                  加入对话
+                </button>
+                {!discussionDisabled && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDiscuss?.(offer);
+                      setOffer(null);
+                      setEditing(null);
+                    }}
+                  >
+                    <MessageCircle size={15} />
+                    讨论
+                  </button>
+                )}
+              </div>
             )}
+            {discussionPanel}
             {markers.map((m) => (
               <button
                 data-quote-ui="true"

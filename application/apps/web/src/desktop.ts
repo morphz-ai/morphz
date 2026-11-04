@@ -43,6 +43,7 @@ declare global {
             | {
                 projectId: string;
                 conversationId: string;
+                discussionId?: string;
                 kind?: "platform";
               }
             | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope

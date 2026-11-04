@@ -74,8 +74,8 @@ export class DashboardApiClient {
     })
   }
 
-  async get<T>(path: string): Promise<T> {
-    return this.readJson<T>(path, await this.response(path))
+  async get<T>(path: string, options: Pick<RequestInit, "signal"> = {}): Promise<T> {
+    return this.readJson<T>(path, await this.response(path, options))
   }
 
   async tryGet<T>(path: string): Promise<T | undefined> {
@@ -87,8 +87,9 @@ export class DashboardApiClient {
     return response.json() as Promise<T>
   }
 
-  async command<T>(path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
+  async command<T>(path: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, options: Pick<RequestInit,"signal"> = {}): Promise<T> {
     const response = await this.response(path, {
+      ...options,
       method,
       body: body === undefined ? undefined : JSON.stringify(body),
     })

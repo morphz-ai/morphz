@@ -10626,6 +10626,13 @@ fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
     if let Some(mode) = observation.dispatch_mode {
         fields.push(pair("dispatch-mode", atom(mode.as_str())));
     }
+    if let Some(discussion) = observation
+        .session_io
+        .as_ref()
+        .and_then(|io| io.request.discussion.as_ref())
+    {
+        fields.push(pair("discussion-id", atom(&discussion.id)));
+    }
     if let Some(destination) = &observation.input_destination {
         let mut target = match destination {
             crate::steering::InputDestination::Thread {

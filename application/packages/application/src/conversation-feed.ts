@@ -1,3 +1,4 @@
+import { sessionIoFrames } from "../../core/src/session-io-sse.js";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
@@ -44,6 +45,7 @@ export class ConversationFeed {
       sessions: () => string[];
       initialCursor?: (sessionId: string) => number;
       messageLimit?: number;
+      readScope?: { scope: "main" | "discussion"; discussion_id?: string };
       url: string;
       headers: () => Record<string, string>;
       request: (path: string) => Promise<unknown>;
@@ -221,6 +223,8 @@ export class ConversationFeed {
         const url = new URL("/ws", this.options.url);
         url.protocol = "ws:";
         url.searchParams.set("session_id", id);
+        for (const [key, value] of Object.entries(this.options.readScope ?? {}))
+          url.searchParams.set(key, value);
         const ws = new WebSocket(url, {
           headers: this.options.headers(),
           handshakeTimeout: 1500,
@@ -281,7 +285,7 @@ export class ConversationFeed {
         .object({ events: z.array(eventSchema) })
         .parse(
           await this.options.request(
-            `/api/sessions/${encodeURIComponent(id)}/events?after_sequence=${c.cursor}&limit=1000`,
+            `/api/sessions/${encodeURIComponent(id)}/events?after_sequence=${c.cursor}&limit=1000${this.options.readScope ? `&${new URLSearchParams(this.options.readScope)}` : ""}`,
           ),
         );
       if (!this.active(id, c)) return;
@@ -327,6 +331,8 @@ export class ConversationFeed {
         this.options.url,
       );
       url.searchParams.set("after", cursor);
+      for (const [key, value] of Object.entries(this.options.readScope ?? {}))
+        url.searchParams.set(key, value);
       timer = setTimeout(() => controller.abort(), 1500);
       const response = await fetch(url, {
         headers: this.options.headers(),
@@ -342,57 +348,43 @@ export class ConversationFeed {
         throw new Error("IO stream unavailable");
       await this.options.authorize();
       if (!this.active(id, c) || c.ioAbort !== controller) return;
-      const decoder = new TextDecoder("utf-8", { fatal: true });
-      let buffer = "";
-      for await (const chunk of response.body) {
+      for await (const { data: raw } of sessionIoFrames(
+        response.body,
+        controller.signal,
+      )) {
         await this.options.authorize();
         if (!this.active(id, c) || c.ioAbort !== controller) return;
-        buffer += decoder.decode(chunk, { stream: true });
-        if (Buffer.byteLength(buffer) > 4 * 1024 * 1024)
-          throw new Error("IO frame exceeds bounds");
-        let end: number;
-        while ((end = buffer.indexOf("\n\n")) >= 0) {
-          const frame = buffer.slice(0, end);
-          buffer = buffer.slice(end + 2);
-          const data = frame
-            .split("\n")
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (!data) continue;
-          const raw: unknown = JSON.parse(data);
-          if ((raw as { type?: unknown })?.type === "stream.opened") {
-            c.ioReady = true;
-            c.ready = c.socket?.readyState === WebSocket.OPEN;
-            this.notify();
-            continue;
-          }
-          if ((raw as { type?: unknown })?.type === "stream.reset")
-            throw new Error("IO snapshot reset required");
-          const parsed = sessionIoDraftSchema.safeParse(raw);
-          if (!parsed.success || parsed.data.session_id !== id) continue;
-          const draft = parsed.data;
-          const previous = prefixes.get(draft.output_id);
-          let text: string;
-          if (draft.snapshot === true || draft.type === "output.started") {
-            if (previous && draft.delta_seq < previous.sequence) continue;
-            text = draft.text;
-          } else if (draft.type === "output.aborted") {
-            text = previous?.text ?? "";
-          } else {
-            if (previous && draft.delta_seq <= previous.sequence) continue;
-            if (draft.delta_seq !== (previous?.sequence ?? 0) + 1)
-              throw new Error("IO delta gap requires its complete snapshot");
-            text = (previous?.text ?? "") + draft.text;
-          }
-          if (Buffer.byteLength(text) > 256 * 1024)
-            throw new Error("IO draft exceeds bounds");
-          if (!previous && prefixes.size >= 64)
-            throw new Error("IO draft count exceeds bounds");
-          prefixes.set(draft.output_id, { sequence: draft.delta_seq, text });
-          c.projection.consumeIoDraft(draft, text);
+        if ((raw as { type?: unknown })?.type === "stream.opened") {
+          c.ioReady = true;
+          c.ready = c.socket?.readyState === WebSocket.OPEN;
           this.notify();
+          continue;
         }
+        if ((raw as { type?: unknown })?.type === "stream.reset")
+          throw new Error("IO snapshot reset required");
+        const parsed = sessionIoDraftSchema.safeParse(raw);
+        if (!parsed.success || parsed.data.session_id !== id) continue;
+        const draft = parsed.data;
+        const previous = prefixes.get(draft.output_id);
+        let text: string;
+        if (draft.snapshot === true || draft.type === "output.started") {
+          if (previous && draft.delta_seq < previous.sequence) continue;
+          text = draft.text;
+        } else if (draft.type === "output.aborted") {
+          text = previous?.text ?? "";
+        } else {
+          if (previous && draft.delta_seq <= previous.sequence) continue;
+          if (draft.delta_seq !== (previous?.sequence ?? 0) + 1)
+            throw new Error("IO delta gap requires its complete snapshot");
+          text = (previous?.text ?? "") + draft.text;
+        }
+        if (Buffer.byteLength(text) > 256 * 1024)
+          throw new Error("IO draft exceeds bounds");
+        if (!previous && prefixes.size >= 64)
+          throw new Error("IO draft count exceeds bounds");
+        prefixes.set(draft.output_id, { sequence: draft.delta_seq, text });
+        c.projection.consumeIoDraft(draft, text);
+        this.notify();
       }
     } catch {
       // No suffix fallback: reconnect to the existing authoritative IO draft

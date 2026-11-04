@@ -222,7 +222,7 @@ test("本人已发送消息可用真实鼠标选中并引用，来源和返回�
   await page.mouse.down();
   await page.mouse.move(range.end, range.y, { steps: 12 });
   await page.mouse.up();
-  await page.getByRole("button", { name: "评论选中文字", exact: true }).click();
+  await page.getByRole("button", { name: "加入对话", exact: true }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 追问自己的原话");
   await page.keyboard.press("Escape");
   await page.getByLabel("AI 输入内容").fill("TEST 引用本人消息");
@@ -277,7 +277,7 @@ test("本人发出的引用评论同样可选文引用，重复评论回到确�
   await paragraph.scrollIntoViewIfNeeded();
   // Triple-click is a real whole-paragraph selection, not a synthesized Range.
   await paragraph.click({ clickCount: 3 });
-  await page.getByRole("button", { name: "评论选中文字", exact: true }).click();
+  await page.getByRole("button", { name: "加入对话", exact: true }).click();
   await page
     .getByLabel("引用 1 的评论（可选）")
     .fill("TEST 继续追问自己的评论");
@@ -353,7 +353,7 @@ test("评论浮层跟随中间内容区边界，侧栏、窄窗和缩放不丢�
   await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
   await expect(page.locator(".workspace-inspector")).toBeVisible();
   await selectText(reply.locator("[data-quotable]"), "先");
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   const editor = page.getByRole("dialog", {
     name: "引用 1 的评论",
     exact: true,
@@ -443,7 +443,7 @@ test("收起时有非空评论才出现发送，直接从评论框提交原文�
   await expect(send).toHaveCount(0);
   const selected = "这段文字只用于验证评论发送入口。";
   await selectText(text, selected);
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   const comment = page.getByLabel("引用 1 的评论（可选）");
   await expect(comment).toBeFocused();
   await expect(send).toHaveCount(0);
@@ -498,7 +498,7 @@ test("收起入口保留并发发送语义和消息选择，连续点击只提�
     return JSON.parse(localStorage.getItem(key)!).exchangeViews;
   });
   await selectText(text, "这段文字只用于验证评论发送入口。");
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 一次提交");
   const request = page.waitForRequest("**/api/platform/messages");
   await page.locator(".composer-collapsed-send").evaluate((button) => {
@@ -538,7 +538,7 @@ test("收起发送的失败保留原冻结评论和重试标识，新评论不�
     "reject-once",
   );
   await selectText(text, "这段文字只用于验证评论发送入口。");
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 原评论不能丢失");
   const request = page.waitForRequest("**/api/platform/messages");
   await page.locator(".composer-collapsed-send").click();
@@ -555,7 +555,7 @@ test("收起发送的失败保留原冻结评论和重试标识，新评论不�
     "TEST 原评论不能丢失",
   );
   await selectText(text, "其他正文保持不变。");
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page
     .getByLabel("引用 1 的评论（可选）")
     .fill("TEST 后续草稿不能被清除");
@@ -579,7 +579,7 @@ test("收起发送短名称提示、主题和窄窗200%命中，评论清空后�
 }, info) => {
   const { text, sentIds } = await collapsedDocument(page);
   await selectText(text, "这段文字只用于验证评论发送入口。");
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   const comment = page.getByLabel("引用 1 的评论（可选）");
   await comment.fill("TEST 视觉验证，不发送");
   const send = page.locator(".composer-collapsed-send");
@@ -647,7 +647,7 @@ test("选文引用、逐段评论、去重、移除、发送与来源回跳", as
   const { reply, records } = await fixture(page);
   const selected = "先理解问题，再选择工具。";
   await selectText(reply.locator("[data-quotable]"), selected);
-  const quoteButton = page.getByRole("button", { name: "评论选中文字" });
+  const quoteButton = page.getByRole("button", { name: "加入对话" });
   await expect(quoteButton).toBeVisible();
   await quoteButton.click();
   const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
@@ -712,7 +712,7 @@ test("四条待发引用经普通输入、工作台切换和重载仍完整保�
   ];
   for (const selection of selections) {
     await selectText(reply.locator("[data-quotable]"), selection);
-    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await page.getByRole("button", { name: "加入对话" }).click();
     await page.keyboard.press("Escape");
   }
   await expect(drafts.locator(".text-quote-chip")).toHaveCount(4);
@@ -754,7 +754,7 @@ test("评论只呈现两行输入，失焦保留草稿，窄窗和明暗主题�
     await page.setViewportSize({ width, height: 760 });
     await page.emulateMedia({ colorScheme: width === 390 ? "dark" : "light" });
     await selectText(reply.locator("[data-quotable]"), "再选择工具。");
-    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await page.getByRole("button", { name: "加入对话" }).click();
     await expect(comment).toBeFocused();
     const box = (await editor.boundingBox())!;
     expect(box.width).toBeLessThanOrEqual(260);
@@ -807,7 +807,7 @@ test("行中引用的编号位于正文外侧，同一行多个编号不重叠�
   const source = reply.locator("[data-quotable]");
   for (const text of ["理解问题", "再选择工具", "代码与标点"]) {
     await selectText(source, text);
-    await page.getByRole("button", { name: "评论选中文字" }).click();
+    await page.getByRole("button", { name: "加入对话" }).click();
     await page.keyboard.press("Escape");
   }
   const markers = page.locator(".text-quote-marker");
@@ -872,7 +872,7 @@ test("仅引用消息失败后保留引文，可从原卡片重试", async ({ pa
   const { reply, sentIds, records } = await fixture(page, "reject-once");
   const selected = "第二段：可以比较多个方案。";
   await selectText(reply.locator("[data-quotable]"), selected);
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.keyboard.press("Escape");
   const drafts = page.getByRole("group", { name: "选文与评论", exact: true });
   const send = page.getByRole("button", { name: "发送消息", exact: true });
@@ -927,7 +927,7 @@ test("选文按钮跟随阅读区域，不引用时间或跨消息内容，Escap
     await page.setViewportSize({ width, height: 960 });
     await page.emulateMedia({ colorScheme: width === 390 ? "dark" : "light" });
     await selectText(reply.locator("[data-quotable]"), "再选择工具");
-    const popup = page.getByRole("button", { name: "评论选中文字" });
+    const popup = page.getByRole("button", { name: "加入对话" });
     await expect(popup).toBeVisible();
     const bounds = (await popup.boundingBox())!;
     expect(bounds.x).toBeGreaterThanOrEqual(0);
@@ -970,7 +970,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
     reply.locator("[data-quotable]"),
     "先理解问题，再选择工具。",
   );
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("第一处：历史消息");
   await page.keyboard.press("Escape");
   const projectId = spaces.deskId;
@@ -992,7 +992,7 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
   const documentText = page.locator(".document-body");
   await expect(documentText).toBeVisible();
   await selectText(documentText, "文档中的第二处意见。");
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.getByLabel("引用 2 的评论（可选）").fill("第二处：文档");
   await page.keyboard.press("Escape");
   const drafts = page.getByRole("group", { name: "选文与评论" });
@@ -1106,7 +1106,7 @@ test("编辑中正文选文可评论、回跳，发送不保存或覆盖原文",
   const selected = await field.evaluate((node: HTMLTextAreaElement) =>
     node.value.slice(node.selectionStart, node.selectionEnd),
   );
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   const draftSource = page
     .getByRole("group", { name: "选文与评论" })
     .getByRole("button", { name: "查看引用 1 的原文", exact: true });
@@ -1147,7 +1147,7 @@ test("切换命名对话不带入另一 Session 的评论草稿", async ({ page 
     reply.locator("[data-quotable]"),
     "先理解问题，再选择工具。",
   );
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill("TEST 原 Session 评论");
   await page.keyboard.press("Escape");
   const title = "TEST 独立引用 " + Date.now();
@@ -1175,7 +1175,7 @@ test("消息回执丢失时，原评论使用同一命令重试且不重复提�
   const comment = "TEST 回执丢失";
   const body = "TEST 回执丢失时原消息正文";
   await selectText(reply.locator("[data-quotable]"), selected);
-  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByRole("button", { name: "加入对话" }).click();
   await page.getByLabel("引用 1 的评论（可选）").fill(comment);
   await page.keyboard.press("Escape");
   const input = page.getByLabel("AI 输入内容");

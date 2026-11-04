@@ -316,6 +316,10 @@ pub struct Request {
     pub io_version: String,
     pub client_message_id: String,
     pub message: Message,
+    /// An optional native discussion route. This groups presentation and
+    /// independent parallel turns; it never grants source or Context access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discussion: Option<crate::discussion::DiscussionInput>,
     /// Client-owned presentation data persisted with the accepted input, but
     /// never projected into the model's typed message or execution authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -513,7 +517,7 @@ impl Registry {
     pub fn capabilities(&self) -> Value {
         json!({"experimental":false,"enabled":true,"io_versions":["1"],
             "stream_versions":["1"],"encodings":["json","utf8","resource"],"resources":true,"generic_json":self.allow_generic,
-            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":true,"client_metadata":true,
+            "resource_inputs":["staged_attachment","event_attachment"],"typed_paging":true,"directed_input":true,"client_metadata":true,"discussions":true,
             "activation_modes":["evaluate"],"schema_keywords":schema::KEYWORDS,"schema_numeric_constants":"int64-or-uint64-only","limits":self.limits,
             "formats":self.definitions.values().map(|definition| json!({"definition":definition,"schema_hash":definition.schema.as_ref().map(hash),"contract_hash":definition.contract.as_ref().map(hash)})).collect::<Vec<_>>()})
     }
@@ -604,6 +608,19 @@ impl Registry {
         })
     }
     pub fn bind(&self, request: Request, principal: &str) -> IoResult<AcceptedInput> {
+        if let Some(discussion) = request.discussion.as_ref() {
+            discussion
+                .validate(&request.client_message_id)
+                .map_err(|message| IoError::new("invalid_content_syntax", message))?;
+            if request.activation.dispatch_mode
+                != Some(crate::memory::MessageDispatchMode::Parallel)
+            {
+                return Err(IoError::new(
+                    "invalid_content_syntax",
+                    "Discussion inputs require explicit parallel dispatch",
+                ));
+            }
+        }
         if request.io_version != "1" {
             return Err(IoError::new(
                 "unsupported_io_version",

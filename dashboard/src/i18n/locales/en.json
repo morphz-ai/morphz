@@ -1,4 +1,22 @@
 {
+  "discussion": {
+    "expand": "Open message",
+    "readMore": "Read more",
+
+    "title": "Discuss",
+    "new": "New discussion",
+    "close": "Close discussion",
+    "directory": "Discussions on this source",
+    "olderDiscussions": "Earlier discussions",
+    "older": "Earlier messages",
+    "loading": "Loading discussion…",
+    "retry": "Retry",
+    "input": "Discussion message",
+    "followup": "Continue the discussion…",
+    "placeholder": "Ask about this passage…",
+    "publish": "Also show in conversation",
+    "send": "Send discussion message"
+  },
   "userInput": {
     "legacy": "This older record did not save the question. Reply using the original task context; your answer stays with that work.",
     "resuming": "Resuming the original Thread",

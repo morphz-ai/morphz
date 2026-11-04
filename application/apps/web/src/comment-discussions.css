@@ -1,0 +1,223 @@
+.app .comment-discussion {
+  position: fixed;
+  z-index: 112;
+  display: flex;
+  flex-direction: column;
+  width: 360px;
+  max-height: min(560px, 75vh);
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--popup-solid, var(--paper));
+  color: var(--ink);
+  box-shadow: var(--elevation-popover);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-app-region: no-drag;
+}
+.app .comment-discussion button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 5px;
+  gap: 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  font: inherit;
+}
+.app .comment-discussion button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+.comment-discussion-header {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 8px 3px;
+}
+.app .comment-discussion .discussion-heading {
+  color: var(--ink);
+  font-weight: 600;
+}
+.discussion-header-spacer {
+  flex: 1;
+}
+.app .comment-discussion .discussion-source {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex-shrink: 0;
+  margin: 2px 12px 8px;
+  padding: 3px 0;
+  min-height: 0;
+  text-align: left;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.discussion-messages {
+  overflow: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+  padding: 0 14px;
+}
+.discussion-message {
+  min-width: 0;
+  margin: 0 0 14px;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.discussion-message.input {
+  margin-left: 24px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--soft);
+}
+.discussion-message p {
+  margin: 0 0 8px;
+}
+.discussion-message p:last-child {
+  margin-bottom: 0;
+}
+.discussion-message.input p {
+  white-space: pre-wrap;
+}
+.discussion-message ul,
+.discussion-message ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+.discussion-message small,
+.discussion-read-state {
+  color: var(--muted);
+  font-size: 12px;
+}
+.discussion-read-state {
+  padding: 6px 0;
+}
+.discussion-compose {
+  margin: 0 8px 8px;
+  padding: 5px 7px 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper);
+  flex-shrink: 0;
+}
+.discussion-compose:focus-within {
+  border-color: var(--accent);
+}
+.app .discussion-compose textarea {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  max-height: 160px;
+  margin: 0;
+  padding: 3px 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  caret-color: var(--accent-strong);
+}
+.discussion-compose textarea::placeholder {
+  color: var(--muted);
+}
+.discussion-compose-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+}
+.discussion-compose-footer label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.discussion-compose-footer input {
+  margin: 0;
+  accent-color: var(--accent-strong);
+  width: 12px;
+  height: 12px;
+}
+.app .comment-discussion .discussion-send {
+  margin-left: auto;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  border-radius: 8px;
+}
+.app .comment-discussion .discussion-send:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.discussion-send:disabled {
+  opacity: 0.4;
+}
+.discussion-error {
+  margin: 0 12px 8px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.discussion-directory {
+  display: flex;
+  flex-direction: column;
+  max-height: 160px;
+  overflow: auto;
+  padding: 3px 8px 8px;
+}
+.app .discussion-directory button {
+  justify-content: flex-start;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.app .discussion-directory button[aria-current="true"] {
+  background: var(--soft);
+  color: var(--accent-strong);
+}
+.app .comment-discussion button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.app .text-quote-select button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 7px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+  font-size: 13px;
+}
+.app .text-quote-select button:hover {
+  background: var(--hover);
+}
+.app .text-quote-select[role="toolbar"] {
+  gap: 2px;
+  padding: 3px;
+}

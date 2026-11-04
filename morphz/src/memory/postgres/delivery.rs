@@ -361,7 +361,7 @@ async fn interrupt_dialogue_turn_in_tx(
         r#"WITH predecessor AS (
              SELECT request.event_id
              FROM session_message_requests request
-             WHERE request.session_id = $1 AND request.event_id != $2
+             WHERE request.discussion_id IS NULL AND request.session_id = $1 AND request.event_id != $2
              ORDER BY request.created_at DESC, request.event_id DESC
              LIMIT 1
            )
@@ -425,7 +425,7 @@ async fn interrupt_dialogue_turn_in_tx(
             r#"WITH predecessor AS (
                  SELECT request.event_id
                  FROM session_message_requests request
-                 WHERE request.session_id = $1 AND request.event_id != $2
+                 WHERE request.discussion_id IS NULL AND request.session_id = $1 AND request.event_id != $2
                  ORDER BY request.created_at DESC, request.event_id DESC
                  LIMIT 1
                )
@@ -1008,7 +1008,7 @@ async fn claim_ordered_message_fast_path(
                     thread.generation AS thread_generation
              FROM request_insert accepted
              JOIN session_message_requests request
-               ON request.session_id = $1 AND request.event_id != $3
+               ON request.discussion_id IS NULL AND request.session_id = $1 AND request.event_id != $3
              JOIN thread_signals signal ON signal.event_id = request.event_id
              JOIN threads thread
                ON thread.id = signal.thread_id
@@ -1713,6 +1713,7 @@ impl DeliveryIngressStore for PostgresStore {
             })
             .unwrap_or_default();
         if dispatch_mode == MessageDispatchMode::Parallel
+            && !event.payload.contains_key("discussion")
             && !event.payload.contains_key("input_destination")
             && !has_references
             && crate::event::is_input_event(event)
@@ -1732,6 +1733,7 @@ impl DeliveryIngressStore for PostgresStore {
         }
         let mut connection = self.acquire_observed("claim_message").await?;
         if !has_references
+            && !event.payload.contains_key("discussion")
             && !event.payload.contains_key("input_destination")
             && crate::event::is_input_event(event)
             && event.topic == "chat/user_message"
@@ -1868,6 +1870,7 @@ impl DeliveryIngressStore for PostgresStore {
         }
 
         if !has_references
+            && !event.payload.contains_key("discussion")
             && session.get::<String, _>("attention_state") != "retired"
             && !event.payload.contains_key("input_destination")
             && crate::event::is_input_event(event)
@@ -2168,7 +2171,7 @@ impl DeliveryIngressStore for PostgresStore {
                    FROM session_message_requests request
                    JOIN thread_signals signal ON signal.event_id = request.event_id
                    JOIN threads thread ON thread.id = signal.thread_id
-                   WHERE request.session_id = $1
+                   WHERE request.discussion_id IS NULL AND request.session_id = $1
                      AND thread.session_id = request.session_id
                      AND thread.kind IN ('dialogue_turn', 'execution')
                      AND request.event_id != $2
