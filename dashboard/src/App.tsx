@@ -11,6 +11,7 @@ import { objectiveIsTerminal } from '../../sdk/typescript/src/runtime-state'
 import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
 import { SessionIoMessage } from './components/SessionIoMessage'
+import { MessageMarkdown as MarkdownBody } from './components/MessageMarkdown'
 import { inspectIoMessage } from './app/sessionIo'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
@@ -817,19 +818,6 @@ const SExpressionReader = memo(function SExpressionReader({
         <footer>{request.notice}</footer>
       </section>
     </div>
-  )
-})
-
-// Markdown rendering is the expensive part of a message row. Memoizing it by
-// text keeps every historical message from re-parsing on each stream delta.
-const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
-      components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}
-    >
-      {text}
-    </ReactMarkdown>
   )
 })
 

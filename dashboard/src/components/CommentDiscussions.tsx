@@ -1,9 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { ArrowUp, ChevronDown, MessageCircle, X } from 'lucide-react'
+import { ChevronDown, MessageCircle, Send, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import remarkBreaks from 'remark-breaks'
+import { MessageMarkdown } from './MessageMarkdown'
 import type { CommentDiscussionController } from '../../../application/packages/core/src/comment-discussion-controller'
 import type { DashboardDiscussionSource } from './useCommentDiscussions'
 import {discussionRange,type DiscussionMarks} from '../../../application/packages/core/src/discussion-marks-dom'
@@ -21,9 +19,14 @@ export function CommentDiscussionPanel({controller,point,readOnly}:{controller:C
   const {t}=useTranslation()
   useSyncExternalStore(controller.subscribe,controller.snapshot,controller.snapshot)
   const view=controller.active,panel=useRef<HTMLElement>(null)
+  const messages=useRef<HTMLDivElement>(null),following=useRef(true)
   const [directoryFor,setDirectoryFor]=useState<string|null>(null)
   const directory=!!view&&directoryFor===view.id
   const opened=!!view
+  const latest=view?.messages.at(-1)
+  useLayoutEffect(()=>{following.current=true},[view?.id])
+  useLayoutEffect(()=>{const node=messages.current;if(node&&following.current)node.scrollTop=node.scrollHeight},[view?.id,latest?.id,latest?.text])
+  useLayoutEffect(()=>{const field=panel.current?.querySelector('textarea');if(field){field.style.height='auto';field.style.height=`${Math.min(140,field.scrollHeight)}px`}},[view?.id,view?.draft])
   useEffect(()=>{if(!opened)return;const outside=(event:PointerEvent)=>{if(event.target instanceof Node&&!panel.current?.contains(event.target)){setDirectoryFor(null);controller.close()}};document.addEventListener('pointerdown',outside,true);return()=>document.removeEventListener('pointerdown',outside,true)},[controller,opened])
   useLayoutEffect(()=>{
     const element=panel.current;if(!view||!element)return
@@ -44,14 +47,17 @@ export function CommentDiscussionPanel({controller,point,readOnly}:{controller:C
       <button type="button" title={t('discussion.close')} aria-label={t('discussion.close')} onClick={()=>{setDirectoryFor(null);controller.close()}}><X size={15}/></button></header>
     {directory&&<nav aria-label={t('discussion.directory')}><button type="button" onClick={()=>{setDirectoryFor(null);controller.open(view.quote,true)}}>{t('discussion.new')}</button>{[...known].map(([id,text])=><button type="button" key={id} aria-current={view.id===id?'true':undefined} onClick={()=>{setDirectoryFor(null);void controller.select(id)}}>{text}</button>)}{view.directoryCursor&&<button type="button" disabled={view.directoryLoading} onClick={()=>controller.olderDiscussions()}>{t('discussion.olderDiscussions')}</button>}</nav>}
     <blockquote className="discussion-source" title={view.quote.text}>{view.quote.text}</blockquote>
-    <div className="discussion-messages" aria-live="polite">
+    <div ref={messages} className="discussion-messages message-list" aria-live="polite" onScroll={event=>{const node=event.currentTarget;following.current=node.scrollHeight-node.scrollTop-node.clientHeight<32}}>
       {view.nextCursor&&<button type="button" disabled={view.loading} onClick={()=>void controller.older()}>{t('discussion.older')}</button>}
-      {view.messages.map(message=><article key={message.id} className={`discussion-message ${message.kind}`}>{message.kind==='input'?<p>{message.text}</p>:<ReactMarkdown remarkPlugins={[remarkGfm,remarkBreaks]} components={{a:({href,children})=><a href={href} target="_blank" rel="noopener noreferrer">{children}</a>}}>{message.text}</ReactMarkdown>}{message.contentOmitted&&<button type="button" disabled={view.loading} onClick={()=>void controller.openMessage(message.id)}>{t(message.text?'discussion.readMore':'discussion.expand')}</button>}</article>)}
+      {view.messages.map(message=><article key={message.id} className={`discussion-message message-row ${message.kind==='input'?'user':message.kind==='error'?'system':'agent'} ${message.streaming?'streaming':''}`}><div className="message-body"><MessageMarkdown text={message.text}/>{message.streaming&&<span className="stream-caret" aria-hidden="true"/>}</div>{message.contentOmitted&&<button className="discussion-action" type="button" disabled={view.loading} onClick={()=>void controller.openMessage(message.id)}>{t(message.text?'discussion.readMore':'discussion.expand')}</button>}</article>)}
       {view.loading&&<small role="status">{t('discussion.loading')}</small>}
     </div>
     {view.error&&<div className="discussion-error" role="alert">{view.error}<button type="button" onClick={()=>view.pending?void controller.send():controller.retryRead()}>{t('discussion.retry')}</button></div>}
-    <form onSubmit={event=>{event.preventDefault();void controller.send()}}><textarea key={view.id} autoFocus rows={2} maxLength={10000} aria-label={t('discussion.input')} placeholder={t(view.submitted?'discussion.followup':'discussion.placeholder')} disabled={readOnly||!!view.pending} value={view.draft} onChange={event=>controller.draft(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void controller.send()}}}/>
-      <div className="discussion-compose-footer">{!view.submitted&&<label><input type="checkbox" checked={view.publish} disabled={!!view.pending||readOnly} onChange={event=>controller.publish(event.target.checked)}/>{t('discussion.publish')}</label>}<button type="submit" className="discussion-send" disabled={view.sending||!!view.pending||!view.sourceReady||!view.draft.trim()||readOnly} aria-label={t('discussion.send')} title={t('discussion.send')}><ArrowUp size={16}/></button></div>
-    </form>
+    <div className="discussion-compose">
+      {!view.submitted&&<label className="discussion-publish"><input type="checkbox" checked={view.publish} disabled={!!view.pending||readOnly} onChange={event=>controller.publish(event.target.checked)}/>{t('discussion.publish')}</label>}
+      <form className="composer" onSubmit={event=>{event.preventDefault();void controller.send()}}><span className="composer-prompt" aria-hidden="true">›</span><textarea key={view.id} autoFocus rows={1} maxLength={10000} aria-label={t('discussion.input')} placeholder={t(view.submitted?'discussion.followup':'discussion.placeholder')} disabled={readOnly||!!view.pending} value={view.draft} onChange={event=>controller.draft(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();void controller.send()}}}/>
+        <button type="submit" className="send-button discussion-send" disabled={view.sending||!!view.pending||!view.sourceReady||!view.draft.trim()||readOnly} aria-label={t('discussion.send')} title={t('discussion.send')}><Send size={15}/></button>
+      </form>
+    </div>
   </section>
 }

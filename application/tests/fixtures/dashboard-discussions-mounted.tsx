@@ -5,6 +5,8 @@ import {
   CommentDiscussionMarks,
 } from "../../../dashboard/src/components/CommentDiscussions";
 import { useCommentDiscussions } from "../../../dashboard/src/components/useCommentDiscussions";
+import { MessageMarkdown } from "../../../dashboard/src/components/MessageMarkdown";
+import { Send } from "lucide-react";
 import i18n from "../../../dashboard/src/i18n";
 void i18n.changeLanguage("zh");
 const theme = new URLSearchParams(location.search).get("theme") ?? "light";
@@ -277,24 +279,18 @@ function Fixture() {
         <h1 style={{ fontSize: 22, margin: "12px 0 28px" }}>
           让讨论留在内容旁
         </h1>
-        <article data-event-id="source-a">
-          <p
-            className="message-body"
-            id="source-a"
-            style={{ fontSize: 16, lineHeight: 1.9 }}
-          >
-            {source("a").text}
-          </p>
-        </article>
-        <article data-event-id="source-b">
-          <p
-            className="message-body"
-            id="source-b"
-            style={{ fontSize: 16, lineHeight: 1.9 }}
-          >
-            {source("b").text}
-          </p>
-        </article>
+        <section className="message-list">
+          <article className="message-row agent" data-event-id="source-a">
+            <div className="message-body" id="source-a">
+              <MessageMarkdown text={source("a").text} />
+            </div>
+          </article>
+          <article className="message-row user" data-event-id="source-b">
+            <div className="message-body" id="source-b">
+              <MessageMarkdown text={source("b").text} />
+            </div>
+          </article>
+        </section>
         <div
           data-text-popover-blocker="true"
           style={{
@@ -307,12 +303,25 @@ function Fixture() {
           }}
         >
           <span id="main-model">test-main-model · max</span>
-          <textarea
-            id="main-draft"
-            aria-label="主对话草稿"
-            defaultValue="TEST：这段主聊天草稿必须保留。"
-            style={{ display: "block", width: "100%", marginTop: 12 }}
-          />
+          <div className="composer">
+            <span className="composer-prompt" aria-hidden="true">
+              ›
+            </span>
+            <textarea
+              id="main-draft"
+              aria-label="主对话草稿"
+              rows={1}
+              defaultValue="TEST：这段主聊天草稿必须保留。"
+            />
+            <button
+              className="send-button"
+              type="button"
+              aria-label="发送主对话"
+              disabled
+            >
+              <Send size={15} />
+            </button>
+          </div>
         </div>
       </div>
       <CommentDiscussionMarks owner={discussions.marks} />

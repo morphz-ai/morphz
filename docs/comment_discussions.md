@@ -113,6 +113,10 @@ small reply input. One active reading panel can switch between independently
 running discussions. Narrow layouts keep the panel inside the content viewport.
 No modal, nested decorative cards, duplicate source paragraphs, or new global
 navigation. Running and failed states reflect native facts and preserve drafts.
+Dashboard discussions use the main conversation's shared Markdown renderer,
+message row/bubble recipes and composer/send states. Local discussion styles
+only size and contain the anchored pane; they do not introduce a second chat
+typography or message palette.
 
 Selection actions, quote editors and discussion panels share Floating UI
 placement against the actual selected-text rectangle. The visible content

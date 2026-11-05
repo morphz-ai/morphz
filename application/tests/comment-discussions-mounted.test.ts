@@ -204,6 +204,60 @@ test(
               "healthy deltas do not read history",
             );
           }
+          if (lane === "dashboard") {
+            const sharedStyles = await page.evaluate(() => {
+              const reference = document.querySelector("#source-b")!,
+                message = document.querySelector(
+                  ".dashboard-discussion .message-row.user .message-body",
+                )!,
+                referenceField = document.querySelector("#main-draft")!,
+                field = document.querySelector(
+                  ".dashboard-discussion textarea",
+                )!;
+              return {
+                reference: [
+                  getComputedStyle(reference).fontFamily,
+                  getComputedStyle(reference).fontSize,
+                  getComputedStyle(reference).lineHeight,
+                  getComputedStyle(reference).backgroundColor,
+                  getComputedStyle(reference).borderRadius,
+                  getComputedStyle(reference).padding,
+                ],
+                message: [
+                  getComputedStyle(message).fontFamily,
+                  getComputedStyle(message).fontSize,
+                  getComputedStyle(message).lineHeight,
+                  getComputedStyle(message).backgroundColor,
+                  getComputedStyle(message).borderRadius,
+                  getComputedStyle(message).padding,
+                ],
+                referenceField: [
+                  getComputedStyle(referenceField).fontFamily,
+                  getComputedStyle(referenceField).fontSize,
+                  getComputedStyle(referenceField).lineHeight,
+                  getComputedStyle(referenceField).color,
+                  getComputedStyle(referenceField).backgroundColor,
+                ],
+                field: [
+                  getComputedStyle(field).fontFamily,
+                  getComputedStyle(field).fontSize,
+                  getComputedStyle(field).lineHeight,
+                  getComputedStyle(field).color,
+                  getComputedStyle(field).backgroundColor,
+                ],
+              };
+            });
+            assert.deepEqual(
+              sharedStyles.message,
+              sharedStyles.reference,
+              "discussion messages share the main chat recipe",
+            );
+            assert.deepEqual(
+              sharedStyles.field,
+              sharedStyles.referenceField,
+              "discussion input shares the main composer recipe",
+            );
+          }
           await expect(page.locator(".discussion-source-mark")).toHaveCount(1);
           const markerHit = await page
             .locator(".discussion-source-mark")
@@ -566,7 +620,8 @@ test(
                           2 *
                             Number.parseFloat(
                               getComputedStyle(
-                                body.querySelector(".discussion-message")!,
+                                body.querySelector(".message-body") ??
+                                  body.querySelector(".discussion-message")!,
                               ).lineHeight,
                             );
                       return {
