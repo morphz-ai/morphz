@@ -8,6 +8,8 @@ import {
 import { TextQuoteProvider } from "../../apps/web/src/TextQuotes.js";
 import { quoteSource } from "../../apps/web/src/text-quote-dom.js";
 import { SafeMarkdown } from "../../apps/web/src/SafeMarkdown.js";
+import { ResponseWaiting } from "../../apps/web/src/ResponseWaiting.js";
+import type { DiscussionResponse } from "../../packages/core/src/comment-discussion-activity.js";
 import { applicationCall } from "../../apps/web/src/application-transport.js";
 import {
   commandSchema,
@@ -28,29 +30,37 @@ const saveEntries = () =>
     JSON.stringify([...entries]),
   );
 const prefixes = new Map<string, string>();
-const emitPrefix = (id: string) => {
+const responses = new Map<string, DiscussionResponse>();
+const activity = (id: string) => ({
+  id,
+  responses: responses.has(id) ? [responses.get(id)!] : [],
+});
+const emit = (id: string, connected = true) => {
   for (const [subscription, scope] of subscriptions)
     if (scope.discussionId === id)
       for (const listener of listeners)
         listener({
           id: subscription,
           value: {
-            connected: true,
-            messages: [
-              {
-                id: `stream:${id}`,
-                rootId: id,
-                inputId: id,
-                projectId: "test-project",
-                conversationId: "test-chat",
-                artifactId: null,
-                kind: "reply",
-                commentDiscussion: { id },
-                text: prefixes.get(id) ?? "",
-                streaming: true,
-                createdAt: "2026-11-04T08:00:00Z",
-              },
-            ],
+            connected,
+            discussionActivity: activity(id),
+            messages: prefixes.has(id)
+              ? [
+                  {
+                    id: `stream:${id}`,
+                    rootId: id,
+                    inputId: id,
+                    projectId: "test-project",
+                    conversationId: "test-chat",
+                    artifactId: null,
+                    kind: "reply",
+                    commentDiscussion: { id },
+                    text: prefixes.get(id) ?? "",
+                    streaming: true,
+                    createdAt: new Date().toISOString(),
+                  },
+                ]
+              : [],
           },
         });
 };
@@ -146,6 +156,16 @@ const bridge = {
           createdAt: new Date().toISOString(),
         });
       entries.set(id, entry);
+      const input = entry.messages.find(
+        (message: any) => message.id === command.commandId,
+      );
+      responses.set(id, {
+        inputId: input.id,
+        rootId: input.rootId,
+        createdAt: input.createdAt,
+        phase: "model",
+      });
+      emit(id);
       saveEntries();
       return response({
         commandId: command.commandId,
@@ -161,10 +181,7 @@ const bridge = {
   async subscribe(id: string, scope: any) {
     subscriptions.set(id, scope);
     queueMicrotask(() => {
-      for (const listener of listeners)
-        listener({ id, value: { connected: true, messages: [] } });
-      if (scope.discussionId && prefixes.has(scope.discussionId))
-        emitPrefix(scope.discussionId);
+      if (scope.discussionId) emit(scope.discussionId);
     });
   },
   unsubscribe(id: string) {
@@ -215,10 +232,16 @@ function Fixture() {
       },
       prefix(id: string, delta: string) {
         prefixes.set(id, (prefixes.get(id) ?? "") + delta);
-        emitPrefix(id);
+        emit(id);
+      },
+      phase(id: string, phase: DiscussionResponse["phase"]) {
+        responses.get(id)!.phase = phase;
+        emit(id);
       },
       finish(id: string) {
         prefixes.delete(id);
+        if (responses.has(id)) responses.get(id)!.phase = "settled";
+        emit(id);
         const entry = entries.get(id);
         entry.messages.push({
           id: `publication:${id}`,
@@ -315,6 +338,15 @@ function Fixture() {
           >
             不同段落的讨论可以同时推进，互不打断。
           </p>
+          <div id="main-waiting">
+            <ResponseWaiting
+              inputId="main-fixture"
+              createdAt={new Date().toISOString()}
+              label="等待模型输出…"
+              connected
+              showElapsed={false}
+            />
+          </div>
           <div
             data-text-popover-blocker="true"
             style={{

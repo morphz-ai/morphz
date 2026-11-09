@@ -1473,7 +1473,7 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .message-row.agent.objective-tinted { padding-left: 12px; border-left: 2px solid var(--objective-color); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: linear-gradient(90deg, color-mix(in srgb, var(--objective-color) 7%, transparent), transparent 68%); }
 .message-row.objective-tinted .reasoning-summary { border-left-color: var(--objective-color); background: linear-gradient(90deg, color-mix(in srgb, var(--objective-color) 12%, transparent), transparent 78%); }
 .message-row.objective-tinted .reasoning-summary summary svg { color: var(--objective-color); }
-.message-row.objective-tinted .stream-caret, .message-row.objective-tinted .stream-typing b { background: var(--objective-color); }
+.message-row.objective-tinted .stream-typing b { background: var(--objective-color); }
 .message-row.objective-tinted .stream-status:not(.is-failed) { color: color-mix(in srgb, var(--objective-color) 68%, var(--muted)); }
 .message-row.user.objective-tinted .message-body { border-color: color-mix(in srgb, var(--objective-color) 40%, var(--line)); box-shadow: inset 2px 0 0 var(--objective-color); }
 .message-row.user.awaiting-model-read .message-body { border-color: color-mix(in srgb, var(--yellow) 36%, var(--line)); background: linear-gradient(105deg, color-mix(in srgb, var(--yellow-soft) 50%, var(--surface-elevated)), var(--surface-elevated)); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--yellow) 72%, transparent); }
@@ -1546,7 +1546,8 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .reasoning-summary-body table { display: block; width: 100%; max-width: 100%; overflow-x: auto; }
 .reasoning-summary-body a, .reasoning-summary-body :not(pre) > code { overflow-wrap: anywhere; word-break: break-word; }
 .reasoning-summary-body img { max-width: 100%; }
-.stream-caret { display: inline-block; width: 2px; height: 1.05em; margin-left: 3px; vertical-align: -.16em; border-radius: 1px; background: var(--accent); animation: stream-caret 1s steps(1, end) infinite; }
+.stream-caret, .message-body > :is(p, h1, h2, h3, h4, h5, h6):has(+ .stream-caret)::after { content: ""; display: inline-block; width: 2px; height: 1.05em; margin-left: 3px; vertical-align: -.16em; border-radius: 1px; background: var(--message-tint, var(--accent)); animation: stream-caret 1s steps(1, end) infinite; }
+.message-body > :is(p, h1, h2, h3, h4, h5, h6) + .stream-caret { display: none; }
 .stream-control-line { display: flex; min-width: 0; align-items: center; justify-content: flex-start; gap: 8px; margin-bottom: 7px; }
 .stream-control-line .message-causal-identifiers { min-width: 0; margin: 0; }
 .stream-control-line .turn-stop-button { flex: 0 0 auto; padding: 3px 6px; font: 600 8px/1 var(--mono); white-space: nowrap; }
@@ -1615,6 +1616,10 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .stream-typing b { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: waiting-dot 1.15s ease-in-out infinite; }
 .stream-typing b:nth-child(2) { animation-delay: .14s; }
 .stream-typing b:nth-child(3) { animation-delay: .28s; }
+.stream-status[data-static=true] .stream-typing b { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .stream-typing b, .stream-caret, .message-body > :is(p, h1, h2, h3, h4, h5, h6):has(+ .stream-caret)::after { animation: none; }
+}
 
 .empty-state { display: flex; min-height: 380px; align-items: center; justify-content: center; flex-direction: column; gap: var(--space-md); color: var(--muted); text-align: center; }
 .empty-state .empty-icon { display: flex; width: 64px; height: 64px; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); box-shadow: 0 0 24px var(--accent-glow); }

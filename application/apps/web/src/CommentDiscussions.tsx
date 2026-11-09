@@ -1,5 +1,6 @@
 import { useConversationStream } from "./useConversationStream.js";
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -15,8 +16,11 @@ import {
 } from "../../../packages/core/src/discussion-marks-dom.js";
 import {
   CommentDiscussionController,
+  discussionResponseRows,
   type DiscussionCommand,
 } from "../../../packages/core/src/comment-discussion-controller.js";
+import { ResponseWaiting } from "./ResponseWaiting.js";
+import { modelActivityLabels } from "./conversation-presentation.js";
 import {
   commentDiscussionSchema,
   commentDiscussionPageSchema,
@@ -57,6 +61,21 @@ import {
 import { observeTextQuoteLayout } from "./text-quote-layout.js";
 import "./comment-discussions.css";
 import { positionTextPopover } from "../../../packages/core/src/text-popover-layout.js";
+
+const responseLabels = {
+  sending: "正在发送…",
+  waiting: "等待回复…",
+  queued: modelActivityLabels.queued,
+  model: modelActivityLabels.streaming,
+  reasoning: modelActivityLabels.reasoning,
+  final_output: modelActivityLabels.waiting_final_output,
+  generating: modelActivityLabels.streaming_text,
+  tool_call: modelActivityLabels.generating_tool_call,
+  tool: "正在执行工具…",
+  settling: modelActivityLabels.settling,
+  provider_wait: "模型服务不可用，等待恢复",
+  settled: "",
+};
 
 export function useCommentDiscussions(options: {
   projectId: string;
@@ -316,10 +335,29 @@ export function useCommentDiscussions(options: {
     return () => controller.dispose();
   }, [controller]);
   useEffect(() => {
+    if (current?.submitted)
+      controller.observeResponse(
+        current.id,
+        stream.connected,
+        stream.discussionActivity,
+      );
+  }, [
+    controller,
+    current?.id,
+    current?.submitted,
+    stream.connected,
+    stream.discussionActivity,
+  ]);
+  useEffect(() => {
     const grouped = new Map<string, typeof stream.messages>();
     for (const message of stream.messages) {
       const id = message.commentDiscussion?.id;
-      if (!id || message.kind === "tool" || message.kind === "evaluation")
+      if (
+        !id ||
+        !message.text ||
+        message.kind === "tool" ||
+        message.kind === "evaluation"
+      )
         continue;
       const list = grouped.get(id) ?? [];
       list.push(message);
@@ -447,7 +485,8 @@ export function CommentDiscussionPanel({
   );
   const view = controller.active;
   const panel = useRef<HTMLElement>(null),
-    thread = useRef<HTMLDivElement>(null);
+    thread = useRef<HTMLDivElement>(null),
+    following = useRef(true);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   useLayoutEffect(() => {
     if (!view || !panel.current) return;
@@ -462,12 +501,24 @@ export function CommentDiscussionPanel({
     });
   }, [view?.id, point]);
   const lastMessage = view?.messages.at(-1);
+  const responses = view && discussionResponseRows(view);
+  const streamingRoots = new Set(
+    view?.messages
+      .filter((message) => message.streaming && message.text.trim())
+      .map((message) => message.rootId),
+  );
+  const settled = new Set(
+    view?.responseActivity?.responses
+      .filter((response) => response.phase === "settled")
+      .map((response) => response.rootId),
+  );
+  useLayoutEffect(() => {
+    following.current = true;
+  }, [view?.id]);
   useLayoutEffect(() => {
     const node = thread.current;
-    if (!node) return;
-    if (node.scrollHeight - node.scrollTop - node.clientHeight < 100)
-      node.scrollTop = node.scrollHeight;
-  }, [view?.id, lastMessage?.id, lastMessage?.text]);
+    if (node && following.current) node.scrollTop = node.scrollHeight;
+  }, [view?.id, lastMessage?.id, lastMessage?.text, responses?.size]);
   useEffect(() => {
     setDirectoryOpen(false);
   }, [view?.id]);
@@ -586,6 +637,11 @@ export function CommentDiscussionPanel({
         ref={thread}
         aria-live="polite"
         aria-relevant="additions text"
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          following.current =
+            node.scrollHeight - node.scrollTop - node.clientHeight < 32;
+        }}
       >
         {view.nextCursor && (
           <button
@@ -597,30 +653,61 @@ export function CommentDiscussionPanel({
             查看更早消息
           </button>
         )}
-        {view.messages.map((message) => (
-          <article
-            key={message.id}
-            className={`discussion-message ${message.kind}`}
-          >
-            {message.kind === "input" ? (
-              <p>{message.text}</p>
-            ) : (
-              renderMarkdown(message.text, message.streaming === true)
-            )}
-            {message.contentOmitted && (
-              <button
-                type="button"
-                disabled={view.loading}
-                onClick={() => void controller.openMessage(message.id)}
+        {view.messages.map((message) => {
+          const response =
+            message.kind === "input" ? responses?.get(message.id) : undefined;
+          const streaming =
+            view.responseConnected !== false &&
+            message.streaming === true &&
+            !settled.has(message.rootId);
+          const connected =
+            view.responseConnected !== false ||
+            response?.phase === "sending" ||
+            !view.responseActivity;
+          return (
+            <Fragment key={message.id}>
+              <article
+                className={`discussion-message ${message.kind}`}
+                data-stream-active={streaming || undefined}
               >
-                {message.text ? "继续读取" : "展开消息"}
-              </button>
-            )}
-            {message.truncated && (
-              <small>内容较长，完整内容可在执行记录中打开。</small>
-            )}
-          </article>
-        ))}
+                {message.kind === "input" ? (
+                  <p>{message.text}</p>
+                ) : (
+                  <div className="discussion-reply-content">
+                    {renderMarkdown(message.text, streaming)}
+                  </div>
+                )}
+                {message.contentOmitted && (
+                  <button
+                    type="button"
+                    disabled={view.loading}
+                    onClick={() => void controller.openMessage(message.id)}
+                  >
+                    {message.text ? "继续读取" : "展开消息"}
+                  </button>
+                )}
+                {message.truncated && (
+                  <small>内容较长，完整内容可在执行记录中打开。</small>
+                )}
+              </article>
+              {response &&
+                (!connected || !streamingRoots.has(response.rootId)) && (
+                  <ResponseWaiting
+                    inputId={response.inputId}
+                    createdAt={response.createdAt}
+                    label={
+                      connected
+                        ? responseLabels[response.phase]
+                        : "连接中断，等待恢复"
+                    }
+                    connected={connected}
+                    animated={connected && response.phase !== "provider_wait"}
+                    showElapsed={response.phase !== "provider_wait"}
+                  />
+                )}
+            </Fragment>
+          );
+        })}
         {view.loading && (
           <div className="discussion-read-state" role="status">
             正在读取讨论…
@@ -675,11 +762,6 @@ export function CommentDiscussionPanel({
               />
               同时显示在对话中
             </label>
-          )}
-          {view.submitted && (
-            <span className="discussion-submit-state">
-              {view.sending ? "发送中…" : ""}
-            </span>
           )}
           <button
             type="submit"

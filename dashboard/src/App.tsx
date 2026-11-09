@@ -1,4 +1,5 @@
 import { CommentDiscussionPanel, CommentDiscussionMarks } from './components/CommentDiscussions'
+import { StreamStatus } from './components/StreamStatus'
 import { useCommentDiscussions } from './components/useCommentDiscussions'
 import {observeTextPopover,positionTextPopover} from '../../application/packages/core/src/text-popover-layout'
 import { sessionReadPlan } from './app/sessionReadPlan'
@@ -9034,24 +9035,19 @@ export default function App() {
                       </div>
                     )}
                     {attempt.error && !attempt.text.trim() && <div className="message-body stream-error">{attempt.error}</div>}
-                    <div className={`stream-status ${attempt.status === 'failed' ? 'is-failed' : ''}`}>
-                      {attempt.status !== 'failed' && <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>}
-                      <span>{attempt.status === 'failed'
+                    <StreamStatus failed={attempt.status === 'failed'} label={attempt.status === 'failed'
                         ? t('conversation.streamFailed')
                         : attempt.runtimeState === 'waiting_final_output'
                           ? t('conversation.reasoningCompleted')
                           : attempt.runtimeState === 'queued'
                             ? t('conversation.waitingForModel')
-                            : t('conversation.streaming')}</span>
-                    </div>
+                            : t('conversation.streaming')} />
                   </article>
                   )
                 })}
                 {turnPending && dialogueStreamingAttempts.length === 0 && (
                   <article className="message-row agent streaming" role="status" aria-live="polite">
-                    <div className="stream-status">
-                      <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>
-                      <span>{turnStatus}</span>
+                    <StreamStatus label={turnStatus}>
                       {pendingDialogueThread && (
                         <button
                           className="turn-stop-button"
@@ -9066,7 +9062,7 @@ export default function App() {
                             : t('conversation.stopCurrentResponse')}
                         </button>
                       )}
-                    </div>
+                    </StreamStatus>
                   </article>
                 )}
                 <div ref={conversationEnd} />
@@ -9242,16 +9238,13 @@ export default function App() {
                             </div>
                           )}
                           {attempt.error && !attempt.text.trim() && <div className="message-body stream-error">{attempt.error}</div>}
-                          <div className={`stream-status ${attempt.status === 'failed' ? 'is-failed' : ''}`}>
-                            {attempt.status !== 'failed' && <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>}
-                            <span>{attempt.status === 'failed'
+                          <StreamStatus failed={attempt.status === 'failed'} label={attempt.status === 'failed'
                               ? t('conversation.streamFailed')
                               : attempt.runtimeState === 'waiting_final_output'
                                 ? t('conversation.reasoningCompleted')
                                 : attempt.runtimeState === 'queued'
                                   ? t('conversation.waitingForModel')
-                                  : t('conversation.streaming')}</span>
-                          </div>
+                                  : t('conversation.streaming')} />
                         </article>
                         )
                       })}

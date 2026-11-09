@@ -1936,6 +1936,10 @@ export class RuntimeBridge {
           changed({
             connected: value.connected,
             messages: [...deduplicated.values()].sort(historyOrder),
+            ...(scope.discussionId &&
+            value.discussionActivity?.id === scope.discussionId
+              ? { discussionActivity: value.discussionActivity }
+              : {}),
           });
         })
         .catch(() => feed?.close());

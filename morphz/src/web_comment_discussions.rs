@@ -65,6 +65,15 @@ impl ReadScope {
             None => {}
         }
     }
+    pub(super) fn activity(&self, runtime: &MorphzRuntime) -> Option<serde_json::Value> {
+        let Some(crate::discussion::TimelineScope::Discussion { id }) = &self.selected else {
+            return None;
+        };
+        Some(json!({
+            "id": id,
+            "responses": runtime.session_io_discussion_activity(&self.session, id, self.principal.as_deref()),
+        }))
+    }
     pub async fn root(
         &mut self,
         runtime: &MorphzRuntime,

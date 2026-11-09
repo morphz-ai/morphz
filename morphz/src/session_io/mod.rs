@@ -1,6 +1,7 @@
 //! Stable Session IO v1 contracts. Transport data, execution authority and
 //! presentation preferences have separate, immutable boundaries.
 pub mod data;
+pub(crate) mod discussion_activity;
 pub mod evaluation;
 pub mod fence;
 pub(crate) mod file_lock;

@@ -6,6 +6,8 @@ import {
 } from "../../../dashboard/src/components/CommentDiscussions";
 import { useCommentDiscussions } from "../../../dashboard/src/components/useCommentDiscussions";
 import { MessageMarkdown } from "../../../dashboard/src/components/MessageMarkdown";
+import { StreamStatus } from "../../../dashboard/src/components/StreamStatus";
+import type { DiscussionResponse } from "../../packages/core/src/comment-discussion-activity.js";
 import { Send } from "lucide-react";
 import i18n from "../../../dashboard/src/i18n";
 void i18n.changeLanguage("zh");
@@ -16,6 +18,28 @@ const ioConnections = new Map<
   AbortSignal,
   { id: string; controller: ReadableStreamDefaultController<Uint8Array> }
 >();
+const responses = new Map<string, DiscussionResponse>();
+const activity = (id: string) => ({
+  id,
+  responses: responses.has(id) ? [responses.get(id)!] : [],
+});
+const writeActivity = (
+  id: string,
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  opened = false,
+) => {
+  const frame = {
+    type: opened ? "stream.opened" : "discussion.activity",
+    discussionActivity: activity(id),
+  };
+  controller.enqueue(
+    new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`),
+  );
+};
+const emitActivity = (id: string) => {
+  for (const connection of ioConnections.values())
+    if (connection.id === id) writeActivity(id, connection.controller);
+};
 const prefixes = new Map<
   string,
   { text: string; sequence: number; timestamp: string }
@@ -139,9 +163,7 @@ const api = {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         ioConnections.set(options.signal, { id, controller });
-        controller.enqueue(
-          new TextEncoder().encode('data: {"type":"stream.opened"}\n\n'),
-        );
+        writeActivity(id, controller, true);
         writePrefix(id, controller, true, "");
         options.signal.addEventListener(
           "abort",
@@ -176,6 +198,16 @@ const api = {
         createdAt: new Date().toISOString(),
       });
     entries.set(id, e);
+    const input = e.messages.find(
+      (message: any) => message.id === body.client_message_id,
+    );
+    responses.set(id, {
+      inputId: input.id,
+      rootId: id,
+      createdAt: input.createdAt,
+      phase: "model",
+    });
+    emitActivity(id);
     saveEntries();
     return { status: "accepted", event_id: body.client_message_id };
   },
@@ -228,8 +260,16 @@ function Fixture() {
       },
       open: (name: string) =>
         discussions.open(source(name), { x: 520, y: 160 }),
+      phase: (id: string, phase: DiscussionResponse["phase"]) => {
+        responses.get(id)!.phase = phase;
+        emitActivity(id);
+      },
       prefix: (id: string, delta: string) => {
         const previous = prefixes.get(id);
+        if (!previous && responses.has(id)) {
+          responses.get(id)!.phase = "generating";
+          emitActivity(id);
+        }
         prefixes.set(id, {
           text: (previous?.text ?? "") + delta,
           sequence: (previous?.sequence ?? 0) + 1,
@@ -241,6 +281,8 @@ function Fixture() {
       },
       finish: (id: string) => {
         prefixes.delete(id);
+        if (responses.has(id)) responses.get(id)!.phase = "settled";
+        emitActivity(id);
         const e = entries.get(id);
         e.messages.push({
           id: `publication:${id}`,
@@ -291,6 +333,9 @@ function Fixture() {
             </div>
           </article>
         </section>
+        <div id="main-waiting">
+          <StreamStatus label="等待模型求值" />
+        </div>
         <div
           data-text-popover-blocker="true"
           style={{

@@ -1,4 +1,5 @@
 import { commentDiscussionReferenceSchema } from "./comment-discussions.js";
+import { parseDiscussionActivity } from "./comment-discussion-activity.js";
 import { z } from "zod";
 import {
   runtimeMessageFailureSchema,
@@ -67,6 +68,7 @@ export const conversationStreamSchema = z.object({
   connected: z.boolean(),
   messages: z.array(liveMessageSchema),
   contextUsages: z.array(sessionContextUsageSchema).optional(),
+  discussionActivity: z.unknown().transform(parseDiscussionActivity).optional(),
 });
 export type ConversationStream = z.infer<typeof conversationStreamSchema>;
 export const conversationFrameSchema = conversationStreamSchema.extend({

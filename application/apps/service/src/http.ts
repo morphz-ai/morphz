@@ -1564,7 +1564,8 @@ export function createAppServer(
           let closed = false,
             dispose: (() => void) | undefined;
           let previous = new Map<string, string>(),
-            connection: boolean | undefined;
+            connection: boolean | undefined,
+            discussionActivity: ConversationStream["discussionActivity"];
           const close = () => {
             if (closed) return;
             closed = true;
@@ -1598,6 +1599,7 @@ export function createAppServer(
               removed = [...previous.keys()].filter((id) => !next.has(id));
             if (
               connection === value.connected &&
+              discussionActivity === value.discussionActivity &&
               !messages.length &&
               !removed.length
             )
@@ -1607,10 +1609,11 @@ export function createAppServer(
               return;
             }
             res.write(
-              `data: ${JSON.stringify({ connected: value.connected, reset: connection === undefined, removed, messages })}\n\n`,
+              `data: ${JSON.stringify({ connected: value.connected, reset: connection === undefined, removed, messages, discussionActivity: value.discussionActivity })}\n\n`,
             );
             previous = next;
             connection = value.connected;
+            discussionActivity = value.discussionActivity;
           };
           try {
             dispose = await business.observePlatformConversation(

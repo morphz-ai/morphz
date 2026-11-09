@@ -1454,28 +1454,28 @@ body:has(dialog[open]) .cognitive-application-frame {
 .message-tool[data-tool-status="error"] {
   color: light-dark(#a72a32, #f8a9ad);
 }
-.conversation-message[data-stream-active="true"]
-  .reply-content
+[data-stream-active="true"]
+  :is(.reply-content, .discussion-reply-content)
   > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
-.conversation-message[data-stream-active="true"]
-  .reply-content
+[data-stream-active="true"]
+  :is(.reply-content, .discussion-reply-content)
   > :is(ul, ol):last-child
   > li:last-child::after,
-.conversation-message[data-stream-active="true"]
-  .reply-content
+[data-stream-active="true"]
+  :is(.reply-content, .discussion-reply-content)
   > blockquote:last-child
   > p:last-child::after,
-.conversation-message[data-stream-active="true"]
-  .reply-content
+[data-stream-active="true"]
+  :is(.reply-content, .discussion-reply-content)
   > pre:last-child
   > code::after,
-.conversation-message[data-stream-active="true"]
-  .reply-content
+[data-stream-active="true"]
+  :is(.reply-content, .discussion-reply-content)
   > .markdown-code-block:last-child
   > pre
   > code::after,
-.conversation-message[data-stream-active="true"]
-  .reply-content
+[data-stream-active="true"]
+  :is(.reply-content, .discussion-reply-content)
   > .markdown-table-scroll:last-child::after {
   content: "";
   display: inline-block;
@@ -1541,7 +1541,9 @@ body:has(dialog[open]) .cognitive-application-frame {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .conversation-message[data-stream-active="true"] .reply-content ::after,
+  [data-stream-active="true"]
+    :is(.reply-content, .discussion-reply-content)
+    ::after,
   .execution-live-calls [data-stream-active="true"] .tool-name::after {
     animation: none !important;
     opacity: 0.65;

@@ -465,7 +465,11 @@ pub(super) async fn stream(
     let (sender, receiver) =
         tokio::sync::mpsc::channel::<Result<SseEvent, std::convert::Infallible>>(64);
     tokio::spawn(async move {
-        let opened = json!({"type":"stream.opened","subscription":preferences,"cursor":cursor(&session, after)});
+        let mut activity = read_scope.activity(&state.runtime);
+        let mut opened = json!({"type":"stream.opened","subscription":preferences,"cursor":cursor(&session, after)});
+        if let Some(activity) = &activity {
+            opened["discussionActivity"] = activity.clone();
+        }
         if sender
             .send(Ok(SseEvent::default()
                 .event("stream.opened")
@@ -513,6 +517,31 @@ pub(super) async fn stream(
             } else {
                 false
             };
+            if relevant
+                && activity.is_some()
+                && incoming.as_ref().is_some_and(|event| {
+                    event.payload.get("session_io_discussion_activity_changed")
+                        == Some(&json!(true))
+                })
+            {
+                let next = read_scope.activity(&state.runtime);
+                if next != activity {
+                    if read_scope.authorized(&state).await.is_err() {
+                        return;
+                    }
+                    let frame = json!({"type":"discussion.activity","discussionActivity":next});
+                    if sender
+                        .send(Ok(SseEvent::default()
+                            .event("discussion.activity")
+                            .data(frame.to_string())))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    activity = next;
+                }
+            }
             let snapshot_needed = first || incoming.is_none();
             let durable = first
                 || incoming.as_ref().is_some_and(|event| {

@@ -3,6 +3,7 @@ import test from "node:test";
 import { setImmediate } from "node:timers/promises";
 import {
   CommentDiscussionController,
+  discussionResponseRows,
   type DiscussionCommand,
   type DiscussionTransport,
 } from "../packages/core/src/comment-discussion-controller.js";
@@ -63,6 +64,10 @@ test("opening is immediate, idle is silent, close retires reads and keeps the su
   const sending = controller.send();
   assert.equal(controller.active?.messages[0]?.text, "Question A");
   assert.equal(controller.active?.messages[0]?.id, id);
+  assert.equal(
+    discussionResponseRows(controller.active!).get(id)?.phase,
+    "sending",
+  );
   controller.close();
   receipt.resolve();
   await sending;
@@ -80,6 +85,22 @@ test("opening is immediate, idle is silent, close retires reads and keeps the su
     "Question A",
     "an older empty page must not erase the optimistic input",
   );
+  assert.equal(
+    discussionResponseRows(controller.active!).get(id)?.phase,
+    "waiting",
+  );
+  controller.observeResponse(id, true, {
+    id,
+    responses: [
+      {
+        inputId: id,
+        rootId: "native-root",
+        createdAt: new Date().toISOString(),
+        phase: "settled",
+      },
+    ],
+  });
+  assert.equal(discussionResponseRows(controller.active!).size, 0);
   const count = calls.length;
   await setImmediate();
   await setImmediate();

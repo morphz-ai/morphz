@@ -1641,6 +1641,11 @@
     }
   },
   "turnStatus": {
+    "preparingTool": "Preparing a tool call",
+    "executingTool": "Running a tool",
+    "settling": "Processing the response",
+    "providerWait": "Waiting for the model service",
+    "reconnecting": "Waiting to reconnect",
     "toolCalls_one": "Executing {{count}} tool call",
     "toolCalls_other": "Executing {{count}} tool calls",
     "executingTools": "Executing {{tools}}",

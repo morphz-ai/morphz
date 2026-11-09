@@ -1645,6 +1645,11 @@
     }
   },
   "turnStatus": {
+    "preparingTool": "正在准备工具调用",
+    "executingTool": "正在执行工具",
+    "settling": "正在处理响应",
+    "providerWait": "模型服务不可用，等待恢复",
+    "reconnecting": "连接中断，等待恢复",
     "toolCalls": "正在执行 {{count}} 个工具调用",
     "toolCalls_one": "正在执行 {{count}} 个工具调用",
     "toolCalls_other": "正在执行 {{count}} 个工具调用",

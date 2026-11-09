@@ -381,7 +381,31 @@ async fn discussion_http_history_live_stream_and_reconnect_keep_bodies_in_their_
         .send()
         .await
         .unwrap();
-    until(&mut stream, "stream.opened").await;
+    let opened = until(&mut stream, "stream.opened").await;
+    assert!(opened.contains("\"inputId\":\"discussion-a\""));
+    assert!(opened.contains("\"phase\":\"model\""));
+    assert!(!opened.contains(&b.id));
+    runtime
+        .publish(morphz::event::Event::new(
+            "fixture-reasoning-before-text".into(),
+            "TEST".into(),
+            "runtime_control".into(),
+            "runtime/model_attempt_state".into(),
+            serde_json::from_value(json!({
+                "context_id":runtime.identity().context_id,
+                "session_id":session.id(),
+                "root_turn_id":a.id,
+                "state":"reasoning",
+                "terminal":false,
+                "detail":"PRIVATE_DIAGNOSTIC_SENTINEL",
+            }))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let thinking = until(&mut stream, "\"phase\":\"reasoning\"").await;
+    assert!(!thinking.contains("PRIVATE_DIAGNOSTIC_SENTINEL"));
+    assert!(!thinking.contains(&b.id));
     let draft = |root: &str, attempt: &str, kind: &str, text: &str| {
         morphz::event::Event::new(format!("fixture-{attempt}-{kind}"),"TEST".into(),"agent_call".into(),"runtime/model_stream".into(),serde_json::from_value(json!({"context_id":runtime.identity().context_id,"session_id":session.id(),"root_turn_id":root,"model_attempt_id":attempt,"stream":{"kind":kind,"text":text}})).unwrap())
     };
@@ -411,6 +435,7 @@ async fn discussion_http_history_live_stream_and_reconnect_keep_bodies_in_their_
         .unwrap();
     let snapshot = until(&mut resumed, "DISCUSSION_A_ONLY").await;
     assert!(snapshot.contains("\"snapshot\":true"));
+    assert!(snapshot.contains("\"phase\":\"reasoning\""));
     assert!(!snapshot.contains("DISCUSSION_B_ONLY"));
     let mut main_stream = client
         .get(format!("{base}/io/stream?scope=main"))
@@ -422,9 +447,12 @@ async fn discussion_http_history_live_stream_and_reconnect_keep_bodies_in_their_
     assert!(
         !main_snapshot.contains("DISCUSSION_A_ONLY")
             && !main_snapshot.contains("DISCUSSION_B_ONLY")
+            && !main_snapshot.contains("discussionActivity")
     );
-    drop(resumed);
     drop(main_stream);
     model.release.add_permits(2);
+    let settled = until(&mut resumed, "\"phase\":\"settled\"").await;
+    assert!(!settled.contains(&b.id));
+    drop(resumed);
     handle.abort();
 }

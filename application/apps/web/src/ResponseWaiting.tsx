@@ -53,7 +53,11 @@ export function ResponseWaiting({
         </span>
       </span>
       {elapsed && (
-        <span className="response-elapsed" title="自这条消息发送起的耗时">
+        <span
+          className="response-elapsed"
+          aria-live="off"
+          title="自这条消息发送起的耗时"
+        >
           {elapsed}
         </span>
       )}

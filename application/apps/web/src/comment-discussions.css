@@ -163,6 +163,9 @@
 .discussion-message.input p {
   white-space: pre-wrap;
 }
+.discussion-message.input:has(+ .response-placeholder) {
+  margin-bottom: var(--ui-space-1, 4px);
+}
 .discussion-message ul,
 .discussion-message ol {
   padding-left: 20px;

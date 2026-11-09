@@ -195,6 +195,7 @@ mod tests {
 }
 #[derive(Default)]
 struct State {
+    discussion_activity: super::discussion_activity::DiscussionActivity,
     drafts: BTreeMap<String, Value>,
     order: VecDeque<String>,
     closed: VecDeque<(String, Option<u64>)>,
@@ -205,6 +206,11 @@ impl Streams {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.discussion_activity.observe(event) {
+            event
+                .payload
+                .insert("session_io_discussion_activity_changed".into(), json!(true));
+        }
         let Some(root) = event
             .payload
             .get("root_turn_id")
@@ -341,6 +347,18 @@ impl Streams {
     }
     pub fn snapshots(&self, session: &str) -> Vec<Value> {
         self.snapshots_for_roots(session, None)
+    }
+    pub(crate) fn discussion_activity(
+        &self,
+        session: &str,
+        discussion: &str,
+        principal: Option<&str>,
+    ) -> Vec<super::discussion_activity::ResponseActivity> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .discussion_activity
+            .snapshot(session, discussion, principal)
     }
     pub fn snapshot_roots(&self, session: &str) -> Vec<String> {
         let state = self

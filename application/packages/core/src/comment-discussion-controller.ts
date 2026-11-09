@@ -2,6 +2,10 @@ import type {
   CommentDiscussionMessage,
   CommentDiscussionPage,
 } from "./comment-discussion-types.js";
+import type {
+  DiscussionActivity,
+  DiscussionResponse,
+} from "./comment-discussion-activity.js";
 import {
   canonicalDiscussionSource,
   discussionCommandId,
@@ -76,6 +80,9 @@ export type DiscussionView<Q> = {
   messages: CommentDiscussionMessage[];
   pending?: DiscussionCommand<Q>;
   sending: boolean;
+  awaitingResponse?: string;
+  responseActivity?: DiscussionActivity;
+  responseConnected?: boolean;
   loading: boolean;
   error: string;
   readError?: string;
@@ -126,6 +133,10 @@ export class CommentDiscussionController<Q> {
     for (const listener of this.listeners) listener();
   }
   private own(id: string) {
+    if (this.active && this.activeId !== id) {
+      this.active.responseConnected = undefined;
+      this.active.responseActivity = undefined;
+    }
     this.readOwner?.abort();
     this.readOwner = new AbortController();
     this.activeId = id;
@@ -368,9 +379,59 @@ export class CommentDiscussionController<Q> {
     view.acceptedIds.add(command.commandId);
     view.submitted = true;
     view.pending = undefined;
+    this.awaitResponse(view, command.commandId);
     view.error = "";
     if (view.draft.trim() === command.body) view.draft = "";
     this.saveDraft(view);
+  }
+  private awaitResponse(view: DiscussionView<Q>, inputId: string) {
+    if (
+      view.responseActivity?.responses.some(
+        (response) => response.inputId === inputId,
+      )
+    )
+      return;
+    if (!view.responseConnected || view.responseActivity)
+      view.awaitingResponse = inputId;
+  }
+  observeResponse(
+    id: string,
+    connected: boolean,
+    activity?: DiscussionActivity,
+  ) {
+    const view = this.active;
+    if (view?.id !== id || (activity && activity.id !== id)) return;
+    const recovering = connected && !view.responseConnected;
+    const previous = view.responseActivity;
+    const same =
+      previous === activity ||
+      (previous &&
+        activity &&
+        previous.responses.length === activity.responses.length &&
+        activity.responses.every((response, index) => {
+          const old = previous.responses[index]!;
+          return (
+            old.inputId === response.inputId &&
+            old.rootId === response.rootId &&
+            old.createdAt === response.createdAt &&
+            old.phase === response.phase
+          );
+        }));
+    if (
+      view.responseConnected === connected &&
+      (same || (!connected && !activity))
+    )
+      return;
+    view.responseConnected = connected;
+    if (activity || connected) view.responseActivity = activity;
+    if (
+      recovering ||
+      activity?.responses.some(
+        (response) => response.inputId === view.awaitingResponse,
+      )
+    )
+      view.awaitingResponse = undefined;
+    this.changed();
   }
   receive(id: string, messages: CommentDiscussionMessage[]) {
     const view = this.views.get(id);
@@ -540,13 +601,16 @@ export class CommentDiscussionController<Q> {
       await this.transport.send(command);
       view.submitted = true;
       view.pending = undefined;
+      this.awaitResponse(view, command.commandId);
       if (view.draft.trim() === command.body) view.draft = "";
       this.saveDraft(view);
       // The native receipt is the command result; a history read is separate.
       this.invalidate(view.id);
     } catch (error) {
-      if (!view.acceptedIds.has(command.commandId))
+      if (!view.acceptedIds.has(command.commandId)) {
+        view.awaitingResponse = undefined;
         view.error = `${error instanceof Error ? error.message : String(error)}。保留了这条消息，重试会使用同一个请求。`;
+      }
     } finally {
       view.sending = false;
       this.changed();
@@ -577,6 +641,10 @@ export class CommentDiscussionController<Q> {
     }
   }
   close() {
+    if (this.active) {
+      this.active.responseConnected = undefined;
+      this.active.responseActivity = undefined;
+    }
     this.readOwner?.abort();
     this.activeId = null;
     this.changed();
@@ -589,4 +657,46 @@ export class CommentDiscussionController<Q> {
     this.readOwner?.abort();
     this.listeners.clear();
   }
+}
+
+/** Render feedback on its input without inserting synthetic rows into history. */
+export function discussionResponseRows<Q>(view: DiscussionView<Q>) {
+  type Row = Omit<DiscussionResponse, "phase"> & {
+    phase: DiscussionResponse["phase"] | "sending";
+  };
+  const completed = new Set(
+    view.messages
+      .filter(
+        (message) =>
+          message.kind === "reply" &&
+          !message.streaming &&
+          !message.id.startsWith("stream:"),
+      )
+      .map((message) => message.rootId),
+  );
+  const rows = new Map<string, Row>();
+  for (const response of view.responseActivity?.responses ?? [])
+    if (response.phase !== "settled" && !completed.has(response.rootId))
+      rows.set(response.inputId, response);
+  const local = view.sending
+    ? (view.pending?.commandId ?? view.awaitingResponse)
+    : view.awaitingResponse;
+  if (
+    local &&
+    !view.responseActivity?.responses.some(
+      (response) => response.inputId === local,
+    )
+  ) {
+    const input = view.messages.find(
+      (message) => message.kind === "input" && message.id === local,
+    );
+    if (input && !completed.has(input.rootId))
+      rows.set(local, {
+        inputId: local,
+        rootId: input.rootId,
+        createdAt: input.createdAt,
+        phase: view.pending ? "sending" : "waiting",
+      });
+  }
+  return rows;
 }

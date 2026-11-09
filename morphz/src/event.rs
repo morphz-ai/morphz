@@ -385,6 +385,17 @@ impl InMemoryEventBus {
             .map(|streams| streams.snapshots(session))
             .unwrap_or_default()
     }
+    pub(crate) fn session_io_discussion_activity(
+        &self,
+        session: &str,
+        discussion: &str,
+        principal: Option<&str>,
+    ) -> Vec<crate::session_io::discussion_activity::ResponseActivity> {
+        self.session_io_streams
+            .as_ref()
+            .map(|streams| streams.discussion_activity(session, discussion, principal))
+            .unwrap_or_default()
+    }
     pub fn session_io_snapshot_roots(&self, session: &str) -> Vec<String> {
         self.session_io_streams
             .as_ref()

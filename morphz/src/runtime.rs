@@ -2232,6 +2232,16 @@ impl MorphzRuntime {
     pub fn session_io_snapshots(&self, session: &str) -> Vec<serde_json::Value> {
         self.inner.bus.session_io_snapshots(session)
     }
+    pub(crate) fn session_io_discussion_activity(
+        &self,
+        session: &str,
+        discussion: &str,
+        principal: Option<&str>,
+    ) -> Vec<crate::session_io::discussion_activity::ResponseActivity> {
+        self.inner
+            .bus
+            .session_io_discussion_activity(session, discussion, principal)
+    }
     pub fn session_io_snapshot_roots(&self, session: &str) -> Vec<String> {
         self.inner.bus.session_io_snapshot_roots(session)
     }

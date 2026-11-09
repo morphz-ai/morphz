@@ -1,4 +1,5 @@
 import { sessionIoFrames } from '../../../application/packages/core/src/session-io-sse'
+import { parseDiscussionActivity } from '../../../application/packages/core/src/comment-discussion-activity'
 import { useEffect, useLayoutEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { CommentDiscussionController } from '../../../application/packages/core/src/comment-discussion-controller'
 import { discussionTimelinePage, type DiscussionTimelineEntry } from '../../../application/packages/core/src/native-comment-discussions'
@@ -119,7 +120,7 @@ export function useCommentDiscussions(options:{api:DashboardApiClient;sessionId:
   useEffect(()=>marks.connection(options.connected!==false),[marks,options.connected])
   useEffect(()=>{for(const view of controller.views.values())if(view.submitted)marks.accepted({key:view.quote.key,quote:view.quote},{id:view.id,title:view.messages.find(m=>m.kind==='input')?.text??'讨论',preview:Array.from(view.quote.text).slice(0,160).join(''),text:view.quote.text,locator:view.quote.locator,created_at_micros:0,publish_to_session:view.publish})},[marks,controller,controller.version])
   useEffect(()=>{
-    if(!active?.submitted)return
+    if(!active?.submitted||options.visible===false)return
     const id=active.id
     let closed=false,socket:WebSocket|undefined,retry:ReturnType<typeof setTimeout>|undefined,ioRetry:ReturnType<typeof setTimeout>|undefined,io:AbortController|undefined
     let wsReady=false,ioReady=false,gapClosed=false,cursor:string|undefined
@@ -160,7 +161,12 @@ export function useCommentDiscussions(options:{api:DashboardApiClient;sessionId:
           if(closed||io!==owner)return
           const update=frame.data as Record<string,unknown>
           if(!update||typeof update!=='object')continue
-          if(update.type==='stream.opened'){ioReady=true;closeGap();continue}
+          if(update.type==='stream.opened'||update.type==='discussion.activity'){
+            const activity=parseDiscussionActivity(update.discussionActivity)
+            if(activity?.id===id||update.type==='stream.opened')controller.observeResponse(id,true,activity)
+            if(update.type==='stream.opened'){ioReady=true;closeGap()}
+            continue
+          }
           if(update.type==='stream.reset')throw new Error('Discussion prefix requires a complete snapshot')
           if(update.session_id!==sessionId)continue
           if(typeof update.output_id==='string'&&typeof update.root_turn_id==='string'&&typeof update.delta_seq==='number'&&typeof update.text==='string'&&update.model_output_visibility==='public'){
@@ -179,13 +185,13 @@ export function useCommentDiscussions(options:{api:DashboardApiClient;sessionId:
       }catch(error){
         if(!closed&&!owner.signal.aborted)controller.readFailed(id,error)
       }finally{
-        owner.abort();if(!closed&&io===owner){ioReady=false;gapClosed=false;ioRetry=setTimeout(()=>void connectIo(),2000)}
+        owner.abort();if(!closed&&io===owner){controller.observeResponse(id,false);ioReady=false;gapClosed=false;ioRetry=setTimeout(()=>void connectIo(),2000)}
       }
     }
     connect();void connectIo()
-    return()=>{closed=true;clearTimeout(retry);clearTimeout(ioRetry);socket?.close();io?.abort()}
+    return()=>{closed=true;clearTimeout(retry);clearTimeout(ioRetry);socket?.close();io?.abort();controller.observeResponse(id,false)}
 
-  },[controller,active?.id,active?.submitted,sessionId,principalId,api])
+  },[controller,active?.id,active?.submitted,sessionId,principalId,api,options.visible])
 
   return {controller,point,marks,
     open:(source:DashboardDiscussionSource,at:{x:number;y:number})=>{

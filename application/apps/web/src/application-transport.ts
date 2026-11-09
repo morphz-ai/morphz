@@ -253,10 +253,8 @@ export function subscribeConversation(
   const disconnectedPrefixes = new Map<string, LiveMessage>();
   const lost = () => {
     current = {
+      ...current,
       connected: false,
-      ...(current.contextUsages
-        ? { contextUsages: current.contextUsages }
-        : {}),
       messages: current.messages.map((m) =>
         m.streaming === undefined ? m : { ...m, streaming: false },
       ),
@@ -283,6 +281,9 @@ export function subscribeConversation(
     current = {
       connected: value.connected,
       messages: [...disconnectedPrefixes.values(), ...value.messages],
+      ...(value.discussionActivity
+        ? { discussionActivity: value.discussionActivity }
+        : {}),
       ...(value.contextUsages
         ? { contextUsages: value.contextUsages }
         : current.contextUsages
@@ -347,6 +348,9 @@ export function subscribeConversation(
         {
           connected: value.connected,
           messages: [...messages.values()],
+          ...(value.discussionActivity
+            ? { discussionActivity: value.discussionActivity }
+            : {}),
           ...(value.contextUsages
             ? { contextUsages: value.contextUsages }
             : current.contextUsages

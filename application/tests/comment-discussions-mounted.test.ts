@@ -160,6 +160,73 @@ test(
           const first = await page.evaluate(
             () => Reflect.get(window, "discussionFixture").report().active,
           );
+          const panel = page.getByRole("region", { name: "讨论", exact: true });
+          const dotsClass =
+            lane === "desktop" ? ".response-dots" : ".stream-typing";
+          const dots = panel.locator(dotsClass);
+          await expect(
+            panel.getByText(
+              lane === "desktop" ? "等待模型输出…" : "等待模型求值",
+              { exact: true },
+            ),
+          ).toBeVisible();
+          await expect(dots).toBeVisible();
+          const paint = (node: Element) => {
+            const dot = getComputedStyle(node.firstElementChild!);
+            const label = getComputedStyle(node.nextElementSibling!);
+            return [
+              dot.animationName,
+              dot.animationDuration,
+              dot.backgroundColor,
+              label.fontSize,
+              label.color,
+            ];
+          };
+          const motion = await dots.evaluate(paint);
+          assert.notEqual(motion[0], "none");
+          assert.deepEqual(
+            motion,
+            await page.locator(`#main-waiting ${dotsClass}`).evaluate(paint),
+          );
+          if (lane === "desktop")
+            await expect(panel.locator(".response-elapsed")).toBeVisible();
+          await page.emulateMedia({ reducedMotion: "reduce" });
+          await expect(dots.locator(":scope > *").first()).toHaveCSS(
+            "animation-name",
+            "none",
+          );
+          await page.emulateMedia({ reducedMotion: "no-preference" });
+          const beforePhase = await page.evaluate(
+            () =>
+              Reflect.get(window, "discussionFixture").report().requests.length,
+          );
+          await page.evaluate(
+            (id) =>
+              Reflect.get(window, "discussionFixture").phase(id, "reasoning"),
+            first,
+          );
+          await expect(
+            panel.getByText(lane === "desktop" ? "正在思考…" : "正在思考", {
+              exact: true,
+            }),
+          ).toBeVisible();
+          assert.equal(
+            await page.evaluate(
+              () =>
+                Reflect.get(window, "discussionFixture").report().requests
+                  .length,
+            ),
+            beforePhase,
+            "a phase transition never fetches history",
+          );
+          if (screenshots)
+            await page.screenshot({
+              path: resolve(
+                screenshots,
+                `${lane}-${theme}-${width}-waiting.png`,
+              ),
+              fullPage: true,
+            });
           {
             await expect
               .poll(() =>
@@ -194,6 +261,35 @@ test(
             await expect(
               page.getByText("TEST 完整前缀 + 增量", { exact: true }),
             ).toBeVisible();
+            if (lane === "desktop") {
+              await expect(dots).toHaveCount(0);
+              await expect(
+                panel
+                  .locator("[data-stream-active=true] .stream-text-reveal")
+                  .first(),
+              ).toBeVisible();
+            } else {
+              const stream = panel.locator(".stream-caret");
+              await expect(stream).toHaveCount(1);
+              assert.equal(
+                await stream.evaluate(
+                  (node) =>
+                    getComputedStyle(node.previousElementSibling!, "::after")
+                      .width,
+                ),
+                "2px",
+                "the shared caret sits at the end of the visible text line",
+              );
+              await expect(dots).toHaveCount(1);
+            }
+            if (screenshots)
+              await page.screenshot({
+                path: resolve(
+                  screenshots,
+                  `${lane}-${theme}-${width}-streaming.png`,
+                ),
+                fullPage: true,
+              });
             assert.equal(
               await page.evaluate(
                 () =>
@@ -397,6 +493,13 @@ test(
             () => Reflect.get(window, "discussionFixture").report().active,
           );
           assert.notEqual(first, second);
+          await expect(dots).toHaveCount(1);
+          await page.evaluate(
+            (id) =>
+              Reflect.get(window, "discussionFixture").phase(id, "settled"),
+            second,
+          );
+          await expect(dots).toHaveCount(0);
           await expect(page.locator(".discussion-source-mark")).toHaveCount(2);
           const markRects = await page
             .locator(".discussion-source-mark")

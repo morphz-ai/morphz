@@ -1,4 +1,8 @@
 import { sessionIoFrames } from "../../core/src/session-io-sse.js";
+import {
+  parseDiscussionActivity,
+  type DiscussionActivity,
+} from "../../core/src/comment-discussion-activity.js";
 import WebSocket from "ws";
 import { z } from "zod";
 import {
@@ -24,6 +28,7 @@ type Connection = {
   ioReady: boolean;
   projection: LiveConversationProjection;
   cursor: number;
+  discussionActivity?: DiscussionActivity;
   ready: boolean;
   retryAt: number;
   loading?: Promise<void>;
@@ -111,9 +116,11 @@ export class ConversationFeed {
         );
         const publishUsage = contextUsages.length > 0 || this.hadContextUsage;
         this.hadContextUsage = contextUsages.length > 0;
+        const discussionActivity = current[0]?.[1].discussionActivity;
         this.options.changed({
           connected: current.every(([, c]) => c.ready),
           ...(publishUsage ? { contextUsages } : {}),
+          ...(discussionActivity ? { discussionActivity } : {}),
           messages: this.options.messageLimit
             ? messages
                 .sort(
@@ -354,7 +361,23 @@ export class ConversationFeed {
       )) {
         await this.options.authorize();
         if (!this.active(id, c) || c.ioAbort !== controller) return;
-        if ((raw as { type?: unknown })?.type === "stream.opened") {
+        const frame = raw as {
+          type?: unknown;
+          discussionActivity?: unknown;
+        } | null;
+        const discussion = this.options.readScope?.discussion_id;
+        if (
+          discussion &&
+          (frame?.type === "stream.opened" ||
+            frame?.type === "discussion.activity")
+        ) {
+          const activity = parseDiscussionActivity(frame.discussionActivity);
+          if (activity?.id === discussion) c.discussionActivity = activity;
+          else if (frame.type === "stream.opened")
+            c.discussionActivity = undefined;
+          this.notify();
+        }
+        if (frame?.type === "stream.opened") {
           c.ioReady = true;
           c.ready = c.socket?.readyState === WebSocket.OPEN;
           this.notify();

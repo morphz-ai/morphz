@@ -3,6 +3,16 @@ import type { LiveMessage } from "../../../packages/core/src/live-conversation.j
 import { isRuntimeMessageDiagnostic } from "../../../packages/core/src/runtime-message-failure.js";
 export { messageSourceSummary } from "../../../packages/core/src/message-source.js";
 
+export const modelActivityLabels = {
+  queued: "模型请求排队中…",
+  streaming: "等待模型输出…",
+  reasoning: "正在思考…",
+  waiting_final_output: "思考完成，等待输出…",
+  streaming_text: "正在生成回复…",
+  generating_tool_call: "正在准备工具调用…",
+  settling: "正在处理响应…",
+};
+
 /** Only actual input-bound receipts may name a stage. Silence is not proof
  * of model reasoning, retrieval, tool execution, or percentage progress. */
 export function responseWaitingPresentation(
@@ -82,17 +92,7 @@ export function responseWaitingPresentation(
   )
     return recoveryPresentation();
   const modelPresentation = () =>
-    waiting(
-      {
-        queued: "模型请求排队中…",
-        streaming: "等待模型输出…",
-        reasoning: "正在思考…",
-        waiting_final_output: "思考完成，等待输出…",
-        streaming_text: "正在生成回复…",
-        generating_tool_call: "正在准备工具调用…",
-        settling: "正在处理响应…",
-      }[model!.modelActivity!],
-    );
+    waiting(modelActivityLabels[model!.modelActivity!]);
   if (model && latest === model) return modelPresentation();
   if (active?.tool?.status === "running") {
     const progress = activity?.available
