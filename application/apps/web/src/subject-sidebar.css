@@ -77,12 +77,16 @@
   height: 15px;
   padding: 0 3px;
   border-radius: 999px;
-  background: var(--accent-strong);
+  background: var(--approval-ink);
   color: var(--paper);
   font-size: 10px;
   line-height: 1;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
+}
+.subject-section > .inline-approval:focus-visible {
+  outline: 2px solid var(--approval-ink);
+  outline-offset: -2px;
 }
 .app .subject-tabs .profile-avatar,
 .app .subject-tabs .brand-mark {

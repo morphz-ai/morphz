@@ -100,11 +100,24 @@ test("real descendant approval overrides a generic parent wait without changing 
   };
   assert.deepEqual(
     executionActivityGroupStatus(parent, threads, true, attention),
-    { kind: "approval", label: "子任务等待你的批准" },
+    {
+      kind: "approval",
+      label: "子任务等待你的批准",
+      approvals: attention.approvals,
+    },
   );
   assert.deepEqual(
     executionActivityGroupStatus(child, threads, true, attention),
-    { kind: "approval", label: "等待你的批准" },
+    { kind: "approval", label: "等待你的批准", approvals: attention.approvals },
+  );
+  assert.equal(
+    executionActivityGroupStatus(
+      parent,
+      threads,
+      (owner) => owner !== child,
+      attention,
+    ).kind,
+    "waiting",
   );
   assert.equal(
     executionActivityGroupStatus(sibling, threads, true, attention).kind,
@@ -131,6 +144,60 @@ test("real descendant approval overrides a generic parent wait without changing 
     }).length,
     0,
   );
+  const asking = {
+    ...parent,
+    continuation: {
+      mode: "supplement" as const,
+      inputId: parent.inputId!,
+      threadId: parent.id,
+      generation: 4,
+    },
+    userInputRequest: {
+      request_id: "exact-parent-question",
+      thread_id: parent.id,
+      thread_generation: 4,
+      session_id: parent.sessionId,
+      context_id: parent.contextId!,
+      requested_at: stamp,
+      questions: [
+        {
+          id: "format",
+          question: "TEST：用哪种格式？",
+          options: [],
+          multi_select: false,
+        },
+      ],
+    },
+  };
+  const mixed = executionActivityGroupStatus(
+    asking,
+    [asking, child, sibling],
+    true,
+    attention,
+  );
+  assert.equal(mixed.label, "等你审批和回复");
+  assert.deepEqual(mixed.replies, [asking]);
+  assert.deepEqual(mixed.approvals, attention.approvals);
+  for (const invalid of [
+    { thread_id: sibling.id },
+    { session_id: "other-session" },
+    { context_id: "other-context" },
+    { thread_generation: 3 },
+    { reply_allowed: false },
+  ]) {
+    const stale = {
+      ...asking,
+      userInputRequest: { ...asking.userInputRequest, ...invalid },
+    };
+    const view = executionActivityGroupStatus(
+      stale,
+      [stale, child, sibling],
+      true,
+      attention,
+    );
+    assert.equal(view.label, "子任务等待你的批准");
+    assert.equal(view.replies, undefined);
+  }
 });
 function input(overrides: Partial<RecordedInput> = {}): RecordedInput {
   return {

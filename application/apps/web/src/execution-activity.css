@@ -28,12 +28,20 @@
   color: var(--muted);
 }
 .execution-activity-icon[data-status="running"],
-.execution-activity-icon[data-status="approval"] {
+.execution-activity-icon[data-status="input"] {
   background: color-mix(in srgb, var(--accent) 10%, var(--paper));
   color: var(--accent-strong);
 }
-.execution-activity-body > .execution-activity-summary[data-approval] {
+.execution-activity-icon[data-status="approval"] {
+  background: color-mix(in srgb, var(--approval-ink) 12%, var(--paper));
+  color: var(--approval-ink);
+}
+.execution-activity-body > .execution-activity-summary[data-status="input"] {
   color: var(--accent-strong);
+  font-weight: 500;
+}
+.execution-activity-body > .execution-activity-summary[data-status="approval"] {
+  color: var(--approval-ink);
   font-weight: 500;
 }
 .execution-activity-icon[data-status="ended"] {

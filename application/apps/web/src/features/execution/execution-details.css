@@ -57,8 +57,12 @@
   font-size: 12px;
   line-height: 1.5;
 }
-.execution-origin-status[data-status="running"] {
+.execution-origin-status:is([data-status="running"], [data-status="input"]) {
   color: var(--accent-strong);
+  font-weight: 550;
+}
+.execution-origin-status[data-status="approval"] {
+  color: var(--approval-ink);
   font-weight: 550;
 }
 .execution-origin-status[data-status="failed"] {

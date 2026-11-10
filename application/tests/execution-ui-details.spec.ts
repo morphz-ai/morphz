@@ -1406,7 +1406,7 @@ test("历史读取失败不抹掉当前执行，跨范围失败和真实断线�
   expect(f.writes).toEqual([]);
 });
 
-test("等待本人回复的开放执行仍可补充，点击只准备原目标草稿而不发送", async ({
+test("只有等待类别的开放执行仍可补充，点击只准备原目标草稿而不发送", async ({
   page,
 }) => {
   const f = await prepare(page);
@@ -1415,7 +1415,7 @@ test("等待本人回复的开放执行仍可补充，点击只准备原目标�
   await openExecutionPanel(page);
   await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
   await expect(f.panel.locator(".execution-origin-status")).toHaveText(
-    "等待你回复",
+    "等待用户回复",
   );
   const action = f.panel.getByRole("button", { name: "补充", exact: true });
   await expect(action).toBeEnabled();

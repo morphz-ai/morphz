@@ -85,18 +85,19 @@ const glyphs = [
   "CircleStop",
   "CircleX",
   "Clock3",
+  "MessageCircle",
   "Pause",
   "ShieldAlert",
 ];
 const expectedIcon = `
-import { CircleCheck, CircleHelp, CircleSlash, CircleX, Clock3, Pause, ShieldAlert } from "lucide-react";
+import { CircleCheck, CircleHelp, CircleSlash, CircleX, Clock3, MessageCircle, Pause, ShieldAlert } from "lucide-react";
 import type { ActivityStatus } from "./execution-activity.js";
 import { RunningActivityIcon } from "./RunningActivityIcon.js";
 export function ExecutionStatusIcon({kind, size}: Readonly<{
   kind: ActivityStatus["kind"] | undefined; size: 18 | 19;
 }>) {
   if (kind === "running") return <RunningActivityIcon />;
-  const Icon = { waiting: Clock3, approval: ShieldAlert, paused: Pause, ended: CircleCheck,
+  const Icon = { waiting: Clock3, input: MessageCircle, approval: ShieldAlert, paused: Pause, ended: CircleCheck,
     failed: CircleX, cancelled: CircleSlash, unknown: CircleHelp }[kind ?? "unknown"];
   return <Icon size={size} aria-hidden="true" />;
 }`;
@@ -261,6 +262,22 @@ const templates = parse({
     const needsInput = !!t.userInputRequest && t.lifecycle === "open" && t.controlState !== "paused" && client.online && executionActivityThreadAvailable(t, runtime);
     const threadNeedsInput = !!thread?.userInputRequest && thread.lifecycle === "open" && thread.controlState !== "paused" && client.online && !!currentThread && executionActivityThreadAvailable(thread, runtime);
     const summary = needsInput ? "等待你的输入" : executionActivitySummary(t, client.online && executionActivityThreadAvailable(t, runtime));`,
+  SidebarHandoff: `
+    const available = client.online && executionActivityThreadAvailable(t, runtime);
+    const reply = !status.approvals && status.replies?.length === 1 ? status.replies[0] : undefined;
+    const approval = !status.replies && status.approvals?.length === 1 ? status.approvals[0] : undefined;
+    const summary = status.kind === "approval" || status.kind === "input" || status.kind === "waiting" ? status.label : executionActivitySummary(t, available);
+    const threadNeedsInput = !!thread && (threadStatus?.replies?.includes(thread) ?? false);
+    <button aria-label={[t.title || "执行事项", status.label, summary === status.label ? "" : summary, origin, executionActivityClock(t), model].filter(Boolean).join(" · ")}
+      onClick={() => { if (reply && onReply) { onSelect(executionActivityScope(reply, state)); onReply(reply); } else if (approval && onApproval) onApproval(approval.approval.fingerprint); else onSelect(executionActivityScope(t, state)); }} />;
+    <span title={status.label} data-status={status.kind} />;
+    <UserInputPreview disabled={!executionActivityCanReply(t, available)} />;
+  `,
+  SidebarPriorHandoff: `
+    <button aria-label={[t.title || "执行事项", needsInput ? "等待你的输入" : status.label, needsInput ? "" : summary, origin, executionActivityClock(t), model].filter(Boolean).join(" · ")}
+      onClick={() => onSelect(executionActivityScope(t, state))} />;
+    <span title={needsInput ? "等待你的输入" : status.label} data-user-input={needsInput || undefined} data-approval={status.kind === "approval" || undefined} />;
+  `,
   // User-approved 5ddfb935/aae741c7 visibility-only motion. Exclude only these
   // exact calls AND their original local bindings from the old lifecycle
   // digest. Keep every historical digest unchanged; inspect the React owner
@@ -414,6 +431,104 @@ function imported(parsed: Parsed, path: string, name: string) {
   const symbol = parsed.symbols.get(matches[0]!);
   assert.notEqual(symbol, undefined);
   return symbol;
+}
+
+/** Restore the prior row only after checking the reviewed change to the
+ * existing hit target. Keep the glyph, lifecycle and control baselines. */
+function withoutReviewedHandoff(parsed: Parsed): string {
+  const handoff = templates.get("SidebarHandoff")!;
+  const prior = templates.get("SidebarPriorHandoff")!;
+  const declaration = (file: Parsed, name: string) => {
+    const matches = file.nodes
+      .filter(isVariableDeclaration)
+      .filter((node) => node.name.getText() === name);
+    assert.equal(matches.length, 1);
+    return matches[0]!;
+  };
+  const edits: { start: number; end: number; text: string }[] = [];
+  function restore(
+    node: Node | undefined,
+    expected: Node | undefined,
+    text: string,
+  ) {
+    assert.ok(node && expected);
+    assert.deepEqual(syntax(node), syntax(expected));
+    edits.push({ start: node.getStart(), end: node.getEnd(), text });
+  }
+  for (const name of ["available", "reply", "approval"]) {
+    const priorQuestion =
+      name === "available"
+        ? declaration(
+            templates.get("SidebarQuestionFacts")!,
+            "needsInput",
+          ).parent.parent.getText()
+        : "";
+    restore(
+      declaration(parsed, name).parent.parent,
+      declaration(handoff, name).parent.parent,
+      priorQuestion,
+    );
+  }
+  for (const [name, previous] of [
+    ["summary", "SidebarApprovalFacts"],
+    ["threadNeedsInput", "SidebarQuestionFacts"],
+  ] as const) {
+    restore(
+      declaration(parsed, name).initializer,
+      declaration(handoff, name).initializer,
+      declaration(templates.get(previous)!, name).initializer!.getText(),
+    );
+  }
+  const element = (className: string) => {
+    const match = parsed.nodes
+      .filter(isJsxElement)
+      .find(
+        (node) =>
+          attribute(
+            node.openingElement,
+            "className",
+          )?.initializer?.getText() === JSON.stringify(className),
+      );
+    assert.ok(match);
+    return match.openingElement;
+  };
+  const attr = (file: Parsed, name: string) =>
+    file.nodes
+      .filter(isJsxAttribute)
+      .find((node) => node.name.getText() === name);
+  for (const [className, name] of [
+    ["execution-activity-row", "aria-label"],
+    ["execution-activity-row", "onClick"],
+    ["execution-activity-icon", "title"],
+  ]) {
+    restore(
+      attribute(element(className!), name!),
+      attr(handoff, name!),
+      attr(prior, name!)!.getText(),
+    );
+  }
+  restore(
+    attribute(element("execution-activity-summary"), "data-status"),
+    attr(handoff, "data-status"),
+    ["data-user-input", "data-approval"]
+      .map((name) => attr(prior, name)!.getText())
+      .join(" "),
+  );
+  const preview = parsed.nodes
+    .filter(isJsxSelfClosingElement)
+    .find((node) => node.tagName.getText() === "UserInputPreview");
+  restore(
+    preview && attribute(preview, "disabled"),
+    attr(handoff, "disabled"),
+    attr(templates.get("SidebarQuestionRow")!, "disabled")!.getText(),
+  );
+  return edits
+    .sort((a, b) => b.start - a.start)
+    .reduce(
+      (source, edit) =>
+        source.slice(0, edit.start) + edit.text + source.slice(edit.end),
+      parsed.source.getText(),
+    );
 }
 
 /** The approved 6f8ba889 approval projection adds one exact attention argument,
@@ -686,6 +801,14 @@ function inspect(sources: Sources) {
       failures.push(name);
     }
   }
+  rule("Sidebar-exact-handoff-routing", () => {
+    parsed.set(
+      "Sidebar",
+      parse({ Sidebar: withoutReviewedHandoff(parsed.get("Sidebar")!) }).get(
+        "Sidebar",
+      )!,
+    );
+  });
   rule("Sidebar-exact-approved-attention-projection", () => {
     parsed.set(
       "Sidebar",
@@ -954,14 +1077,9 @@ test("new Thread controls retain exact source, revision owner, freshness and acc
     );
   }
 });
-test("approval projection preserves conditional attention and the exact label and marker", () => {
+test("approval projection preserves conditional attention and routes only a single exact request", () => {
   for (const [before, after] of [
     ["client.online ? runtime.attention : undefined", "runtime.attention"],
-    ['status.kind === "approval"', 'status.kind === "running"'],
-    [
-      'data-approval={status.kind === "approval" || undefined}',
-      "data-approval={true}",
-    ],
   ]) {
     assert.ok(source.Sidebar.includes(before!));
     assert.ok(
@@ -969,6 +1087,22 @@ test("approval projection preserves conditional attention and the exact label an
         ...source,
         Sidebar: source.Sidebar.replace(before!, after!),
       }).includes("Sidebar-exact-approved-attention-projection"),
+    );
+  }
+  for (const [before, after] of [
+    ['status.kind === "approval"', 'status.kind === "running"'],
+    ["onApproval(approval.approval.fingerprint)", 'onApproval("other")'],
+    [
+      "!status.replies && status.approvals?.length === 1",
+      "status.approvals?.length",
+    ],
+  ]) {
+    assert.ok(source.Sidebar.includes(before!));
+    assert.ok(
+      inspect({
+        ...source,
+        Sidebar: source.Sidebar.replace(before!, after!),
+      }).includes("Sidebar-exact-handoff-routing"),
     );
   }
 });
@@ -979,11 +1113,6 @@ test("question previews have exact independent owner, target, callback and fresh
     .find((node) => node.tagName.getText() === "UserInputPreview")!;
   assert.ok(preview);
   for (const [before, after] of [
-    ["!!t.userInputRequest &&", "true &&"],
-    ['t.lifecycle === "open" &&', "true &&"],
-    ['t.controlState !== "paused" &&', "true &&"],
-    ["!!thread?.userInputRequest &&", "true &&"],
-    ["data-user-input={needsInput || undefined}", "data-user-input={true}"],
     ['from "./UserInputPreview.js"', 'from "./UntrustedQuestion.js"'],
     [
       preview.getText(),
@@ -996,12 +1125,6 @@ test("question previews have exact independent owner, target, callback and fresh
         .replace("onReply={onReply}", "onReply={() => onReply?.(thread!)}"),
     ],
     [
-      preview.getText(),
-      preview
-        .getText()
-        .replace("!executionActivityThreadAvailable(t, runtime)", "false"),
-    ],
-    [
       'className="execution-activity-entry"',
       'className="execution-activity-entry" onClick={() => onClose()}',
     ],
@@ -1012,6 +1135,19 @@ test("question previews have exact independent owner, target, callback and fresh
         ...source,
         Sidebar: source.Sidebar.replace(before!, after!),
       }).includes("Sidebar-exact-independent-question-previews"),
+    );
+  }
+  for (const [before, after] of [
+    ["disabled={!executionActivityCanReply(t, available)}", "disabled={false}"],
+    ["onReply(reply)", "onReply(t)"],
+    ["threadStatus?.replies?.includes(thread)", "thread?.userInputRequest"],
+  ]) {
+    assert.ok(source.Sidebar.includes(before!));
+    assert.ok(
+      inspect({
+        ...source,
+        Sidebar: source.Sidebar.replace(before!, after!),
+      }).includes("Sidebar-exact-handoff-routing"),
     );
   }
 });

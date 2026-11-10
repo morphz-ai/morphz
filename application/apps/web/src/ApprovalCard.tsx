@@ -155,6 +155,8 @@ export function ApprovalCard({
       className="execution-approval inline-approval"
       aria-label="待审批操作"
       data-approval-id={approval.request.approval_id}
+      data-approval-fingerprint={onInspect ? approval.fingerprint : undefined}
+      tabIndex={onInspect ? -1 : undefined}
     >
       {(origin || onInspect) && (
         <div className="approval-source">

@@ -4314,7 +4314,7 @@ function WorkspaceApp({
                     ?.click(),
                 );
               }}
-              activity={(navigation) => (
+              activity={(navigation, openApproval) => (
                 <ExecutionSidebar
                   embedded
                   headerLeading={navigation}
@@ -4330,6 +4330,7 @@ function WorkspaceApp({
                   onResize={resizeInspector}
                   onClose={closeInspector}
                   onSelect={subjectInspector.selectExecution}
+                  onApproval={openApproval}
                   onReply={openQuestion}
                   onSupplement={
                     client.boot!.capabilities.directedInput

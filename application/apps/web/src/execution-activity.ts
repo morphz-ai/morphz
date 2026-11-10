@@ -21,6 +21,7 @@ export type ActivityStatus = {
   kind:
     | "running"
     | "waiting"
+    | "input"
     | "approval"
     | "paused"
     | "ended"
@@ -28,6 +29,10 @@ export type ActivityStatus = {
     | "cancelled"
     | "unknown";
   label: string;
+};
+type ActivityGroupStatus = ActivityStatus & {
+  approvals?: ExecutionAttention["approvals"];
+  replies?: ActivityThread[];
 };
 
 /** A successfully read Context is independent of another Context's failure.
@@ -141,6 +146,17 @@ function activityParent(
   );
 }
 
+export function executionActivityChildren(
+  thread: ActivityThread,
+  threads: readonly ActivityThread[],
+): ActivityThread[] {
+  return threads.filter(
+    (child) =>
+      child.id !== thread.id &&
+      activityParent(child, threads)?.id === thread.id,
+  );
+}
+
 export function executionActivityDescendants(
   thread: ActivityThread,
   threads: readonly ActivityThread[],
@@ -190,27 +206,42 @@ export function executionActivityGroupStatus(
   threads: readonly ActivityThread[],
   available: boolean | ((thread: ActivityThread) => boolean),
   attention?: ExecutionAttention,
-): ActivityStatus {
+): ActivityGroupStatus {
   const children = executionActivityDescendants(thread, threads);
-  const approvals = executionActivityApprovals(thread, threads, attention);
-  if (approvals.length)
+  const isAvailable = (value: ActivityThread) =>
+    typeof available === "function" ? available(value) : available;
+  const approvals = executionActivityApprovals(
+    thread,
+    threads,
+    attention,
+    isAvailable,
+  );
+  const replies = [thread, ...children].filter((value) =>
+    executionActivityCanReply(value, isAvailable(value)),
+  );
+  if (approvals.length || replies.length) {
+    const labels = [];
+    if (approvals.length)
+      labels.push(
+        approvals.some((entry) => approvalBelongsTo(entry, thread))
+          ? "等待你的批准"
+          : "子任务等待你的批准",
+      );
+    if (replies.length)
+      labels.push(replies.includes(thread) ? "等待你回复" : "子任务等待你回复");
     return {
-      kind: "approval",
-      label: approvals.some(
-        (entry) => entry.approval.request.thread_id === thread.id,
-      )
-        ? "等待你的批准"
-        : "子任务等待你的批准",
+      kind: approvals.length ? "approval" : "input",
+      label: labels.length > 1 ? "等你审批和回复" : labels[0]!,
+      ...(approvals.length ? { approvals } : {}),
+      ...(replies.length ? { replies } : {}),
     };
+  }
   const open = [thread, ...children].filter(
     (value) => value.lifecycle === "open",
   );
   if (open.length) {
     const statuses = open.map((value) =>
-      executionActivityStatus(
-        value,
-        typeof available === "function" ? available(value) : available,
-      ),
+      executionActivityStatus(value, isAvailable(value)),
     );
     const status =
       statuses.find((value) => value.kind === "running") ??
@@ -225,9 +256,47 @@ export function executionActivityGroupStatus(
     thread.lifecycle === "completed"
   )
     return { kind: "failed", label: "子任务执行失败" };
-  return executionActivityStatus(
-    thread,
-    typeof available === "function" ? available(thread) : available,
+  return executionActivityStatus(thread, isAvailable(thread));
+}
+
+export function executionActivityCanReply(
+  thread: ActivityThread,
+  available: boolean,
+): boolean {
+  const { userInputRequest: request, continuation } = thread;
+  return (
+    available &&
+    thread.lifecycle === "open" &&
+    thread.controlState === "active" &&
+    !!thread.projectId &&
+    !!thread.conversationId &&
+    !!request &&
+    request.reply_allowed !== false &&
+    request.thread_id === thread.id &&
+    request.session_id === thread.sessionId &&
+    request.context_id === thread.contextId &&
+    continuation?.threadId === thread.id &&
+    continuation.inputId === thread.inputId &&
+    continuation.generation === request.thread_generation
+  );
+}
+
+function approvalBelongsTo(
+  entry: ExecutionAttention["approvals"][number],
+  owner: ActivityThread,
+): boolean {
+  const request = entry.approval.request;
+  return (
+    owner.lifecycle === "open" &&
+    request.session_id === owner.sessionId &&
+    request.context_id === owner.contextId &&
+    entry.scope.projectId === owner.projectId &&
+    entry.scope.conversationId === owner.conversationId &&
+    entry.scope.inputId === owner.inputId &&
+    (request.thread_id
+      ? request.thread_id === owner.id
+      : !!request.root_turn_id && request.root_turn_id === owner.rootId) &&
+    (!request.root_turn_id || request.root_turn_id === owner.rootId)
   );
 }
 
@@ -238,25 +307,13 @@ export function executionActivityApprovals(
   thread: ActivityThread,
   threads: readonly ActivityThread[],
   attention?: ExecutionAttention,
+  available?: (owner: ActivityThread) => boolean,
 ) {
   if (!attention?.available) return [];
-  const owners = [thread, ...executionActivityDescendants(thread, threads)];
+  const group = [thread, ...executionActivityDescendants(thread, threads)];
+  const owners = available ? group.filter(available) : group;
   return attention.approvals.filter((entry) =>
-    owners.some((owner) => {
-      const request = entry.approval.request;
-      return (
-        owner.lifecycle === "open" &&
-        request.session_id === owner.sessionId &&
-        request.context_id === owner.contextId &&
-        entry.scope.projectId === owner.projectId &&
-        entry.scope.conversationId === owner.conversationId &&
-        entry.scope.inputId === owner.inputId &&
-        (request.thread_id
-          ? request.thread_id === owner.id
-          : !!request.root_turn_id && request.root_turn_id === owner.rootId) &&
-        (!request.root_turn_id || request.root_turn_id === owner.rootId)
-      );
-    }),
+    owners.some((owner) => approvalBelongsTo(entry, owner)),
   );
 }
 

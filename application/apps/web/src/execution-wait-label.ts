@@ -1,9 +1,9 @@
 import { arrangementTime } from "./subject-schedules-model.js";
 
 const reasons: Record<string, string> = {
-  user_input: "你回复",
+  user_input: "用户回复",
   user_input_delivery: "恢复原线程",
-  permission: "你批准",
+  permission: "授权",
   timer: "定时触发",
   thread: "关联执行结束",
   thread_group: "子任务结果",

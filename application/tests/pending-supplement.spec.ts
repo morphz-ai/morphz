@@ -9,7 +9,7 @@ import {
 } from "./platform-conversation-fixture.js";
 import { openExecutionPanel } from "./interaction-helpers.js";
 
-test("待答线程明确显示等待你的输入，原补充按钮呼吸而不流转，失去新鲜状态不冒称当前待答", async ({
+test("待答线程明确显示等待你回复，原补充按钮呼吸而不流转，失去新鲜状态不冒称当前待答", async ({
   page,
 }) => {
   const threads: ExecutionActivity["threads"] = [];
@@ -76,7 +76,7 @@ test("待答线程明确显示等待你的输入，原补充按钮呼吸而不�
     .click();
   await openExecutionPanel(page);
   const row = page.locator('[data-thread-id="TEST-wait"]');
-  await expect(row.getByText("等待你的输入", { exact: true })).toBeVisible();
+  await expect(row.getByText("等待你回复", { exact: true })).toBeVisible();
   await expect(row.getByText("此前的执行进展")).toHaveCount(0);
   const supplement = page
     .locator(".execution-activity-entry")
@@ -98,12 +98,13 @@ test("待答线程明确显示等待你的输入，原补充按钮呼吸而不�
   await expect(page.locator(".composer-question")).toHaveCount(0);
   threads[0]!.controlState = "paused";
   await fixture.refresh();
-  await expect(row.getByText("等待你的输入", { exact: true })).toHaveCount(0);
+  await expect(row.getByText("等待你回复", { exact: true })).toHaveCount(0);
+  await expect(supplement).toBeDisabled();
   threads[0]!.controlState = "active";
   await fixture.refresh();
-  await expect(row.getByText("等待你的输入", { exact: true })).toBeVisible();
+  await expect(row.getByText("等待你回复", { exact: true })).toBeVisible();
   available = false;
   await fixture.refresh();
-  await expect(row.getByText("等待你的输入", { exact: true })).toHaveCount(0);
+  await expect(row.getByText("等待你回复", { exact: true })).toHaveCount(0);
   await expect(supplement).toBeDisabled();
 });

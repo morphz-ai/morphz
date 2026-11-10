@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   List,
   ShieldCheck,
@@ -67,7 +73,10 @@ export function SubjectSidebar({
   onClose(): void;
   detail: boolean;
   onBack(): void;
-  activity(navigation: ReactNode): ReactNode;
+  activity(
+    navigation: ReactNode,
+    openApproval: (fingerprint: string) => void,
+  ): ReactNode;
   onInspect(scope: ExecutionReadScope): void;
   onOpen(id: string): void;
   onModels?: () => void;
@@ -84,6 +93,8 @@ export function SubjectSidebar({
   const [activityPageError, setActivityPageError] = useState("");
   const [approvalPageLoading, setApprovalPageLoading] = useState(false);
   const [approvalPageError, setApprovalPageError] = useState("");
+  const pendingApprovalFocus = useRef<string | null>(null);
+  const permissionsPanel = useRef<HTMLElement>(null);
   const bar = useRef<HTMLDivElement>(null),
     boot = client.boot!,
     runtime = boot.runtime;
@@ -111,6 +122,20 @@ export function SubjectSidebar({
     });
   }, [view, detail, client.online, runtime.connected, historyKey]);
   const attention = runtime.attention;
+  useLayoutEffect(() => {
+    if (view !== "permissions" || !pendingApprovalFocus.current) return;
+    const fingerprint = pendingApprovalFocus.current;
+    pendingApprovalFocus.current = null;
+    const card = permissionsPanel.current?.querySelector<HTMLElement>(
+      `[data-approval-fingerprint="${CSS.escape(fingerprint)}"]`,
+    );
+    card?.focus({ preventScroll: true });
+    card?.scrollIntoView({ block: "start" });
+  }, [view]);
+  function openApproval(fingerprint: string) {
+    pendingApprovalFocus.current = fingerprint;
+    onView("permissions");
+  }
   const pendingApprovals = attention?.approvals.length ?? 0;
   const approvalHint = pendingApprovals
     ? `${pendingApprovals} 项等待你的批准${attention?.available ? "" : " · 状态待核对"}`
@@ -224,6 +249,7 @@ export function SubjectSidebar({
                 活动
               </button>
             ) : null,
+            openApproval,
           )}
         {view === "activity" && !detail && client.activityPage?.hasMore && (
           <div className="subject-section">
@@ -272,7 +298,7 @@ export function SubjectSidebar({
           </div>
         )}
         {view === "permissions" && (
-          <section className="subject-section">
+          <section className="subject-section" ref={permissionsPanel}>
             <h3>授权</h3>
             {(!client.online ||
               !runtime.connected ||

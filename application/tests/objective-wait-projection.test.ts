@@ -89,8 +89,8 @@ test("primary objective exposes the exact pending model route only with complete
 });
 test("Human input, approval, tasks, timer and unknown are distinct; terminal/running/stale state wins", () => {
   for (const [kind, text] of [
-    ["user_input", "等待你回复"],
-    ["permission", "等待你批准"],
+    ["user_input", "等待用户回复"],
+    ["permission", "等待授权"],
     ["timer", "等待定时触发"],
     ["thread_group", "等待子任务结果"],
     ["tool_task", "等待工具结果"],
@@ -115,7 +115,7 @@ test("Human input, approval, tasks, timer and unknown are distinct; terminal/run
   assert.equal(executionWaitLabel(["future"]), "等待其他条件");
   assert.equal(
     executionWaitLabel(["user_input", "timer"]),
-    "等待你回复、定时触发",
+    "等待用户回复、定时触发",
   );
   assert.equal(
     executionActivityStatus(

@@ -435,9 +435,6 @@
 button.objective-steering-button.is-waiting.needs-input > svg {
   color: var(--ink, var(--text));
 }
-.execution-activity-summary[data-user-input] {
-  color: var(--accent-strong);
-}
 @keyframes supplement-breathe {
   0%,
   100% {

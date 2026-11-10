@@ -225,6 +225,8 @@ export function SubjectObjectives({
           goal.threadIds.includes(thread.id),
       ) ?? [];
     const open = expanded === goal.id;
+    const needsReply =
+      goalFresh && goal.status === "active" && !!goal.pendingUserInput;
     const needsApproval =
       goalFresh &&
       threads.some(
@@ -235,6 +237,14 @@ export function SubjectObjectives({
             runtime.attention,
           ).length,
       );
+    const handoffLabel =
+      needsApproval && needsReply
+        ? "等你审批和回复"
+        : needsApproval
+          ? "等待你的批准"
+          : needsReply
+            ? "等待你回复"
+            : undefined;
     const running = goalFresh
       ? threads.filter(
           (thread) =>
@@ -305,9 +315,8 @@ export function SubjectObjectives({
           }
           status={
             <>
-              {needsApproval
-                ? "等待你的批准"
-                : goalFresh
+              {handoffLabel ??
+                (goalFresh
                   ? goal.readiness === "waiting"
                     ? objectiveDetailStatus(
                         goal.status,
@@ -315,7 +324,7 @@ export function SubjectObjectives({
                         goal.waitKinds,
                       )
                     : objectiveStatus(goal.status)
-                  : "状态待核对"}{" "}
+                  : "状态待核对")}{" "}
               · {threads.length} 个关联执行
               {running > 0 && ` · ${running} 条执行中`}
             </>
@@ -324,15 +333,14 @@ export function SubjectObjectives({
         {open && (
           <div className="subject-objective-detail">
             <p role="status">
-              {needsApproval
-                ? "等待你的批准"
-                : goalFresh
+              {handoffLabel ??
+                (goalFresh
                   ? objectiveDetailStatus(
                       goal.status,
                       goal.readiness,
                       goal.waitKinds,
                     )
-                  : "目标状态待核对"}
+                  : "目标状态待核对")}
             </p>
             {threads.map((thread) => {
               const status = executionActivityStatus(

@@ -22,6 +22,8 @@ import {
   executionActivityRoots,
   executionActivityDescendants,
   executionActivityGroupStatus,
+  executionActivityCanReply,
+  executionActivityChildren,
   executionActivityThreadAvailable,
   executionActivityOrigin,
   type ActivityThread,
@@ -43,6 +45,7 @@ export function ExecutionSidebar({
   onResize,
   onClose,
   onSelect,
+  onApproval,
   onSupplement,
   onReply,
   onOpen,
@@ -59,6 +62,7 @@ export function ExecutionSidebar({
   onResize: (width: number) => void;
   onClose: () => void;
   onSelect: (scope: ExecutionReadScope) => void;
+  onApproval?: (fingerprint: string) => void;
   onSupplement?: (target: InputContinuation) => void;
   onReply?: (thread: ActivityThread) => void;
   onOpen: (id: string, revision?: number) => void;
@@ -148,12 +152,10 @@ export function ExecutionSidebar({
       )
     : undefined;
   const threadNeedsInput =
-    !!thread?.userInputRequest &&
-    thread.lifecycle === "open" &&
-    thread.controlState !== "paused" &&
-    client.online &&
-    !!currentThread &&
-    executionActivityThreadAvailable(thread, runtime);
+    !!thread && (threadStatus?.replies?.includes(thread) ?? false);
+  const childrenInDetail = thread
+    ? executionActivityChildren(thread, activityThreads)
+    : [];
   const summaryRef = useRef<HTMLParagraphElement>(null);
   const [summaryVisible, setSummaryVisible] = useState(true);
   useEffect(() => {
@@ -175,10 +177,10 @@ export function ExecutionSidebar({
     };
   }, [threadStatus?.kind, threadSummary]);
   const supplementAction = supplementTarget && onSupplement && (
-    <Tooltip label="补充要求">
+    <Tooltip label={threadNeedsInput ? "补充 · 有待答问题" : "补充要求"}>
       <button
-        className={`icon-button execution-supplement${thread?.userInputRequest ? " needs-input" : ""}`}
-        ref={thread?.userInputRequest ? observeSupplementAttention : undefined}
+        className={`icon-button execution-supplement${threadNeedsInput ? " needs-input" : ""}`}
+        ref={threadNeedsInput ? observeSupplementAttention : undefined}
         aria-label="补充"
         disabled={
           !client.online || !runtime.connected || !runtime.activity?.available
@@ -221,18 +223,12 @@ export function ExecutionSidebar({
   const detailStatus = scope.threadId && (
     <span
       className="execution-origin-status"
-      title={
-        threadNeedsInput
-          ? "等待你的输入"
-          : (threadStatus?.label ?? "此分支不在当前快照中")
-      }
+      title={threadStatus?.label ?? "此分支不在当前快照中"}
       data-status={threadStatus?.kind ?? "unknown"}
     >
       <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
       <span className="execution-status-label">
-        {threadNeedsInput
-          ? "等待你的输入"
-          : (threadStatus?.label ?? "此分支不在当前快照中")}
+        {threadStatus?.label ?? "此分支不在当前快照中"}
       </span>
     </span>
   );
@@ -267,6 +263,8 @@ export function ExecutionSidebar({
     </div>
   );
   const row = (t: ActivityThread) => {
+    const available =
+      client.online && executionActivityThreadAvailable(t, runtime);
     const status = executionActivityGroupStatus(
       t,
       activityThreads,
@@ -275,21 +273,20 @@ export function ExecutionSidebar({
       client.online ? runtime.attention : undefined,
     );
     const children = executionActivityDescendants(t, activityThreads);
-    const needsInput =
-      !!t.userInputRequest &&
-      t.lifecycle === "open" &&
-      t.controlState !== "paused" &&
-      client.online &&
-      executionActivityThreadAvailable(t, runtime);
+    const reply =
+      !status.approvals && status.replies?.length === 1
+        ? status.replies[0]
+        : undefined;
+    const approval =
+      !status.replies && status.approvals?.length === 1
+        ? status.approvals[0]
+        : undefined;
     const summary =
-      status.kind === "approval"
+      status.kind === "approval" ||
+      status.kind === "input" ||
+      status.kind === "waiting"
         ? status.label
-        : needsInput
-          ? "等待你的输入"
-          : executionActivitySummary(
-              t,
-              client.online && executionActivityThreadAvailable(t, runtime),
-            );
+        : executionActivitySummary(t, available);
     const origin = executionActivityOrigin(
       t,
       state,
@@ -314,20 +311,27 @@ export function ExecutionSidebar({
           data-root-id={t.rootId}
           aria-label={[
             t.title || "执行事项",
-            needsInput ? "等待你的输入" : status.label,
-            needsInput ? "" : summary,
+            status.label,
+            summary === status.label ? "" : summary,
             origin,
             executionActivityClock(t),
             model,
           ]
             .filter(Boolean)
             .join(" · ")}
-          onClick={() => onSelect(executionActivityScope(t, state))}
+          onClick={() => {
+            if (reply && onReply) {
+              onSelect(executionActivityScope(reply, state));
+              onReply(reply);
+            } else if (approval && onApproval)
+              onApproval(approval.approval.fingerprint);
+            else onSelect(executionActivityScope(t, state));
+          }}
         >
           <span
             className="execution-activity-icon"
             data-status={status.kind}
-            title={needsInput ? "等待你的输入" : status.label}
+            title={status.label}
           >
             <ExecutionStatusIcon kind={status.kind} size={19} />
           </span>
@@ -336,8 +340,7 @@ export function ExecutionSidebar({
             {summary && (
               <span
                 className="execution-activity-summary"
-                data-user-input={needsInput || undefined}
-                data-approval={status.kind === "approval" || undefined}
+                data-status={status.kind}
                 title={summary}
               >
                 {summary}
@@ -385,9 +388,7 @@ export function ExecutionSidebar({
         <UserInputPreview
           thread={t}
           onReply={onReply}
-          disabled={
-            !client.online || !executionActivityThreadAvailable(t, runtime)
-          }
+          disabled={!executionActivityCanReply(t, available)}
         />
       </div>
     );
@@ -482,7 +483,7 @@ export function ExecutionSidebar({
               <p className="execution-origin-title" title={thread?.title}>
                 {thread?.title ?? "执行分支"}
               </p>
-              {threadSummary && (
+              {thread?.summary?.trim() && threadSummary && (
                 <p
                   ref={summaryRef}
                   className="execution-activity-summary"
@@ -574,18 +575,17 @@ export function ExecutionSidebar({
           {!scope.threadId && branches.length > 0 && (
             <section aria-label="执行分支">{branches.map(row)}</section>
           )}
-          {scope.threadId &&
-            activityThreads.some(
-              (t) => t.delegation?.parentThreadId === scope.threadId,
-            ) && (
-              <section aria-label="委派子任务">
-                {executionActivityRoots(
-                  activityThreads.filter(
-                    (t) => t.delegation?.parentThreadId === scope.threadId,
-                  ),
-                ).map(row)}
-              </section>
-            )}
+          {childrenInDetail.length > 0 && (
+            <section
+              aria-label={
+                childrenInDetail.every((t) => t.delegation)
+                  ? "委派子任务"
+                  : "子任务"
+              }
+            >
+              {childrenInDetail.map(row)}
+            </section>
+          )}
           <ExecutionProgress
             messages={messages}
             running={threadStatus?.kind === "running"}

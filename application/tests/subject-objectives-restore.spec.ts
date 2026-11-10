@@ -517,9 +517,9 @@ test("活动首页直接显示真实目标，跨工作面及无执行目标不�
   );
   f.runtime.activity.objectives[0]!.waitKinds = ["user_input"];
   await f.refresh();
-  await expect(related.getByRole("status")).toHaveText("等待你回复");
+  await expect(related.getByRole("status")).toHaveText("等待用户回复");
   await expect(related.locator(".subject-objective-heading")).toContainText(
-    "等待你回复",
+    "等待用户回复",
   );
   await expect(
     related.locator(".subject-objective-detail > button"),
@@ -965,10 +965,10 @@ test("目标子任务展示自己的等待类别和确切定时时间，刷新�
   await expect(goal).not.toContainText("原因待核对");
   Object.assign(child, { waitKinds: ["permission"], waitUntil: undefined });
   await f.refresh();
-  await expect(reason).toHaveText("等待你批准");
+  await expect(reason).toHaveText("等待授权");
   Object.assign(child, { waitKinds: ["user_input"] });
   await f.refresh();
-  await expect(reason).toHaveText("等待你回复");
+  await expect(reason).toHaveText("等待用户回复");
   Object.assign(child, { phase: "running" });
   await f.refresh();
   await expect(reason).toHaveText("执行中");
