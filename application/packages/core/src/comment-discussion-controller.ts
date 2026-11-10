@@ -10,6 +10,7 @@ import {
   canonicalDiscussionSource,
   discussionCommandId,
 } from "./comment-discussion-drafts.js";
+import type { DiscussionReplyLocator } from "./text-quotes.js";
 
 export type DiscussionSummary = {
   id: string;
@@ -63,6 +64,11 @@ export type DiscussionTransport<Q> = {
     offset: number,
     signal: AbortSignal,
   ) => Promise<{ eventId: string; text: string; nextOffset: number | null }>;
+  readReply?: (
+    id: string,
+    reply: DiscussionReplyLocator,
+    signal: AbortSignal,
+  ) => Promise<CommentDiscussionMessage>;
   prepare?: (command: DiscussionCommand<Q>) => unknown;
   send: (command: DiscussionCommand<Q>) => Promise<void>;
 };
@@ -86,6 +92,7 @@ export type DiscussionView<Q> = {
   loading: boolean;
   error: string;
   readError?: string;
+  focusReply?: DiscussionReplyLocator;
   nextCursor: CommentDiscussionPage["nextCursor"];
   directory: DiscussionSummary[];
   directoryCursor: DiscussionDirectoryCursor | null;
@@ -222,6 +229,7 @@ export class CommentDiscussionController<Q> {
     const view = this.views.get(id);
     if (!view) return;
     this.own(id);
+    view.focusReply = undefined;
     this.changed();
     if (view.submitted) this.invalidate(id);
   }
@@ -229,7 +237,7 @@ export class CommentDiscussionController<Q> {
   sourcePage(quote: Q, signal: AbortSignal) {
     return this.transport.list(quote, null, signal, 10);
   }
-  async select(id: string, source?: Q) {
+  async select(id: string, source?: Q, reply?: DiscussionReplyLocator) {
     const signal = this.own(id);
     let view = this.views.get(id);
     // Keep the current source visible while the exact selected discussion is
@@ -241,6 +249,7 @@ export class CommentDiscussionController<Q> {
     }
     view.loading = true;
     view.sourceReady = false;
+    view.focusReply = reply && { ...reply };
     view.error = "";
     this.changed();
     try {
@@ -262,6 +271,21 @@ export class CommentDiscussionController<Q> {
       view.sourceReady = true;
       void this.directory(view, null, signal);
       await this.refresh(view, null, signal);
+      if (
+        reply &&
+        !signal.aborted &&
+        !view.messages.some(
+          (message) =>
+            message.entryId === reply.messageId &&
+            message.eventId === reply.eventId &&
+            !message.contentOmitted,
+        ) &&
+        this.transport.readReply
+      ) {
+        const message = await this.transport.readReply(id, reply, signal);
+        if (signal.aborted || this.disposed) return;
+        this.merge(view, [message]);
+      }
       this.saveDraft(view);
     } catch (error) {
       if (!signal.aborted)
@@ -325,6 +349,7 @@ export class CommentDiscussionController<Q> {
     );
     for (const message of messages) {
       const previous = items.get(message.id);
+      if (previous?.entryId && !message.entryId) continue;
       if (
         previous &&
         message.contentOmitted &&
@@ -619,7 +644,8 @@ export class CommentDiscussionController<Q> {
   retryRead() {
     const view = this.active;
     if (!view || !this.readOwner) return;
-    if (view.submitted || !view.sourceReady) void this.select(view.id);
+    if (view.submitted || !view.sourceReady)
+      void this.select(view.id, view.quote, view.focusReply);
     else void this.directory(view, null, this.readOwner.signal);
   }
   readFailed(id: string, error: unknown) {

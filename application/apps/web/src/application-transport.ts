@@ -31,6 +31,10 @@ import {
 } from "../../../packages/core/src/live-conversation.js";
 import type {} from "./desktop.js";
 import {
+  discussionReplyNoticesSchema,
+  type DiscussionReplyNotices,
+} from "../../../packages/core/src/comment-discussions.js";
+import {
   workspaceChangeSchema,
   type WorkspaceChange,
 } from "../../../packages/core/src/workspace-changes.js";
@@ -378,7 +382,7 @@ function subscribeChangeHints<T extends { sequence: number }>(
       NonNullable<Window["morphzDesktop"]>["application"]
     >["subscribe"]
   >[1],
-  url: string,
+  url: string | null,
   parse: (raw: unknown) => T,
   update: (value: T) => void,
   lifecycle: { onConnected?: () => void; onClosed?: () => void },
@@ -451,6 +455,7 @@ function subscribeChangeHints<T extends { sequence: number }>(
       dispose();
     };
   }
+  if (url === null) return () => {};
   const stream = new EventSource(url);
   stream.onopen = () => {
     sequence = 0;
@@ -480,6 +485,18 @@ export function subscribeWorkspaceChanges(
     (raw) => workspaceChangeSchema.parse(raw),
     update,
     lifecycle,
+  );
+}
+export function subscribeDiscussionReplies(
+  scope: { projectId: string; conversationId: string },
+  update: (value: DiscussionReplyNotices) => void,
+) {
+  return subscribeChangeHints(
+    { ...scope, kind: "discussion-replies" },
+    null,
+    (raw) => discussionReplyNoticesSchema.parse(raw),
+    update,
+    {},
   );
 }
 export function subscribeTerminalChanges(

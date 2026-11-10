@@ -58,6 +58,24 @@ export const commentDiscussionScopeSchema = z.object({
   projectId: z.string().min(1),
   conversationId: z.string().min(1),
 });
+export const discussionReplyNoticeScopeSchema = commentDiscussionScopeSchema
+  .extend({ kind: z.literal("discussion-replies") })
+  .strict();
+export type DiscussionReplyNoticeScope = z.infer<
+  typeof discussionReplyNoticeScopeSchema
+>;
+export const discussionReplyNoticeSchema = z.object({
+  discussionId: z.string().min(1).max(128),
+  eventId: z.string().min(1).max(512),
+});
+export const discussionReplyNoticesSchema = z.object({
+  kind: z.literal("discussion-replies"),
+  sequence: z.number().int().positive(),
+  replies: z.array(discussionReplyNoticeSchema).max(128),
+});
+export type DiscussionReplyNotices = z.infer<
+  typeof discussionReplyNoticesSchema
+>;
 export const commentDiscussionsRequestSchema = commentDiscussionScopeSchema
   .extend({
     source: textQuoteSourceSchema,

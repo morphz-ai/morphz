@@ -144,6 +144,31 @@ test("two passages send independently with frozen publication and separate draft
   assert.notEqual(commands[2]?.commandId, first);
   controller.dispose();
 });
+test("an older cited reply uses one exact read and preserves its authoritative event identity", async () => {
+  const older = {
+    ...message("publication:older"),
+    entryId: "publication:older",
+    eventId: "native-old",
+  };
+  const { controller, calls } = fixture({
+    readReply: async (id, reply) => {
+      assert.equal(id, "discussion");
+      assert.deepEqual(reply, {
+        messageId: older.entryId,
+        eventId: older.eventId,
+      });
+      return older;
+    },
+  });
+  await controller.select("discussion", "original", {
+    messageId: older.entryId,
+    eventId: older.eventId,
+  });
+  assert.equal(calls.filter(({ kind }) => kind === "history").length, 1);
+  controller.receive("discussion", [message(older.id, "reply", "live hint")]);
+  assert.deepEqual(controller.active?.messages, [older]);
+  controller.dispose();
+});
 test("unknown outcomes preserve the exact command, then native acceptance wins over a late failure", async () => {
   const commands: DiscussionCommand<string>[] = [],
     send = deferred<void>();

@@ -10,6 +10,7 @@ import {
 import {
   quotedInputText,
   authoredMessageText,
+  sameQuote,
   textQuotesSchema,
   type TextQuote,
 } from "../packages/core/src/text-quotes.js";
@@ -69,6 +70,99 @@ test("本人正文与评论共享稳定偏移，排除原资料且保留既有bo
   assert.equal(authoredMessageText({ body: "原正文" }).text, "原正文");
 });
 
+test("加入讨论回复在主动提交时验证原文和正式回复，持久保留两个定位", async (t) => {
+  const f = await platformMessageFixture();
+  try {
+    const app = f.session();
+    const originalId = randomUUID();
+    await app.platformMessage({
+      commandId: originalId,
+      operation: input(originalText),
+    });
+    const original = { ...quote(f.input(originalId)), comment: "" };
+    const reply = {
+      discussionId: randomUUID(),
+      messageId: "publication:reply",
+      eventId: "reply-event",
+      text: "讨论资料\n保留逐行内容",
+    };
+    const reference = { ...original, id: randomUUID(), discussionReply: reply };
+    assert.equal(sameQuote(original, reference), false);
+    assert.equal(
+      sameQuote(reference, { ...reference, id: randomUUID() }),
+      true,
+    );
+    assert.equal(
+      authoredMessageText({ body: "原草稿", textQuotes: [reference] }).text,
+      "原草稿",
+    );
+    assert.match(
+      quotedInputText("原草稿", [reference]),
+      /> 讨论资料\n> 保留逐行内容/,
+    );
+    const runtime = f.applicationOptions?.runtime;
+    assert.ok(runtime);
+    const scope = {
+      projectId: "first-project",
+      conversationId: "first-project",
+    };
+    t.mock.method(
+      runtime,
+      "platformCommentDiscussion",
+      async (
+        ...[actual, , id]: Parameters<typeof runtime.platformCommentDiscussion>
+      ) => {
+        assert.deepEqual(actual, scope);
+        assert.equal(id, reply.discussionId);
+        return { quote: original };
+      },
+    );
+    t.mock.method(
+      runtime,
+      "platformCommentDiscussionContent",
+      async (
+        ...[actual, , id, entry, event, offset]: Parameters<
+          typeof runtime.platformCommentDiscussionContent
+        >
+      ) => {
+        assert.deepEqual(actual, scope);
+        assert.deepEqual(
+          [id, entry, event, offset],
+          [reply.discussionId, reply.messageId, reply.eventId, 0],
+        );
+        return {
+          id: entry,
+          event_id: event,
+          kind: "reply",
+          text: reply.text,
+          next_offset: null,
+        };
+      },
+    );
+    await assert.rejects(
+      app.platformMessage({
+        commandId: randomUUID(),
+        operation: input("伪造回复", [
+          { ...reference, discussionReply: { ...reply, text: "不同" } },
+        ]),
+      }),
+      /讨论回复已变化/,
+    );
+    const commandId = randomUUID();
+    await app.platformMessage({
+      commandId,
+      operation: input("原草稿", [reference]),
+    });
+    await f.reopen();
+    const recorded = f.input(commandId);
+    assert.equal(recorded.body, "原草稿");
+    assert.deepEqual(recorded.textQuotes, [reference]);
+    f.assertNoLegacyData();
+  } finally {
+    await f.close();
+  }
+});
+
 test("本人发出的引用评论可再次引用并跨Host重开，外部原资料不冒充本人评论", async () => {
   const f = await platformMessageFixture();
   try {
@@ -91,22 +185,18 @@ test("本人发出的引用评论可再次引用并跨Host重开，外部原资�
     const citation = { ...quote(saved), text: selected.comment };
     // Reload the real Host/outbox before citing the existing comment.
     await f.reopen();
-    await f
-      .session()
-      .platformMessage({
-        commandId: randomUUID(),
-        operation: input("再解释一下", [citation]),
-      });
+    await f.session().platformMessage({
+      commandId: randomUUID(),
+      operation: input("再解释一下", [citation]),
+    });
     const before = structuredClone(f.deliveries());
     await assert.rejects(
-      f
-        .session()
-        .platformMessage({
-          commandId: randomUUID(),
-          operation: input("不可伪造本人原话", [
-            { ...citation, text: selected.text },
-          ]),
-        }),
+      f.session().platformMessage({
+        commandId: randomUUID(),
+        operation: input("不可伪造本人原话", [
+          { ...citation, text: selected.text },
+        ]),
+      }),
       /引用的原消息已不可用/,
     );
     assert.deepEqual(f.deliveries(), before);

@@ -16,6 +16,10 @@ import {
 } from "../../core/src/application-api.js";
 import type { ConversationStream } from "../../core/src/live-conversation.js";
 import {
+  discussionReplyNoticeScopeSchema,
+  type DiscussionReplyNotices,
+} from "../../core/src/comment-discussions.js";
+import {
   workspaceChangeScopeSchema,
   type WorkspaceChange,
 } from "../../core/src/workspace-changes.js";
@@ -368,7 +372,11 @@ export class LocalApplicationConnection {
     scope: unknown,
     generation: unknown,
     emit: (
-      value: ConversationStream | WorkspaceChange | TerminalChange,
+      value:
+        | ConversationStream
+        | WorkspaceChange
+        | TerminalChange
+        | DiscussionReplyNotices,
     ) => void,
     onClose: () => void,
   ) {
@@ -405,6 +413,17 @@ export class LocalApplicationConnection {
       }
       if (workspaceChangeScopeSchema.safeParse(scope).success) {
         dispose = await session.observeWorkspaceChanges(
+          emit,
+          close,
+          controller.signal,
+        );
+        if (disposed) dispose();
+        return;
+      }
+      const replies = discussionReplyNoticeScopeSchema.safeParse(scope);
+      if (replies.success) {
+        dispose = await session.observeDiscussionReplies(
+          replies.data,
           emit,
           close,
           controller.signal,

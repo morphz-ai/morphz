@@ -1,6 +1,7 @@
 import { useConversationStream } from "./useConversationStream.js";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -9,7 +10,13 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { ArrowUp, ChevronDown, MessageCircle, X } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  MessageCircle,
+  MessageSquarePlus,
+  X,
+} from "lucide-react";
 import {
   DiscussionMarks,
   discussionRange,
@@ -26,14 +33,21 @@ import {
   commentDiscussionPageSchema,
   commentDiscussionChunkSchema,
   commentDiscussionSourceKey,
+  type DiscussionReplyNotices,
 } from "../../../packages/core/src/comment-discussions.js";
 import {
   quoteSourceKey,
+  type DiscussionReplyLocator,
   textQuoteSourceSchema,
   type TextQuote,
 } from "../../../packages/core/src/text-quotes.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
-import { applicationCall } from "./application-transport.js";
+import {
+  applicationCall,
+  subscribeDiscussionReplies,
+} from "./application-transport.js";
+import { isoTimeAtMicros } from "../../../packages/application/src/iso-time.js";
+import { useTextQuotes } from "./TextQuotes.js";
 import {
   commandSchema,
   morphzAgentAccess,
@@ -76,6 +90,88 @@ const responseLabels = {
   provider_wait: "模型服务不可用，等待恢复",
   settled: "",
 };
+
+function useDiscussionReplyNotices({
+  projectId,
+  conversationId,
+  identity,
+  storageScope,
+  enabled,
+}: {
+  projectId: string;
+  conversationId: string;
+  identity: string;
+  storageScope: string;
+  enabled: boolean;
+}) {
+  const key = `morphz:discussion-read:${storageScope}:${draftOwner}:${projectId}:${conversationId}`;
+  const owner = useMemo(() => ({ key, identity }), [key, identity]);
+  const [snapshot, setSnapshot] = useState<{
+    owner: typeof owner;
+    replies: DiscussionReplyNotices["replies"];
+  }>();
+  const read = useMemo(() => {
+    const entries = new Map<string, string>();
+    try {
+      requirePersistentDraftOwner();
+      const raw = localStorage.getItem(owner.key);
+      if (raw && raw.length < 170_000) {
+        const saved: unknown = JSON.parse(raw);
+        if (Array.isArray(saved) && saved.length <= 128)
+          for (const entry of saved)
+            if (
+              Array.isArray(entry) &&
+              typeof entry[0] === "string" &&
+              entry[0].length <= 128 &&
+              typeof entry[1] === "string" &&
+              entry[1].length <= 512
+            )
+              entries.set(entry[0], entry[1]);
+      }
+    } catch {
+      // Keep read receipts in memory if the profile cannot persist them.
+    }
+    return entries;
+  }, [owner]);
+  const [readVersion, setReadVersion] = useState(0);
+  const unread = useMemo(
+    () =>
+      new Map(
+        enabled && snapshot?.owner === owner
+          ? snapshot.replies.flatMap(({ discussionId, eventId }) =>
+              read.get(discussionId) === eventId
+                ? []
+                : [[discussionId, eventId] as const],
+            )
+          : [],
+      ),
+    [enabled, owner, snapshot, read, readVersion],
+  );
+  useEffect(() => {
+    if (!enabled || !projectId || !conversationId) return;
+    return subscribeDiscussionReplies(
+      { projectId, conversationId },
+      ({ replies }) => setSnapshot({ owner, replies }),
+    );
+  }, [enabled, owner, projectId, conversationId]);
+  const markRead = useCallback(
+    (id: string, eventId: string) => {
+      if (read.get(id) === eventId) return;
+      read.delete(id);
+      read.set(id, eventId);
+      if (read.size > 128) read.delete(read.keys().next().value!);
+      setReadVersion((version) => version + 1);
+      try {
+        requirePersistentDraftOwner();
+        localStorage.setItem(owner.key, JSON.stringify([...read]));
+      } catch {
+        // Storage failure does not block reading or change discussion state.
+      }
+    },
+    [owner, read],
+  );
+  return { unread, markRead };
+}
 
 export function useCommentDiscussions(options: {
   projectId: string;
@@ -163,6 +259,19 @@ export function useCommentDiscussions(options: {
       params: unknown,
       signal: AbortSignal,
     ) => applicationCall(method, params, { identityGeneration, signal });
+    const readChunk = async (
+      id: string,
+      reply: DiscussionReplyLocator,
+      offset: number,
+      signal: AbortSignal,
+    ) =>
+      commentDiscussionChunkSchema.parse(
+        await call(
+          "discussions.message",
+          { ...scope, id, ...reply, offset },
+          signal,
+        ),
+      );
     return new CommentDiscussionController<TextQuote>(
       {
         list: async (quote, before, signal, limit = 20) =>
@@ -194,23 +303,40 @@ export function useCommentDiscussions(options: {
             ),
           ),
         readMessage: async (id, message, offset, signal) => {
-          const chunk = commentDiscussionChunkSchema.parse(
-            await call(
-              "discussions.message",
-              {
-                ...scope,
-                id,
-                messageId: message.entryId ?? message.id,
-                eventId: message.eventId,
-                offset,
-              },
-              signal,
-            ),
+          const chunk = await readChunk(
+            id,
+            {
+              messageId: message.entryId ?? message.id,
+              eventId: message.eventId,
+            },
+            offset,
+            signal,
           );
           return {
             eventId: chunk.event_id,
             text: chunk.text,
             nextOffset: chunk.next_offset,
+          };
+        },
+        readReply: async (id, reply, signal) => {
+          const chunk = await readChunk(id, reply, 0, signal);
+          const createdAt = isoTimeAtMicros(chunk.created_at_micros);
+          if (
+            !createdAt ||
+            chunk.kind !== "reply" ||
+            chunk.id !== reply.messageId ||
+            chunk.event_id !== reply.eventId ||
+            chunk.next_offset !== null
+          )
+            throw new Error("这条讨论回复暂时无法定位。");
+          return {
+            id: chunk.id,
+            entryId: chunk.id,
+            eventId: chunk.event_id,
+            rootId: chunk.root_id,
+            createdAt,
+            kind: chunk.kind,
+            text: chunk.text,
           };
         },
         prepare: (command) =>
@@ -246,6 +372,7 @@ export function useCommentDiscussions(options: {
     controller.snapshot,
   );
   const current = controller.active;
+  const { unread, markRead } = useDiscussionReplyNotices(options);
   const marks = useMemo(
     () =>
       new DiscussionMarks<TextQuote>({
@@ -304,6 +431,18 @@ export function useCommentDiscussions(options: {
     () => marks.connection(options.connected !== false),
     [marks, options.connected],
   );
+  useEffect(() => marks.setUnread(unread.keys()), [marks, unread]);
+  const unreadEvent = current && unread.get(current.id);
+  useEffect(() => {
+    if (
+      current?.submitted &&
+      unreadEvent &&
+      !current.messages.some(
+        (message) => message.eventId === unreadEvent && message.entryId,
+      )
+    )
+      controller.invalidate(current.id);
+  }, [controller, current, current?.submitted, unreadEvent]);
   useEffect(() => {
     for (const view of controller.views.values())
       if (view.submitted)
@@ -348,6 +487,7 @@ export function useCommentDiscussions(options: {
     stream.connected,
     stream.discussionActivity,
   ]);
+  const liveReplies = useMemo(() => new Set<string>(), [controller]);
   useEffect(() => {
     const grouped = new Map<string, typeof stream.messages>();
     for (const message of stream.messages) {
@@ -363,12 +503,32 @@ export function useCommentDiscussions(options: {
       list.push(message);
       grouped.set(id, list);
     }
-    for (const [id, messages] of grouped)
+    for (const [id, messages] of grouped) {
+      let needsHistory = false;
+      for (const message of messages) {
+        if (
+          message.kind !== "reply" ||
+          message.id.startsWith("stream:") ||
+          message.discussionEntry ||
+          liveReplies.has(message.id) ||
+          controller.views
+            .get(id)
+            ?.messages.some((entry) => entry.id === message.id && entry.entryId)
+        )
+          continue;
+        liveReplies.add(message.id);
+        if (liveReplies.size > 128)
+          liveReplies.delete(liveReplies.keys().next().value!);
+        needsHistory = true;
+      }
       controller.receive(
         id,
         messages.map((message) => ({
           id: message.id,
-          eventId: message.id,
+          eventId: message.discussionEntry?.eventId ?? message.id,
+          ...(message.discussionEntry
+            ? { entryId: message.discussionEntry.entryId }
+            : {}),
           rootId: message.rootId ?? "",
           createdAt: message.createdAt,
           kind: message.kind as "reply" | "progress" | "error",
@@ -379,7 +539,9 @@ export function useCommentDiscussions(options: {
           ...(message.threadId ? { threadId: message.threadId } : {}),
         })),
       );
-  }, [controller, stream.messages]);
+      if (needsHistory) controller.invalidate(id);
+    }
+  }, [controller, stream.messages, liveReplies]);
   const connected = useRef(false);
   useEffect(() => {
     if (stream.connected && !connected.current && controller.activeId)
@@ -391,6 +553,15 @@ export function useCommentDiscussions(options: {
     point,
     enabled: options.enabled,
     marks,
+    unread,
+    markRead,
+    openReply: (quote: TextQuote) => {
+      if (!latest.current.enabled || !quote.discussionReply) return;
+      const { discussionId, messageId, eventId } = quote.discussionReply;
+      const rect = locateTextQuote(quote)?.getBoundingClientRect();
+      if (rect) setPoint({ x: rect.right, y: rect.bottom, rect });
+      void controller.select(discussionId, quote, { messageId, eventId });
+    },
     open: (selection?: QuoteSelection | null) => {
       if (!latest.current.enabled) return;
       const selected = selection ?? captureTextQuote();
@@ -448,8 +619,9 @@ export function CommentDiscussionMarks({
           data-size="icon-xs"
           key={mark.key}
           className="icon-button discussion-source-mark"
-          title={`查看讨论 · ${mark.preview}`}
-          aria-label={`查看此处讨论（${mark.count}${mark.more ? "+" : ""}）`}
+          data-unread={mark.unread || undefined}
+          title={`${mark.unread ? "有新回复" : "查看讨论"} · ${mark.preview}`}
+          aria-label={`查看此处讨论（${mark.count}${mark.more ? "+" : ""}）${mark.unread ? "，有新回复" : ""}`}
           onClick={() => owner.open(mark)}
         >
           <MessageCircle size={14} />
@@ -469,12 +641,16 @@ export function CommentDiscussionPanel({
   controller,
   point,
   onOpen,
+  unread,
+  onRead,
   renderMarkdown,
   sendShortcut = "enter",
 }: {
   controller: CommentDiscussionController<TextQuote>;
   point: QuotePoint;
   onOpen: (quote: TextQuote) => void;
+  unread: ReadonlyMap<string, string>;
+  onRead: (id: string, eventId: string) => void;
   renderMarkdown: (text: string, streaming: boolean) => ReactNode;
   sendShortcut?: InterfacePreferences["sendShortcut"];
 }) {
@@ -484,6 +660,7 @@ export function CommentDiscussionPanel({
     controller.snapshot,
   );
   const view = controller.active;
+  const quotes = useTextQuotes();
   const panel = useRef<HTMLElement>(null),
     thread = useRef<HTMLDivElement>(null),
     following = useRef(true);
@@ -499,7 +676,7 @@ export function CommentDiscussionPanel({
         "right-start",
       );
     });
-  }, [view?.id, point]);
+  }, [view?.id, view?.quote, point]);
   const lastMessage = view?.messages.at(-1);
   const responses = view && discussionResponseRows(view);
   const streamingRoots = new Set(
@@ -519,6 +696,52 @@ export function CommentDiscussionPanel({
     const node = thread.current;
     if (node && following.current) node.scrollTop = node.scrollHeight;
   }, [view?.id, lastMessage?.id, lastMessage?.text, responses?.size]);
+  const focusReply = view?.focusReply;
+  useLayoutEffect(() => {
+    const node = thread.current;
+    if (!node || !focusReply || view?.loading || !view?.sourceReady) return;
+    const target = node.querySelector<HTMLElement>("[data-quote-target]");
+    if (!target) return;
+    following.current = false;
+    node.scrollTop +=
+      target.getBoundingClientRect().top - node.getBoundingClientRect().top - 8;
+    target.focus({ preventScroll: true });
+  }, [focusReply, view?.loading, view?.sourceReady]);
+  const unreadEvent = view && unread.get(view.id);
+  const hasUnreadReply = !!view?.messages.some(
+    (message) =>
+      message.entryId && message.eventId === unreadEvent && message.text,
+  );
+  useEffect(() => {
+    const root = thread.current;
+    if (!root || !view || !unreadEvent || !hasUnreadReply) return;
+    const reply = root.querySelector<HTMLElement>("[data-unread-reply]");
+    if (!reply) return;
+    const check = () => {
+      const panel = root.getBoundingClientRect(),
+        row = reply.getBoundingClientRect();
+      if (
+        document.visibilityState === "visible" &&
+        document.hasFocus() &&
+        reply.checkVisibility({ visibilityProperty: true }) &&
+        Math.min(row.bottom, panel.bottom) - Math.max(row.top, panel.top) >=
+          Math.min(row.height, 24) &&
+        row.height > 0
+      )
+        onRead(view.id, unreadEvent);
+    };
+    const observer = new IntersectionObserver(check, { root });
+    observer.observe(reply);
+    root.addEventListener("scroll", check, { passive: true });
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("focus", check);
+    return () => {
+      observer.disconnect();
+      root.removeEventListener("scroll", check);
+      document.removeEventListener("visibilitychange", check);
+      window.removeEventListener("focus", check);
+    };
+  }, [view?.id, unreadEvent, hasUnreadReply, onRead]);
   useEffect(() => {
     setDirectoryOpen(false);
   }, [view?.id]);
@@ -605,12 +828,14 @@ export function CommentDiscussionPanel({
               type="button"
               key={id}
               aria-current={view.id === id ? "true" : undefined}
+              data-unread={unread.has(id) || undefined}
+              aria-label={unread.has(id) ? `${preview}，有新回复` : undefined}
               onClick={() => {
                 setDirectoryOpen(false);
                 void controller.select(id);
               }}
             >
-              {preview}
+              <span>{preview}</span>
             </button>
           ))}
           {view.directoryCursor && (
@@ -664,11 +889,31 @@ export function CommentDiscussionPanel({
             view.responseConnected !== false ||
             response?.phase === "sending" ||
             !view.responseActivity;
+          const quoteTarget =
+            !!focusReply &&
+            focusReply.messageId === message.entryId &&
+            focusReply.eventId === message.eventId;
+          const join = !!(
+            quotes &&
+            view.sourceReady &&
+            message.kind === "reply" &&
+            message.entryId &&
+            !streaming &&
+            !message.contentOmitted &&
+            !message.truncated &&
+            message.text.trim()
+          );
           return (
             <Fragment key={message.id}>
               <article
                 className={`discussion-message ${message.kind}`}
                 data-stream-active={streaming || undefined}
+                data-quote-target={quoteTarget || undefined}
+                data-unread-reply={
+                  (!!message.entryId && message.eventId === unreadEvent) ||
+                  undefined
+                }
+                tabIndex={quoteTarget ? -1 : undefined}
               >
                 {message.kind === "input" ? (
                   <p>{message.text}</p>
@@ -688,6 +933,32 @@ export function CommentDiscussionPanel({
                 )}
                 {message.truncated && (
                   <small>内容较长，完整内容可在执行记录中打开。</small>
+                )}
+                {join && (
+                  <button
+                    type="button"
+                    className="discussion-join"
+                    disabled={!quotes?.joinReply}
+                    onClick={() => {
+                      if (
+                        quotes?.joinReply?.({
+                          ...view.quote,
+                          id: crypto.randomUUID(),
+                          comment: "",
+                          discussionReply: {
+                            discussionId: view.id,
+                            messageId: message.entryId!,
+                            eventId: message.eventId,
+                            text: message.text,
+                          },
+                        })
+                      )
+                        controller.close();
+                    }}
+                  >
+                    <MessageSquarePlus size={14} aria-hidden="true" />
+                    加入对话
+                  </button>
                 )}
               </article>
               {response &&

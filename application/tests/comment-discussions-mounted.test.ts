@@ -232,8 +232,12 @@ test(
               .poll(() =>
                 page.evaluate(
                   () =>
-                    Reflect.get(window, "discussionFixture").report()
-                      .subscriptions.length,
+                    Reflect.get(window, "discussionFixture")
+                      .report()
+                      .subscriptions.filter(
+                        (scope: { kind?: string }) =>
+                          scope.kind !== "discussion-replies",
+                      ).length,
                 ),
               )
               .toBe(lane === "dashboard" ? 2 : 1);
@@ -439,8 +443,12 @@ test(
             .poll(() =>
               page.evaluate(
                 () =>
-                  Reflect.get(window, "discussionFixture").report()
-                    .subscriptions.length,
+                  Reflect.get(window, "discussionFixture")
+                    .report()
+                    .subscriptions.filter(
+                      (scope: { kind?: string }) =>
+                        scope.kind !== "discussion-replies",
+                    ).length,
               ),
             )
             .toBe(0);
@@ -665,6 +673,84 @@ test(
             await page.locator("#main-draft").inputValue(),
             "TEST：这段主聊天草稿必须保留。",
           );
+          if (lane === "desktop") {
+            await page
+              .getByRole("button", { name: "关闭讨论", exact: true })
+              .click();
+            const beforeNotice = await page.evaluate(
+              () =>
+                Reflect.get(window, "discussionFixture").report().requests
+                  .length,
+            );
+            await page.evaluate(
+              ([a, b]) => {
+                const fixture = Reflect.get(window, "discussionFixture");
+                fixture.publishReply(a, "独立回复甲");
+                fixture.publishReply(b, "独立回复乙");
+              },
+              [first, second],
+            );
+            const unread = page.getByRole("button", {
+              name: /查看此处讨论.*有新回复/,
+            });
+            await expect(unread).toHaveCount(2);
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  Reflect.get(window, "discussionFixture").report().requests
+                    .length,
+              ),
+              beforeNotice,
+              "unread notices for closed discussions do not open either transcript",
+            );
+            await unread.first().click();
+            await expect(
+              page.getByText("独立回复甲", { exact: true }),
+            ).toBeVisible();
+            await expect(unread).toHaveCount(1);
+            const sends = () =>
+              page.evaluate(
+                () =>
+                  Reflect.get(window, "discussionFixture")
+                    .report()
+                    .requests.filter(
+                      (request: { method: string }) =>
+                        request.method === "platform.message",
+                    ).length,
+              );
+            const beforeJoin = await sends();
+            await page
+              .getByRole("button", { name: "加入对话", exact: true })
+              .click();
+            const citation = page.getByRole("button", {
+              name: "查看引用 1 的原文和讨论回复",
+            });
+            await expect(citation).toBeVisible();
+            await expect(page.locator("#main-draft")).toHaveValue(
+              "TEST：这段主聊天草稿必须保留。",
+            );
+            assert.equal(
+              await sends(),
+              beforeJoin,
+              "including a reply does not send a main input",
+            );
+            await citation.click();
+            await expect(page.locator("[data-quote-target]")).toContainText(
+              "独立回复甲",
+            );
+            await expect(
+              page.getByRole("button", {
+                name: "每个评论都可以独立运行，并在原处继续追问。",
+              }),
+            ).toBeVisible();
+            if (screenshots)
+              await page.screenshot({
+                path: resolve(
+                  screenshots,
+                  `desktop-${theme}-${width}-reply-citation.png`,
+                ),
+              });
+          }
           await page.evaluate(
             (id) => Reflect.get(window, "discussionFixture").long(id),
             first,

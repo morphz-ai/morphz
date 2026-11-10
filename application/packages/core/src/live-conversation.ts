@@ -32,6 +32,9 @@ export const liveMessageSchema = z.object({
    * Disposable presentation only, never identity, authority or model output. */
   inputPreview: z.string().min(1).max(101).optional(),
   commentDiscussion: commentDiscussionReferenceSchema.optional(),
+  discussionEntry: z
+    .object({ entryId: z.string(), eventId: z.string() })
+    .optional(),
   rootId: z.string().nullable(),
   createdAt: z.string(),
   text: z.string(),

@@ -2056,8 +2056,26 @@ function WorkspaceApp({
     },
     quotes: {
       clearSelection: () => window.getSelection()?.removeAllRanges(),
-      reveal: revealTextQuote,
-      setReveal: setQuoteReveal,
+      reveal: (quote) => {
+        const revealed = revealTextQuote(quote);
+        if (revealed && quote.discussionReply) {
+          if (!dialogueCanvas && conversationVisible) setInteraction("input");
+          commentDiscussions.openReply(quote);
+        }
+        return revealed;
+      },
+      setReveal: (value) => {
+        setQuoteReveal(value);
+        if (value.quote.discussionReply) {
+          if (
+            value.quote.source.kind !== "message" &&
+            !dialogueCanvas &&
+            conversationVisible
+          )
+            setInteraction("input");
+          commentDiscussions.openReply(value.quote);
+        }
+      },
     },
     onNotice: setNotice,
   });
@@ -2696,6 +2714,8 @@ function WorkspaceApp({
           <CommentDiscussionMarks owner={commentDiscussions.marks} />
           <CommentDiscussionPanel
             controller={commentDiscussions.controller}
+            unread={commentDiscussions.unread}
+            onRead={commentDiscussions.markRead}
             sendShortcut={prefs.sendShortcut}
             point={commentDiscussions.point}
             onOpen={(quote) => void openTextQuote(quote)}

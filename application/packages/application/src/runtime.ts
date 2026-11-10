@@ -11,8 +11,10 @@ import {
   nativeDiscussionDescriptorSchema,
   nativeDiscussionSourceSchema,
   commentDiscussionPageSchema,
+  discussionReplyNoticeSchema,
   commentDiscussionChunkSchema,
   type CommentDiscussion,
+  type DiscussionReplyNotices,
 } from "../../core/src/comment-discussions.js";
 import {
   textQuoteSchema,
@@ -684,6 +686,14 @@ const storedSchema = z.object({
   connected: z.boolean(),
   directedInput: z.boolean().default(false),
   commentDiscussions: z.boolean().default(false),
+  discussionReplyNotices: z
+    .array(
+      discussionReplyNoticeSchema.extend({
+        owner: z.string(),
+      }),
+    )
+    .max(128)
+    .default([]),
   model: z.string(),
   error: z.string(),
   publications: z
@@ -1629,6 +1639,112 @@ export class RuntimeBridge {
   private retainedHarnesses:
     { id: string; version: string; title?: string }[] | null = null;
   private feeds = new Set<ConversationFeed>();
+  private discussionReplyListeners = new Map<string, Set<() => void>>();
+  private changedDiscussionReplyOwners = new Set<string>();
+
+  private discussionReplyOwner(
+    principalId: string,
+    sessionId: string,
+    scope: { projectId: string; conversationId: string },
+  ) {
+    return JSON.stringify([
+      principalId,
+      sessionId,
+      scope.projectId,
+      scope.conversationId,
+    ]);
+  }
+
+  async observeDiscussionReplies(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    emit: (value: DiscussionReplyNotices) => void,
+    failed: () => void,
+    signal: AbortSignal,
+  ) {
+    const route = await this.commentDiscussionRoute(scope, access);
+    signal.throwIfAborted();
+    const owner = this.discussionReplyOwner(
+      access.principalId,
+      route.sessionId,
+      scope,
+    );
+    let sequence = 0,
+      dirty = false,
+      draining = false;
+    const wake = async () => {
+      dirty = true;
+      if (draining || signal.aborted) return;
+      draining = true;
+      try {
+        while (dirty && !signal.aborted) {
+          dirty = false;
+          const grant = await route.authorize();
+          if (this.discussionSessionId(scope, grant) !== route.sessionId) {
+            failed();
+            return;
+          }
+          if (!signal.aborted)
+            emit({
+              kind: "discussion-replies",
+              sequence: ++sequence,
+              replies: this.state.discussionReplyNotices
+                .filter((notice) => notice.owner === owner)
+                .map(({ discussionId, eventId }) => ({
+                  discussionId,
+                  eventId,
+                })),
+            });
+        }
+      } catch {
+        if (!signal.aborted) failed();
+      } finally {
+        draining = false;
+      }
+    };
+    const listeners = this.discussionReplyListeners.get(owner) ?? new Set();
+    listeners.add(wake);
+    this.discussionReplyListeners.set(owner, listeners);
+    void wake();
+    return () => {
+      listeners.delete(wake);
+      if (!listeners.size) this.discussionReplyListeners.delete(owner);
+    };
+  }
+
+  private rememberDiscussionReply(
+    delivery: StoredDelivery,
+    event: RuntimeEvent,
+  ) {
+    const source = delivery.platformSource;
+    const discussionId = source?.commentDiscussion?.id;
+    if (
+      !source ||
+      !discussionId ||
+      !["chat/reply", "chat/outbound_message"].includes(event.topic) ||
+      !payloadString(event, "text")?.trim() ||
+      internalModelOutput(event) ||
+      !["root_turn_id", "trigger_event_id", "source_turn_id"].some(
+        (key) => payloadString(event, key) === delivery.rootId,
+      )
+    )
+      return;
+    const owner = this.discussionReplyOwner(
+      source.author.principalId,
+      delivery.sessionId,
+      source,
+    );
+    const notices = this.state.discussionReplyNotices;
+    const previous = notices.findIndex(
+      (notice) =>
+        notice.owner === owner && notice.discussionId === discussionId,
+    );
+    if (previous >= 0) notices.splice(previous, 1);
+    notices.push({ owner, discussionId, eventId: event.id });
+    const evicted = notices.length > 128 ? notices.shift() : undefined;
+    if (evicted) this.changedDiscussionReplyOwners.add(evicted.owner);
+    this.changedDiscussionReplyOwners.add(owner);
+  }
   /** Stream the same Platform-authorized history exposed by
    * platformConversationHistory. A revoked project is removed from the next
    * publication even when other projects share its Runtime Session.
@@ -1702,6 +1818,14 @@ export class RuntimeBridge {
             conversationId: scope.conversationId,
             artifactId: null,
             commentDiscussion: { id: scope.discussionId! },
+            ...(message.entryId && !message.contentOmitted
+              ? {
+                  discussionEntry: {
+                    entryId: message.entryId,
+                    eventId: message.eventId,
+                  },
+                }
+              : {}),
           }))
       : (
           await this.platformConversationHistory(baseScope, access, {
@@ -3096,6 +3220,7 @@ export class RuntimeBridge {
           connected: false,
           directedInput: false,
           commentDiscussions: false,
+          discussionReplyNotices: [],
           model: "",
           error: "",
           publications: {},
@@ -3156,6 +3281,9 @@ export class RuntimeBridge {
     // records together with their Event and connection cursors.
     const admittedKeys = [...this.dirtyDeliveries.keys()];
     this.dirtyDeliveries.clear();
+    for (const owner of this.changedDiscussionReplyOwners)
+      for (const wake of this.discussionReplyListeners.get(owner) ?? []) wake();
+    this.changedDiscussionReplyOwners.clear();
     for (const key of admittedKeys)
       for (const wake of this.inputAdmissionListeners.get(key) ?? []) wake();
     this.notifyWorkspaceChanges();
@@ -11483,6 +11611,7 @@ export class RuntimeBridge {
           )
             continue;
           const delivery = attribute(event);
+          if (delivery) this.rememberDiscussionReply(delivery, event);
           if (
             delivery?.platformSource &&
             (!delivery.lastActivityAt ||

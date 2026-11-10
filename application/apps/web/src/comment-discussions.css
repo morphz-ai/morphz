@@ -17,6 +17,11 @@
 .app [data-discussion-marked] {
   padding-inline-end: 40px;
   --discussion-highlight: color-mix(in srgb, var(--accent) 17%, transparent);
+  --discussion-unread-highlight: color-mix(
+    in srgb,
+    var(--accent) 30%,
+    transparent
+  );
   --discussion-ink: var(--accent);
 }
 .discussion-mark-layer {
@@ -44,6 +49,17 @@
 }
 .app .discussion-source-mark:hover {
   background: var(--hover);
+}
+.app .discussion-source-mark[data-unread]::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--paper);
 }
 .app .discussion-source-mark > span {
   position: absolute;
@@ -153,6 +169,24 @@
   padding: 8px 10px;
   border-radius: 9px;
   background: var(--soft);
+}
+.discussion-message[data-quote-target] {
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--soft);
+}
+.discussion-message[data-quote-target]:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.app .comment-discussion .discussion-join {
+  margin-block-start: 4px;
+  padding-inline: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.app .comment-discussion .discussion-join:hover:not(:disabled) {
+  color: var(--accent-strong);
 }
 .discussion-message p {
   margin: 0 0 8px;
@@ -274,6 +308,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
+}
+.app .discussion-directory button[data-unread] {
+  display: flex;
+}
+.discussion-directory button[data-unread] > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.discussion-directory button[data-unread]::after {
+  content: "";
+  flex: 0 0 6px;
+  height: 6px;
+  margin-inline-start: auto;
+  border-radius: 50%;
+  background: var(--accent);
 }
 .app .discussion-directory button[aria-current="true"] {
   background: var(--soft);

@@ -5,7 +5,10 @@ import {
   CommentDiscussionPanel,
   CommentDiscussionMarks,
 } from "../../apps/web/src/CommentDiscussions.js";
-import { TextQuoteProvider } from "../../apps/web/src/TextQuotes.js";
+import {
+  TextQuoteDrafts,
+  TextQuoteProvider,
+} from "../../apps/web/src/TextQuotes.js";
 import { quoteSource } from "../../apps/web/src/text-quote-dom.js";
 import { SafeMarkdown } from "../../apps/web/src/SafeMarkdown.js";
 import { ResponseWaiting } from "../../apps/web/src/ResponseWaiting.js";
@@ -30,6 +33,21 @@ const saveEntries = () =>
     JSON.stringify([...entries]),
   );
 const prefixes = new Map<string, string>();
+const replyNotices = new Map<string, string>();
+let noticeSequence = 0;
+const emitNotices = () => {
+  const value = {
+    kind: "discussion-replies",
+    sequence: ++noticeSequence,
+    replies: [...replyNotices].map(([discussionId, eventId]) => ({
+      discussionId,
+      eventId,
+    })),
+  };
+  for (const [id, scope] of subscriptions)
+    if (scope.kind === value.kind)
+      for (const listener of listeners) listener({ id, value });
+};
 const responses = new Map<string, DiscussionResponse>();
 const activity = (id: string) => ({
   id,
@@ -182,6 +200,7 @@ const bridge = {
     subscriptions.set(id, scope);
     queueMicrotask(() => {
       if (scope.discussionId) emit(scope.discussionId);
+      if (scope.kind === "discussion-replies") emitNotices();
     });
   },
   unsubscribe(id: string) {
@@ -254,6 +273,21 @@ function Fixture() {
         discussions.controller.invalidate(id);
         saveEntries();
       },
+      publishReply(id: string, text: string) {
+        const entryId = `publication:${id}:new`;
+        const eventId = `reply-${id}-new`;
+        entries.get(id).messages.push({
+          id: entryId,
+          entryId,
+          eventId,
+          rootId: id,
+          kind: "reply",
+          text,
+          createdAt: new Date().toISOString(),
+        });
+        replyNotices.set(id, eventId);
+        emitNotices();
+      },
       open(name: string) {
         discussions.open({
           quote: {
@@ -292,7 +326,7 @@ function Fixture() {
         onChange={setQuotes}
         onEngage={() => {}}
         onFocusComposer={() => {}}
-        onOpen={() => {}}
+        onOpen={discussions.openReply}
         onNotice={() => {}}
         onSubmit={() => {}}
         onDiscuss={discussions.open}
@@ -302,6 +336,8 @@ function Fixture() {
             <CommentDiscussionMarks owner={discussions.marks} />
             <CommentDiscussionPanel
               controller={discussions.controller}
+              unread={discussions.unread}
+              onRead={discussions.markRead}
               point={discussions.point}
               onOpen={() => {}}
               renderMarkdown={(text, streaming) => (
@@ -359,6 +395,9 @@ function Fixture() {
             }}
           >
             <span id="main-model">test-main-model · max</span>
+            {quotes.length > 0 && (
+              <TextQuoteDrafts quotes={quotes} disabled={false} />
+            )}
             <textarea
               id="main-draft"
               aria-label="主对话草稿"

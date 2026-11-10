@@ -11,6 +11,7 @@ export type PassageMark = {
   quote: unknown;
   count: number;
   more: boolean;
+  unread?: boolean;
   x: number;
   y: number;
   preview: string;
@@ -59,6 +60,7 @@ export class DiscussionMarks<Q> {
     id: string;
   }[] = [];
   private highlightName = `morphz-discussions-${Math.random().toString(36).slice(2)}`;
+  private unread = new Set<string>();
   version = 0;
   marks: PassageMark[] = [];
   private owner: Owner<Q>;
@@ -235,6 +237,10 @@ export class DiscussionMarks<Q> {
     }
     this.pump();
   }
+  setUnread(ids: Iterable<string>) {
+    this.unread = new Set(ids);
+    this.layout();
+  }
   private layout = () => {
     if (!this.running || this.frame) return;
     this.frame = requestAnimationFrame(() => {
@@ -246,6 +252,7 @@ export class DiscussionMarks<Q> {
     this.marks = [];
     this.clickRanges = [];
     const ranges: Range[] = [];
+    const unreadRanges: Range[] = [];
     for (const root of this.visible) {
       const source = this.roots.get(root),
         page = source && this.pages.get(source.key);
@@ -256,14 +263,20 @@ export class DiscussionMarks<Q> {
       const box = root.getBoundingClientRect();
       if (!box.width || box.bottom <= 0 || box.top >= innerHeight) continue;
       root.setAttribute("data-discussion-marked", "true");
+      let unread: DiscussionMark | undefined;
       for (const item of page.items) {
         const range = this.owner.range(root, item);
         if (range) {
           ranges.push(range);
-          this.clickRanges.push({ range, source, id: item.id });
+          const hit = { range, source, id: item.id };
+          if (this.unread.has(item.id)) {
+            unread ??= item;
+            unreadRanges.push(range);
+            this.clickRanges.unshift(hit);
+          } else this.clickRanges.push(hit);
         }
       }
-      const first = page.items[0]!;
+      const first = unread ?? page.items[0]!;
       const hitSize = matchMedia("(pointer: coarse)").matches ? 44 : 24;
       this.marks.push({
         key: `${source.key}:${this.ids.get(root)}`,
@@ -271,6 +284,7 @@ export class DiscussionMarks<Q> {
         quote: source.quote,
         count: page.items.length,
         more: page.more,
+        ...(unread ? { unread: true } : {}),
         x: Math.min(innerWidth - hitSize - 4, box.right - hitSize - 4),
         y: Math.max(0, box.top),
         preview: first.preview,
@@ -282,6 +296,10 @@ export class DiscussionMarks<Q> {
     if (highlight && registry) {
       const value = new highlight(...ranges) as Highlight;
       registry.set(this.highlightName, value);
+      registry.set(
+        `${this.highlightName}-unread`,
+        new highlight(...unreadRanges) as Highlight,
+      );
       // Use one semantic pseudo-element rule for all owned ranges.
       const style =
         document.getElementById(this.highlightName) ??
@@ -290,7 +308,8 @@ export class DiscussionMarks<Q> {
             id: this.highlightName,
           }),
         );
-      style.textContent = `::highlight(${this.highlightName}) { background-color: var(--discussion-highlight, #9bdce14d); text-decoration: underline; text-decoration-color: var(--discussion-ink, #168492); text-decoration-thickness: 1px; text-underline-offset: 3px; }`;
+      style.textContent = `::highlight(${this.highlightName}) { background-color: var(--discussion-highlight, #9bdce14d); text-decoration: underline; text-decoration-color: var(--discussion-ink, #168492); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+::highlight(${this.highlightName}-unread) { background-color: var(--discussion-unread-highlight, #9bdce180); }`;
     }
     this.version++;
     for (const listener of this.listeners) listener();
@@ -338,6 +357,7 @@ export class DiscussionMarks<Q> {
     for (const root of this.roots.keys())
       root.removeAttribute("data-discussion-marked");
     CSS.highlights?.delete(this.highlightName);
+    CSS.highlights?.delete(`${this.highlightName}-unread`);
     document.getElementById(this.highlightName)?.remove();
     this.roots.clear();
     this.visible.clear();

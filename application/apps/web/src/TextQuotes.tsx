@@ -41,6 +41,7 @@ const markerGap = 4;
 type QuoteActions = {
   reveal?: { quote: TextQuote; token: string } | null;
   comment: (selection?: QuoteSelection | null) => string | undefined;
+  joinReply?: (quote: TextQuote) => boolean;
   discuss?: (selection?: QuoteSelection | null) => void;
   offer: (selection: QuoteSelection | null) => void;
   edit: (id: string, point?: CommentPoint) => void;
@@ -180,28 +181,37 @@ export function TextQuoteProvider({
     finish();
     latest.current.onOpen(quote);
   }
-  function comment(selection = captureTextQuote()) {
-    if (!selection || latest.current.disabled) return;
-    const existing = latest.current.quotes.find((q) =>
-      sameQuote(q, selection.quote),
-    );
-    const quote = existing ?? selection.quote;
-    if (!existing) {
-      const result = textQuotesSchema.safeParse([
-        ...latest.current.quotes,
-        quote,
-      ]);
-      if (!result.success) {
-        latest.current.onNotice("引用内容过长，请分次发送。");
-        return;
-      }
-      latest.current.onChange(result.data);
+  function include(quote: TextQuote) {
+    const current = latest.current;
+    if (current.disabled) return;
+    const existing = current.quotes.find((q) => sameQuote(q, quote));
+    if (existing) return existing.id;
+    const result = textQuotesSchema.safeParse([...current.quotes, quote]);
+    if (!result.success) {
+      current.onNotice("引用内容过长，请分次发送。");
+      return;
     }
+    current.quotes = result.data;
+    current.onChange(result.data);
+    return quote.id;
+  }
+  function comment(selection = captureTextQuote()) {
+    if (!selection) return;
+    const id = include(selection.quote);
+    if (!id) return;
     latest.current.onEngage();
-    setEditing({ id: quote.id, point: selection.point });
+    setEditing({ id, point: selection.point });
     setOffer(null);
     window.getSelection()?.removeAllRanges();
-    return quote.id;
+    return id;
+  }
+  function joinReply(quote: TextQuote) {
+    if (!include(quote)) return false;
+    setEditing(null);
+    setOffer(null);
+    latest.current.onEngage();
+    latest.current.onFocusComposer();
+    return true;
   }
   function remove(id: string) {
     if (latest.current.disabled) return;
@@ -307,6 +317,7 @@ export function TextQuoteProvider({
       frame = requestAnimationFrame(() => {
         const ranges: Range[] = [];
         const next = quotes.flatMap((q, index) => {
+          if (q.discussionReply) return [];
           const range = locateTextQuote(q),
             field = locateTextQuoteField(q),
             rect = range?.getClientRects()[0] ?? field?.getBoundingClientRect();
@@ -425,6 +436,7 @@ export function TextQuoteProvider({
     <Context.Provider
       value={{
         comment,
+        joinReply: disabled ? undefined : joinReply,
         discuss: discussionDisabled
           ? undefined
           : (selection) => {
@@ -577,31 +589,51 @@ export function TextQuoteDrafts({
     >
       {quotes.map((q, index) => (
         <div className="text-quote-chip" key={q.id}>
-          <button
-            type="button"
-            className="text-quote-source"
-            title={`查看原文 · ${quoteSourceLabel(q.source)}${q.draft ? " · 编辑中" : ""}`}
-            aria-label={`查看引用 ${index + 1} 的原文`}
-            onClick={() => actions?.open(q.id)}
-          >
-            <span className="text-quote-number">{index + 1}</span>
-          </button>
-          <button
-            type="button"
-            className="text-quote-edit"
-            disabled={disabled}
-            title={`${quoteSourceLabel(q.source)}${q.draft ? " · 编辑中" : ""}\n${q.text}${q.comment ? `\n${q.comment}` : ""}`}
-            aria-label={`编辑引用 ${index + 1} 的评论`}
-            onClick={(e) => {
-              const r = e.currentTarget.getBoundingClientRect();
-              actions?.edit(q.id, { x: r.right, y: r.top, above: true });
-            }}
-          >
-            <span>{q.comment || q.text}</span>
-            {q.comment && (
-              <span className="text-quote-comment-dot" aria-label="已评论" />
-            )}
-          </button>
+          {q.discussionReply ? (
+            <button
+              type="button"
+              className="text-quote-reply"
+              title={q.discussionReply.text}
+              aria-label={`查看引用 ${index + 1} 的原文和讨论回复`}
+              onClick={() => actions?.open(q.id)}
+            >
+              <span className="text-quote-number">{index + 1}</span>
+              <span>
+                {q.discussionReply.text.trimStart().split("\n", 1)[0]}
+              </span>
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="text-quote-source"
+                title={`查看原文 · ${quoteSourceLabel(q.source)}${q.draft ? " · 编辑中" : ""}`}
+                aria-label={`查看引用 ${index + 1} 的原文`}
+                onClick={() => actions?.open(q.id)}
+              >
+                <span className="text-quote-number">{index + 1}</span>
+              </button>
+              <button
+                type="button"
+                className="text-quote-edit"
+                disabled={disabled}
+                title={`${quoteSourceLabel(q.source)}${q.draft ? " · 编辑中" : ""}\n${q.text}${q.comment ? `\n${q.comment}` : ""}`}
+                aria-label={`编辑引用 ${index + 1} 的评论`}
+                onClick={(e) => {
+                  const r = e.currentTarget.getBoundingClientRect();
+                  actions?.edit(q.id, { x: r.right, y: r.top, above: true });
+                }}
+              >
+                <span>{q.comment || q.text}</span>
+                {q.comment && (
+                  <span
+                    className="text-quote-comment-dot"
+                    aria-label="已评论"
+                  />
+                )}
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="text-quote-remove"
@@ -758,7 +790,7 @@ function SentTextQuote({
           className="sent-text-quote"
           ref={trigger}
           title={`查看原文 · ${quoteSourceLabel(quote.source)}`}
-          aria-label={`查看引用 ${index + 1} 的原文`}
+          aria-label={`查看引用 ${index + 1} 的原文${quote.discussionReply ? "和讨论回复" : ""}`}
           aria-controls={open ? id : undefined}
           onClick={() => {
             cancelClose();
@@ -771,7 +803,7 @@ function SentTextQuote({
             {quote.source.kind !== "message" && (
               <small>{quoteSourceLabel(quote.source)}</small>
             )}
-            <span>{quote.text}</span>
+            <span>{quote.discussionReply?.text ?? quote.text}</span>
           </span>
           <ArrowUpLeft size={14} aria-hidden="true" />
         </button>
@@ -820,6 +852,11 @@ function SentTextQuote({
           </button>
         </header>
         <div className="sent-text-quote-preview-text">{quote.text}</div>
+        {quote.discussionReply && (
+          <div className="sent-text-quote-preview-text text-quote-preview-reply">
+            {quote.discussionReply.text}
+          </div>
+        )}
       </div>
       {quote.comment && (
         <p className="text-quote-comment" {...commentSource}>

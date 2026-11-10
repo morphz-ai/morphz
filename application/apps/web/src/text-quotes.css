@@ -104,10 +104,16 @@
   font-size: 12px;
   text-align: left;
 }
-.text-quote-chip .text-quote-edit > span:first-child {
+.text-quote-chip .text-quote-edit > span:first-child,
+.text-quote-chip .text-quote-reply > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.text-quote-preview-reply {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 .text-quote-chip .text-quote-remove {
   flex: 0 0 26px;

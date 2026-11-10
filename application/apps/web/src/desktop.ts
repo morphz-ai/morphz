@@ -47,6 +47,7 @@ declare global {
                 kind?: "platform";
               }
             | import("../../../packages/core/src/workspace-changes.js").WorkspaceChangeScope
+            | import("../../../packages/core/src/comment-discussions.js").DiscussionReplyNoticeScope
             | import("zod").infer<
                 typeof import("../../../packages/core/src/terminal.js").terminalChangeScopeSchema
               >,
@@ -60,6 +61,7 @@ declare global {
             value?:
               | import("../../../packages/core/src/live-conversation.js").ConversationStream
               | import("../../../packages/core/src/workspace-changes.js").WorkspaceChange
+              | import("../../../packages/core/src/comment-discussions.js").DiscussionReplyNotices
               | import("../../../packages/core/src/terminal.js").TerminalChange;
           }) => void,
         ): () => void;

@@ -70,6 +70,9 @@ export function discussionTimelinePage(
               ? `stream:${item.attempt_id}`
               : item.entry_id,
           eventId: item.event.id,
+          ...(item.final_event !== false && item.display_kind === "reply"
+            ? { entryId: item.entry_id }
+            : {}),
           rootId: item.root_turn_id,
           createdAt: item.visible_at,
           kind: item.display_kind,

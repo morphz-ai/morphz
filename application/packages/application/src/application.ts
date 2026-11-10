@@ -5,6 +5,8 @@ import {
   commentDiscussionReadSchema,
   commentDiscussionHistoryRequestSchema,
   commentDiscussionContentRequestSchema,
+  type DiscussionReplyNoticeScope,
+  type DiscussionReplyNotices,
 } from "../../core/src/comment-discussions.js";
 
 import {
@@ -2176,7 +2178,8 @@ export class ApplicationSession {
       if (
         op.dispatchMode !== "parallel" ||
         op.newConversation ||
-        !op.textQuotes?.length
+        !op.textQuotes?.length ||
+        op.textQuotes.some((quote) => quote.discussionReply)
       )
         throw new DomainError(
           "invalid",
@@ -2384,6 +2387,47 @@ export class ApplicationSession {
       // A continuation reuses the exact already accepted, owner-authorized
       // snapshot. It grants no new access to the current source object.
       if (savedDiscussion) continue;
+      if (quote.discussionReply) {
+        if (op.newConversation)
+          throw new DomainError(
+            "invalid",
+            "请在讨论所属的对话中发送这条引用。",
+          );
+        const scope = {
+          projectId: op.projectId,
+          conversationId: op.conversationId ?? op.projectId,
+        };
+        const reply = quote.discussionReply;
+        const { quote: original } = await runtime.platformCommentDiscussion(
+          scope,
+          this.access,
+          reply.discussionId,
+        );
+        if (
+          original.text !== quote.text ||
+          !isDeepStrictEqual(original.source, quote.source) ||
+          !isDeepStrictEqual(original.anchor, quote.anchor) ||
+          !!original.draft !== !!quote.draft
+        )
+          throw new DomainError("conflict", "讨论的原文已变化，请重新加入。");
+        const message = await runtime.platformCommentDiscussionContent(
+          scope,
+          this.access,
+          reply.discussionId,
+          reply.messageId,
+          reply.eventId,
+          0,
+        );
+        this.active();
+        if (
+          message.kind !== "reply" ||
+          message.id !== reply.messageId ||
+          message.event_id !== reply.eventId ||
+          message.text !== reply.text ||
+          message.next_offset !== null
+        )
+          throw new DomainError("conflict", "这条讨论回复已变化，请重新加入。");
+      }
       const source = quote.source;
       if (source.kind === "script") {
         const entryId = source.entryId;
@@ -4257,6 +4301,25 @@ export class ApplicationSession {
       close();
       throw error;
     }
+  }
+
+  observeDiscussionReplies(
+    { projectId, conversationId }: DiscussionReplyNoticeScope,
+    emit: (value: DiscussionReplyNotices) => void,
+    onClose: () => void,
+    signal: AbortSignal,
+  ) {
+    this.active();
+    return this.runtime().observeDiscussionReplies(
+      { projectId, conversationId },
+      this.access,
+      (value) => {
+        this.active();
+        emit(value);
+      },
+      onClose,
+      signal,
+    );
   }
 
   async observePlatformConversation(
