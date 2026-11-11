@@ -608,6 +608,50 @@ export function TaskList({
                         dependent.content.execution,
                       ),
                   );
+                const arrangement = (
+                  <ComposerOptions
+                    below
+                    label={`安排事项：${a.title}`}
+                    menuLabel="安排事项"
+                    triggerIcon={<SlidersHorizontal />}
+                    options={[]}
+                    modelControl={
+                      <div className="task-arrange-popover">
+                        <TaskProperties
+                          artifact={a}
+                          state={state}
+                          client={client}
+                          busy={busy || edit.busy}
+                          onChange={edit.save}
+                          showStatus={false}
+                        />
+                      </div>
+                    }
+                  />
+                );
+                const executionActions = (!own || !board) && (
+                  <TaskRunPanel
+                    compact
+                    runtimeObserved
+                    runtimeReadError={runtimeErrors[a.id]}
+                    artifact={a}
+                    state={state}
+                    client={client}
+                    onRespond={() => onOpen(a.id)}
+                    onOpen={onOpen}
+                    beforeMore={board ? undefined : arrangement}
+                    rowStatus={
+                      own && !board ? (
+                        <TaskStatusSelect
+                          artifact={a}
+                          client={client}
+                          busy={busy || edit.busy}
+                          onChange={edit.save}
+                        />
+                      ) : undefined
+                    }
+                  />
+                );
                 return (
                   <li
                     className="task-row"
@@ -848,55 +892,22 @@ export function TaskList({
                         )}
                       </span>
                     </button>
-                    {!board && own && (
-                      <TaskStatusSelect
-                        artifact={a}
-                        client={client}
-                        busy={busy || edit.busy}
-                        onChange={edit.save}
-                      />
-                    )}
                     {board ? (
-                      <TaskProperties
-                        artifact={a}
-                        state={state}
-                        client={client}
-                        busy={busy || edit.busy}
-                        onChange={edit.save}
-                        showStatus={false}
-                      />
+                      <>
+                        <TaskProperties
+                          artifact={a}
+                          state={state}
+                          client={client}
+                          busy={busy || edit.busy}
+                          onChange={edit.save}
+                          showStatus={false}
+                        />
+                        {executionActions}
+                      </>
                     ) : (
-                      <ComposerOptions
-                        below
-                        label={`安排事项：${a.title}`}
-                        menuLabel="安排事项"
-                        triggerIcon={<SlidersHorizontal />}
-                        options={[]}
-                        modelControl={
-                          <div className="task-arrange-popover">
-                            <TaskProperties
-                              artifact={a}
-                              state={state}
-                              client={client}
-                              busy={busy || edit.busy}
-                              onChange={edit.save}
-                              showStatus={false}
-                            />
-                          </div>
-                        }
-                      />
-                    )}
-                    {!own && (
-                      <TaskRunPanel
-                        compact
-                        runtimeObserved
-                        runtimeReadError={runtimeErrors[a.id]}
-                        artifact={a}
-                        state={state}
-                        client={client}
-                        onRespond={() => onOpen(a.id)}
-                        onOpen={onOpen}
-                      />
+                      <div className="task-row-controls">
+                        {executionActions}
+                      </div>
                     )}
                   </li>
                 );

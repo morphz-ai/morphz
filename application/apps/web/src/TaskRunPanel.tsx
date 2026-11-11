@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -13,6 +14,8 @@ export function TaskRunPanel({
   compact = false,
   runtimeObserved = false,
   runtimeReadError,
+  beforeMore,
+  rowStatus,
 }: {
   artifact: Artifact;
   state: Workspace;
@@ -22,6 +25,9 @@ export function TaskRunPanel({
   compact?: boolean;
   runtimeObserved?: boolean;
   runtimeReadError?: string;
+  /** List-row arrangement shares the trailing slots with execution actions. */
+  beforeMore?: ReactNode;
+  rowStatus?: ReactNode;
 }) {
   const panel = useTaskRunPanel({
     artifact,
@@ -63,6 +69,74 @@ export function TaskRunPanel({
       className={`task-run-panel${compact ? " task-run-compact" : ""}`}
       aria-label="实际执行与回应"
     >
+      {!human && !compact && (
+        <p className="task-run-status" role="status">
+          {status.label}
+          {run && <small> · 第 {run.run} 次执行</small>}
+        </p>
+      )}
+      {(!human || beforeMore) && (
+        <div className="task-run-actions">
+          {human ? (
+            rowStatus
+          ) : (
+            <>
+              {primary && (
+                <button
+                  className="task-primary-action"
+                  disabled={primary.disabled}
+                  title={primary.title}
+                  onClick={primary.onSelect}
+                >
+                  {primary.label}
+                </button>
+              )}
+              {active && run && (
+                <button
+                  disabled={busy || !connected || run.stopRequested}
+                  onClick={stopCurrentRun}
+                >
+                  {run.stopRequested ? status.label : "停止"}
+                </button>
+              )}
+              {active && !run && (
+                <button
+                  disabled={busy || !connected}
+                  onClick={withdrawArrangement}
+                >
+                  撤回安排
+                </button>
+              )}
+            </>
+          )}
+          {beforeMore}
+          {beforeMore ? (
+            <span
+              className="task-row-more-slot"
+              aria-hidden={human || !secondary.length || undefined}
+            >
+              {!human && secondary.length > 0 && (
+                <ComposerOptions
+                  below
+                  label={`更多操作：${artifact.title}`}
+                  menuLabel="事项操作"
+                  options={secondary}
+                />
+              )}
+            </span>
+          ) : (
+            !human &&
+            secondary.length > 0 && (
+              <ComposerOptions
+                below
+                label={`更多操作：${artifact.title}`}
+                menuLabel="事项操作"
+                options={secondary}
+              />
+            )
+          )}
+        </div>
+      )}
       {human ? (
         <>
           {responsesLoading && (
@@ -80,7 +154,7 @@ export function TaskRunPanel({
               </small>
             </blockquote>
           ))}
-          {canRespond && (
+          {canRespond && !beforeMore && (
             <button className="task-result-action" onClick={onRespond}>
               提交结果并完成
             </button>
@@ -88,48 +162,6 @@ export function TaskRunPanel({
         </>
       ) : (
         <>
-          {!compact && (
-            <p className="task-run-status" role="status">
-              {status.label}
-              {run && <small> · 第 {run.run} 次执行</small>}
-            </p>
-          )}
-          <div className="task-run-actions">
-            {primary && (
-              <button
-                className="task-primary-action"
-                disabled={primary.disabled}
-                title={primary.title}
-                onClick={primary.onSelect}
-              >
-                {primary.label}
-              </button>
-            )}
-            {active && run && (
-              <button
-                disabled={busy || !connected || run.stopRequested}
-                onClick={stopCurrentRun}
-              >
-                {run.stopRequested ? status.label : "停止"}
-              </button>
-            )}
-            {active && !run && (
-              <button
-                disabled={busy || !connected}
-                onClick={withdrawArrangement}
-              >
-                撤回安排
-              </button>
-            )}
-            {secondary.length > 0 && (
-              <ComposerOptions
-                below
-                label={`更多操作：${artifact.title}`}
-                menuLabel="事项操作"
-                options={secondary}
-              />
-            )}
-          </div>
           {!compact && status.reason && (
             <p className="task-status-reason">{status.reason}</p>
           )}

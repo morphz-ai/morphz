@@ -51,6 +51,29 @@
   flex: 0 0 auto;
   align-self: center;
 }
+.task-row-controls {
+  --task-more-slot-size: 32px;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  margin-inline-start: auto;
+}
+.task-row-controls > .task-run-compact {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.task-row-controls .task-run-actions {
+  flex-wrap: nowrap;
+}
+.task-row-more-slot {
+  display: grid;
+  place-items: center;
+  flex: 0 0 var(--task-more-slot-size);
+  inline-size: var(--task-more-slot-size);
+}
 .task-arrange-popover {
   padding: 8px;
   max-width: min(400px, 80vw);
@@ -516,6 +539,9 @@
   }
 }
 @media (pointer: coarse) {
+  .task-row-controls {
+    --task-more-slot-size: 44px;
+  }
   .app .task-toggle {
     flex-basis: 44px;
     width: 44px;
