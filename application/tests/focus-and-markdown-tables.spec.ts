@@ -74,6 +74,8 @@ async function prepare(page: Page, document = false) {
   return {
     root,
     table: root.getByRole("region", { name: "表格", exact: true }),
+    client: fixture.client,
+    spaces: fixture.spaces,
   };
 }
 
@@ -157,7 +159,9 @@ for (const document of [false, true]) {
           .evaluate((e) => getComputedStyle(e).whiteSpace),
       ).toBe("pre-wrap");
       expect(
-        await root.locator("pre").evaluate((e) => e.scrollWidth - e.clientWidth),
+        await root
+          .locator("pre")
+          .evaluate((e) => e.scrollWidth - e.clientWidth),
       ).toBeLessThanOrEqual(1);
       await table.screenshot({
         path: info.outputPath(`${width}-${zoom}-table.png`),
@@ -258,5 +262,63 @@ test("按钮和弹层统一区分鼠标与键盘，四主题亮暗不回退原�
   }
   await page.screenshot({
     path: info.outputPath("buttons-no-pointer-ring.png"),
+  });
+});
+
+test("事项状态与安排选择器鼠标保留焦点不留外框，键盘提示和文本编辑反馈仍可见", async ({
+  page,
+}, info) => {
+  const { client, spaces } = await prepare(page);
+  const taskId = randomUUID();
+  const title = `TEST 选择器焦点 ${taskId}`;
+  await client.createTask({
+    commandId: randomUUID(),
+    taskId,
+    projectId: spaces.deskId,
+    title,
+    description: "焦点回归，不开始执行",
+    assigneeId: client.boot.actantId,
+  });
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: /^事项/ })
+    .click();
+  const row = page.locator(`.task-row[data-task-id="${taskId}"]`);
+  const status = row.getByLabel("事项状态", { exact: true });
+  await expect(status).toHaveValue("planned");
+  for (const appearance of ["亮色", "暗色"]) {
+    const settings = await openSettings(page, "外观");
+    await settings
+      .getByRole("button", { name: appearance, exact: true })
+      .click();
+    await page.keyboard.press("Escape");
+    // Inspect retained focus while the native choice is open. No blur or
+    // tabindex removal is allowed to obtain the pointer appearance.
+    await status.click();
+    await expect(status).toBeFocused();
+    expect((await focusStyle(status)).mode).toBe("pointer");
+    expect((await focusStyle(status)).outline).toBe("none");
+    await page.keyboard.press("Escape");
+    await keyboardFocus(page, status);
+    expect((await focusStyle(status)).outline).toBe("solid");
+    await row
+      .getByRole("button", { name: `安排事项：${title}`, exact: true })
+      .click();
+    const project = row.getByLabel("项目", { exact: true });
+    await keyboardFocus(page, project);
+    expect((await focusStyle(project)).outline).toBe("solid");
+    await project.click();
+    await expect(project).toBeFocused();
+    expect((await focusStyle(project)).outline).toBe("none");
+    await page.keyboard.press("Escape");
+    await page.getByRole("heading", { name: "事项", exact: true }).click();
+    const search = page.getByLabel("搜索事项").filter({ visible: true });
+    await search.click();
+    await expect(search).toBeFocused();
+    expect((await focusStyle(search.locator(".."))).outline).toBe("solid");
+    await expect(status).toHaveValue("planned");
+  }
+  await page.screenshot({
+    path: info.outputPath("task-select-pointer-focus.png"),
   });
 });

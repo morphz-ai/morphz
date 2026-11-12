@@ -48,10 +48,12 @@ button:disabled {
   outline-offset: -2px;
 }
 /* Pointer activation/restoration still owns real focus, but not a keyboard
-   outline. Leave text-field focus recipes and all native keyboard paths intact. */
+   outline. Native selects are choices, not text editors: their retained focus
+   must follow the same modality as buttons. Leave text-field editing cues and
+   all native keyboard paths intact. */
 :root[data-ui-focus="pointer"]
   :is(.app, .startup, .connection-screen, .selection-actions)
-  :is(button, a, summary, [tabindex]):not(input, textarea, select):focus,
+  :is(button, a, summary, select, [tabindex]):not(input, textarea):focus,
 :root[data-ui-focus="pointer"]
   :is(.app, .startup, .connection-screen)
   input:is([type="checkbox"], [type="radio"], [type="range"]):focus {
