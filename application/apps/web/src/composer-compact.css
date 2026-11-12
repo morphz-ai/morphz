@@ -285,7 +285,8 @@
   background: var(--accent);
   box-shadow: 0 1px 3px #0002;
 }
-.composer-capacity-input-row
+:root:not([data-ui-focus="pointer"])
+  .composer-capacity-input-row
   > input[type="range"]:focus-visible::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }

@@ -167,7 +167,8 @@
   right: 8px;
   opacity: 0;
 }
-.composer-question
+:root:not([data-ui-focus="pointer"])
+  .composer-question
   :is(.user-input-choice, .runtime-question-choice):has(input:focus-visible) {
   outline: 2px solid var(--accent-strong);
   outline-offset: 1px;

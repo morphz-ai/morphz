@@ -100,6 +100,16 @@ async function keyboardFocus(page: Page, target: Locator) {
   await expect(target).toBeFocused();
 }
 
+async function returnToPointer(page: Page, target: Locator) {
+  // Real motion, without clicking/blurring the focused control. The second
+  // point also covers a pointer already resting at the first point.
+  await page.mouse.move(8, 8);
+  await page.mouse.move(12, 8);
+  await expect(target).toBeFocused();
+  expect((await focusStyle(target)).mode).toBe("pointer");
+  expect((await focusStyle(target)).outline).toBe("none");
+}
+
 async function wrapped(table: Locator) {
   return table.evaluate((element) => {
     const cell = element.querySelector("tbody td:nth-child(2)")!;
@@ -234,8 +244,14 @@ test("搜索自动聚焦输入，鼠标关闭不把原生框带回按钮，键�
 test("按钮和弹层统一区分鼠标与键盘，四主题亮暗不回退原生颜色", async ({
   page,
 }, info) => {
-  await prepare(page);
+  const { table } = await prepare(page);
   const trigger = page.getByRole("button", { name: "外观设置", exact: true });
+  const activity = page.getByRole("tab", { name: "活动", exact: true });
+  if (!(await activity.isVisible()))
+    await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  const navigation = page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true });
   for (const appearance of ["亮色", "暗色"]) {
     for (const accent of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
       const settings = await openSettings(page, "外观");
@@ -254,6 +270,14 @@ test("按钮和弹层统一区分鼠标与键盘，四主题亮暗不回退原�
       await page.keyboard.press("Enter");
       await page.keyboard.press("Escape");
       await expect(trigger).toBeFocused();
+      expect((await focusStyle(trigger)).outline).toBe("solid");
+      await returnToPointer(page, trigger);
+      for (const target of [navigation, activity, table]) {
+        await keyboardFocus(page, target);
+        expect((await focusStyle(target)).outline).toBe("solid");
+        await returnToPointer(page, target);
+      }
+      await keyboardFocus(page, trigger);
       expect((await focusStyle(trigger)).outline).toBe("solid");
       await trigger.click();
       expect((await focusStyle(trigger)).outline).toBe("none");
@@ -301,6 +325,14 @@ test("事项状态与安排选择器鼠标保留焦点不留外框，键盘提�
     await page.keyboard.press("Escape");
     await keyboardFocus(page, status);
     expect((await focusStyle(status)).outline).toBe("solid");
+    await returnToPointer(page, status);
+    const openTask = row.getByRole("button", {
+      name: `打开事项：${title}`,
+      exact: true,
+    });
+    await keyboardFocus(page, openTask);
+    expect((await focusStyle(openTask)).outline).toBe("solid");
+    await returnToPointer(page, openTask);
     await row
       .getByRole("button", { name: `安排事项：${title}`, exact: true })
       .click();
