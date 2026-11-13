@@ -467,6 +467,105 @@ const cognitiveWriterRecipe = `  const writeDrafts = createCognitiveDraftWriter(
 const cognitiveWriterImport =
   'import { createCognitiveDraftWriter } from "./host/cognitive-draft-writer.js";';
 
+test("discussion quote revisit preserves exact quote guards and the actual scoped owner, never a nominal lookalike", () => {
+  verifyExchangeReferencePreparationConsumption(currentApp, currentOwner);
+  const variants: [string, string, string][] = [
+    [
+      "confirmed source reveal",
+      "if (revealed && quote.discussionReply)",
+      "if (quote.discussionReply)",
+    ],
+    ["original reveal result", "return revealed;", "return true;"],
+    [
+      "exact reply quote",
+      "commentDiscussions.openReply(quote);",
+      "commentDiscussions.openReply({ ...quote, id: 'other' });",
+    ],
+    [
+      "reply metadata guard",
+      "if (value.quote.discussionReply)",
+      "if (value.quote)",
+    ],
+    [
+      "message keeps its conversation surface",
+      'value.quote.source.kind !== "message" &&',
+      'value.quote.source.kind === "message" &&',
+    ],
+    [
+      "dedicated dialogue stays visible",
+      "if (!dialogueCanvas && conversationVisible)",
+      "if (conversationVisible)",
+    ],
+    [
+      "hidden conversation is not expanded",
+      "if (!dialogueCanvas && conversationVisible)",
+      "if (!dialogueCanvas)",
+    ],
+    [
+      "original quote reveal is committed",
+      "setQuoteReveal(value);",
+      "setQuoteReveal({ ...value, token: 'foreign' });",
+    ],
+    [
+      "owning discussion instance",
+      "const commentDiscussions = useCommentDiscussions({",
+      "const commentDiscussions = foreignDiscussions({",
+    ],
+    [
+      "verified identity",
+      "identity: client.boot!.csrfToken,",
+      "identity: 'foreign',",
+    ],
+    [
+      "actual current capability",
+      "!!client.boot!.capabilities.commentDiscussions &&",
+      "true &&",
+    ],
+    [
+      "real discussion module",
+      'from "./CommentDiscussions.js"',
+      'from "./foreign-discussions.js"',
+    ],
+    [
+      "work-surface presentation owner",
+      "} = workSurface;",
+      "} = foreignSurface;",
+    ],
+    [
+      "exchange presentation owner",
+      "} = exchangeController;",
+      "} = foreignController;",
+    ],
+  ];
+  for (const [label, before, after] of variants) {
+    assert.equal(
+      currentApp.split(before).length,
+      2,
+      label + " exact mutation seam",
+    );
+    assert.throws(
+      () =>
+        verifyExchangeReferencePreparationConsumption(
+          currentApp.replace(before, after),
+          currentOwner,
+        ),
+      undefined,
+      label,
+    );
+  }
+  const aliased = currentApp
+    .replace(
+      "  useCommentDiscussions,",
+      "  useCommentDiscussions as useActualDiscussions,",
+    )
+    .replace(
+      "const commentDiscussions = useCommentDiscussions({",
+      "const commentDiscussions = useActualDiscussions({",
+    );
+  assert.notEqual(aliased, currentApp);
+  verifyExchangeReferencePreparationConsumption(aliased, currentOwner);
+});
+
 test("current guarded draft writer and original direct writer remain finite distinct accepted profiles", () => {
   assert.equal(currentApp.split(cognitiveWriterRecipe).length, 2);
   verifyExchangeReferencePreparationConsumption(currentApp, currentOwner);

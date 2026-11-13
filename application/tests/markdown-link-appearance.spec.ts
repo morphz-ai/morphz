@@ -267,7 +267,6 @@ for (const consumer of consumers) {
           ]);
 
           await keyboardFocus(page, link);
-          await page.mouse.move(0, 0);
           const focused = await appearanceOf(link);
           assertReadable(focused);
           expect(focused.ink).toEqual(focused.strong);
@@ -280,6 +279,9 @@ for (const consumer of consumers) {
             normal.height,
             normal.weight,
           ]);
+          await page.mouse.move(0, 0);
+          await expect(link).toBeFocused();
+          expect((await appearanceOf(link)).outline).toBe("none");
 
           await link.hover();
           await page.mouse.down();

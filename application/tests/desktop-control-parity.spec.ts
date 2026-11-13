@@ -696,10 +696,10 @@ test("scoped approval requires explicit scope review; delegated Agent stop uses 
     approvalId: "TEST-approval",
     fingerprint: approval.fingerprint,
   });
-  await page.getByRole("tab", { name: "活动", exact: true }).click();
-  await page
-    .locator(`[data-thread-id="${x.thread.id}"].execution-activity-row`)
-    .click();
+  // The controlled snapshot still has the pending approval. A row click now
+  // correctly routes that attention to Authorization; explicit inspection uses
+  // the existing source link rather than pretending that stale snapshot settled.
+  await card.getByRole("button", { name: "查看执行", exact: true }).click();
   await page
     .getByRole("region", { name: "委派子任务", exact: true })
     .locator(`[data-thread-id="${child.id}"]`)

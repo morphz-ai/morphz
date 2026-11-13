@@ -384,12 +384,15 @@ for (const mode of ["亮色", "暗色"])
         await page.keyboard.press("Shift+Tab");
         await page.keyboard.press("Tab");
         await expect(button).toBeFocused();
-        await page.mouse.move(0, 0);
         await settleTransitions(page);
         const focus = await appearance(button);
         expect(focus.contrast).toBeGreaterThanOrEqual(4.5);
         expect(focus.outline).toBe("solid");
         expect(focus.outlineWidth).toBe("1px");
+        await page.mouse.move(0, 0);
+        await expect(button).toBeFocused();
+        await settleTransitions(page);
+        expect((await appearance(button)).outline).toBe("none");
         await button.hover();
         await page.mouse.down();
         await settleTransitions(page);

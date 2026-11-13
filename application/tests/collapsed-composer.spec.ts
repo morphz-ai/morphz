@@ -132,7 +132,35 @@ test("收起入口跟随真实形状的运行、并行、等待、重试、审�
     },
   ];
   await f.refresh();
+  await expect(entry).toContainText("等待用户回复");
+  const waiting = runtime.activity!.threads[0]!;
+  waiting.continuation = {
+    mode: "supplement",
+    inputId: waiting.inputId!,
+    threadId: waiting.id,
+    generation: 4,
+  };
+  waiting.userInputRequest = {
+    request_id: "question-current",
+    thread_id: waiting.id,
+    thread_generation: 4,
+    session_id: waiting.sessionId,
+    context_id: waiting.contextId!,
+    requested_at: stamp,
+    questions: [
+      {
+        id: "format",
+        question: "TEST：用哪种格式？",
+        options: [],
+        multi_select: false,
+      },
+    ],
+  };
+  await f.refresh();
   await expect(entry).toContainText("等待你回复");
+  waiting.userInputRequest.thread_generation = 3;
+  await f.refresh();
+  await expect(entry).toContainText("等待用户回复");
   await expect(entry).not.toHaveAttribute("data-animated", "true");
   runtime.activity!.threads = [];
   runtime.messages = [

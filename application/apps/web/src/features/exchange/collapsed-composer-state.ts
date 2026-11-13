@@ -10,6 +10,7 @@ import {
   responseWaitingPresentation,
 } from "../../conversation-presentation.js";
 import {
+  executionActivityCanReply,
   executionActivityIsDeferred,
   executionActivityStatus,
 } from "../../execution-activity.js";
@@ -180,7 +181,9 @@ export function collapsedComposerState({
       thread.inputId!,
       result(
         kind,
-        status.label,
+        status.kind === "waiting" && executionActivityCanReply(thread, true)
+          ? "等待你回复"
+          : status.label,
         detail(thread.inputId!, thread.summary || thread.title),
         kind === "running",
         1,

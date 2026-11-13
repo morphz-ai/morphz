@@ -306,12 +306,14 @@ test("本人消息引用：四强调色亮暗正常、悬停、Tab与按下沿�
         path: info.outputPath(`${appearance}-${accent}-hover.png`),
       });
       await tabFocus(page, quote);
-      await page.mouse.move(0, 0);
       const focused = await settled(quote, "hover");
       assertState(focused, normal);
       expect(focused.focusVisible).toBe(true);
       expect(focused.outline).toBe("solid");
       expect(parseFloat(focused.outlineWidth)).toBeGreaterThan(0);
+      await page.mouse.move(0, 0);
+      await expect(quote).toBeFocused();
+      expect((await settled(quote, "hover")).outline).toBe("none");
       await quote.hover();
       await page.mouse.down();
       const active = await settled(quote, "pressed");

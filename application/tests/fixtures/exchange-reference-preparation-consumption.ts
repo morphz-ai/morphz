@@ -375,6 +375,51 @@ const stateRegistration =
   "const { quoteReveal, setQuoteReveal } = useExchangeQuoteRevealState();";
 const commitRegistration =
   "useExchangeQuoteRevealCommit(conversationId, setQuoteReveal);";
+// The reviewed discussion-reply revisit adds exactly these two presentation
+// continuations. Keep the old factory/history intact; all other options and
+// every original command/authority recipe still compare in full below.
+const discussionFactory = replace(
+  expectedFactory,
+  "      reveal: revealTextQuote,\n      setReveal: setQuoteReveal,",
+  `      reveal: (quote) => {
+        const revealed = revealTextQuote(quote);
+        if (revealed && quote.discussionReply) {
+          if (!dialogueCanvas && conversationVisible) setInteraction("input");
+          commentDiscussions.openReply(quote);
+        }
+        return revealed;
+      },
+      setReveal: (value) => {
+        setQuoteReveal(value);
+        if (value.quote.discussionReply) {
+          if (
+            value.quote.source.kind !== "message" &&
+            !dialogueCanvas &&
+            conversationVisible
+          )
+            setInteraction("input");
+          commentDiscussions.openReply(value.quote);
+        }
+      },`,
+  "reviewed discussion quote continuations",
+);
+const discussionRegistration = `const commentDiscussions = useCommentDiscussions({
+    projectId: conversationProjectId,
+    conversationId,
+    identity: client.boot!.csrfToken,
+    storageScope: \`\${client.boot!.centerId}:\${client.boot!.principalId}\`,
+    connected: client.online && client.boot!.runtime.connected,
+    enabled:
+      !!client.boot!.capabilities.commentDiscussions &&
+      !selectedDraft &&
+      !selectedConversation?.archivedAt,
+    model: sessionEvaluation.enabled
+      ? sessionEvaluation.defaults.model
+      : draft.model,
+    reasoningEffort: sessionEvaluation.enabled
+      ? sessionEvaluation.defaults.reasoningEffort
+      : draft.reasoningEffort,
+  });`;
 const appImport = `import {
   createExchangeReferenceCommands,
   useExchangeQuoteRevealState,
@@ -1754,6 +1799,8 @@ export function verifyExchangeReferencePreparationConsumption(
     Host: integration.host,
     BuiltinIntent: 'const value = () => onComposeIntent("script");',
     Factory: expectedFactory,
+    DiscussionFactory: discussionFactory,
+    DiscussionRegistration: discussionRegistration,
     CognitiveWriter: `const writeDrafts = createCognitiveDraftWriter({
       writeInputs: draftCommands.writeInputs,
       captureScope: () =>
@@ -2033,7 +2080,14 @@ export function verifyExchangeReferencePreparationConsumption(
     isObjectLiteralExpression(call.arguments[0]!),
     "complete preparation captured render fields scope and distinct lazy focus ports",
   );
-  const expected = parsed.get("Factory")!,
+  const quotes = property(call.arguments[0]!, "quotes").initializer;
+  assert(isObjectLiteralExpression(quotes), "actual captured quote ports");
+  const discussionRevisit =
+    isArrowFunction(property(quotes, "reveal").initializer) ||
+    isArrowFunction(property(quotes, "setReveal").initializer);
+  const expected = parsed.get(
+      discussionRevisit ? "DiscussionFactory" : "Factory",
+    )!,
     expectedCall = one(
       expected.nodes
         .filter(isCallExpression)
@@ -2062,6 +2116,57 @@ export function verifyExchangeReferencePreparationConsumption(
     "complete preparation captured render fields scope and distinct lazy focus ports",
     names,
   );
+  if (discussionRevisit) {
+    const registration = localVariable(main, "commentDiscussions");
+    directStatement(registration, "unconditional discussion quote owner");
+    const expectedRegistration = parsed.get("DiscussionRegistration")!;
+    currentSame(
+      statement(registration),
+      app,
+      expectedRegistration.source.statements[0]!,
+      expectedRegistration,
+      "exact discussion quote owner scope and live model controls",
+      names,
+    );
+    const imported = currentImport(
+      app,
+      "./CommentDiscussions.js",
+      "useCommentDiscussions",
+    );
+    assert(
+      registration.initializer && isCallExpression(registration.initializer),
+    );
+    assert(isIdentifier(registration.initializer.expression));
+    assert.equal(
+      aliasOrigin(app, registration.initializer.expression),
+      app.symbols.get(imported),
+      "actual discussion quote owner import",
+    );
+    for (const [field, owner] of [
+      ["dialogueCanvas", "workSurface"],
+      ["conversationVisible", "exchangeController"],
+    ]) {
+      const binding = one(
+        body.statements
+          .filter(isVariableStatement)
+          .flatMap((s) => [...s.declarationList.declarations])
+          .filter(
+            (d) =>
+              isObjectBindingPattern(d.name) &&
+              d.name.elements.some(
+                (e) => (e.propertyName ?? e.name).getText() === field,
+              ),
+          ),
+        "direct discussion presentation binding " + field,
+      );
+      assert(binding.initializer && isIdentifier(binding.initializer));
+      assert.equal(
+        aliasOrigin(app, binding.initializer),
+        hostOrigins.get(owner),
+        "actual discussion presentation owner " + field,
+      );
+    }
+  }
   for (const identifier of ownedNodes(call.arguments[0]!).filter(
     isIdentifier,
   )) {

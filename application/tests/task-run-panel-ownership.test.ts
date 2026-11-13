@@ -198,7 +198,14 @@ function fn(p: Parsed, name: string) {
   return found[0]!;
 }
 function expression(raw: string) {
-  const p = parsed({ Expression: "const value=" + raw + ";" }).Expression!;
+  const p = parsed({
+    Expression:
+      'import { ComposerOptions } from "./ComposerOptions.js";\n' +
+      'import { TaskStatusSelect } from "./TaskArrangement.js";\n' +
+      "const value=" +
+      raw +
+      ";",
+  }).Expression!;
   return { p, node: p.nodes.find(ts.isVariableDeclaration)!.initializer! };
 }
 function same(
@@ -299,12 +306,12 @@ function guard(element: ts.Node, p: Parsed, raws: string[], rule: string) {
   const found: ts.Node[] = [];
   for (let n: ts.Node | undefined = element; n; n = n.parent)
     if (
-      ts.isJsxExpression(n) &&
-      n.expression &&
-      ts.isBinaryExpression(n.expression) &&
-      n.expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
+      n.right.pos <= element.pos &&
+      element.end <= n.right.end
     )
-      found.push(n.expression.left);
+      found.push(n.left);
   assert.equal(found.length, raws.length, rule);
   found.forEach((n, i) => same(n, p, raws[i]!, rule));
 }
@@ -599,7 +606,12 @@ function validate(contents: Sources) {
       value,
       "original-primary-consumption",
     );
-  guard(primary, renderer, ["primary"], "original-primary-consumption");
+  guard(
+    primary,
+    renderer,
+    ["primary", "!human || beforeMore"],
+    "original-primary-consumption",
+  );
   const respond = buttonByClass("task-result-action");
   same(
     attribute(respond, "onClick"),
@@ -607,10 +619,15 @@ function validate(contents: Sources) {
     "onRespond",
     "original-human-response-callback",
   );
-  guard(respond, renderer, ["canRespond"], "original-human-response-callback");
+  guard(
+    respond,
+    renderer,
+    ["canRespond && !beforeMore"],
+    "original-human-response-callback",
+  );
   const expectedGuards = [
-    ["active && run"],
-    ["active && !run"],
+    ["active && run", "!human || beforeMore"],
+    ["active && !run", "!human || beforeMore"],
     [
       'run.record && !run.sourceStopped && (["queued","paused"].includes(run.record.status)||run.hasSourceWatch)',
       "!compact && run",
@@ -655,19 +672,41 @@ function validate(contents: Sources) {
     );
   }
   const menus = tag(renderer, "ComposerOptions");
-  assert.equal(menus.length, 1, "original-options-consumption");
+  // List rows reserve their trailing slot, while detail/board views keep the
+  // original direct menu. These are exclusive branches, never two live menus.
+  assert.equal(menus.length, 2, "original-options-consumption");
+  for (const menu of menus)
+    same(
+      attribute(menu, "options"),
+      renderer,
+      "secondary",
+      "original-options-consumption",
+    );
+  const placement = renderer.nodes
+    .filter(ts.isConditionalExpression)
+    .filter(
+      (n) => ts.isIdentifier(n.condition) && n.condition.text === "beforeMore",
+    );
+  assert.equal(placement.length, 1, "original-options-consumption");
   same(
-    attribute(menus[0]!, "options"),
+    placement[0]!,
     renderer,
-    "secondary",
+    `beforeMore ? (
+    <span className="task-row-more-slot" aria-hidden={human || !secondary.length || undefined}>
+      {!human && secondary.length > 0 && (
+        <ComposerOptions below label={\`更多操作：\${artifact.title}\`} menuLabel="事项操作" options={secondary} />
+      )}
+    </span>
+  ) : (!human && secondary.length > 0 && (
+    <ComposerOptions below label={\`更多操作：\${artifact.title}\`} menuLabel="事项操作" options={secondary} />
+  ))`,
     "original-options-consumption",
   );
-  guard(
-    menus[0]!,
-    renderer,
-    ["secondary.length > 0"],
-    "original-options-consumption",
-  );
+  for (const menu of menus) {
+    let owner: ts.Node | undefined = menu;
+    while (owner && owner !== placement[0]) owner = owner.parent;
+    assert.equal(owner, placement[0], "original-options-consumption");
+  }
   const dialogs = tag(renderer, "ExecutionDialog");
   assert.equal(dialogs.length, 1, "original-inspection-consumption");
   same(
@@ -723,8 +762,11 @@ function validate(contents: Sources) {
         onRespond: "()=>onOpen(a.id)",
         onOpen: "onOpen",
         runtimeReadError: "runtimeErrors[a.id]",
+        beforeMore: "board ? undefined : arrangement",
+        rowStatus:
+          "own && !board ? (<TaskStatusSelect artifact={a} client={client} busy={busy || edit.busy} onChange={edit.save} />) : undefined",
       },
-      "!own",
+      "!own || !board",
     ],
   ] as const) {
     const parent = p[key]!,
@@ -1040,6 +1082,51 @@ const negatives: Record<string, readonly Negative[]> = {
       "original-parent-mount-qualification",
     ],
   ],
+  "arrangement slots preserve the same original action gates and exclusive menu":
+    [
+      [
+        "Renderer",
+        "{(!human || beforeMore) && (",
+        "{beforeMore && (",
+        "original-primary-consumption",
+      ],
+      [
+        "Renderer",
+        "{canRespond && !beforeMore && (",
+        "{canRespond && (",
+        "original-human-response-callback",
+      ],
+      [
+        "Renderer",
+        "{beforeMore ? (",
+        "{true ? (",
+        "original-options-consumption",
+      ],
+      [
+        "Renderer",
+        "aria-hidden={human || !secondary.length || undefined}",
+        "aria-hidden={false}",
+        "original-options-consumption",
+      ],
+      [
+        "List",
+        "beforeMore={board ? undefined : arrangement}",
+        "beforeMore={arrangement}",
+        "original-parent-borrowed-contract",
+      ],
+      [
+        "List",
+        "const executionActions = (!own || !board) && (",
+        "const executionActions = !own && (",
+        "original-parent-mount-qualification",
+      ],
+      [
+        "List",
+        "own && !board ? (",
+        "own ? (",
+        "original-parent-borrowed-contract",
+      ],
+    ],
 };
 for (const [name, cases] of Object.entries(negatives))
   test(name + " reject parse-valid counterfactuals", () => {

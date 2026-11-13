@@ -247,7 +247,7 @@ test("waiting and paused use exact scheduler labels without busy animation; defe
   const f = facts();
   const t = thread({ phase: "waiting", waitKinds: ["user_input"] });
   f.runtime.activity!.threads = [t];
-  assert.equal(collapsedComposerState(f).label, "等待你回复");
+  assert.equal(collapsedComposerState(f).label, "等待用户回复");
   assert.equal(collapsedComposerState(f).animated, false);
   t.waitKinds = ["thread_group"];
   assert.equal(collapsedComposerState(f).label, "等待子任务结果");
@@ -277,6 +277,52 @@ test("waiting and paused use exact scheduler labels without busy animation; defe
     },
   ];
   assert.equal(collapsedComposerState(f).kind, "idle");
+});
+test("collapsed wait only addresses the user for an exact currently answerable question", () => {
+  const f = facts();
+  const t = thread({
+    phase: "waiting",
+    waitKinds: ["user_input"],
+    continuation: {
+      mode: "supplement",
+      inputId: "input-a",
+      threadId: "thread-a",
+      generation: 4,
+    },
+    userInputRequest: {
+      request_id: "question-a",
+      thread_id: "thread-a",
+      thread_generation: 4,
+      session_id: "session-a",
+      context_id: "context-a",
+      requested_at: stamp,
+      questions: [
+        {
+          id: "format",
+          question: "TEST：用哪种格式？",
+          options: [],
+          multi_select: false,
+        },
+      ],
+    },
+  });
+  f.runtime.activity!.threads = [t];
+  assert.equal(collapsedComposerState(f).label, "等待你回复");
+  assert.equal(collapsedComposerState(f).animated, false);
+  t.userInputRequest!.thread_generation = 3;
+  assert.equal(collapsedComposerState(f).label, "等待用户回复");
+  t.userInputRequest!.thread_generation = 4;
+  t.userInputRequest!.reply_allowed = false;
+  assert.equal(collapsedComposerState(f).label, "等待用户回复");
+  t.userInputRequest!.reply_allowed = true;
+  t.phase = "running";
+  assert.equal(collapsedComposerState(f).kind, "running");
+  t.phase = "waiting";
+  t.controlState = "paused";
+  assert.equal(collapsedComposerState(f).kind, "paused");
+  t.controlState = "active";
+  f.runtime.activity!.available = false;
+  assert.notEqual(collapsedComposerState(f).label, "等待你回复");
 });
 test("recovery distinguishes service retry from credential repair and a resumed recovery is not still waiting", () => {
   const f = facts();

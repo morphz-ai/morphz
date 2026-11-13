@@ -226,7 +226,6 @@ test("纯图标补充入口：四强调色亮暗悬停、Tab、按下不出现�
         await page.keyboard.press("Shift+Tab");
         await page.keyboard.press("Tab");
         await expect(button).toBeFocused();
-        await page.mouse.move(0, 0);
         const focused = await settled(button, "hover");
         assertState(focused, normal);
         expect(focused.focusVisible).toBe(true);
@@ -235,6 +234,9 @@ test("纯图标补充入口：四强调色亮暗悬停、Tab、按下不出现�
         await message.screenshot({
           path: info.outputPath(`${appearance}-${accent}-${name}-focused.png`),
         });
+        await page.mouse.move(0, 0);
+        await expect(button).toBeFocused();
+        expect((await settled(button, "hover")).outline).toBe("none");
         await button.hover();
         await page.mouse.down();
         const active = await settled(button, "pressed");

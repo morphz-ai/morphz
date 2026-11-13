@@ -52,7 +52,11 @@ export function CommentDiscussionPanel({controller,point,readOnly}:{controller:C
       const article=[...document.querySelectorAll<HTMLElement>('article[data-event-id]')].find(node=>node.dataset.eventId===id);
       const body=article?.querySelector<HTMLElement>('.message-body');
       const range=body&&discussionRange(body,{id:view.id,title:'',preview:Array.from(view.quote.text).slice(0,160).join(''),text:view.quote.text,locator:view.quote.locator,created_at_micros:0,publish_to_session:view.publish});
-      const rect=range?.getBoundingClientRect();
+      const textRect=range?.getBoundingClientRect(),bodyRect=body?.getBoundingClientRect();
+      // Keep the selected source row, including its reserved discussion-marker
+      // edge, clear. A glyph-only Range excludes that edge and lets the panel
+      // cover part of the marked message even though the text itself fits.
+      const rect=textRect&&bodyRect?new DOMRect(bodyRect.left,textRect.top,bodyRect.width,textRect.height):textRect;
       void positionTextPopover(element,rect?{x:rect.right,y:rect.bottom,rect}:point,'right-start');
     })
   },[view,point])
