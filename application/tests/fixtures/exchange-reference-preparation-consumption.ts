@@ -2145,7 +2145,7 @@ export function verifyExchangeReferencePreparationConsumption(
     for (const [field, owner] of [
       ["dialogueCanvas", "workSurface"],
       ["conversationVisible", "exchangeController"],
-    ]) {
+    ] as const) {
       const binding = one(
         body.statements
           .filter(isVariableStatement)
@@ -2154,7 +2154,7 @@ export function verifyExchangeReferencePreparationConsumption(
             (d) =>
               isObjectBindingPattern(d.name) &&
               d.name.elements.some(
-                (e) => (e.propertyName ?? e.name).getText() === field,
+                (e) => (e.propertyName ?? e.name)?.getText() === field,
               ),
           ),
         "direct discussion presentation binding " + field,

@@ -549,7 +549,7 @@ test("discussion quote revisit preserves exact quote guards and the actual scope
           currentApp.replace(before, after),
           currentOwner,
         ),
-      undefined,
+      Error,
       label,
     );
   }

@@ -1,6 +1,7 @@
 import type {
   CommentDiscussionMessage,
   CommentDiscussionPage,
+  DiscussionReplyLocator,
 } from "./comment-discussion-types.js";
 import type {
   DiscussionActivity,
@@ -10,7 +11,6 @@ import {
   canonicalDiscussionSource,
   discussionCommandId,
 } from "./comment-discussion-drafts.js";
-import type { DiscussionReplyLocator } from "./text-quotes.js";
 
 export type DiscussionSummary = {
   id: string;

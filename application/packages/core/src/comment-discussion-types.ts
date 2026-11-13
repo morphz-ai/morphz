@@ -1,5 +1,10 @@
 /** Shared presentation contract. Keep this module independent of Host schemas
  * so the standalone Dashboard can consume it without Desktop dependencies. */
+export type DiscussionReplyLocator = {
+  messageId: string;
+  eventId: string;
+};
+
 export type CommentDiscussionMessage = {
   id: string;
   eventId: string;

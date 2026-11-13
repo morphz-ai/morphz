@@ -37,10 +37,10 @@ import {
 } from "../../../packages/core/src/comment-discussions.js";
 import {
   quoteSourceKey,
-  type DiscussionReplyLocator,
   textQuoteSourceSchema,
   type TextQuote,
 } from "../../../packages/core/src/text-quotes.js";
+import type { DiscussionReplyLocator } from "../../../packages/core/src/comment-discussion-types.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import {
   applicationCall,

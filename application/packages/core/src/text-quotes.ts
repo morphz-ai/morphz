@@ -96,10 +96,6 @@ const discussionReplyLocator = {
   messageId: z.string().min(1).max(256),
   eventId: z.string().min(1).max(512),
 };
-export type DiscussionReplyLocator = {
-  messageId: string;
-  eventId: string;
-};
 export const discussionReplyQuoteSchema = z
   .object({
     discussionId: z.string().min(1).max(128),
