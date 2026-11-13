@@ -38,7 +38,7 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "16.4.0",
     "minimatch": "file:../third_party/npm/minimatch-11.0.1+morphz.1.tgz",
-    "react-server-dom-webpack": "19.2.8",
+    "react-server-dom-webpack": "19.3.1",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
