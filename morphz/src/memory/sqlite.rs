@@ -78,9 +78,6 @@ use crate::scheduler::{
     SchedulerDependencyStore, ThreadResourceWakeCommit,
 };
 use chrono::{DateTime, Utc};
-// SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
-// amalgamation to the release binary instead of relying on the host library.
-use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Acquire, ConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqlitePool};
@@ -122,7 +119,7 @@ pub struct CognitiveStoreTransitionReport {
     pub synchronized: usize,
 }
 
-fn sqlite_has_wal_reset_fix(version: &str) -> bool {
+fn sqlite_version_components(version: &str) -> Option<(u64, u64, u64)> {
     let components = version
         .split('.')
         .take(3)
@@ -135,15 +132,26 @@ fn sqlite_has_wal_reset_fix(version: &str) -> bool {
         })
         .collect::<Result<Vec<_>, _>>();
     let Ok(components) = components else {
-        return false;
+        return None;
     };
     let [major, minor, patch] = components.as_slice() else {
-        return false;
+        return None;
     };
 
-    (*major, *minor, *patch) >= (3, 51, 3)
-        || (*major == 3 && *minor == 50 && *patch >= 7)
-        || (*major == 3 && *minor == 44 && *patch >= 6)
+    Some((*major, *minor, *patch))
+}
+
+fn sqlite_has_wal_reset_fix(version: &str) -> bool {
+    let Some((major, minor, patch)) = sqlite_version_components(version) else {
+        return false;
+    };
+    (major, minor, patch) >= (3, 51, 3)
+        || (major == 3 && minor == 50 && patch >= 7)
+        || (major == 3 && minor == 44 && patch >= 6)
+}
+
+fn sqlite_has_wal_page_size_fix(version: &str) -> bool {
+    sqlite_version_components(version).is_some_and(|version| version >= (3, 54, 0))
 }
 
 impl SqliteStore {
@@ -231,6 +239,13 @@ impl SqliteStore {
             pool.close().await;
             return Err(format!(
                 "SQLite {sqlite_version} 存在已知 WAL-reset 并发竞态；Morphz 要求 SQLite 3.51.3+（或官方回移版本 3.50.7 / 3.44.6）"
+            )
+            .into());
+        }
+        if !sqlite_has_wal_page_size_fix(&sqlite_version) {
+            pool.close().await;
+            return Err(format!(
+                "SQLite {sqlite_version} is vulnerable to WAL page-size memory disclosure (RUSTSEC-2026-0459); Morphz requires SQLite 3.54.0 or newer"
             )
             .into());
         }
@@ -30589,6 +30604,15 @@ mod tests {
     }
 
     #[test]
+    fn wal_page_size_fix_rejects_versions_before_the_security_release() {
+        for version in ["3.44.6", "3.50.7", "3.51.3", "3.53.3", "3.53.4", "invalid"] {
+            assert!(!sqlite_has_wal_page_size_fix(version), "{version}");
+        }
+        assert!(sqlite_has_wal_page_size_fix("3.54.0"));
+        assert!(sqlite_has_wal_page_size_fix("3.54.1"));
+    }
+
+    #[test]
     fn runtime_sqlite_pool_keeps_healthy_connections_until_shutdown() {
         let options = runtime_sqlite_pool_options(8);
 
@@ -30780,6 +30804,10 @@ mod tests {
         assert!(
             sqlite_has_wal_reset_fix(&version),
             "linked SQLite {version} is vulnerable to the WAL-reset race"
+        );
+        assert!(
+            sqlite_has_wal_page_size_fix(&version),
+            "linked SQLite {version} is vulnerable to WAL page-size memory disclosure"
         );
     }
 

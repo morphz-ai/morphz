@@ -5,7 +5,6 @@
 #[path = "support/temp_sqlite.rs"]
 mod temp_sqlite;
 
-use libsqlite3_hotbundle as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};

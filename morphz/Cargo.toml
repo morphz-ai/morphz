@@ -53,18 +53,11 @@ chrono = { version = "0.4", features = ["serde"] }
 iana-time-zone = "0.1"
 dashmap = "5.5"
 futures-util = "0.3"
-# Select SQLx's SQLite driver without its older bundled amalgamation;
-# `libsqlite3-hotbundle` below is the single native implementation.
-sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "_sqlite", "sqlx-sqlite", "postgres", "chrono", "json"] }
-# SQLx 0.8.6's public `sqlite` feature bundles SQLite 3.46.0, which contains
-# the WAL-reset race fixed in 3.51.3. Keep SQLx's FFI surface while making this
-# current process-wide amalgamation the sole native implementation; startup and
-# a link-level test verify the effective version.
-libsqlite3-hotbundle = { version = "1.530300.0", features = ["unlock_notify"] }
-# SQLx's unbundled driver normally generates bindings from the host header,
-# which is too old on supported macOS images. Reuse its audited bundled
-# bindings without enabling its bundled C implementation.
-libsqlite3-sys = { version = "=0.30.1", default-features = false, features = ["bundled_bindings", "unlock_notify"] }
+# The narrow sqlx-sqlite manifest backport selects the fixed official SQLite
+# 3.54.1 bundle for every workspace consumer. Startup and link tests verify the
+# real library; no host-header dependency or second native implementation.
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "json"] }
+libsqlite3-sys = { version = "=0.39.1", default-features = false, features = ["bundled", "unlock_notify"] }
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["compression-gzip", "cors"] }
 tracing = "0.1"

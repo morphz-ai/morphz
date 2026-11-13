@@ -18,6 +18,7 @@ exclude = [
     "third_party/codex-utils-absolute-path",
     "third_party/codex-utils-pty",
     "third_party/sqlx-core-0.8.6",
+    "third_party/sqlx-sqlite-0.8.6",
 ]
 default-members = ["morphz"]
 
@@ -50,6 +51,9 @@ candle-core = { path = "third_party/candle-core-0.10.2" }
 # Keep SQLx's tested 0.8 storage APIs while selecting the current Mozilla roots
 # directly, instead of the obsolete 0.26 compatibility wrapper (RUSTSEC-2026-0381).
 sqlx-core = { path = "third_party/sqlx-core-0.8.6" }
+# Retain SQLx 0.8's tested query APIs while selecting the fixed official SQLite
+# source/bindings (RUSTSEC-2026-0459), without an advisory exception.
+sqlx-sqlite = { path = "third_party/sqlx-sqlite-0.8.6" }
 
 [patch."https://github.com/openai/codex"]
 # The pinned Windows protocol consumes only HttpError/HttpResponse aliases.

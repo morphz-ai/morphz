@@ -10,80 +10,80 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | Package | Declared license | Included texts |
 |---|---|---|
 | `Inflector 0.11.4` | `BSD-2-Clause` | L311 |
-| `adler2 2.0.1` | `0BSD OR MIT OR Apache-2.0` | L036, L066, L230 |
-| `aes 0.8.4` | `MIT OR Apache-2.0` | L071, L325 |
+| `adler2 2.0.1` | `0BSD OR MIT OR Apache-2.0` | L035, L065, L230 |
+| `aes 0.8.4` | `MIT OR Apache-2.0` | L070, L325 |
 | `aho-corasick 1.1.4` | `Unlicense OR MIT` | L024, L137 |
 | `allocative 0.3.6` | `Apache-2.0` | L297 |
 | `allocative_derive 0.3.6` | `Apache-2.0` | L297 |
-| `allocator-api2 0.2.21` | `MIT OR Apache-2.0` | L066, L189 |
+| `allocator-api2 0.2.21` | `MIT OR Apache-2.0` | L065, L189 |
 | `android_system_properties 0.1.5` | `MIT/Apache-2.0` | L248, L313 |
-| `annotate-snippets 0.9.2` | `Apache-2.0/MIT` | L055, L081 |
-| `anstream 1.0.0` | `MIT OR Apache-2.0` | L097, L150 |
-| `anstyle 1.0.14` | `MIT OR Apache-2.0` | L097, L150 |
-| `anstyle-parse 1.0.0` | `MIT OR Apache-2.0` | L097, L150 |
-| `anstyle-query 1.1.5` | `MIT OR Apache-2.0` | L097, L150 |
-| `anstyle-wincon 3.0.11` | `MIT OR Apache-2.0` | L097, L150 |
-| `anyhow 1.0.104` | `MIT OR Apache-2.0` | L066, L189 |
+| `annotate-snippets 0.9.2` | `Apache-2.0/MIT` | L054, L080 |
+| `anstream 1.0.0` | `MIT OR Apache-2.0` | L096, L150 |
+| `anstyle 1.0.14` | `MIT OR Apache-2.0` | L096, L150 |
+| `anstyle-parse 1.0.0` | `MIT OR Apache-2.0` | L096, L150 |
+| `anstyle-query 1.1.5` | `MIT OR Apache-2.0` | L096, L150 |
+| `anstyle-wincon 3.0.11` | `MIT OR Apache-2.0` | L096, L150 |
+| `anyhow 1.0.104` | `MIT OR Apache-2.0` | L065, L189 |
 | `apple-native-keyring-store 1.0.1` | `MIT OR Apache-2.0` | L132, L257 |
-| `approx 0.5.1` | `Apache-2.0` | L055 |
+| `approx 0.5.1` | `Apache-2.0` | L054 |
 | `arrayref 0.3.9` | `BSD-2-Clause` | L018 |
 | `arrayvec 0.7.8` | `MIT OR Apache-2.0` | L204, L210 |
-| `async-broadcast 0.7.2` | `MIT OR Apache-2.0` | L104, L238 |
-| `async-channel 2.5.0` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-compression 0.4.42` | `MIT OR Apache-2.0` | L050, L210 |
-| `async-executor 1.14.0` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-io 2.6.0` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-lock 3.4.2` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-process 2.5.0` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-recursion 1.1.1` | `MIT OR Apache-2.0` | L066, L210 |
-| `async-signal 0.2.14` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-task 4.7.1` | `Apache-2.0 OR MIT` | L066, L210 |
-| `async-trait 0.1.89` | `MIT OR Apache-2.0` | L066, L189 |
-| `atoi 2.0.0` | `MIT` | L041 |
+| `async-broadcast 0.7.2` | `MIT OR Apache-2.0` | L103, L238 |
+| `async-channel 2.5.0` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-compression 0.4.42` | `MIT OR Apache-2.0` | L049, L210 |
+| `async-executor 1.14.0` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-io 2.6.0` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-lock 3.4.2` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-process 2.5.0` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-recursion 1.1.1` | `MIT OR Apache-2.0` | L065, L210 |
+| `async-signal 0.2.14` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-task 4.7.1` | `Apache-2.0 OR MIT` | L065, L210 |
+| `async-trait 0.1.89` | `MIT OR Apache-2.0` | L065, L189 |
+| `atoi 2.0.0` | `MIT` | L040 |
 | `atomic 0.5.3` | `Apache-2.0/MIT` | L197, L210 |
 | `atomic-polyfill 1.0.3` | `MIT OR Apache-2.0` | L210, L326 |
-| `atomic-waker 1.1.2` | `Apache-2.0 OR MIT` | L042, L066, L210 |
+| `atomic-waker 1.1.2` | `Apache-2.0 OR MIT` | L041, L065, L210 |
 | `autocfg 1.5.1` | `Apache-2.0 OR MIT` | L210, L216 |
 | `axum 0.7.9` | `MIT` | L214 |
 | `axum-core 0.4.5` | `MIT` | L294 |
 | `base64 0.22.1` | `MIT OR Apache-2.0` | L144, L210 |
 | `base64ct 1.8.3` | `Apache-2.0 OR MIT` | L169, L325 |
-| `beef 0.5.2` | `MIT OR Apache-2.0` | L079, L239 |
-| `bit-set 0.8.0` | `Apache-2.0 OR MIT` | L112, L176 |
-| `bit-vec 0.8.0` | `Apache-2.0 OR MIT` | L112, L176 |
+| `beef 0.5.2` | `MIT OR Apache-2.0` | L078, L239 |
+| `bit-set 0.8.0` | `Apache-2.0 OR MIT` | L111, L176 |
+| `bit-vec 0.8.0` | `Apache-2.0 OR MIT` | L111, L176 |
 | `bitflags 1.3.2` | `MIT/Apache-2.0` | L023, L210 |
 | `bitflags 2.13.0` | `MIT OR Apache-2.0` | L023, L210 |
 | `blake3 1.8.2` | `CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception` | L149, L161, L347 |
-| `block-buffer 0.10.4` | `MIT OR Apache-2.0` | L129, L325 |
-| `block-padding 0.3.3` | `MIT OR Apache-2.0` | L129, L325 |
-| `blocking 1.6.2` | `Apache-2.0 OR MIT` | L066, L210 |
-| `borsh 1.8.1` | `MIT OR Apache-2.0` | L066, L134 |
+| `block-buffer 0.10.4` | `MIT OR Apache-2.0` | L128, L325 |
+| `block-padding 0.3.3` | `MIT OR Apache-2.0` | L128, L325 |
+| `blocking 1.6.2` | `Apache-2.0 OR MIT` | L065, L210 |
+| `borsh 1.8.1` | `MIT OR Apache-2.0` | L065, L134 |
 | `bs58 0.5.1` | `MIT/Apache-2.0` | L141, L210 |
 | `bstr 1.13.1` | `MIT OR Apache-2.0` | L190, L210, L355 |
-| `bumpalo 3.20.3` | `MIT OR Apache-2.0` | L119, L210 |
-| `by_address 1.2.1` | `MIT OR Apache-2.0` | L096, L210 |
+| `bumpalo 3.20.3` | `MIT OR Apache-2.0` | L118, L210 |
+| `by_address 1.2.1` | `MIT OR Apache-2.0` | L095, L210 |
 | `bytemuck 1.25.0` | `Zlib OR Apache-2.0 OR MIT` | L014, L207, L315 |
 | `bytemuck_derive 1.10.2` | `Zlib OR Apache-2.0 OR MIT` | L014, L207, L315 |
 | `byteorder 1.5.0` | `Unlicense OR MIT` | L024, L137 |
 | `byteorder-lite 0.1.0` | `Unlicense OR MIT` | L024 |
-| `bytes 1.12.0` | `MIT` | L115 |
+| `bytes 1.12.0` | `MIT` | L114 |
 | `castaway 0.2.4` | `MIT` | L206 |
 | `cbc 0.1.2` | `MIT OR Apache-2.0` | L325, L341 |
 | `cc 1.2.65` | `MIT OR Apache-2.0` | L187, L210 |
 | `cfg-if 1.0.4` | `MIT OR Apache-2.0` | L187, L210 |
-| `cfg_aliases 0.1.1` | `MIT` | L103, L262 |
-| `cfg_aliases 0.2.1` | `MIT` | L103, L262 |
+| `cfg_aliases 0.1.1` | `MIT` | L102, L262 |
+| `cfg_aliases 0.2.1` | `MIT` | L102, L262 |
 | `chacha20 0.10.2` | `MIT OR Apache-2.0` | L016, L325 |
-| `chardetng 0.1.17` | `Apache-2.0 OR MIT` | L055, L090, L175 |
+| `chardetng 0.1.17` | `Apache-2.0 OR MIT` | L054, L089, L175 |
 | `chrono 0.4.45` | `MIT OR Apache-2.0` | L296 |
 | `cipher 0.4.4` | `MIT OR Apache-2.0` | L205, L325 |
-| `clap 4.6.2` | `MIT OR Apache-2.0` | L097, L150 |
-| `clap_builder 4.6.2` | `MIT OR Apache-2.0` | L097, L150 |
-| `clap_complete 4.6.7` | `MIT OR Apache-2.0` | L097, L150 |
-| `clap_derive 4.6.1` | `MIT OR Apache-2.0` | L097, L150 |
-| `clap_lex 1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
+| `clap 4.6.2` | `MIT OR Apache-2.0` | L096, L150 |
+| `clap_builder 4.6.2` | `MIT OR Apache-2.0` | L096, L150 |
+| `clap_complete 4.6.7` | `MIT OR Apache-2.0` | L096, L150 |
+| `clap_derive 4.6.1` | `MIT OR Apache-2.0` | L096, L150 |
+| `clap_lex 1.1.0` | `MIT OR Apache-2.0` | L096, L150 |
 | `clipboard-win 5.4.1` | `BSL-1.0` | L198 |
-| `cmp_any 0.8.1` | `MIT OR Apache-2.0` | L055, L300 |
+| `cmp_any 0.8.1` | `MIT OR Apache-2.0` | L054, L300 |
 | `cobs 0.3.0` | `MIT OR Apache-2.0` | L150, L258 |
 | `codex-async-utils 0.0.0` | `Apache-2.0` | L282, L318 |
 | `codex-execpolicy 0.0.0` | `Apache-2.0` | L282, L318 |
@@ -95,34 +95,34 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `codex-utils-redacted-string 0.0.0` | `Apache-2.0` | L282, L318 |
 | `codex-utils-string 0.0.0` | `Apache-2.0` | L282, L318 |
 | `color_quant 1.1.0` | `MIT` | L231 |
-| `colorchoice 1.0.5` | `MIT OR Apache-2.0` | L097, L150 |
+| `colorchoice 1.0.5` | `MIT OR Apache-2.0` | L096, L150 |
 | `compact_str 0.9.1` | `MIT` | L139 |
-| `compression-codecs 0.4.38` | `MIT OR Apache-2.0` | L050, L210 |
-| `compression-core 0.4.32` | `MIT OR Apache-2.0` | L050, L210 |
-| `concurrent-queue 2.5.0` | `Apache-2.0 OR MIT` | L066, L210 |
+| `compression-codecs 0.4.38` | `MIT OR Apache-2.0` | L049, L210 |
+| `compression-core 0.4.32` | `MIT OR Apache-2.0` | L049, L210 |
+| `concurrent-queue 2.5.0` | `Apache-2.0 OR MIT` | L065, L210 |
 | `const-oid 0.9.6` | `Apache-2.0 OR MIT` | L004, L325 |
 | `const_format 0.2.36` | `Zlib` | L271 |
 | `const_format_proc_macros 0.2.34` | `Zlib` | L271 |
 | `constant_time_eq 0.3.1` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | L149, L189, L334 |
 | `convert_case 0.10.0` | `MIT` | L246 |
 | `convert_case 0.6.0` | `MIT` | L203 |
-| `cookie 0.18.2` | `MIT OR Apache-2.0` | L102, L283 |
-| `cookie_store 0.22.1` | `MIT OR Apache-2.0` | L041, L150 |
-| `core-foundation 0.10.1` | `MIT OR Apache-2.0` | L085, L210 |
-| `core-foundation 0.9.4` | `MIT OR Apache-2.0` | L085, L210 |
-| `core-foundation-sys 0.8.7` | `MIT OR Apache-2.0` | L085, L210 |
+| `cookie 0.18.2` | `MIT OR Apache-2.0` | L101, L283 |
+| `cookie_store 0.22.1` | `MIT OR Apache-2.0` | L040, L150 |
+| `core-foundation 0.10.1` | `MIT OR Apache-2.0` | L084, L210 |
+| `core-foundation 0.9.4` | `MIT OR Apache-2.0` | L084, L210 |
+| `core-foundation-sys 0.8.7` | `MIT OR Apache-2.0` | L084, L210 |
 | `core_maths 0.1.1` | `MIT` | L225 |
 | `cpufeatures 0.2.17` | `MIT OR Apache-2.0` | L136, L325 |
 | `cpufeatures 0.3.1` | `MIT OR Apache-2.0` | L325, L328 |
 | `crc 3.4.0` | `MIT OR Apache-2.0` | L265, L312 |
 | `crc-catalog 2.5.0` | `MIT OR Apache-2.0` | L297 |
 | `crc32fast 1.5.0` | `MIT OR Apache-2.0` | L150, L211 |
-| `critical-section 1.2.0` | `MIT OR Apache-2.0` | L075, L210 |
-| `crossbeam-channel 0.5.16` | `MIT OR Apache-2.0` | L122, L210, L301 |
-| `crossbeam-deque 0.8.6` | `MIT OR Apache-2.0` | L122, L210 |
-| `crossbeam-epoch 0.9.20` | `MIT OR Apache-2.0` | L122, L210 |
-| `crossbeam-queue 0.3.12` | `MIT OR Apache-2.0` | L122, L210 |
-| `crossbeam-utils 0.8.21` | `MIT OR Apache-2.0` | L122, L210 |
+| `critical-section 1.2.0` | `MIT OR Apache-2.0` | L074, L210 |
+| `crossbeam-channel 0.5.16` | `MIT OR Apache-2.0` | L121, L210, L301 |
+| `crossbeam-deque 0.8.6` | `MIT OR Apache-2.0` | L121, L210 |
+| `crossbeam-epoch 0.9.20` | `MIT OR Apache-2.0` | L121, L210 |
+| `crossbeam-queue 0.3.12` | `MIT OR Apache-2.0` | L121, L210 |
+| `crossbeam-utils 0.8.21` | `MIT OR Apache-2.0` | L121, L210 |
 | `crossterm 0.29.0` | `MIT` | L154 |
 | `crossterm_winapi 0.9.1` | `MIT` | L154 |
 | `crypto-common 0.1.7` | `MIT OR Apache-2.0` | L143, L325 |
@@ -130,91 +130,91 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `darling 0.23.0` | `MIT` | L292 |
 | `darling_core 0.23.0` | `MIT` | L292 |
 | `darling_macro 0.23.0` | `MIT` | L292 |
-| `dashmap 5.5.3` | `MIT` | L086 |
-| `dashmap 6.2.1` | `MIT` | L086 |
+| `dashmap 5.5.3` | `MIT` | L085 |
+| `dashmap 6.2.1` | `MIT` | L085 |
 | `data-encoding 2.11.0` | `MIT` | L222 |
 | `debugserver-types 0.5.0` | `MIT` | L317 |
-| `defmt 1.1.1` | `MIT OR Apache-2.0` | L053, L176 |
-| `defmt-macros 1.1.1` | `MIT OR Apache-2.0` | L053, L176 |
+| `defmt 1.1.1` | `MIT OR Apache-2.0` | L052, L176 |
+| `defmt-macros 1.1.1` | `MIT OR Apache-2.0` | L052, L176 |
 | `defmt-parser 1.0.0` | `MIT OR Apache-2.0` | L297 |
 | `der 0.7.10` | `Apache-2.0 OR MIT` | L146, L325 |
-| `deranged 0.5.8` | `MIT OR Apache-2.0` | L033, L254 |
+| `deranged 0.5.8` | `MIT OR Apache-2.0` | L032, L254 |
 | `derivative 2.2.0` | `MIT/Apache-2.0` | L210, L217 |
-| `derive_more 1.0.0` | `MIT` | L105 |
-| `derive_more 2.1.1` | `MIT` | L105 |
-| `derive_more-impl 1.0.0` | `MIT` | L105 |
-| `derive_more-impl 2.1.1` | `MIT` | L105 |
+| `derive_more 1.0.0` | `MIT` | L104 |
+| `derive_more 2.1.1` | `MIT` | L104 |
+| `derive_more-impl 1.0.0` | `MIT` | L104 |
+| `derive_more-impl 2.1.1` | `MIT` | L104 |
 | `digest 0.10.7` | `MIT OR Apache-2.0` | L220, L325 |
 | `display_container 0.9.0` | `MIT OR Apache-2.0` | L297 |
-| `displaydoc 0.2.6` | `MIT OR Apache-2.0` | L066, L210 |
-| `document-features 0.2.12` | `MIT OR Apache-2.0` | L093, L273 |
-| `dotenvy 0.15.7` | `MIT` | L077 |
-| `downcast-rs 1.2.1` | `MIT/Apache-2.0` | L069, L176 |
+| `displaydoc 0.2.6` | `MIT OR Apache-2.0` | L065, L210 |
+| `document-features 0.2.12` | `MIT OR Apache-2.0` | L092, L273 |
+| `dotenvy 0.15.7` | `MIT` | L076 |
+| `downcast-rs 1.2.1` | `MIT/Apache-2.0` | L068, L176 |
 | `dunce 1.0.5` | `CC0-1.0 OR MIT-0 OR Apache-2.0` | L149 |
-| `dupe 0.9.1` | `MIT OR Apache-2.0` | L055, L300 |
-| `dupe_derive 0.9.1` | `MIT OR Apache-2.0` | L055, L300 |
-| `dyn-clone 1.0.20` | `MIT OR Apache-2.0` | L066, L189 |
+| `dupe 0.9.1` | `MIT OR Apache-2.0` | L054, L300 |
+| `dupe_derive 0.9.1` | `MIT OR Apache-2.0` | L054, L300 |
+| `dyn-clone 1.0.20` | `MIT OR Apache-2.0` | L065, L189 |
 | `either 1.16.0` | `MIT OR Apache-2.0` | L210, L348 |
-| `embedded-io 0.4.0` | `MIT OR Apache-2.0` | L108, L210 |
+| `embedded-io 0.4.0` | `MIT OR Apache-2.0` | L107, L210 |
 | `embedded-io 0.6.1` | `MIT OR Apache-2.0` | L210, L293 |
-| `encoding_rs 0.8.35` | `(Apache-2.0 OR MIT) AND BSD-3-Clause` | L027, L055, L175, L251 |
-| `endi 1.1.1` | `MIT` | L066 |
+| `encoding_rs 0.8.35` | `(Apache-2.0 OR MIT) AND BSD-3-Clause` | L027, L054, L175, L251 |
+| `endi 1.1.1` | `MIT` | L065 |
 | `endian-type 0.1.2` | `MIT` | L268 |
 | `enumflags2 0.7.12` | `MIT OR Apache-2.0` | L135, L314 |
 | `enumflags2_derive 0.7.12` | `MIT OR Apache-2.0` | L020, L320 |
-| `env_filter 2.0.0` | `MIT OR Apache-2.0` | L097, L150 |
-| `env_logger 0.11.11` | `MIT OR Apache-2.0` | L097, L150 |
-| `equivalent 1.0.2` | `Apache-2.0 OR MIT` | L095, L210 |
-| `erased-serde 0.3.31` | `MIT OR Apache-2.0` | L066, L189 |
-| `erased-serde 0.4.10` | `MIT OR Apache-2.0` | L066, L189 |
+| `env_filter 2.0.0` | `MIT OR Apache-2.0` | L096, L150 |
+| `env_logger 0.11.11` | `MIT OR Apache-2.0` | L096, L150 |
+| `equivalent 1.0.2` | `Apache-2.0 OR MIT` | L094, L210 |
+| `erased-serde 0.3.31` | `MIT OR Apache-2.0` | L065, L189 |
+| `erased-serde 0.4.10` | `MIT OR Apache-2.0` | L065, L189 |
 | `errno 0.3.14` | `MIT OR Apache-2.0` | L179, L210 |
 | `error-code 3.4.0` | `BSL-1.0` | L198 |
-| `etcetera 0.8.0` | `MIT OR Apache-2.0` | L066, L189 |
-| `event-listener 5.4.2` | `Apache-2.0 OR MIT` | L066, L210 |
-| `event-listener-strategy 0.5.4` | `Apache-2.0 OR MIT` | L066, L210 |
+| `etcetera 0.8.0` | `MIT OR Apache-2.0` | L065, L189 |
+| `event-listener 5.4.2` | `Apache-2.0 OR MIT` | L065, L210 |
+| `event-listener-strategy 0.5.4` | `Apache-2.0 OR MIT` | L065, L210 |
 | `fancy-regex 0.16.2` | `MIT` | L354 |
-| `fast-srgb8 1.0.0` | `MIT OR Apache-2.0 OR CC0-1.0` | L012, L056, L149 |
-| `fastrand 2.4.1` | `Apache-2.0 OR MIT` | L066, L210 |
-| `fd-lock 4.0.4` | `MIT OR Apache-2.0` | L087, L186 |
-| `fdeflate 0.3.7` | `MIT OR Apache-2.0` | L111, L164 |
+| `fast-srgb8 1.0.0` | `MIT OR Apache-2.0 OR CC0-1.0` | L012, L055, L149 |
+| `fastrand 2.4.1` | `Apache-2.0 OR MIT` | L065, L210 |
+| `fd-lock 4.0.4` | `MIT OR Apache-2.0` | L086, L186 |
+| `fdeflate 0.3.7` | `MIT OR Apache-2.0` | L110, L164 |
 | `filedescriptor 0.8.3` | `MIT` | L015 |
 | `filetime 0.2.29` | `MIT/Apache-2.0` | L187, L210 |
 | `find-msvc-tools 0.1.9` | `MIT OR Apache-2.0` | L187, L210 |
 | `fixed_decimal 0.7.2` | `Unicode-3.0` | L295 |
-| `flate2 1.1.9` | `MIT OR Apache-2.0` | L035, L210 |
-| `fluent-uri 0.1.4` | `MIT` | L038 |
-| `flume 0.11.1` | `Apache-2.0/MIT` | L055, L066 |
+| `flate2 1.1.9` | `MIT OR Apache-2.0` | L034, L210 |
+| `fluent-uri 0.1.4` | `MIT` | L037 |
+| `flume 0.11.1` | `Apache-2.0/MIT` | L054, L065 |
 | `fnv 1.0.7` | `Apache-2.0 / MIT` | L210, L277 |
 | `foldhash 0.1.5` | `Zlib` | L250 |
 | `foldhash 0.2.0` | `Zlib` | L250 |
 | `foreign-types 0.3.2` | `MIT/Apache-2.0` | L150, L286 |
 | `foreign-types-shared 0.1.1` | `MIT/Apache-2.0` | L150, L286 |
-| `form_urlencoded 1.2.2` | `MIT OR Apache-2.0` | L072, L210 |
+| `form_urlencoded 1.2.2` | `MIT OR Apache-2.0` | L071, L210 |
 | `fsevent-sys 4.1.0` | `MIT` | L213 |
-| `futures-channel 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-core 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-executor 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-intrusive 0.5.0` | `MIT OR Apache-2.0` | L048, L117 |
-| `futures-io 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-lite 2.6.1` | `Apache-2.0 OR MIT` | L042, L066, L210 |
-| `futures-macro 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-sink 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-task 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
-| `futures-util 0.3.32` | `MIT OR Apache-2.0` | L054, L253 |
+| `futures-channel 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-core 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-executor 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-intrusive 0.5.0` | `MIT OR Apache-2.0` | L047, L116 |
+| `futures-io 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-lite 2.6.1` | `Apache-2.0 OR MIT` | L041, L065, L210 |
+| `futures-macro 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-sink 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-task 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
+| `futures-util 0.3.32` | `MIT OR Apache-2.0` | L053, L253 |
 | `fxhash 0.2.1` | `Apache-2.0/MIT` | L297 |
 | `generic-array 0.14.7` | `MIT` | L243 |
-| `getrandom 0.2.17` | `MIT OR Apache-2.0` | L101, L322 |
+| `getrandom 0.2.17` | `MIT OR Apache-2.0` | L100, L322 |
 | `getrandom 0.3.4` | `MIT OR Apache-2.0` | L157, L322 |
 | `getrandom 0.4.3` | `MIT OR Apache-2.0` | L209, L322 |
-| `gif 0.14.2` | `MIT OR Apache-2.0` | L034, L210 |
-| `gix-path 0.11.3` | `MIT OR Apache-2.0` | L045, L111 |
-| `gix-trace 0.1.21` | `MIT OR Apache-2.0` | L045, L111 |
-| `gix-url 0.35.3` | `MIT OR Apache-2.0` | L045, L111 |
-| `gix-validate 0.11.4` | `MIT OR Apache-2.0` | L045, L111 |
+| `gif 0.14.2` | `MIT OR Apache-2.0` | L033, L210 |
+| `gix-path 0.11.3` | `MIT OR Apache-2.0` | L044, L110 |
+| `gix-trace 0.1.21` | `MIT OR Apache-2.0` | L044, L110 |
+| `gix-url 0.35.3` | `MIT OR Apache-2.0` | L044, L110 |
+| `gix-validate 0.11.4` | `MIT OR Apache-2.0` | L044, L110 |
 | `glob 0.3.3` | `MIT OR Apache-2.0` | L023, L210 |
 | `globset 0.4.19` | `Unlicense OR MIT` | L024, L137 |
 | `h2 0.4.19` | `MIT` | L343 |
-| `hash32 0.2.1` | `MIT OR Apache-2.0` | L091, L210 |
+| `hash32 0.2.1` | `MIT OR Apache-2.0` | L090, L210 |
 | `hashbrown 0.12.3` | `MIT OR Apache-2.0` | L210, L245 |
 | `hashbrown 0.14.5` | `MIT OR Apache-2.0` | L210, L245 |
 | `hashbrown 0.15.5` | `MIT OR Apache-2.0` | L210, L245 |
@@ -223,22 +223,22 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `hashlink 0.10.0` | `MIT OR Apache-2.0` | L176, L327 |
 | `heapless 0.7.17` | `MIT OR Apache-2.0` | L195, L210 |
 | `heck 0.5.0` | `MIT OR Apache-2.0` | L002, L210 |
-| `hermit-abi 0.5.2` | `MIT OR Apache-2.0` | L066, L210 |
+| `hermit-abi 0.5.2` | `MIT OR Apache-2.0` | L065, L210 |
 | `hex 0.4.3` | `MIT OR Apache-2.0` | L150, L223 |
-| `hkdf 0.12.4` | `MIT OR Apache-2.0` | L060, L325 |
+| `hkdf 0.12.4` | `MIT OR Apache-2.0` | L059, L325 |
 | `hmac 0.12.1` | `MIT OR Apache-2.0` | L220, L325 |
-| `home 0.5.12` | `MIT OR Apache-2.0` | L036, L066 |
+| `home 0.5.12` | `MIT OR Apache-2.0` | L035, L065 |
 | `http 1.4.2` | `MIT OR Apache-2.0` | L193, L342 |
 | `http-body 1.0.1` | `MIT` | L244 |
-| `http-body-util 0.1.3` | `MIT` | L110 |
+| `http-body-util 0.1.3` | `MIT` | L109 |
 | `httparse 1.10.1` | `MIT OR Apache-2.0` | L188, L210 |
 | `httpdate 1.0.3` | `MIT OR Apache-2.0` | L168, L200 |
 | `hyper 1.10.1` | `MIT` | L006 |
 | `hyper-rustls 0.27.9` | `Apache-2.0 OR ISC OR MIT` | L210, L234, L247 |
 | `hyper-tls 0.6.0` | `MIT/Apache-2.0` | L210, L336 |
 | `hyper-util 0.1.20` | `MIT` | L324 |
-| `iana-time-zone 0.1.65` | `MIT OR Apache-2.0` | L073, L167 |
-| `iana-time-zone-haiku 0.1.2` | `MIT OR Apache-2.0` | L073, L167 |
+| `iana-time-zone 0.1.65` | `MIT OR Apache-2.0` | L072, L167 |
+| `iana-time-zone-haiku 0.1.2` | `MIT OR Apache-2.0` | L072, L167 |
 | `icu_collections 2.2.0` | `Unicode-3.0` | L295 |
 | `icu_decimal 2.2.0` | `Unicode-3.0` | L295 |
 | `icu_decimal_data 2.2.0` | `Unicode-3.0` | L295 |
@@ -257,202 +257,201 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `ident_case 1.0.1` | `MIT/Apache-2.0` | L026 |
 | `idna 1.1.0` | `MIT OR Apache-2.0` | L170, L210 |
 | `idna_adapter 1.2.2` | `Apache-2.0 OR MIT` | L013, L210 |
-| `image 0.25.10` | `MIT OR Apache-2.0` | L111, L164 |
-| `image-webp 0.2.4` | `MIT OR Apache-2.0` | L111, L164 |
-| `indenter 0.3.4` | `MIT OR Apache-2.0` | L066, L189 |
-| `indexmap 1.9.3` | `Apache-2.0 OR MIT` | L114, L210 |
-| `indexmap 2.14.0` | `Apache-2.0 OR MIT` | L114, L210 |
-| `indoc 2.0.7` | `MIT OR Apache-2.0` | L066, L189 |
+| `image 0.25.10` | `MIT OR Apache-2.0` | L110, L164 |
+| `image-webp 0.2.4` | `MIT OR Apache-2.0` | L110, L164 |
+| `indenter 0.3.4` | `MIT OR Apache-2.0` | L065, L189 |
+| `indexmap 1.9.3` | `Apache-2.0 OR MIT` | L113, L210 |
+| `indexmap 2.14.0` | `Apache-2.0 OR MIT` | L113, L210 |
+| `indoc 2.0.7` | `MIT OR Apache-2.0` | L065, L189 |
 | `inotify 0.11.5` | `ISC` | L344 |
 | `inotify-sys 0.1.8` | `ISC` | L344 |
 | `inout 0.1.4` | `MIT OR Apache-2.0` | L155, L325 |
 | `instability 0.3.12` | `MIT` | L202 |
-| `inventory 0.3.24` | `MIT OR Apache-2.0` | L066, L189 |
+| `inventory 0.3.24` | `MIT OR Apache-2.0` | L065, L189 |
 | `ipnet 2.12.0` | `MIT OR Apache-2.0` | L221, L287 |
-| `is_terminal_polyfill 1.70.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `is_terminal_polyfill 1.70.2` | `MIT OR Apache-2.0` | L096, L150 |
 | `itertools 0.14.0` | `MIT OR Apache-2.0` | L210, L348 |
-| `itoa 1.0.18` | `MIT OR Apache-2.0` | L066, L189 |
+| `itoa 1.0.18` | `MIT OR Apache-2.0` | L065, L189 |
 | `jiff 0.2.35` | `Unlicense OR MIT` | L024, L137 |
 | `jiff-core 0.1.0` | `Unlicense OR MIT` | L024, L137 |
 | `jiff-static 0.2.35` | `Unlicense OR MIT` | L024, L137 |
 | `jiff-tzdb 0.1.8` | `Unlicense OR MIT` | L024, L137 |
 | `jiff-tzdb-platform 0.1.3` | `Unlicense OR MIT` | L024, L137 |
 | `js-sys 0.3.102` | `MIT OR Apache-2.0` | L187, L210 |
-| `kasuari 0.4.12` | `MIT OR Apache-2.0` | L125, L316 |
+| `kasuari 0.4.12` | `MIT OR Apache-2.0` | L124, L316 |
 | `keyring 4.1.4` | `MIT OR Apache-2.0` | L132, L257 |
 | `keyring-core 1.0.0` | `MIT OR Apache-2.0` | L132, L257 |
-| `konst 0.2.20` | `Zlib` | L120 |
-| `konst_macro_rules 0.2.19` | `Zlib` | L120 |
-| `kqueue 1.2.1` | `MIT` | L043 |
-| `kqueue-sys 1.1.2` | `MIT` | L043 |
-| `landlock 0.4.7` | `MIT OR Apache-2.0` | L030, L084, L160 |
+| `konst 0.2.20` | `Zlib` | L119 |
+| `konst_macro_rules 0.2.19` | `Zlib` | L119 |
+| `kqueue 1.2.1` | `MIT` | L042 |
+| `kqueue-sys 1.1.2` | `MIT` | L042 |
+| `landlock 0.4.7` | `MIT OR Apache-2.0` | L030, L083, L160 |
 | `lazy_static 1.5.0` | `MIT OR Apache-2.0` | L210, L224 |
 | `libc 0.2.186` | `MIT OR Apache-2.0` | L189, L288 |
-| `libm 0.2.16` | `MIT` | L128 |
+| `libm 0.2.16` | `MIT` | L127 |
 | `libredox 0.1.17` | `MIT` | L174 |
-| `libsqlite3-hotbundle 1.530300.0` | `MIT` | L032 |
-| `libsqlite3-sys 0.30.1` | `MIT` | L032 |
+| `libsqlite3-sys 0.39.1` | `MIT` | L130 |
 | `line-clipping 0.3.7` | `MIT OR Apache-2.0` | L001, L323 |
 | `link-section 0.19.3` | `Apache-2.0 OR MIT` | L150, L263 |
 | `linktime-proc-macro 0.2.3` | `Apache-2.0 OR MIT` | L150, L263 |
-| `linux-raw-sys 0.12.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L165, L210 |
+| `linux-raw-sys 0.12.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L165, L210 |
 | `litemap 0.8.2` | `Unicode-3.0` | L295 |
 | `litrs 1.0.0` | `MIT OR Apache-2.0` | L189, L307 |
 | `lock_api 0.4.14` | `MIT OR Apache-2.0` | L197, L210 |
 | `lock_free_hashtable 0.1.4` | `MIT OR Apache-2.0` | L297 |
 | `log 0.4.33` | `MIT OR Apache-2.0` | L023, L210 |
-| `logos 0.15.1` | `MIT OR Apache-2.0` | L100, L162 |
-| `logos-codegen 0.15.1` | `MIT OR Apache-2.0` | L100, L162 |
-| `logos-derive 0.15.1` | `MIT OR Apache-2.0` | L100, L162 |
+| `logos 0.15.1` | `MIT OR Apache-2.0` | L099, L162 |
+| `logos-codegen 0.15.1` | `MIT OR Apache-2.0` | L099, L162 |
+| `logos-derive 0.15.1` | `MIT OR Apache-2.0` | L099, L162 |
 | `lru 0.18.3` | `MIT` | L008 |
-| `lru-slab 0.1.2` | `MIT OR Apache-2.0 OR Zlib` | L055, L289, L298 |
+| `lru-slab 0.1.2` | `MIT OR Apache-2.0 OR Zlib` | L054, L289, L298 |
 | `lsp-types 0.97.0` | `MIT` | L340 |
 | `maplit 1.0.2` | `MIT/Apache-2.0` | L210, L348 |
-| `matchers 0.2.0` | `MIT` | L061 |
-| `matchit 0.7.3` | `MIT AND BSD-3-Clause` | L065, L182 |
-| `md-5 0.10.6` | `MIT OR Apache-2.0` | L089, L325 |
+| `matchers 0.2.0` | `MIT` | L060 |
+| `matchit 0.7.3` | `MIT AND BSD-3-Clause` | L064, L182 |
+| `md-5 0.10.6` | `MIT OR Apache-2.0` | L088, L325 |
 | `memchr 2.8.2` | `Unlicense OR MIT` | L024, L137 |
-| `memoffset 0.9.1` | `MIT` | L067 |
+| `memoffset 0.9.1` | `MIT` | L066 |
 | `mime 0.3.17` | `MIT OR Apache-2.0` | L210, L232 |
 | `mime_guess 2.0.5` | `MIT` | L319 |
-| `miniz_oxide 0.8.9` | `MIT OR Zlib OR Apache-2.0` | L111, L158, L241, L330 |
+| `miniz_oxide 0.8.9` | `MIT OR Zlib OR Apache-2.0` | L110, L158, L241, L330 |
 | `mio 1.2.1` | `MIT` | L281 |
-| `moxcms 0.8.1` | `BSD-3-Clause OR Apache-2.0` | L059, L184 |
+| `moxcms 0.8.1` | `BSD-3-Clause OR Apache-2.0` | L058, L184 |
 | `multimap 0.10.1` | `MIT OR Apache-2.0` | L147, L210 |
 | `native-tls 0.2.18` | `MIT OR Apache-2.0` | L150, L304 |
 | `nibble_vec 0.1.0` | `MIT` | L003 |
 | `nix 0.28.0` | `MIT` | L261 |
 | `nix 0.31.3` | `MIT` | L261 |
-| `notify 8.2.0` | `CC0-1.0` | L083 |
-| `notify-types 2.2.0` | `MIT OR Apache-2.0` | L109, L152 |
+| `notify 8.2.0` | `CC0-1.0` | L082 |
+| `notify-types 2.2.0` | `MIT OR Apache-2.0` | L108, L152 |
 | `nu-ansi-term 0.50.3` | `MIT` | L249 |
 | `num 0.4.3` | `MIT OR Apache-2.0` | L023, L210 |
 | `num-bigint 0.4.8` | `MIT OR Apache-2.0` | L023, L210 |
 | `num-bigint-dig 0.8.6` | `MIT/Apache-2.0` | L023, L210 |
 | `num-complex 0.4.6` | `MIT OR Apache-2.0` | L023, L210 |
-| `num-conv 0.2.2` | `MIT OR Apache-2.0` | L111, L113 |
+| `num-conv 0.2.2` | `MIT OR Apache-2.0` | L110, L112 |
 | `num-integer 0.1.46` | `MIT OR Apache-2.0` | L023, L210 |
 | `num-iter 0.1.45` | `MIT OR Apache-2.0` | L023, L210 |
 | `num-rational 0.4.2` | `MIT OR Apache-2.0` | L023, L210 |
 | `num-traits 0.2.19` | `MIT OR Apache-2.0` | L023, L210 |
 | `num_threads 0.1.7` | `MIT OR Apache-2.0` | L264, L274 |
-| `once_cell 1.21.4` | `MIT OR Apache-2.0` | L066, L210 |
-| `once_cell_polyfill 1.70.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `once_cell 1.21.4` | `MIT OR Apache-2.0` | L065, L210 |
+| `once_cell_polyfill 1.70.2` | `MIT OR Apache-2.0` | L096, L150 |
 | `openssl 0.10.81` | `Apache-2.0` | L150, L329 |
 | `openssl-macros 0.1.1` | `MIT/Apache-2.0` | L150, L345 |
 | `openssl-probe 0.2.1` | `MIT OR Apache-2.0` | L187, L210 |
 | `openssl-sys 0.9.117` | `MIT` | L187 |
-| `ordered-stream 0.2.0` | `MIT OR Apache-2.0` | L066, L210 |
+| `ordered-stream 0.2.0` | `MIT OR Apache-2.0` | L065, L210 |
 | `pagable 0.4.2` | `Apache-2.0` | L297 |
 | `pagable_derive 0.4.2` | `Apache-2.0` | L297 |
 | `palette 0.7.6` | `MIT OR Apache-2.0` | L178, L210 |
 | `palette_derive 0.7.6` | `MIT OR Apache-2.0` | L178, L210 |
-| `parking 2.2.1` | `Apache-2.0 OR MIT` | L066, L210, L276 |
+| `parking 2.2.1` | `Apache-2.0 OR MIT` | L065, L210, L276 |
 | `parking_lot 0.12.5` | `MIT OR Apache-2.0` | L197, L210 |
 | `parking_lot_core 0.9.12` | `MIT OR Apache-2.0` | L197, L210 |
-| `paste 1.0.15` | `MIT OR Apache-2.0` | L066, L189 |
+| `paste 1.0.15` | `MIT OR Apache-2.0` | L065, L189 |
 | `pem-rfc7468 0.7.0` | `Apache-2.0 OR MIT` | L005, L325 |
 | `percent-encoding 2.3.2` | `MIT OR Apache-2.0` | L170, L210 |
-| `pin-project-lite 0.2.17` | `Apache-2.0 OR MIT` | L066, L111 |
-| `piper 0.2.5` | `MIT OR Apache-2.0` | L066, L210 |
+| `pin-project-lite 0.2.17` | `Apache-2.0 OR MIT` | L065, L110 |
+| `piper 0.2.5` | `MIT OR Apache-2.0` | L065, L210 |
 | `pkcs1 0.7.5` | `Apache-2.0 OR MIT` | L011, L325 |
 | `pkcs8 0.10.2` | `Apache-2.0 OR MIT` | L146, L325 |
 | `pkg-config 0.3.33` | `MIT OR Apache-2.0` | L187, L210 |
 | `plain 0.2.3` | `MIT/Apache-2.0` | L010, L210 |
 | `png 0.18.1` | `MIT OR Apache-2.0` | L183, L210 |
-| `polling 3.11.0` | `Apache-2.0 OR MIT` | L066, L210 |
-| `portable-atomic 1.13.1` | `Apache-2.0 OR MIT` | L066, L111 |
-| `portable-atomic-util 0.2.7` | `Apache-2.0 OR MIT` | L066, L111 |
+| `polling 3.11.0` | `Apache-2.0 OR MIT` | L065, L210 |
+| `portable-atomic 1.13.1` | `Apache-2.0 OR MIT` | L065, L110 |
+| `portable-atomic-util 0.2.7` | `Apache-2.0 OR MIT` | L065, L110 |
 | `portable-pty 0.9.0` | `MIT` | L015 |
-| `postcard 1.1.3` | `MIT OR Apache-2.0` | L063, L210 |
+| `postcard 1.1.3` | `MIT OR Apache-2.0` | L062, L210 |
 | `potential_utf 0.1.5` | `Unicode-3.0` | L295 |
-| `powerfmt 0.2.0` | `MIT OR Apache-2.0` | L107, L151 |
+| `powerfmt 0.2.0` | `MIT OR Apache-2.0` | L106, L151 |
 | `ppv-lite86 0.2.21` | `MIT OR Apache-2.0` | L252, L337 |
-| `proc-macro-crate 3.5.0` | `MIT OR Apache-2.0` | L036, L066 |
-| `proc-macro2 1.0.106` | `MIT OR Apache-2.0` | L066, L189 |
-| `psl-types 2.0.11` | `MIT/Apache-2.0` | L068, L210 |
+| `proc-macro-crate 3.5.0` | `MIT OR Apache-2.0` | L035, L065 |
+| `proc-macro2 1.0.106` | `MIT OR Apache-2.0` | L065, L189 |
+| `psl-types 2.0.11` | `MIT/Apache-2.0` | L067, L210 |
 | `publicsuffix 2.3.0` | `MIT/Apache-2.0` | L210, L279 |
 | `pulldown-cmark 0.13.6` | `MIT` | L266 |
-| `pxfm 0.1.30` | `BSD-3-Clause OR Apache-2.0` | L059, L184 |
+| `pxfm 0.1.30` | `BSD-3-Clause OR Apache-2.0` | L058, L184 |
 | `quick-error 2.0.1` | `MIT/Apache-2.0` | L150, L299 |
 | `quick-xml 0.41.0` | `MIT` | L021 |
 | `quickcheck 1.1.0` | `Unlicense OR MIT` | L024, L137 |
-| `quinn 0.11.11` | `MIT OR Apache-2.0` | L007, L055 |
-| `quinn-proto 0.11.18` | `MIT OR Apache-2.0` | L007, L055 |
-| `quinn-udp 0.5.15` | `MIT OR Apache-2.0` | L007, L055 |
-| `quote 1.0.46` | `MIT OR Apache-2.0` | L066, L189 |
+| `quinn 0.11.11` | `MIT OR Apache-2.0` | L007, L054 |
+| `quinn-proto 0.11.18` | `MIT OR Apache-2.0` | L007, L054 |
+| `quinn-udp 0.5.15` | `MIT OR Apache-2.0` | L007, L054 |
+| `quote 1.0.46` | `MIT OR Apache-2.0` | L065, L189 |
 | `r-efi 5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
 | `r-efi 6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
 | `radix_trie 0.2.1` | `MIT` | L003 |
 | `rama-error 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L297 |
 | `rama-macros 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L297 |
 | `rama-utils 0.3.0-alpha.4` | `MIT OR Apache-2.0` | L297 |
-| `rand 0.10.2` | `MIT OR Apache-2.0` | L047, L290, L352 |
-| `rand 0.8.6` | `MIT OR Apache-2.0` | L047, L290, L352 |
-| `rand_chacha 0.3.1` | `MIT OR Apache-2.0` | L047, L290, L322 |
+| `rand 0.10.2` | `MIT OR Apache-2.0` | L046, L290, L352 |
+| `rand 0.8.6` | `MIT OR Apache-2.0` | L046, L290, L352 |
+| `rand_chacha 0.3.1` | `MIT OR Apache-2.0` | L046, L290, L322 |
 | `rand_core 0.10.1` | `MIT OR Apache-2.0` | L025, L153, L285 |
-| `rand_core 0.6.4` | `MIT OR Apache-2.0` | L025, L047, L290 |
-| `rand_pcg 0.10.2` | `MIT OR Apache-2.0` | L025, L047, L275 |
-| `ratatui 0.30.2` | `MIT` | L121 |
-| `ratatui-core 0.1.2` | `MIT` | L121 |
-| `ratatui-crossterm 0.1.2` | `MIT` | L121 |
+| `rand_core 0.6.4` | `MIT OR Apache-2.0` | L025, L046, L290 |
+| `rand_pcg 0.10.2` | `MIT OR Apache-2.0` | L025, L046, L275 |
+| `ratatui 0.30.2` | `MIT` | L120 |
+| `ratatui-core 0.1.2` | `MIT` | L120 |
+| `ratatui-crossterm 0.1.2` | `MIT` | L120 |
 | `ratatui-macros 0.7.2` | `MIT` | L338 |
-| `ratatui-widgets 0.3.2` | `MIT` | L121 |
+| `ratatui-widgets 0.3.2` | `MIT` | L120 |
 | `rayon 1.12.0` | `MIT OR Apache-2.0` | L210, L224 |
 | `rayon-core 1.13.0` | `MIT OR Apache-2.0` | L210, L224 |
 | `redox_syscall 0.5.18` | `MIT` | L350 |
 | `redox_syscall 0.8.1` | `MIT` | L350 |
-| `ref-cast 1.0.27` | `MIT OR Apache-2.0` | L066, L189 |
-| `ref-cast-impl 1.0.27` | `MIT OR Apache-2.0` | L066, L189 |
+| `ref-cast 1.0.27` | `MIT OR Apache-2.0` | L065, L189 |
+| `ref-cast-impl 1.0.27` | `MIT OR Apache-2.0` | L065, L189 |
 | `regex 1.12.4` | `MIT OR Apache-2.0` | L023, L210 |
 | `regex-automata 0.4.14` | `MIT OR Apache-2.0` | L023, L210 |
 | `regex-lite 0.1.9` | `MIT OR Apache-2.0` | L023, L210 |
 | `regex-syntax 0.8.11` | `MIT OR Apache-2.0` | L023, L210 |
-| `reqwest 0.12.28` | `MIT OR Apache-2.0` | L118, L124 |
-| `ring 0.17.14` | `Apache-2.0 AND ISC` | L009, L099, L332 |
-| `rsa 0.9.10` | `MIT OR Apache-2.0` | L066, L210 |
-| `rustc-hash 2.1.3` | `Apache-2.0 OR MIT` | L066, L189 |
+| `reqwest 0.12.28` | `MIT OR Apache-2.0` | L117, L123 |
+| `ring 0.17.14` | `Apache-2.0 AND ISC` | L009, L098, L332 |
+| `rsa 0.9.10` | `MIT OR Apache-2.0` | L065, L210 |
+| `rustc-hash 2.1.3` | `Apache-2.0 OR MIT` | L065, L189 |
 | `rustc_version 0.4.1` | `MIT OR Apache-2.0` | L197, L210 |
-| `rustix 1.1.4` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210, L349 |
+| `rustix 1.1.4` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L210, L349 |
 | `rustls 0.23.46` | `Apache-2.0 OR ISC OR MIT` | L210, L234, L247 |
-| `rustls-native-certs 0.8.4` | `Apache-2.0 OR ISC OR MIT` | L058, L210, L234, L247 |
-| `rustls-pki-types 1.14.1` | `MIT OR Apache-2.0` | L092, L278 |
-| `rustls-webpki 0.103.16` | `ISC` | L082 |
-| `rustversion 1.0.22` | `MIT OR Apache-2.0` | L066, L189 |
+| `rustls-native-certs 0.8.4` | `Apache-2.0 OR ISC OR MIT` | L057, L210, L234, L247 |
+| `rustls-pki-types 1.14.1` | `MIT OR Apache-2.0` | L091, L278 |
+| `rustls-webpki 0.103.16` | `ISC` | L081 |
+| `rustversion 1.0.22` | `MIT OR Apache-2.0` | L065, L189 |
 | `rustyline 14.0.0` | `MIT` | L235 |
 | `ryu 1.0.23` | `Apache-2.0 OR BSL-1.0` | L189, L198 |
 | `same-file 1.0.6` | `Unlicense/MIT` | L137, L156 |
-| `schannel 0.1.29` | `MIT` | L040 |
+| `schannel 0.1.29` | `MIT` | L039 |
 | `schemafy 0.5.2` | `MIT` | L340 |
 | `schemafy_core 0.5.2` | `MIT` | L317 |
 | `schemafy_lib 0.5.2` | `MIT` | L317 |
-| `schemars 0.8.22` | `MIT` | L039 |
-| `schemars 0.9.0` | `MIT` | L039 |
-| `schemars 1.2.2` | `MIT` | L039 |
-| `schemars_derive 0.8.22` | `MIT` | L039 |
+| `schemars 0.8.22` | `MIT` | L038 |
+| `schemars 0.9.0` | `MIT` | L038 |
+| `schemars 1.2.2` | `MIT` | L038 |
+| `schemars_derive 0.8.22` | `MIT` | L038 |
 | `scopeguard 1.2.0` | `MIT OR Apache-2.0` | L029, L210 |
-| `seccompiler 0.5.0` | `Apache-2.0 OR BSD-3-Clause` | L055, L219 |
+| `seccompiler 0.5.0` | `Apache-2.0 OR BSD-3-Clause` | L054, L219 |
 | `secret-service 5.1.0` | `MIT OR Apache-2.0` | L210, L303 |
-| `security-framework 3.7.0` | `MIT OR Apache-2.0` | L076, L210 |
-| `security-framework-sys 2.17.0` | `MIT OR Apache-2.0` | L076, L210 |
-| `semver 1.0.28` | `MIT OR Apache-2.0` | L066, L189 |
+| `security-framework 3.7.0` | `MIT OR Apache-2.0` | L075, L210 |
+| `security-framework-sys 2.17.0` | `MIT OR Apache-2.0` | L075, L210 |
+| `semver 1.0.28` | `MIT OR Apache-2.0` | L065, L189 |
 | `sequence_trie 0.3.6` | `MIT/Apache-2.0` | L148, L159 |
-| `serde 1.0.228` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_core 1.0.228` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_derive 1.0.228` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_derive_internals 0.29.1` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_json 1.0.150` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_path_to_error 0.1.20` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_repr 0.1.20` | `MIT OR Apache-2.0` | L066, L189 |
-| `serde_spanned 0.6.9` | `MIT OR Apache-2.0` | L097, L150 |
+| `serde 1.0.228` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_core 1.0.228` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_derive 1.0.228` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_derive_internals 0.29.1` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_json 1.0.150` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_path_to_error 0.1.20` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_repr 0.1.20` | `MIT OR Apache-2.0` | L065, L189 |
+| `serde_spanned 0.6.9` | `MIT OR Apache-2.0` | L096, L150 |
 | `serde_urlencoded 0.7.1` | `MIT/Apache-2.0` | L189, L256 |
 | `serde_with 3.22.0` | `MIT OR Apache-2.0` | L210, L348 |
 | `serde_with_macros 3.22.0` | `MIT OR Apache-2.0` | L210, L348 |
 | `serial2 0.2.37` | `BSD-2-Clause OR Apache-2.0` | L196, L208 |
-| `sha1 0.10.6` | `MIT OR Apache-2.0` | L089, L325 |
-| `sha2 0.10.9` | `MIT OR Apache-2.0` | L089, L325 |
-| `sharded-slab 0.1.7` | `MIT` | L046 |
-| `shared_library 0.1.9` | `Apache-2.0/MIT` | L037, L176 |
+| `sha1 0.10.6` | `MIT OR Apache-2.0` | L088, L325 |
+| `sha2 0.10.9` | `MIT OR Apache-2.0` | L088, L325 |
+| `sharded-slab 0.1.7` | `MIT` | L045 |
+| `shared_library 0.1.9` | `Apache-2.0/MIT` | L036, L176 |
 | `shell-words 1.1.1` | `MIT/Apache-2.0` | L017, L280 |
 | `shlex 1.3.0` | `MIT OR Apache-2.0` | L237, L291 |
 | `shlex 2.0.1` | `MIT OR Apache-2.0` | L237, L291 |
@@ -463,7 +462,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `simd-adler32 0.3.9` | `MIT` | L133 |
 | `slab 0.4.12` | `MIT` | L022 |
 | `smallvec 1.15.2` | `MIT OR Apache-2.0` | L177, L210 |
-| `smol_str 0.3.6` | `MIT OR Apache-2.0` | L066, L210 |
+| `smol_str 0.3.6` | `MIT OR Apache-2.0` | L065, L210 |
 | `socket2 0.6.4` | `MIT OR Apache-2.0` | L187, L210 |
 | `sorted_vector_map 0.2.1` | `MIT OR Apache-2.0` | L297 |
 | `spin 0.9.8` | `MIT` | L145 |
@@ -473,13 +472,12 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `sqlx-macros-core 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
 | `sqlx-mysql 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
 | `sqlx-postgres 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
-| `sqlx-sqlite 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
-| `stable_deref_trait 1.2.1` | `MIT OR Apache-2.0` | L127, L210 |
+| `stable_deref_trait 1.2.1` | `MIT OR Apache-2.0` | L126, L210 |
 | `starlark 0.14.2` | `Apache-2.0` | L297 |
 | `starlark_derive 0.14.2` | `Apache-2.0` | L297 |
 | `starlark_map 0.14.2` | `Apache-2.0` | L297 |
 | `starlark_syntax 0.14.2` | `Apache-2.0` | L297 |
-| `static_assertions 1.1.0` | `MIT OR Apache-2.0` | L055, L212 |
+| `static_assertions 1.1.0` | `MIT OR Apache-2.0` | L054, L212 |
 | `static_interner 0.1.3` | `MIT OR Apache-2.0` | L297 |
 | `streaming-iterator 0.1.9` | `MIT OR Apache-2.0` | L150, L226 |
 | `stringprep 0.1.5` | `MIT/Apache-2.0` | L150, L284 |
@@ -487,49 +485,49 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `strong_hash_derive 0.1.0` | `MIT OR Apache-2.0` | L297 |
 | `strsim 0.10.0` | `MIT` | L201 |
 | `strsim 0.11.1` | `MIT` | L201 |
-| `strum 0.27.2` | `MIT` | L052 |
-| `strum 0.28.0` | `MIT` | L052 |
-| `strum_macros 0.28.0` | `MIT` | L052 |
-| `subtle 2.6.1` | `BSD-3-Clause` | L049 |
-| `symlink 0.1.0` | `MIT/Apache-2.0` | L116, L210, L233 |
-| `syn 1.0.109` | `MIT OR Apache-2.0` | L066, L210 |
-| `syn 2.0.118` | `MIT OR Apache-2.0` | L066, L189 |
-| `syn 3.0.4` | `MIT OR Apache-2.0` | L066, L189 |
-| `sync_wrapper 1.0.2` | `Apache-2.0` | L111 |
-| `synstructure 0.13.2` | `MIT` | L080 |
-| `sys-locale 0.3.2` | `MIT OR Apache-2.0` | L055, L057 |
+| `strum 0.27.2` | `MIT` | L051 |
+| `strum 0.28.0` | `MIT` | L051 |
+| `strum_macros 0.28.0` | `MIT` | L051 |
+| `subtle 2.6.1` | `BSD-3-Clause` | L048 |
+| `symlink 0.1.0` | `MIT/Apache-2.0` | L115, L210, L233 |
+| `syn 1.0.109` | `MIT OR Apache-2.0` | L065, L210 |
+| `syn 2.0.118` | `MIT OR Apache-2.0` | L065, L189 |
+| `syn 3.0.4` | `MIT OR Apache-2.0` | L065, L189 |
+| `sync_wrapper 1.0.2` | `Apache-2.0` | L110 |
+| `synstructure 0.13.2` | `MIT` | L079 |
+| `sys-locale 0.3.2` | `MIT OR Apache-2.0` | L054, L056 |
 | `system-configuration 0.7.0` | `MIT OR Apache-2.0` | L210, L335 |
 | `system-configuration-sys 0.6.0` | `MIT OR Apache-2.0` | L210, L335 |
 | `take_mut 0.2.2` | `MIT` | L028 |
 | `tar 0.4.46` | `MIT OR Apache-2.0` | L210, L321 |
 | `tempfile 3.27.0` | `MIT OR Apache-2.0` | L171, L210 |
 | `termcolor 1.4.1` | `Unlicense OR MIT` | L024, L137 |
-| `textwrap 0.11.0` | `MIT` | L094 |
-| `thiserror 1.0.69` | `MIT OR Apache-2.0` | L066, L189 |
-| `thiserror 2.0.18` | `MIT OR Apache-2.0` | L066, L189 |
-| `thiserror-impl 1.0.69` | `MIT OR Apache-2.0` | L066, L189 |
-| `thiserror-impl 2.0.18` | `MIT OR Apache-2.0` | L066, L189 |
+| `textwrap 0.11.0` | `MIT` | L093 |
+| `thiserror 1.0.69` | `MIT OR Apache-2.0` | L065, L189 |
+| `thiserror 2.0.18` | `MIT OR Apache-2.0` | L065, L189 |
+| `thiserror-impl 1.0.69` | `MIT OR Apache-2.0` | L065, L189 |
+| `thiserror-impl 2.0.18` | `MIT OR Apache-2.0` | L065, L189 |
 | `thread_local 1.1.9` | `MIT OR Apache-2.0` | L197, L210 |
-| `time 0.3.51` | `MIT OR Apache-2.0` | L111, L180 |
-| `time-core 0.1.9` | `MIT OR Apache-2.0` | L111, L180 |
-| `time-macros 0.2.30` | `MIT OR Apache-2.0` | L111, L180 |
+| `time 0.3.51` | `MIT OR Apache-2.0` | L110, L180 |
+| `time-core 0.1.9` | `MIT OR Apache-2.0` | L110, L180 |
+| `time-macros 0.2.30` | `MIT OR Apache-2.0` | L110, L180 |
 | `tinystr 0.8.3` | `Unicode-3.0` | L295 |
-| `tinyvec 1.11.0` | `Zlib OR Apache-2.0 OR MIT` | L055, L207, L263 |
-| `tinyvec_macros 0.1.1` | `MIT OR Apache-2.0 OR Zlib` | L051, L306, L351 |
-| `tokio 1.52.3` | `MIT` | L088 |
+| `tinyvec 1.11.0` | `Zlib OR Apache-2.0 OR MIT` | L054, L207, L263 |
+| `tinyvec_macros 0.1.1` | `MIT OR Apache-2.0 OR Zlib` | L050, L306, L351 |
+| `tokio 1.52.3` | `MIT` | L087 |
 | `tokio-macros 2.7.0` | `MIT` | L269 |
 | `tokio-native-tls 0.3.1` | `MIT` | L272 |
 | `tokio-rustls 0.26.4` | `MIT OR Apache-2.0` | L031, L242 |
-| `tokio-stream 0.1.18` | `MIT` | L088 |
-| `tokio-tungstenite 0.24.0` | `MIT` | L123 |
-| `tokio-util 0.7.18` | `MIT` | L088 |
-| `toml 0.8.23` | `MIT OR Apache-2.0` | L097, L150 |
-| `toml_datetime 0.6.11` | `MIT OR Apache-2.0` | L097, L150 |
-| `toml_datetime 1.1.1+spec-1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
-| `toml_edit 0.22.27` | `MIT OR Apache-2.0` | L097, L150 |
-| `toml_edit 0.25.13+spec-1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
-| `toml_parser 1.1.2+spec-1.1.0` | `MIT OR Apache-2.0` | L097, L150 |
-| `toml_write 0.1.2` | `MIT OR Apache-2.0` | L097, L150 |
+| `tokio-stream 0.1.18` | `MIT` | L087 |
+| `tokio-tungstenite 0.24.0` | `MIT` | L122 |
+| `tokio-util 0.7.18` | `MIT` | L087 |
+| `toml 0.8.23` | `MIT OR Apache-2.0` | L096, L150 |
+| `toml_datetime 0.6.11` | `MIT OR Apache-2.0` | L096, L150 |
+| `toml_datetime 1.1.1+spec-1.1.0` | `MIT OR Apache-2.0` | L096, L150 |
+| `toml_edit 0.22.27` | `MIT OR Apache-2.0` | L096, L150 |
+| `toml_edit 0.25.13+spec-1.1.0` | `MIT OR Apache-2.0` | L096, L150 |
+| `toml_parser 1.1.2+spec-1.1.0` | `MIT OR Apache-2.0` | L096, L150 |
+| `toml_write 0.1.2` | `MIT OR Apache-2.0` | L096, L150 |
 | `tower 0.5.3` | `MIT` | L308 |
 | `tower-http 0.5.2` | `MIT` | L333 |
 | `tower-http 0.6.11` | `MIT` | L333 |
@@ -546,29 +544,29 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `tree-sitter-bash 0.25.1` | `MIT` | L181 |
 | `tree-sitter-language 0.1.7` | `MIT` | L339 |
 | `triomphe 0.1.16` | `MIT OR Apache-2.0` | L140, L194 |
-| `try-lock 0.2.5` | `MIT` | L078 |
+| `try-lock 0.2.5` | `MIT` | L077 |
 | `ts-rs 11.1.0` | `MIT` | L317 |
 | `ts-rs-macros 11.1.0` | `MIT` | L317 |
 | `tungstenite 0.24.0` | `MIT OR Apache-2.0` | L210, L236 |
-| `typed-path 0.12.3` | `MIT OR Apache-2.0` | L066, L189 |
-| `typeid 1.0.3` | `MIT OR Apache-2.0` | L066, L189 |
+| `typed-path 0.12.3` | `MIT OR Apache-2.0` | L065, L189 |
+| `typeid 1.0.3` | `MIT OR Apache-2.0` | L065, L189 |
 | `typenum 1.20.1` | `MIT OR Apache-2.0` | L138, L192, L309 |
 | `uds_windows 1.2.1` | `MIT` | L199 |
 | `unicase 2.9.0` | `MIT OR Apache-2.0` | L006, L210 |
 | `unicode-bidi 0.3.18` | `MIT OR Apache-2.0` | L002, L172, L210 |
-| `unicode-ident 1.0.24` | `(MIT OR Apache-2.0) AND Unicode-3.0` | L066, L074, L189 |
-| `unicode-normalization 0.1.25` | `MIT OR Apache-2.0` | L002, L044, L210 |
-| `unicode-properties 0.1.4` | `MIT/Apache-2.0` | L002, L044, L210 |
-| `unicode-segmentation 1.13.3` | `MIT OR Apache-2.0` | L002, L044, L210 |
-| `unicode-truncate 2.0.1` | `MIT OR Apache-2.0` | L044, L142, L210 |
-| `unicode-width 0.1.14` | `MIT OR Apache-2.0` | L002, L044, L210 |
-| `unicode-width 0.2.2` | `MIT OR Apache-2.0` | L002, L044, L210 |
-| `unicode-xid 0.2.6` | `MIT OR Apache-2.0` | L002, L044, L210 |
+| `unicode-ident 1.0.24` | `(MIT OR Apache-2.0) AND Unicode-3.0` | L065, L073, L189 |
+| `unicode-normalization 0.1.25` | `MIT OR Apache-2.0` | L002, L043, L210 |
+| `unicode-properties 0.1.4` | `MIT/Apache-2.0` | L002, L043, L210 |
+| `unicode-segmentation 1.13.3` | `MIT OR Apache-2.0` | L002, L043, L210 |
+| `unicode-truncate 2.0.1` | `MIT OR Apache-2.0` | L043, L142, L210 |
+| `unicode-width 0.1.14` | `MIT OR Apache-2.0` | L002, L043, L210 |
+| `unicode-width 0.2.2` | `MIT OR Apache-2.0` | L002, L043, L210 |
+| `unicode-xid 0.2.6` | `MIT OR Apache-2.0` | L002, L043, L210 |
 | `untrusted 0.9.0` | `ISC` | L229 |
 | `url 2.5.8` | `MIT OR Apache-2.0` | L170, L210 |
-| `urlencoding 2.1.3` | `MIT` | L126 |
-| `utf-8 0.7.6` | `MIT OR Apache-2.0` | L066, L189 |
-| `utf8_iter 1.0.4` | `Apache-2.0 OR MIT` | L055, L163, L175 |
+| `urlencoding 2.1.3` | `MIT` | L125 |
+| `utf-8 0.7.6` | `MIT OR Apache-2.0` | L065, L189 |
+| `utf8_iter 1.0.4` | `Apache-2.0 OR MIT` | L054, L163, L175 |
 | `utf8parse 0.2.2` | `Apache-2.0 OR MIT` | L189, L310 |
 | `uuid 1.23.5` | `Apache-2.0 OR MIT` | L019, L210 |
 | `valuable 0.1.1` | `MIT` | L317 |
@@ -578,23 +576,23 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `vte 0.15.0` | `Apache-2.0 OR MIT` | L189, L310 |
 | `walkdir 2.5.0` | `Unlicense/MIT` | L024, L137 |
 | `want 0.3.1` | `MIT` | L346 |
-| `wasi 0.11.1+wasi-snapshot-preview1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210 |
-| `wasip2 1.0.4+wasi-0.2.12` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210 |
+| `wasi 0.11.1+wasi-snapshot-preview1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L210 |
+| `wasip2 1.0.4+wasi-0.2.12` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L210 |
 | `wasite 0.1.0` | `Apache-2.0 OR BSL-1.0 OR MIT` | L297 |
 | `wasm-bindgen 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
 | `wasm-bindgen-futures 0.4.75` | `MIT OR Apache-2.0` | L187, L210 |
 | `wasm-bindgen-macro 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
 | `wasm-bindgen-macro-support 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
 | `wasm-bindgen-shared 0.2.125` | `MIT OR Apache-2.0` | L187, L210 |
-| `wasm-streams 0.4.2` | `MIT OR Apache-2.0` | L066, L189 |
+| `wasm-streams 0.4.2` | `MIT OR Apache-2.0` | L065, L189 |
 | `web-sys 0.3.102` | `MIT OR Apache-2.0` | L187, L210 |
-| `web-time 1.1.0` | `MIT OR Apache-2.0` | L070, L259 |
+| `web-time 1.1.0` | `MIT OR Apache-2.0` | L069, L259 |
 | `webpki-roots 1.0.10` | `CDLA-Permissive-2.0` | L302 |
-| `weezl 0.1.12` | `MIT OR Apache-2.0` | L130, L210 |
+| `weezl 0.1.12` | `MIT OR Apache-2.0` | L129, L210 |
 | `whoami 1.6.1` | `Apache-2.0 OR BSL-1.0 OR MIT` | L026, L189, L198 |
-| `wildcard 0.3.0` | `Apache-2.0` | L055 |
+| `wildcard 0.3.0` | `Apache-2.0` | L054 |
 | `wildmatch 2.6.1` | `MIT` | L270 |
-| `winapi 0.3.9` | `MIT/Apache-2.0` | L062, L150 |
+| `winapi 0.3.9` | `MIT/Apache-2.0` | L061, L150 |
 | `winapi-i686-pc-windows-gnu 0.4.0` | `MIT/Apache-2.0` | L297 |
 | `winapi-util 0.1.11` | `Unlicense OR MIT` | L137, L156 |
 | `winapi-x86_64-pc-windows-gnu 0.4.0` | `MIT/Apache-2.0` | L297 |
@@ -645,7 +643,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `winnow 0.7.15` | `MIT` | L191 |
 | `winnow 1.0.4` | `MIT` | L191 |
 | `winreg 0.10.1` | `MIT` | L305 |
-| `wit-bindgen 0.57.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L066, L210 |
+| `wit-bindgen 0.57.1` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L063, L065, L210 |
 | `writeable 0.6.3` | `Unicode-3.0` | L295 |
 | `xattr 1.6.1` | `MIT OR Apache-2.0` | L171, L210 |
 | `yoke 0.8.3` | `Unicode-3.0` | L295 |
@@ -654,20 +652,20 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `zbus-secret-service-keyring-store 1.0.0` | `MIT OR Apache-2.0` | L132, L257 |
 | `zbus_macros 5.17.0` | `MIT` | L228 |
 | `zbus_names 4.3.3` | `MIT` | L228 |
-| `zerocopy 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L098, L215, L227 |
-| `zerocopy-derive 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L098, L215, L227 |
+| `zerocopy 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L097, L215, L227 |
+| `zerocopy-derive 0.8.52` | `BSD-2-Clause OR Apache-2.0 OR MIT` | L097, L215, L227 |
 | `zerofrom 0.1.8` | `Unicode-3.0` | L295 |
 | `zerofrom-derive 0.1.7` | `Unicode-3.0` | L295 |
-| `zeroize 1.9.0` | `Apache-2.0 OR MIT` | L055, L185 |
+| `zeroize 1.9.0` | `Apache-2.0 OR MIT` | L054, L185 |
 | `zerotrie 0.2.4` | `Unicode-3.0` | L295 |
 | `zerovec 0.11.6` | `Unicode-3.0` | L295 |
 | `zerovec-derive 0.11.3` | `Unicode-3.0` | L295 |
-| `zmij 1.0.21` | `MIT` | L066 |
-| `zune-core 0.5.3` | `MIT OR Apache-2.0 OR Zlib` | L055, L106, L260 |
-| `zune-jpeg 0.5.15` | `MIT OR Apache-2.0 OR Zlib` | L055, L106, L260 |
+| `zmij 1.0.21` | `MIT` | L065 |
+| `zune-core 0.5.3` | `MIT OR Apache-2.0 OR Zlib` | L054, L105, L260 |
+| `zune-jpeg 0.5.15` | `MIT OR Apache-2.0 OR Zlib` | L054, L105, L260 |
 | `zvariant 5.13.0` | `MIT` | L228 |
 | `zvariant_derive 5.13.0` | `MIT` | L228 |
-| `zvariant_utils 3.5.0` | `MIT` | L066 |
+| `zvariant_utils 3.5.0` | `MIT` | L065 |
 
 ## License texts
 
@@ -1951,32 +1949,6 @@ DEALINGS IN THE SOFTWARE.
 
 ### L032
 
-Applies to: `libsqlite3-hotbundle 1.530300.0`, `libsqlite3-sys 0.30.1`
-
-~~~~text
-Copyright (c) 2014-2021 The rusqlite developers
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-~~~~
-
-### L033
-
 Applies to: `deranged 0.5.8`
 
 ~~~~text
@@ -2001,7 +1973,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L034
+### L033
 
 Applies to: `gif 0.14.2`
 
@@ -2029,7 +2001,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L035
+### L034
 
 Applies to: `flate2 1.1.9`
 
@@ -2061,7 +2033,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L036
+### L035
 
 Applies to: `adler2 2.0.1`, `home 0.5.12`, `proc-macro-crate 3.5.0`
 
@@ -2269,7 +2241,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L037
+### L036
 
 Applies to: `shared_library 0.1.9`
 
@@ -2301,7 +2273,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L038
+### L037
 
 Applies to: `fluent-uri 0.1.4`
 
@@ -2329,7 +2301,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L039
+### L038
 
 Applies to: `schemars 0.8.22`, `schemars 0.9.0`, `schemars 1.2.2`, `schemars_derive 0.8.22`
 
@@ -2357,7 +2329,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L040
+### L039
 
 Applies to: `schannel 0.1.29`
 
@@ -2371,7 +2343,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L041
+### L040
 
 Applies to: `atoi 2.0.0`, `cookie_store 0.22.1`
 
@@ -2399,7 +2371,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L042
+### L041
 
 Applies to: `atomic-waker 1.1.2`, `futures-lite 2.6.1`
 
@@ -2451,7 +2423,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L043
+### L042
 
 Applies to: `kqueue 1.2.1`, `kqueue-sys 1.1.2`
 
@@ -2477,7 +2449,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L044
+### L043
 
 Applies to: `unicode-normalization 0.1.25`, `unicode-properties 0.1.4`, `unicode-segmentation 1.13.3`, `unicode-truncate 2.0.1`, `unicode-width 0.1.14`, `unicode-width 0.2.2`, `unicode-xid 0.2.6`
 
@@ -2491,7 +2463,7 @@ notice may not be copied, modified, or distributed except
 according to those terms.
 ~~~~
 
-### L045
+### L044
 
 Applies to: `gix-path 0.11.3`, `gix-trace 0.1.21`, `gix-url 0.35.3`, `gix-validate 0.11.4`
 
@@ -2515,7 +2487,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L046
+### L045
 
 Applies to: `sharded-slab 0.1.7`
 
@@ -2541,7 +2513,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L047
+### L046
 
 Applies to: `rand 0.10.2`, `rand 0.8.6`, `rand_chacha 0.3.1`, `rand_core 0.6.4`, `rand_pcg 0.10.2`
 
@@ -2560,7 +2532,7 @@ The Rand project includes code from the Rust project
 published under these same licenses.
 ~~~~
 
-### L048
+### L047
 
 Applies to: `futures-intrusive 0.5.0`
 
@@ -2768,7 +2740,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L049
+### L048
 
 Applies to: `subtle 2.6.1`
 
@@ -2804,7 +2776,7 @@ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L050
+### L049
 
 Applies to: `async-compression 0.4.42`, `compression-codecs 0.4.38`, `compression-core 0.4.32`
 
@@ -2832,7 +2804,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L051
+### L050
 
 Applies to: `tinyvec_macros 0.1.1`
 
@@ -2858,7 +2830,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L052
+### L051
 
 Applies to: `strum 0.27.2`, `strum 0.28.0`, `strum_macros 0.28.0`
 
@@ -2886,7 +2858,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L053
+### L052
 
 Applies to: `defmt 1.1.1`, `defmt-macros 1.1.1`
 
@@ -2918,7 +2890,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L054
+### L053
 
 Applies to: `futures-channel 0.3.32`, `futures-core 0.3.32`, `futures-executor 0.3.32`, `futures-io 0.3.32`, `futures-macro 0.3.32`, `futures-sink 0.3.32`, `futures-task 0.3.32`, `futures-util 0.3.32`
 
@@ -3127,7 +3099,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L055
+### L054
 
 Applies to: `annotate-snippets 0.9.2`, `approx 0.5.1`, `chardetng 0.1.17`, `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`, `encoding_rs 0.8.35`, `flume 0.11.1`, `lru-slab 0.1.2`, `quinn 0.11.11`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`, `seccompiler 0.5.0`, `static_assertions 1.1.0`, `sys-locale 0.3.2`, `tinyvec 1.11.0`, `utf8_iter 1.0.4`, `wildcard 0.3.0`, `zeroize 1.9.0`, `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
@@ -3335,7 +3307,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L056
+### L055
 
 Applies to: `fast-srgb8 1.0.0`
 
@@ -3543,7 +3515,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L057
+### L056
 
 Applies to: `sys-locale 0.3.2`
 
@@ -3571,7 +3543,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L058
+### L057
 
 Applies to: `rustls-native-certs 0.8.4`
 
@@ -3587,7 +3559,7 @@ respectively.  You may use this software under the terms of any
 of these licenses, at your option.
 ~~~~
 
-### L059
+### L058
 
 Applies to: `moxcms 0.8.1`, `pxfm 0.1.30`
 
@@ -3620,7 +3592,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L060
+### L059
 
 Applies to: `hkdf 0.12.4`
 
@@ -3653,7 +3625,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L061
+### L060
 
 Applies to: `matchers 0.2.0`
 
@@ -3679,7 +3651,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L062
+### L061
 
 Applies to: `winapi 0.3.9`
 
@@ -3705,7 +3677,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L063
+### L062
 
 Applies to: `postcard 1.1.3`
 
@@ -3737,7 +3709,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L064
+### L063
 
 Applies to: `linux-raw-sys 0.12.1`, `rustix 1.1.4`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wit-bindgen 0.57.1`
 
@@ -3962,7 +3934,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ~~~~
 
-### L065
+### L064
 
 Applies to: `matchit 0.7.3`
 
@@ -3998,7 +3970,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L066
+### L065
 
 Applies to: `adler2 2.0.1`, `allocator-api2 0.2.21`, `anyhow 1.0.104`, `async-channel 2.5.0`, `async-executor 1.14.0`, `async-io 2.6.0`, `async-lock 3.4.2`, `async-process 2.5.0`, `async-recursion 1.1.1`, `async-signal 0.2.14`, `async-task 4.7.1`, `async-trait 0.1.89`, `atomic-waker 1.1.2`, `blocking 1.6.2`, `borsh 1.8.1`, `concurrent-queue 2.5.0`, `displaydoc 0.2.6`, `dyn-clone 1.0.20`, `endi 1.1.1`, `erased-serde 0.3.31`, `erased-serde 0.4.10`, `etcetera 0.8.0`, `event-listener 5.4.2`, `event-listener-strategy 0.5.4`, `fastrand 2.4.1`, `flume 0.11.1`, `futures-lite 2.6.1`, `hermit-abi 0.5.2`, `home 0.5.12`, `indenter 0.3.4`, `indoc 2.0.7`, `inventory 0.3.24`, `itoa 1.0.18`, `linux-raw-sys 0.12.1`, `once_cell 1.21.4`, `ordered-stream 0.2.0`, `parking 2.2.1`, `paste 1.0.15`, `pin-project-lite 0.2.17`, `piper 0.2.5`, `polling 3.11.0`, `portable-atomic 1.13.1`, `portable-atomic-util 0.2.7`, `proc-macro-crate 3.5.0`, `proc-macro2 1.0.106`, `quote 1.0.46`, `ref-cast 1.0.27`, `ref-cast-impl 1.0.27`, `rsa 0.9.10`, `rustc-hash 2.1.3`, `rustix 1.1.4`, `rustversion 1.0.22`, `semver 1.0.28`, `serde 1.0.228`, `serde_core 1.0.228`, `serde_derive 1.0.228`, `serde_derive_internals 0.29.1`, `serde_json 1.0.150`, `serde_path_to_error 0.1.20`, `serde_repr 0.1.20`, `smol_str 0.3.6`, `syn 1.0.109`, `syn 2.0.118`, `syn 3.0.4`, `thiserror 1.0.69`, `thiserror 2.0.18`, `thiserror-impl 1.0.69`, `thiserror-impl 2.0.18`, `typed-path 0.12.3`, `typeid 1.0.3`, `unicode-ident 1.0.24`, `utf-8 0.7.6`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wasm-streams 0.4.2`, `wit-bindgen 0.57.1`, `zmij 1.0.21`, `zvariant_utils 3.5.0`
 
@@ -4028,7 +4000,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L067
+### L066
 
 Applies to: `memoffset 0.9.1`
 
@@ -4054,7 +4026,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L068
+### L067
 
 Applies to: `psl-types 2.0.11`
 
@@ -4082,7 +4054,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L069
+### L068
 
 Applies to: `downcast-rs 1.2.1`
 
@@ -4114,7 +4086,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L070
+### L069
 
 Applies to: `web-time 1.1.0`
 
@@ -4142,7 +4114,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L071
+### L070
 
 Applies to: `aes 0.8.4`
 
@@ -4174,7 +4146,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L072
+### L071
 
 Applies to: `form_urlencoded 1.2.2`
 
@@ -4206,7 +4178,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L073
+### L072
 
 Applies to: `iana-time-zone 0.1.65`, `iana-time-zone-haiku 0.1.2`
 
@@ -4238,7 +4210,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L074
+### L073
 
 Applies to: `unicode-ident 1.0.24`
 
@@ -4284,7 +4256,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ~~~~
 
-### L075
+### L074
 
 Applies to: `critical-section 1.2.0`
 
@@ -4316,7 +4288,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L076
+### L075
 
 Applies to: `security-framework 3.7.0`, `security-framework-sys 2.17.0`
 
@@ -4343,7 +4315,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L077
+### L076
 
 Applies to: `dotenvy 0.15.7`
 
@@ -4371,7 +4343,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L078
+### L077
 
 Applies to: `try-lock 0.2.5`
 
@@ -4398,7 +4370,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L079
+### L078
 
 Applies to: `beef 0.5.2`
 
@@ -4606,7 +4578,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L080
+### L079
 
 Applies to: `synstructure 0.13.2`
 
@@ -4620,7 +4592,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L081
+### L080
 
 Applies to: `annotate-snippets 0.9.2`
 
@@ -4646,7 +4618,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L082
+### L081
 
 Applies to: `rustls-webpki 0.103.16`
 
@@ -4672,7 +4644,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ~~~~
 
-### L083
+### L082
 
 Applies to: `notify 8.2.0`
 
@@ -4720,7 +4692,7 @@ For these and/or other purposes and motivations, and without any expectation of 
      d. Affirmer understands and acknowledges that Creative Commons is not a party to this document and has no duty or obligation with respect to this CC0 or use of the Work.
 ~~~~
 
-### L084
+### L083
 
 Applies to: `landlock 0.4.7`
 
@@ -4928,7 +4900,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L085
+### L084
 
 Applies to: `core-foundation 0.10.1`, `core-foundation 0.9.4`, `core-foundation-sys 0.8.7`
 
@@ -4960,7 +4932,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L086
+### L085
 
 Applies to: `dashmap 5.5.3`, `dashmap 6.2.1`
 
@@ -4988,7 +4960,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L087
+### L086
 
 Applies to: `fd-lock 4.0.4`
 
@@ -5185,7 +5157,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L088
+### L087
 
 Applies to: `tokio 1.52.3`, `tokio-stream 0.1.18`, `tokio-util 0.7.18`
 
@@ -5213,7 +5185,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L089
+### L088
 
 Applies to: `md-5 0.10.6`, `sha1 0.10.6`, `sha2 0.10.9`
 
@@ -5247,7 +5219,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L090
+### L089
 
 Applies to: `chardetng 0.1.17`
 
@@ -5263,7 +5235,7 @@ notice may not be copied, modified, or distributed except
 according to those terms.
 ~~~~
 
-### L091
+### L090
 
 Applies to: `hash32 0.2.1`
 
@@ -5295,7 +5267,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L092
+### L091
 
 Applies to: `rustls-pki-types 1.14.1`
 
@@ -5503,7 +5475,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L093
+### L092
 
 Applies to: `document-features 0.2.12`
 
@@ -5529,7 +5501,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L094
+### L093
 
 Applies to: `textwrap 0.11.0`
 
@@ -5557,7 +5529,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L095
+### L094
 
 Applies to: `equivalent 1.0.2`
 
@@ -5589,7 +5561,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L096
+### L095
 
 Applies to: `by_address 1.2.1`
 
@@ -5621,7 +5593,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L097
+### L096
 
 Applies to: `anstream 1.0.0`, `anstyle 1.0.14`, `anstyle-parse 1.0.0`, `anstyle-query 1.1.5`, `anstyle-wincon 3.0.11`, `clap 4.6.2`, `clap_builder 4.6.2`, `clap_complete 4.6.7`, `clap_derive 4.6.1`, `clap_lex 1.1.0`, `colorchoice 1.0.5`, `env_filter 2.0.0`, `env_logger 0.11.11`, `is_terminal_polyfill 1.70.2`, `once_cell_polyfill 1.70.2`, `serde_spanned 0.6.9`, `toml 0.8.23`, `toml_datetime 0.6.11`, `toml_datetime 1.1.1+spec-1.1.0`, `toml_edit 0.22.27`, `toml_edit 0.25.13+spec-1.1.0`, `toml_parser 1.1.2+spec-1.1.0`, `toml_write 0.1.2`
 
@@ -5647,7 +5619,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L098
+### L097
 
 Applies to: `zerocopy 0.8.52`, `zerocopy-derive 0.8.52`
 
@@ -5678,7 +5650,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L099
+### L098
 
 Applies to: `ring 0.17.14`
 
@@ -5956,7 +5928,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L100
+### L099
 
 Applies to: `logos 0.15.1`, `logos-codegen 0.15.1`, `logos-derive 0.15.1`
 
@@ -5984,7 +5956,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L101
+### L100
 
 Applies to: `getrandom 0.2.17`
 
@@ -6017,7 +5989,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L102
+### L101
 
 Applies to: `cookie 0.18.2`
 
@@ -6050,7 +6022,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L103
+### L102
 
 Applies to: `cfg_aliases 0.1.1`, `cfg_aliases 0.2.1`
 
@@ -6066,7 +6038,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L104
+### L103
 
 Applies to: `async-broadcast 0.7.2`
 
@@ -6094,7 +6066,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L105
+### L104
 
 Applies to: `derive_more 1.0.0`, `derive_more 2.1.1`, `derive_more-impl 1.0.0`, `derive_more-impl 2.1.1`
 
@@ -6122,7 +6094,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L106
+### L105
 
 Applies to: `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
@@ -6150,7 +6122,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L107
+### L106
 
 Applies to: `powerfmt 0.2.0`
 
@@ -6358,7 +6330,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L108
+### L107
 
 Applies to: `embedded-io 0.4.0`
 
@@ -6390,7 +6362,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L109
+### L108
 
 Applies to: `notify-types 2.2.0`
 
@@ -6422,7 +6394,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L110
+### L109
 
 Applies to: `http-body-util 0.1.3`
 
@@ -6454,7 +6426,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L111
+### L110
 
 Applies to: `fdeflate 0.3.7`, `gix-path 0.11.3`, `gix-trace 0.1.21`, `gix-url 0.35.3`, `gix-validate 0.11.4`, `image 0.25.10`, `image-webp 0.2.4`, `miniz_oxide 0.8.9`, `num-conv 0.2.2`, `pin-project-lite 0.2.17`, `portable-atomic 1.13.1`, `portable-atomic-util 0.2.7`, `sync_wrapper 1.0.2`, `time 0.3.51`, `time-core 0.1.9`, `time-macros 0.2.30`
 
@@ -6637,7 +6609,7 @@ Apache License
    END OF TERMS AND CONDITIONS
 ~~~~
 
-### L112
+### L111
 
 Applies to: `bit-set 0.8.0`, `bit-vec 0.8.0`
 
@@ -6669,7 +6641,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L113
+### L112
 
 Applies to: `num-conv 0.2.2`
 
@@ -6695,7 +6667,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L114
+### L113
 
 Applies to: `indexmap 1.9.3`, `indexmap 2.14.0`
 
@@ -6727,7 +6699,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L115
+### L114
 
 Applies to: `bytes 1.12.0`
 
@@ -6759,7 +6731,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L116
+### L115
 
 Applies to: `symlink 0.1.0`
 
@@ -6791,7 +6763,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L117
+### L116
 
 Applies to: `futures-intrusive 0.5.0`
 
@@ -6823,7 +6795,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L118
+### L117
 
 Applies to: `reqwest 0.12.28`
 
@@ -6849,7 +6821,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L119
+### L118
 
 Applies to: `bumpalo 3.20.3`
 
@@ -6881,7 +6853,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L120
+### L119
 
 Applies to: `konst 0.2.20`, `konst_macro_rules 0.2.19`
 
@@ -6905,7 +6877,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### L121
+### L120
 
 Applies to: `ratatui 0.30.2`, `ratatui-core 0.1.2`, `ratatui-crossterm 0.1.2`, `ratatui-widgets 0.3.2`
 
@@ -6934,7 +6906,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L122
+### L121
 
 Applies to: `crossbeam-channel 0.5.16`, `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.20`, `crossbeam-queue 0.3.12`, `crossbeam-utils 0.8.21`
 
@@ -6968,7 +6940,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L123
+### L122
 
 Applies to: `tokio-tungstenite 0.24.0`
 
@@ -6995,7 +6967,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L124
+### L123
 
 Applies to: `reqwest 0.12.28`
 
@@ -7203,7 +7175,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L125
+### L124
 
 Applies to: `kasuari 0.4.12`
 
@@ -7232,7 +7204,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L126
+### L125
 
 Applies to: `urlencoding 2.1.3`
 
@@ -7259,7 +7231,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L127
+### L126
 
 Applies to: `stable_deref_trait 1.2.1`
 
@@ -7291,7 +7263,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L128
+### L127
 
 Applies to: `libm 0.2.16`
 
@@ -7556,7 +7528,7 @@ have been licensed under extremely permissive terms.
 Copyright notices are retained in src/* files where relevant.
 ~~~~
 
-### L129
+### L128
 
 Applies to: `block-buffer 0.10.4`, `block-padding 0.3.3`
 
@@ -7588,7 +7560,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L130
+### L129
 
 Applies to: `weezl 0.1.12`
 
@@ -7614,6 +7586,32 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+~~~~
+
+### L130
+
+Applies to: `libsqlite3-sys 0.39.1`
+
+~~~~text
+Copyright (c) 2014 The rusqlite developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 ~~~~
 
 ### L131
@@ -13334,7 +13332,7 @@ SOFTWARE.
 
 ### L218
 
-Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
+Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`
 
 ~~~~text
 Apache License
@@ -15257,7 +15255,7 @@ Apache License
 
 ### L255
 
-Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
+Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`
 
 ~~~~text
 Copyright (c) 2020 LaunchBadge, LLC
