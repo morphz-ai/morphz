@@ -5236,6 +5236,9 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
         // Every scalar subquery belongs to this one SQLite statement snapshot.
         // `json(...)` marks nested JSON values so arrays contain objects rather
         // than escaped JSON strings.
+        // The active Session and metadata candidates do not use exclusion_reason.
+        // Read them from the same authorized scope directly, avoiding repeated
+        // expansion of unused classification CTEs under SQLite's cursor limit.
         let directory_sql_prefix = r#"WITH
                scoped_sessions AS NOT MATERIALIZED (
                  SELECT s.*,
@@ -5288,14 +5291,14 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                ),
                full_session_ids AS MATERIALIZED (
                  SELECT id FROM (
-                   SELECT id,last_activity_at,0 AS selection_order FROM classified_sessions WHERE id=?2 AND exclusion_reason IS NULL
+                   SELECT id,last_activity_at,0 AS selection_order FROM scoped_sessions WHERE id=?2
                    UNION ALL
                    SELECT id,last_activity_at,1 AS selection_order FROM full_other_ids
                  ) full_page ORDER BY selection_order,last_activity_at DESC,id LIMIT ?4
                ),
                metadata_candidate_ids AS NOT MATERIALIZED (
                  SELECT s.id, s.last_activity_at,s.directory_priority
-                 FROM classified_sessions s
+                 FROM scoped_sessions s
                  CROSS JOIN active_policy policy
                  WHERE s.directory_priority < 4 AND NOT EXISTS (
                          SELECT 1 FROM full_session_ids selected_full
