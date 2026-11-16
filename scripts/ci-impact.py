@@ -19,6 +19,10 @@ SCOPES = ("runtime", "application", "storage", "contracts", "dashboard", "websit
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 MAX_DIFF_BYTES = 4 * 1024 * 1024
 MAX_PATHS = 20_000
+RENDERER = "application/apps/web/"
+RENDERER_SOURCE = RENDERER + "src/"
+RENDERER_HOST = RENDERER_SOURCE + "host/"
+VISUAL_ASSETS = (".svg", ".png", ".jpg", ".jpeg", ".webp", ".avif", ".gif", ".ico", ".woff", ".woff2", ".ttf", ".otf")
 
 # These are job IDs, including existing matrix/fan-in owners, not display names.
 # A matrix only reports success after every partition has succeeded.
@@ -74,9 +78,14 @@ def classify(paths: list[str], commit: str) -> dict:
         if (not path or path.startswith("/") or "\\" in path
                 or any(part in ("", ".", "..") for part in path.split("/"))):
             return full_plan(commit, "unrecognized-path")
-        if path.startswith("application/apps/web/"):
+        presentation = (path.startswith(RENDERER) and not path.startswith(RENDERER_HOST)
+                        and (path.endswith(VISUAL_ASSETS)
+                             or path.startswith(RENDERER_SOURCE) and path.endswith((".tsx", ".css"))))
+        if presentation:
             # This renderer is shared by Web and Desktop: keep both full Node
             # inventories, all browsers, native acceptance and stability passes.
+            # A shared folder is not a presentation boundary: clients, transport,
+            # data/state helpers and native Host adapters still require full CI.
             plan["scopes"]["application"] = True
         elif path.startswith("application/tests/"):
             # Test/fixture changes may exercise Host, real Runtime or S3, even

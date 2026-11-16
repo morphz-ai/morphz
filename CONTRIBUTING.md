@@ -77,7 +77,8 @@ checked-out commit. A selected job must succeed; failure, cancellation, a missin
 or an unexpected skip fails the receipt. Workflows do not use top-level path filters
 that can leave required checks pending.
 
-- Changes confined to `application/apps/web/` retain the complete shared Web/Desktop
+- Renderer `.tsx` views, CSS and static visual assets under `application/apps/web/`
+  (excluding native Host adapters) retain the complete shared Web/Desktop
   Node inventories, browser inventories, native Desktop acceptance, source contracts
   and repeated native/timing regressions. They omit the unchanged full Rust Runtime,
   sandbox, Runtime release-build, independent Dashboard/site and cloud-storage jobs.
@@ -86,7 +87,8 @@ that can leave required checks pending.
   PostgreSQL/S3 application inventories. They do not alter Runtime implementation.
 - Website-only changes run website checks, except installer paths, which require full CI.
   Application Markdown documentation alone needs only the always-running admission checks.
-- Runtime, SDKs, shared contracts, Host adapters, native Desktop privileges, application dependencies,
+- Runtime, SDKs, shared contracts, renderer clients/transport/data logic, Host adapters,
+  native Desktop privileges, application dependencies,
   build scripts, CI policy/workflows and every unclassified path require full joint CI.
   Missing/unreadable history and classification-budget overflow also select full CI.
 - Release branches, PRs into release branches and explicit manual workflow runs always

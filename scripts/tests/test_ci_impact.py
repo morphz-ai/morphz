@@ -53,6 +53,34 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(scopes(plan), {"application", "contracts", "storage"})
         self.assertFalse(plan["scopes"]["runtime"])
 
+    def test_renderer_protocol_clients_data_logic_and_host_are_not_presentation(self):
+        for path in [
+            "application/apps/web/src/client.ts",
+            "application/apps/web/src/platform-client.ts",
+            "application/apps/web/src/cognitive-app-client.ts",
+            "application/apps/web/src/application-transport.ts",
+            "application/apps/web/src/legacy-storage.ts",
+            "application/apps/web/src/task-runtime-projection.ts",
+            "application/apps/web/src/new-protocol.ts",
+            "application/apps/web/src/host/builtin-application-adapters.tsx",
+            "application/apps/web/src/host/icon.svg",
+            "application/apps/web/package.json",
+            "application/apps/web/vite.config.ts",
+            "application/apps/web/index.html",
+        ]:
+            with self.subTest(path=path):
+                self.assertEqual(CI.classify([path], COMMIT)["mode"], "full")
+                self.assertEqual(CI.classify(["application/apps/web/src/ui.css", path], COMMIT)["mode"], "full")
+
+    def test_renderer_visual_assets_keep_ui_owners(self):
+        for path in ["application/apps/web/src/Icons.tsx",
+                     "application/apps/web/src/styles/tokens.css",
+                     "application/apps/web/public/icon.svg",
+                     "application/apps/web/public/brand.webp",
+                     "application/apps/web/public/font.woff2"]:
+            with self.subTest(path=path):
+                self.assertEqual(scopes(CI.classify([path], COMMIT)), {"application"})
+
     def test_website_and_ui_union_keeps_both_consumers(self):
         plan = CI.classify(["website/content/docs/en/start.md",
                             "application/apps/web/src/ui.css"], COMMIT)
@@ -151,13 +179,13 @@ class GitRangeTests(unittest.TestCase):
     def test_delete_and_rename_include_old_shared_path(self):
         base = self.commit("application/packages/core/src/contract.ts")
         old = self.root / "application/packages/core/src/contract.ts"
-        old.rename(self.root / "application/apps/web/src/moved.ts")
+        old.rename(self.root / "application/apps/web/src/moved.tsx")
         head = self.commit()
         changed = CI.changed_paths(self.root, base, head, merge_base=False)
         self.assertIn("application/packages/core/src/contract.ts", changed)
-        self.assertIn("application/apps/web/src/moved.ts", changed)
+        self.assertIn("application/apps/web/src/moved.tsx", changed)
         self.assertEqual(self.plan({"before": base, "after": head})["mode"], "full")
-        (self.root / "application/apps/web/src/moved.ts").unlink()
+        (self.root / "application/apps/web/src/moved.tsx").unlink()
         deleted = self.commit()
         self.assertEqual(scopes(self.plan({"before": head, "after": deleted})), {"application"})
 
