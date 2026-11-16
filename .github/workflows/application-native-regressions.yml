@@ -261,6 +261,9 @@ jobs:
           set -euo pipefail
           log="$RUNNER_TEMP/mounted-resource-pass-${{ matrix.pass }}.log"
           output="$RUNNER_TEMP/mounted-resource-output-${{ matrix.pass }}.log"
+          # Preserve the original failing exit status AND expose bounded failure
+          # detail in the job log; artifacts remain the complete evidence.
+          trap 'status=$?; if [ "$status" -ne 0 ] && [ -f "$output" ]; then tail -c 65536 "$output"; fi; exit "$status"' EXIT
           MORPHZ_TEST_COVERAGE_LOG="$log" \
           MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 \
             tests/cognitive-document-view-mounted.test.ts \

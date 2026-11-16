@@ -18,6 +18,7 @@ declare global {
       parameters: unknown,
     ): Promise<unknown>;
     documentViewAbort(id: string): Promise<void>;
+    documentViewAuthorObserved(id: string): Promise<void>;
     documentViewSettings: { initiallyValid?: boolean; holdAuthorize?: boolean };
     documentViewFixture: ReturnType<typeof controls>;
   }
@@ -175,37 +176,36 @@ function controls() {
   return {
     observeAuthor(id: string, phase: string, accent?: string) {
       if (authorObservers.has(id)) throw new Error("Duplicate author observer");
-      return new Promise<void>((resolve, reject) => {
-        const check = () => {
-          const outer = document.querySelector<HTMLIFrameElement>(
-            ".cognitive-document-container>iframe",
-          );
-          if (outer?.className !== "cognitive-application-frame") return;
-          const proof = new URL(outer.src).searchParams.get("documentProof");
-          if (
-            !authorEvents.some(
-              (item) =>
-                item.proof === proof &&
-                item.event.phase === phase &&
-                (accent === undefined ||
-                  item.event.context!.theme.accent === accent),
-            )
+      const check = () => {
+        const outer = document.querySelector<HTMLIFrameElement>(
+          ".cognitive-document-container>iframe",
+        );
+        if (outer?.className !== "cognitive-application-frame") return;
+        const proof = new URL(outer.src).searchParams.get("documentProof");
+        if (
+          !authorEvents.some(
+            (item) =>
+              item.proof === proof &&
+              item.event.phase === phase &&
+              (accent === undefined ||
+                item.event.context!.theme.accent === accent),
           )
-            return;
+        )
+          return;
+        authorObservers.delete(id);
+        // A one-way Playwright binding carries the accepted event to Node.
+        // It must not wait for a long-lived Runtime.evaluate promise reply.
+        // The source/proof check above remains the actual positive control.
+        void window.documentViewAuthorObserved(id).catch(() => undefined);
+      };
+      authorObservers.set(id, {
+        check,
+        cancel() {
           authorObservers.delete(id);
-          resolve();
-        };
-        authorObservers.set(id, {
-          check,
-          cancel() {
-            authorObservers.delete(id);
-            reject(new Error("Author observation cancelled"));
-          },
-        });
-        // Subscribe before the initial check: an already accepted receipt is
-        // observable without a timer, paint or a second protocol operation.
-        check();
+        },
       });
+      // Subscribe before checking already accepted, exact-proof receipts.
+      check();
     },
     cancelAuthorObservation(id: string) {
       authorObservers.get(id)?.cancel();

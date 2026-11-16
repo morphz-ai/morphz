@@ -3,7 +3,7 @@ import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { build } from "esbuild";
-import { chromium, type Page, type Frame } from "@playwright/test";
+import { chromium, expect, type Page, type Frame } from "@playwright/test";
 import { appContentSecurityPolicy } from "../packages/core/src/resource-policy.js";
 import type { CognitiveAppViewUi } from "../packages/core/src/cognitive-app-view-api.js";
 import { withViewTransport } from "./fixtures/cognitive-app-view-transport-fixture.js";
@@ -12,6 +12,10 @@ import { withViewTransport } from "./fixtures/cognitive-app-view-transport-fixtu
 // default rAF poll can stop observing an already-delivered acknowledgment when
 // Chromium suppresses rendering. Keep the same 5s wall-clock deadline.
 const protocolObservation = { polling: 25 } as const;
+const authorObservationReceipts = new WeakMap<
+  Page,
+  Map<string, { resolve(): void; reject(error: unknown): void }>
+>();
 
 async function report(page: Page): Promise<any> {
   return page.evaluate(() =>
@@ -37,9 +41,17 @@ async function authorPhase(
   const id = randomUUID();
   const started = performance.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const receipts = authorObservationReceipts.get(page);
+  assert.ok(receipts, "real parent event binding must be installed first");
+  const accepted = new Promise<void>((resolve, reject) => {
+    receipts.set(id, { resolve, reject });
+  });
   try {
-    await Promise.race([
-      page.evaluate(
+    // Subscribe in Node before arming the browser. The arm command returns
+    // immediately; actual accepted events use the native binding, independently
+    // of a delayed evaluation response, browser timers or paint.
+    void page
+      .evaluate(
         ({ id, phase, accent }) =>
           Reflect.get(window, "documentViewFixture").observeAuthor(
             id,
@@ -47,7 +59,10 @@ async function authorPhase(
             accent,
           ),
         { id, phase, accent },
-      ),
+      )
+      .catch((error) => receipts.get(id)?.reject(error));
+    await Promise.race([
+      accepted,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(
           () =>
@@ -68,6 +83,7 @@ async function authorPhase(
     return elapsed;
   } finally {
     clearTimeout(timer);
+    receipts.delete(id);
     await page.evaluate(
       (id) =>
         Reflect.get(window, "documentViewFixture").cancelAuthorObservation(id),
@@ -207,6 +223,22 @@ test(
           ]);
           const page = await context.newPage();
           page.setDefaultTimeout(5_000);
+          const authorReceipts = new Map<
+            string,
+            { resolve(): void; reject(error: unknown): void }
+          >();
+          authorObservationReceipts.set(page, authorReceipts);
+          await page.exposeBinding(
+            "documentViewAuthorObserved",
+            ({ frame }, id: string) => {
+              assert.equal(
+                frame,
+                page.mainFrame(),
+                "only the source-qualified parent may acknowledge an author phase",
+              );
+              authorReceipts.get(id)?.resolve();
+            },
+          );
           const pending = new Map<string, AbortController>();
           const activePorts = new Map<
             string,
@@ -362,6 +394,7 @@ test(
             assert.equal((await report(page)).authorObserverCount, 0);
           } finally {
             for (const controller of pending.values()) controller.abort();
+            authorObservationReceipts.delete(page);
             await context.close();
             t.diagnostic(
               JSON.stringify({ backend, documentViewPortTimings: portTimings }),
@@ -461,6 +494,75 @@ test(
           });
         },
       );
+    await t.test(
+      "real saved acknowledgment bypasses a held observation evaluation reply within the same 5s wall deadline",
+      async () => {
+        await run("sqlite", async (page) => {
+          const guest = await connected(page);
+          const originalEvaluate = page.evaluate;
+          let parked = false;
+          let responseReturned = false;
+          let releaseReply!: () => void;
+          const heldReply = new Promise<void>((resolve) => {
+            releaseReply = resolve;
+          });
+          // Hold only the TEST observation driver's reply, after its real
+          // browser arm command has completed. The real document, native port,
+          // SDK, SQL save and accepted parent event are not intercepted.
+          Reflect.set(page, "evaluate", async (...args: unknown[]) => {
+            const result = await Reflect.apply(originalEvaluate, page, args);
+            const value = args[1];
+            if (
+              value &&
+              typeof value === "object" &&
+              Reflect.get(value, "phase") === "saved"
+            ) {
+              parked = true;
+              await heldReply;
+              responseReturned = true;
+            }
+            return result;
+          });
+          const saved = authorPhase(page, "saved");
+          // Ensure a control-setup failure still disposes the pending observer;
+          // the assertion path below independently requires its actual success.
+          void saved.catch(() => undefined);
+          try {
+            await expect.poll(() => parked, { timeout: 5_000 }).toBe(true);
+            await guest.evaluate(() =>
+              Reflect.get(window, "documentViewAuthor").save(),
+            );
+            const acknowledgmentMs = await saved;
+            assert.ok(acknowledgmentMs <= 5_000);
+            assert.equal(
+              responseReturned,
+              false,
+              "accepted native event must precede the held evaluation reply",
+            );
+            assert.deepEqual(
+              await guest.evaluate(
+                () => Reflect.get(window, "documentViewAuthor").outcomes.save,
+              ),
+              {
+                ok: true,
+                value: { revision: 2, state: { view: "warm-original" } },
+              },
+            );
+            t.diagnostic(
+              JSON.stringify({
+                acknowledgmentMs,
+                wallDeadlineMs: 5_000,
+                evaluationReplyHeld: true,
+              }),
+            );
+          } finally {
+            releaseReply();
+            Reflect.set(page, "evaluate", originalEvaluate);
+            await saved.catch(() => undefined);
+          }
+        });
+      },
+    );
     await t.test(
       "real protocol completion remains observable without paint; the old rAF waiter misses the delivered acknowledgment",
       async () => {

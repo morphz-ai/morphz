@@ -228,6 +228,22 @@ class GitRangeTests(unittest.TestCase):
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_native_diagnostics_keep_failure_status_and_bound_console_evidence(self):
+        source = (ROOT / ".github/workflows/application-native-regressions.yml").read_text()
+        job = workflow_jobs(source)["macos-mounted-resource-passes"]
+        handler = re.search(r"^          trap '([^\n]+)' EXIT$", job, re.M)[1]
+        with tempfile.TemporaryDirectory(prefix="morphz-ci-failure-log-") as directory:
+            output = Path(directory) / "output with spaces.log"
+            output.write_bytes(b"x" * 100_000 + b"original failure detail\n")
+            command = 'set -euo pipefail; output="$1"; trap \'' + handler + '\' EXIT; exit "$2"'
+            for status in (0, 1, 7, 130):
+                result = subprocess.run(["bash", "-c", command, "fixture", str(output), str(status)],
+                                        capture_output=True)
+                self.assertEqual(result.returncode, status)
+                self.assertEqual(len(result.stdout), 65536 if status else 0)
+                if status:
+                    self.assertTrue(result.stdout.endswith(b"original failure detail\n"))
+
     def test_full_and_scoped_complete_receipts_pass_for_both_workflows(self):
         for plan in [CI.full_plan(COMMIT, "fixture"), CI.classify(["application/apps/web/src/ui.css"], COMMIT),
                      CI.classify(["website/app/page.tsx"], COMMIT)]:
