@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { Pool } from "pg";
 import { Application } from "../packages/application/src/application.js";
 import { HumanPlatformAuthority } from "../packages/application/src/human-platform-authority.js";
+import { PlatformWorkService } from "../packages/application/src/platform-work-service.js";
 import { ExecutionControls } from "../packages/application/src/execution.js";
 import { RuntimeTaskRunStatusReader } from "../packages/application/src/runtime-task-run-status.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
@@ -346,6 +347,240 @@ test("事项执行历史共用 Desktop 本机与 Web HTTP 业务入口，旧执�
     }
     local.close();
   } finally {
+    await platform.close();
+    workspace.close();
+  }
+});
+
+test("Desktop 和 HTTP 取消已结束的 Agent 事项核对当前 Runtime，不把历史执行当作进行中", async () => {
+  const tenantId = `cancel-transport-${randomUUID()}`;
+  const workspace = new WorkspaceStore(":memory:", { mode: "transport" });
+  const authority = new HumanPlatformAuthority(
+    tenantId,
+    (access) =>
+      access.principalId === localAccess.principalId &&
+      access.actantId === localAccess.actantId,
+  );
+  const platform = await PlatformStore.sqlite(
+    ":memory:",
+    authority.verifier({
+      ...noOtherAuthority,
+      async resolveActant({ tenantId: scope, actantId }) {
+        if (scope !== tenantId) return null;
+        if (actantId === localAccess.actantId)
+          return { principalId: localAccess.principalId, kind: "human" };
+        if (actantId === "morphz-agent")
+          return { principalId: "morphz-service", kind: "agent" };
+        return null;
+      },
+      async resolveProjectAgent({ tenantId: scope }) {
+        return scope === tenantId
+          ? { principalId: "morphz-service", actantId: "morphz-agent" }
+          : null;
+      },
+    }),
+  );
+  const runtimePaths: string[] = [];
+  let current:
+    | { scheduleId: string; threadId: string; lifecycle: "open" | "completed" }
+    | undefined;
+  const domains = {
+    platformWork: {
+      authority,
+      service: new PlatformWorkService(platform, "single-host"),
+    },
+    platformTaskRuns: {
+      authority,
+      store: platform,
+      runtimeStatus: new RuntimeTaskRunStatusReader(async (path) => {
+        assert(
+          current,
+          "Runtime is read only after the exact task is prepared",
+        );
+        runtimePaths.push(path);
+        const base = "/api/sessions/cancel-session";
+        if (path === `${base}/schedules/${current.scheduleId}`)
+          return {
+            id: current.scheduleId,
+            thread_id: current.threadId,
+            revision: 2,
+            status: "dispatched",
+            not_before: null,
+            interval_seconds: null,
+          };
+        assert.equal(
+          path,
+          `${base}/turns/client-schedule-${current.scheduleId}/thread`,
+          "cancel must not read a directory or unrelated execution",
+        );
+        return {
+          thread_id: current.threadId,
+          session_id: "cancel-session",
+          root_turn_id: `client-schedule-${current.scheduleId}`,
+          revision: 2,
+          lifecycle: current.lifecycle,
+        };
+      }),
+    },
+  };
+  const local = new LocalApplicationConnection(
+    new Application(workspace, domains),
+  );
+  let server: ReturnType<typeof createAppServer> | undefined;
+  try {
+    await platform.provisionTenant(tenantId);
+    await authority.withSession(
+      localAccess,
+      () => {},
+      (actor) =>
+        platform.createProject(actor, {
+          commandId: randomUUID(),
+          projectId: "cancel-project",
+          title: "取消事项传输验收",
+        }),
+    );
+    const port = await freePort();
+    server = createAppServer(workspace, {
+      port,
+      webRoot: "/nonexistent",
+      ...domains,
+    });
+    await new Promise<void>((resolve) =>
+      server!.listen(port, "127.0.0.1", resolve),
+    );
+    const remote = new HttpApplicationClient(`http://127.0.0.1:${port}`);
+    for (const [label, connection] of [
+      ["Desktop", local],
+      ["HTTP", remote],
+    ] as const) {
+      const boot = (await connection.call("platform.bootstrap")) as {
+        csrfToken: string;
+      };
+      const options = { identityGeneration: boot.csrfToken };
+      const taskId = randomUUID();
+      const admission = await authority.withSession(
+        localAccess,
+        () => {},
+        async (actor) => {
+          await platform.createTask(actor, {
+            commandId: randomUUID(),
+            taskId,
+            projectId: "cancel-project",
+            title: `${label} 已结束但未完成的事项`,
+            assigneeId: "morphz-agent",
+          });
+          return platform.requestTaskRun(actor, {
+            commandId: randomUUID(),
+            taskId,
+            expectedRevision: 1,
+            sessionId: "cancel-session",
+            intent: "一次性事项",
+            notBefore: "2026-11-16T00:00:00.000Z",
+          });
+        },
+      );
+      current = {
+        scheduleId: admission.request.id,
+        threadId: `thread-${taskId}`,
+        lifecycle: "open",
+      };
+      // The persisted bridge is deliberately stale, just like the reported
+      // task. The trusted Runtime point reads own its current execution state.
+      await platform.confirmTaskRun(tenantId, admission.eventId, {
+        schedule: {
+          id: current.scheduleId,
+          thread_id: current.threadId,
+          revision: 1,
+          status: "queued",
+          not_before: admission.request.not_before,
+          interval_seconds: null,
+        },
+        thread: {
+          thread_id: current.threadId,
+          session_id: "cancel-session",
+          root_turn_id: `client-schedule-${current.scheduleId}`,
+          lifecycle: "open",
+        },
+      });
+      const original = (await connection.call(
+        "tasks.version",
+        { taskId },
+        options,
+      )) as { revision: number; execution: string; runRequested: number };
+      assert.equal(original.execution, "waiting");
+      assert.equal(original.runRequested, 1);
+      const history = await connection.call(
+        "task.run-history",
+        { taskId, limit: 1 },
+        options,
+      );
+      const cancel = {
+        commandId: randomUUID(),
+        taskId,
+        expectedRevision: original.revision,
+        execution: "cancelled",
+      };
+      const before = runtimePaths.length;
+      await assert.rejects(
+        connection.call("tasks.revise", cancel, options),
+        /执行.*(?:结束|停止|确认)/,
+        `${label}: an open Thread cannot be cancelled as an idle task`,
+      );
+      assert.deepEqual(
+        await connection.call("tasks.version", { taskId }, options),
+        original,
+      );
+      assert.equal(runtimePaths.length, before + 2);
+      current.lifecycle = "completed";
+      assert.equal(
+        await connection.call("tasks.revise", cancel, options),
+        taskId,
+      );
+      assert.equal(runtimePaths.length, before + 4);
+      const cancelled = (await connection.call(
+        "tasks.version",
+        { taskId },
+        options,
+      )) as { revision: number; execution: string; runRequested: number };
+      assert.equal(cancelled.execution, "cancelled");
+      assert.equal(cancelled.revision, original.revision + 1);
+      assert.equal(cancelled.runRequested, 1);
+      assert.deepEqual(
+        await connection.call(
+          "tasks.version",
+          { taskId, revision: original.revision },
+          options,
+        ),
+        original,
+        "cancellation preserves the immutable earlier task revision",
+      );
+      assert.deepEqual(
+        await connection.call(
+          "task.run-history",
+          { taskId, limit: 1 },
+          options,
+        ),
+        history,
+        "cancellation neither stops nor rewrites the completed execution",
+      );
+      assert.equal(
+        await connection.call("tasks.revise", cancel, options),
+        taskId,
+      );
+      assert.equal(
+        runtimePaths.length,
+        before + 4,
+        "receipt replay is read-free",
+      );
+      assert.deepEqual(
+        await connection.call("tasks.version", { taskId }, options),
+        cancelled,
+      );
+    }
+  } finally {
+    local.close();
+    if (server)
+      await new Promise<void>((resolve) => server!.close(() => resolve()));
     await platform.close();
     workspace.close();
   }

@@ -690,7 +690,7 @@ export type ProjectRetirementRun = {
 export type PriorRuntimeObservation = {
   source: "runtime";
   runtime: { sessionId: string; scheduleId: string; threadId: string };
-  schedule: { status: string };
+  schedule: { status: string; intervalSeconds?: number | null };
   thread: { lifecycle: string };
 };
 export type PendingTaskRunStop = {
@@ -9951,9 +9951,12 @@ export class PlatformStore {
     const now = request.now ?? new Date().toISOString();
     // Runtime is authoritative for execution, not the task's board column.
     // Read outside the write lock; the exact admission/control binding is
-    // checked again in the mutation transaction before changing its owner.
+    // checked again in the mutation transaction before changing its owner or
+    // cancelling an Agent task. A historical run request is not live work.
     const selected =
-      request.assigneeId !== undefined || request.projectId !== undefined
+      request.assigneeId !== undefined ||
+      request.projectId !== undefined ||
+      request.execution === "cancelled"
         ? await this.transaction(async (q) => {
             const earlier = await this.replay(
               q,
@@ -9966,9 +9969,10 @@ export class PlatformStore {
               await q.all<{
                 project_id: string;
                 assignee_id: string;
+                execution: string;
                 revision: number | string;
               }>(
-                "SELECT project_id,assignee_id,revision FROM tasks WHERE tenant_id=? AND task_id=? AND deleted_at IS NULL",
+                "SELECT project_id,assignee_id,execution,revision FROM tasks WHERE tenant_id=? AND task_id=? AND deleted_at IS NULL",
                 [actor.tenantId, request.taskId],
               )
             )[0];
@@ -9986,7 +9990,10 @@ export class PlatformStore {
                 (request.assigneeId !== undefined &&
                   request.assigneeId !== task.assignee_id) ||
                 (request.projectId !== undefined &&
-                  request.projectId !== task.project_id)
+                  request.projectId !== task.project_id) ||
+                (request.execution === "cancelled" &&
+                  task.execution !== "cancelled" &&
+                  task.assignee_id !== actor.actantId)
                   ? await this.taskReassignmentExecution(
                       q,
                       actor,
@@ -10109,7 +10116,15 @@ export class PlatformStore {
         }));
       if (!nextAssignee)
         throw new PlatformStorageError("forbidden", "负责人身份未获确认。");
-      if (assigneeChanged || targetProjectId !== current.project_id) {
+      const cancellingAgentTask =
+        request.execution === "cancelled" &&
+        previous.execution !== "cancelled" &&
+        current.assignee_id !== actor.actantId;
+      if (
+        assigneeChanged ||
+        targetProjectId !== current.project_id ||
+        cancellingAgentTask
+      ) {
         const execution = await this.taskReassignmentExecution(
           q,
           actor,
@@ -10128,7 +10143,10 @@ export class PlatformStore {
           ["completed", "failed", "cancelled"].includes(
             observed.thread.lifecycle,
           ) &&
-          ["completed", "cancelled"].includes(observed.schedule.status);
+          (["completed", "cancelled"].includes(observed.schedule.status) ||
+            (cancellingAgentTask &&
+              observed.schedule.status === "dispatched" &&
+              observed.schedule.intervalSeconds === null));
         if (
           execution.pendingControl ||
           execution.sourceWatchOpen ||
@@ -10144,7 +10162,9 @@ export class PlatformStore {
         )
           throw new PlatformStorageError(
             "conflict",
-            "事项执行尚未确认结束，请先停止执行再更换负责人或项目。",
+            cancellingAgentTask
+              ? "事项执行尚未确认结束，不能取消；请查看执行记录，或先停止执行。"
+              : "事项执行尚未确认结束，请先停止执行再更换负责人或项目。",
           );
       }
       const nextAssigneeId = request.assigneeId ?? current.assignee_id;
@@ -10233,6 +10253,7 @@ export class PlatformStore {
           previous,
           nextAssigneeId,
           nextExecution,
+          cancellingAgentTask,
         );
       }
       const nextAssignment =
@@ -10433,6 +10454,7 @@ export class PlatformStore {
     previous: TaskVersionRow,
     assigneeId: string,
     execution: string,
+    executionEnded = false,
   ) {
     if (actor.kind !== "human")
       throw new PlatformStorageError(
@@ -10449,15 +10471,36 @@ export class PlatformStore {
         tenantId: actor.tenantId,
         actantId: assigneeId,
       });
-      if (
-        assigned?.kind !== "agent" ||
-        previous.execution !== "planned" ||
-        previous.run_requested !== 0
-      )
+      if (assigned?.kind !== "agent")
         throw new PlatformStorageError(
           "forbidden",
-          "只能取消尚未开始的 Agent 事项；执行中请先停止。",
+          "只能直接取消自己的事项或 Morphz 事项。",
         );
+      if (
+        !executionEnded &&
+        (previous.execution !== "planned" || previous.run_requested !== 0)
+      ) {
+        // Board moves have no asynchronous Runtime observation. They may use
+        // an already committed stop/withdrawal receipt, never a cached label.
+        const boundary = await this.taskReassignmentExecution(
+          q,
+          actor,
+          previous.task_id,
+          previous.revision,
+          true,
+        );
+        if (
+          boundary.pendingAdmission ||
+          boundary.pendingControl ||
+          boundary.sourceWatchOpen ||
+          (!boundary.confirmedStopped &&
+            !(boundary.withdrawn && !boundary.runtime))
+        )
+          throw new PlatformStorageError(
+            "conflict",
+            "事项执行尚未确认结束，不能取消；请查看执行记录，或先停止执行。",
+          );
+      }
     }
     if (execution === "completed") {
       const downstream = await q.all(

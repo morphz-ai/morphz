@@ -119,6 +119,28 @@ test("事项离开授权投影或身份已注销时，旧执行摘要不可显�
   assert.equal(taskRuntimeResponseStillCurrent(origin, null, task.id), false);
 });
 
+test("旧事项仍标等待时，一次性执行的真实终态允许取消但不冒充事项完成", () => {
+  const waiting = { ...content, execution: "waiting" as const };
+  const ended = taskRuntimeSchema.parse({
+    ...view,
+    approvalCount: 0,
+    runs: [{ ...view.runs[0]!, threadState: "completed" }],
+  });
+  assert.equal(ended.runs[0]!.record!.status, "dispatched");
+  assert.equal(taskRunBusy(waiting, ended), false);
+  assert.equal(
+    taskPresentation(waiting, false, ended).label,
+    "执行结束 · 事项未完成",
+  );
+  assert.equal(taskRunBusy(waiting, view), true);
+  assert.equal(taskRunBusy(waiting, undefined), true);
+  assert.equal(
+    taskPresentation({ ...waiting, execution: "cancelled" }, false, ended)
+      .label,
+    "已取消",
+  );
+});
+
 test("正式事项面板与核心投影统一显示停止待确认，终态观测不能替代停止回执", () => {
   // Renderer-only projection: the persisted stop/retry/CAS lifecycle is tested
   // by task-arrangement and the real Platform task-run tests, not this DTO.

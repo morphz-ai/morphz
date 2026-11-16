@@ -129,7 +129,7 @@ async function fixture(backend: "sqlite" | "postgres") {
       await store!.close();
       store = await open();
     },
-    async create() {
+    async create(watchSourceIds: string[] = [], dependsOnIds: string[] = []) {
       const taskId = randomUUID();
       await store!.createTask(owner, {
         commandId: randomUUID(),
@@ -138,6 +138,8 @@ async function fixture(backend: "sqlite" | "postgres") {
         title: "实际事项",
         description: "Runtime 终态决定是否允许改派",
         assigneeId: "morphz-agent",
+        watchSourceIds,
+        dependsOnIds,
       });
       return taskId;
     },
@@ -158,7 +160,10 @@ async function fixture(backend: "sqlite" | "postgres") {
           : {}),
       });
     },
-    async confirm(admission: TaskRunAdmission) {
+    async confirm(
+      admission: TaskRunAdmission,
+      cached?: { schedule: "queued"; thread: "open" },
+    ) {
       const runtime = {
         sessionId: admission.sessionId,
         scheduleId: admission.request.id,
@@ -169,9 +174,9 @@ async function fixture(backend: "sqlite" | "postgres") {
           id: runtime.scheduleId,
           thread_id: runtime.threadId,
           revision: 1,
-          status: admission.request.interval_seconds
-            ? "dispatched"
-            : "completed",
+          status:
+            cached?.schedule ??
+            (admission.request.interval_seconds ? "dispatched" : "completed"),
           not_before: admission.request.not_before,
           interval_seconds: admission.request.interval_seconds,
         },
@@ -179,7 +184,7 @@ async function fixture(backend: "sqlite" | "postgres") {
           thread_id: runtime.threadId,
           session_id: runtime.sessionId,
           root_turn_id: `client-schedule-${runtime.scheduleId}`,
-          lifecycle: "completed",
+          lifecycle: cached?.thread ?? "completed",
         },
       });
       return runtime;
@@ -215,6 +220,12 @@ const reassign = (taskId: string, expectedRevision = 2) => ({
   expectedRevision,
   assigneeId: "owner-human",
 });
+const cancel = (taskId: string, expectedRevision = 2) => ({
+  commandId: randomUUID(),
+  taskId,
+  expectedRevision,
+  execution: "cancelled" as const,
+});
 async function running(f: Fixture, intervalSeconds?: number) {
   const taskId = await f.create();
   const admission = await f.start(taskId, 1, { intervalSeconds });
@@ -228,6 +239,341 @@ for (const backend of ["sqlite", "postgres"] as const) {
         ? "MORPHZ_TEST_POSTGRES_URL not set"
         : false,
   };
+  test(
+    `${backend}: cancellation accepts fresh terminal one-shot execution, preserves history, and replays its receipt`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        for (const lifecycle of ["completed", "failed", "cancelled"] as const) {
+          for (const schedule of [
+            { status: "completed" },
+            { status: "cancelled" },
+            { status: "dispatched", intervalSeconds: null },
+          ]) {
+            const taskId = await f.create();
+            const admission = await f.start(taskId, 1);
+            // This is the reported original-app boundary: the stored admission
+            // still says queued/open, while exact Runtime reads say ended.
+            const runtime = await f.confirm(admission, {
+              schedule: "queued",
+              thread: "open",
+            });
+            const request = cancel(taskId);
+            assert.equal(
+              await f.store.reviseTask(owner, request, async (binding) => {
+                assert.deepEqual(binding, runtime);
+                return {
+                  source: "runtime",
+                  runtime,
+                  schedule,
+                  thread: { lifecycle },
+                };
+              }),
+              taskId,
+            );
+            const version = await f.version(taskId);
+            assert.equal(version.execution, "cancelled");
+            assert.equal(version.run_requested, 1);
+            assert.equal(version.assignee_id, "morphz-agent");
+            assert.equal(version.revision, 3);
+            assert.equal((await f.version(taskId, 2)).execution, "waiting");
+            assert.deepEqual(
+              (await f.store.listTaskRunLinks(owner, taskId, { limit: 1 }))[0]
+                ?.runtime,
+              runtime,
+            );
+            await f.reopen();
+            assert.equal(
+              await f.store.reviseTask(owner, request, async () => {
+                throw Error("durable cancellation retry must not read Runtime");
+              }),
+              taskId,
+            );
+            assert.equal((await f.version(taskId)).revision, 3);
+          }
+        }
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  test(
+    `${backend}: cancellation rejects unavailable, mismatched, open and nonterminal Runtime states without mutation`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        const { taskId, runtime } = await running(f);
+        const request = cancel(taskId);
+        await assert.rejects(
+          f.store.reviseTask(owner, request),
+          /执行尚未确认结束/,
+        );
+        await assert.rejects(
+          f.store.reviseTask(owner, request, async () => {
+            throw Error("Runtime unavailable");
+          }),
+          /Runtime unavailable/,
+        );
+        const invalid: PriorRuntimeObservation[] = [
+          terminal({ ...runtime, threadId: "another-thread" }),
+          { ...terminal(runtime), thread: { lifecycle: "open" } },
+          ...[
+            { status: "queued", intervalSeconds: null },
+            { status: "paused", intervalSeconds: 60 },
+            { status: "dispatched", intervalSeconds: 60 },
+            { status: "dispatched" },
+          ].map((schedule) => ({ ...terminal(runtime), schedule })),
+        ];
+        for (const observation of invalid)
+          await assert.rejects(
+            f.store.reviseTask(owner, request, async () => observation),
+            /执行尚未确认结束/,
+          );
+        assert.equal((await f.version(taskId)).revision, 2);
+        assert.equal((await f.store.pendingTaskRunStops(f.tenantId)).length, 0);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  test(
+    `${backend}: cancellation allows never-started or confirmed-withdrawn tasks but fences uncertain admission`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        const neverStarted = await f.create();
+        await f.store.reviseTask(owner, cancel(neverStarted, 1), async () => {
+          throw Error("never-started task has no Runtime to inspect");
+        });
+        assert.equal((await f.version(neverStarted)).execution, "cancelled");
+        const taskId = await f.create();
+        await f.start(taskId, 1);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(taskId)),
+          /执行尚未确认结束/,
+        );
+        await f.store.requestTaskRunStop(owner, taskId, 1, 1);
+        assert.equal((await f.version(taskId)).revision, 2);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(taskId)),
+          /执行尚未确认结束/,
+          "prepared admission may have reached Runtime; a stop request alone is not terminal proof",
+        );
+        const source = await f.create();
+        const waiting = await f.create([], [source]);
+        await f.start(waiting, 1);
+        await f.store.requestTaskRunStop(owner, waiting, 1, 1);
+        const withdrawn = await f.version(waiting);
+        assert.equal(withdrawn.revision, 3);
+        await f.store.reviseTask(owner, cancel(waiting, withdrawn.revision));
+        assert.equal((await f.version(waiting)).execution, "cancelled");
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  test(
+    `${backend}: cancellation fences admitted source watches and pending controls until stop is confirmed`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        const source = await f.create();
+        const taskId = await f.create([source]);
+        const admission = await f.start(taskId, 1);
+        const runtime = await f.confirm(admission);
+        const inspect = async () => terminal(runtime);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(taskId), inspect),
+          /执行尚未确认结束/,
+        );
+        await f.store.requestTaskRunControl(owner, taskId, 1, 1, "pause");
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(taskId), inspect),
+          /执行尚未确认结束/,
+        );
+        const [control] = await f.store.pendingTaskRunScheduleControls(
+          f.tenantId,
+        );
+        assert.ok(control);
+        await f.store.confirmTaskRunScheduleControl(f.tenantId, control, {
+          source: "runtime",
+          runtime,
+          schedule: {
+            revision: 2,
+            status: "completed",
+            notBefore: null,
+            intervalSeconds: null,
+          },
+          thread: { lifecycle: "completed" },
+        });
+        await f.store.requestTaskRunStop(owner, taskId, 1, 3);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(taskId), inspect),
+          /执行尚未确认结束/,
+        );
+        const [stop] = await f.store.pendingTaskRunStops(f.tenantId);
+        assert.ok(stop);
+        await f.store.confirmTaskRunStop(f.tenantId, stop, {
+          source: "runtime",
+          runtime,
+          schedule: {
+            revision: 2,
+            status: "completed",
+            notBefore: null,
+            intervalSeconds: null,
+          },
+          thread: { lifecycle: "completed" },
+        });
+        await f.store.reviseTask(owner, cancel(taskId), async () => {
+          throw Error("confirmed stop needs no new Runtime read");
+        });
+        assert.equal((await f.version(taskId)).execution, "cancelled");
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  test(
+    `${backend}: cancellation rechecks authorization, task CAS and execution controls after Runtime observation`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        const first = await running(f);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(first.taskId), async () => {
+            f.revoke();
+            return terminal(first.runtime);
+          }),
+        );
+        f.restore();
+        assert.equal((await f.version(first.taskId)).revision, 2);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(first.taskId), async () => {
+            await f.store.reviseTask(owner, {
+              commandId: randomUUID(),
+              taskId: first.taskId,
+              expectedRevision: 2,
+              title: "保留并发修改",
+            });
+            return terminal(first.runtime);
+          }),
+          /事项已变化/,
+        );
+        assert.equal((await f.version(first.taskId)).title, "保留并发修改");
+        const second = await running(f);
+        await assert.rejects(
+          f.store.reviseTask(owner, cancel(second.taskId), async () => {
+            await f.store.requestTaskRunStop(owner, second.taskId, 1, 1);
+            return terminal(second.runtime);
+          }),
+          /核对期间执行状态已变化/,
+        );
+        assert.equal((await f.version(second.taskId)).revision, 2);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  test(
+    `${backend}: simultaneous cancellation retries commit one task version and preserve conflicting-command CAS`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        for (const identical of [true, false]) {
+          const { taskId, runtime } = await running(f);
+          const request = cancel(taskId);
+          let arrived = 0;
+          let release!: () => void;
+          const barrier = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          const inspect = async () => {
+            if (++arrived === 2) release();
+            await barrier;
+            return terminal(runtime);
+          };
+          const results = await Promise.allSettled([
+            f.store.reviseTask(owner, request, inspect),
+            f.store.reviseTask(
+              owner,
+              identical ? request : cancel(taskId),
+              inspect,
+            ),
+          ]);
+          assert.equal(
+            results.filter((result) => result.status === "fulfilled").length,
+            identical ? 2 : 1,
+          );
+          if (!identical) {
+            const failed = results.find(
+              (result) => result.status === "rejected",
+            );
+            assert.ok(failed?.status === "rejected");
+            assert.match(String(failed.reason), /事项已变化/);
+          }
+          assert.equal((await f.version(taskId)).revision, 3);
+          assert.equal((await f.version(taskId)).execution, "cancelled");
+        }
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  test(
+    `${backend}: board cancellation cannot trust cached terminal state but accepts a committed stop`,
+    options,
+    async () => {
+      const f = await fixture(backend);
+      try {
+        const { taskId, runtime } = await running(f);
+        const request = {
+          commandId: randomUUID(),
+          taskIds: [taskId],
+          expectedOrderRevision: await f.store.taskOrderRevision(owner),
+          move: {
+            taskId,
+            expectedRevision: 2,
+            execution: "cancelled" as const,
+          },
+        };
+        await assert.rejects(
+          f.store.reorderTaskSelection(owner, request),
+          /执行尚未确认结束/,
+        );
+        await f.store.requestTaskRunStop(owner, taskId, 1, 1);
+        const [stop] = await f.store.pendingTaskRunStops(f.tenantId);
+        assert.ok(stop);
+        await f.store.confirmTaskRunStop(f.tenantId, stop, {
+          source: "runtime",
+          runtime,
+          schedule: {
+            revision: 2,
+            status: "completed",
+            notBefore: null,
+            intervalSeconds: null,
+          },
+          thread: { lifecycle: "completed" },
+        });
+        await f.store.reorderTaskSelection(owner, request);
+        assert.equal((await f.version(taskId)).execution, "cancelled");
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   test(
     `${backend}: current Runtime binding and terminal evidence authorize reassignment; cached status does not`,
     options,
