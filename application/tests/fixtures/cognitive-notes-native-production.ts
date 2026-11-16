@@ -155,16 +155,21 @@ export async function openNotesNativeProduction(
       .windows()
       .find((value) => value.url() === "morphz://app/")!;
     page.setDefaultTimeout(12_000);
+    // A renderer navigation URL can be reported before main's URL snapshot
+    // catches up. Bind the native owner to this exact Playwright Page instead
+    // of taking a second URL-based snapshot in another process.
+    const nativeWindow = await electron.browserWindow(page);
+    const nativeWindowId = await nativeWindow.evaluate((window) => window.id);
+    await nativeWindow.dispose();
     // Read-only native network evidence: observe the real main session's
     // requests without replacing fetch, connection.invoke, resources or replies.
     // Only the two synthetic receipt request bodies are retained, never login
     // or cookie/credential headers. This main-process observation is not a
     // renderer capability or production API.
-    await electron.evaluate(({ BrowserWindow }, center) => {
-      const owner = BrowserWindow.getAllWindows().find(
-        (window) => window.webContents.getURL() === "morphz://app/",
-      );
-      if (!owner) throw Error("actual native owning window is missing");
+    await electron.evaluate(({ BrowserWindow }, { center, windowId }) => {
+      const owner = BrowserWindow.fromId(windowId);
+      if (!owner || owner.isDestroyed())
+        throw Error("actual native owning window is missing");
       const trace: {
         path: string;
         commandId: string | null;
@@ -206,7 +211,7 @@ export async function openNotesNativeProduction(
       });
       requests.onErrorOccurred(filter, (details) => pending.delete(details.id));
       Reflect.set(globalThis, "__notesNativeRemoteTrace", trace);
-    }, origin);
+    }, { center: origin, windowId: nativeWindowId });
     const errors: string[] = [];
     const responses: { path: string; status: number }[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
