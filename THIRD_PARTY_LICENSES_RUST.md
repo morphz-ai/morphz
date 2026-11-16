@@ -377,8 +377,8 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `quick-xml 0.41.0` | `MIT` | L021 |
 | `quickcheck 1.1.0` | `Unlicense OR MIT` | L024, L137 |
 | `quinn 0.11.11` | `MIT OR Apache-2.0` | L007, L054 |
-| `quinn-proto 0.11.18` | `MIT OR Apache-2.0` | L007, L054 |
-| `quinn-udp 0.5.15` | `MIT OR Apache-2.0` | L007, L054 |
+| `quinn-proto 0.11.19` | `MIT OR Apache-2.0` | L007, L054 |
+| `quinn-udp 0.5.16` | `MIT OR Apache-2.0` | L007, L054 |
 | `quote 1.0.46` | `MIT OR Apache-2.0` | L065, L189 |
 | `r-efi 5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
 | `r-efi 6.0.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
@@ -1029,7 +1029,7 @@ THE SOFTWARE.
 
 ### L007
 
-Applies to: `quinn 0.11.11`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`
+Applies to: `quinn 0.11.11`, `quinn-proto 0.11.19`, `quinn-udp 0.5.16`
 
 ~~~~text
 Copyright (c) 2018 The quinn Developers
@@ -3101,7 +3101,7 @@ limitations under the License.
 
 ### L054
 
-Applies to: `annotate-snippets 0.9.2`, `approx 0.5.1`, `chardetng 0.1.17`, `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`, `encoding_rs 0.8.35`, `flume 0.11.1`, `lru-slab 0.1.2`, `quinn 0.11.11`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`, `seccompiler 0.5.0`, `static_assertions 1.1.0`, `sys-locale 0.3.2`, `tinyvec 1.11.0`, `utf8_iter 1.0.4`, `wildcard 0.3.0`, `zeroize 1.9.0`, `zune-core 0.5.3`, `zune-jpeg 0.5.15`
+Applies to: `annotate-snippets 0.9.2`, `approx 0.5.1`, `chardetng 0.1.17`, `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`, `encoding_rs 0.8.35`, `flume 0.11.1`, `lru-slab 0.1.2`, `quinn 0.11.11`, `quinn-proto 0.11.19`, `quinn-udp 0.5.16`, `seccompiler 0.5.0`, `static_assertions 1.1.0`, `sys-locale 0.3.2`, `tinyvec 1.11.0`, `utf8_iter 1.0.4`, `wildcard 0.3.0`, `zeroize 1.9.0`, `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
 ~~~~text
 Apache License
