@@ -135,10 +135,19 @@ def changed_paths(root: Path, base: str, head: str, *, merge_base: bool) -> list
 def event_plan(root: Path, event: dict, event_name: str, ref: str, commit: str) -> dict:
     if not SHA.fullmatch(commit) or git(root, "rev-parse", "HEAD") != commit:
         raise ImpactError("impact plan must describe the checked-out commit")
+    if not isinstance(event, dict):
+        raise ImpactError("invalid GitHub event payload")
     if event_name == "workflow_dispatch":
         plan = full_plan(commit, "explicit-full-validation")
-        profile = event.get("inputs", {}).get("conversation_profile", False)
-        if profile not in (True, False, "true", "false", ""):
+        # Workflows without declared inputs receive JSON null, not {}. This is
+        # the actual Application manual-run payload; it still means FULL CI.
+        inputs = event.get("inputs")
+        if inputs is None:
+            inputs = {}
+        if not isinstance(inputs, dict):
+            raise ImpactError("invalid manual workflow inputs")
+        profile = inputs.get("conversation_profile", False)
+        if not (type(profile) is bool or isinstance(profile, str) and profile in ("true", "false", "")):
             raise ImpactError("invalid optional profile selection")
         plan["profile"] = profile in (True, "true")
         return plan

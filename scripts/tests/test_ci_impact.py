@@ -200,6 +200,32 @@ class GitRangeTests(unittest.TestCase):
             self.assertEqual(self.plan({}, kind)["mode"], "full")
         self.assertTrue(self.plan({"inputs": {"conversation_profile": "true"}}, "workflow_dispatch")["profile"])
 
+    def test_actual_manual_payload_with_null_inputs_produces_full_cli_outputs(self):
+        head = self.commit("application/apps/web/src/ui.css", "next")
+        for event in ({}, {"inputs": None}, {"inputs": {}}, {"inputs": {"conversation_profile": False}}):
+            with self.subTest(event=event):
+                plan = self.plan(event, "workflow_dispatch")
+                self.assertEqual(plan["mode"], "full")
+                self.assertEqual(scopes(plan), set(CI.SCOPES))
+                self.assertFalse(plan["profile"])
+        event_file = self.root / "manual.json"
+        event_file.write_text(json.dumps({"inputs": None}))
+        output = self.root / "manual-outputs"
+        subprocess.run(["python3", "-B", str(ROOT / "scripts/ci-impact.py"), "plan",
+                        "--root", str(self.root), "--event", str(event_file)],
+                       env={**os.environ, "GITHUB_SHA": head, "GITHUB_EVENT_NAME": "workflow_dispatch",
+                            "GITHUB_REF": "refs/heads/main", "GITHUB_OUTPUT": str(output),
+                            "GITHUB_STEP_SUMMARY": str(self.root / "manual-summary")},
+                       check=True, capture_output=True, text=True)
+        for scope in CI.SCOPES:
+            self.assertIn(f"{scope}=true\n", output.read_text())
+        for inputs in ([], "false", 1):
+            with self.assertRaises(CI.ImpactError):
+                self.plan({"inputs": inputs}, "workflow_dispatch")
+        for value in (None, 0, 1, [], "unexpected"):
+            with self.assertRaises(CI.ImpactError):
+                self.plan({"inputs": {"conversation_profile": value}}, "workflow_dispatch")
+
 
 class ReceiptTests(unittest.TestCase):
     def test_full_and_scoped_complete_receipts_pass_for_both_workflows(self):
