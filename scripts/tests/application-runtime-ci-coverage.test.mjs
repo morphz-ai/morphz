@@ -429,8 +429,8 @@ function verifyCompleteWebPartitions(source) {
   assert.doesNotMatch(node, /(?:include|exclude):|continue-on-error|--test-name-pattern|--test-skip-pattern|\|\s*tee/);
   assert.doesNotMatch(node, /npm run test:e2e/);
   assert.match(complete, /name: Shared application full Node inventory\n/);
-  assert.match(complete, /needs: \[web-node\]/);
-  assert.match(complete, /if: \$\{\{ always\(\) \}\}/);
+  assert.match(complete, /needs: \[impact, web-node\]/);
+  assert.match(complete, /if: \$\{\{ always\(\) && needs\.impact\.outputs\.application == 'true' \}\}/);
   assert.ok(complete.includes('NODE_RESULT: ${{ needs.web-node.result }}'));
   assert.ok(complete.includes('test "$NODE_RESULT" = success'));
   assert.ok(complete.includes('verify-application-node-shards.py verify --report-prefix WEB_NODE --total 2 --commit "$GITHUB_SHA"'));
@@ -454,8 +454,8 @@ function verifyCompleteWebPartitions(source) {
     /name: application-web-failures-\$\{\{ matrix.shard \}\}/,
   );
   assert.match(required, /name: Shared application and Web\n/);
-  assert.match(required, /needs: \[web-node-complete, web-browser\]/);
-  assert.match(required, /if: \$\{\{ always\(\) \}\}/);
+  assert.match(required, /needs: \[impact, web-node-complete, web-browser\]/);
+  assert.match(required, /if: \$\{\{ always\(\) && needs\.impact\.outputs\.application == 'true' \}\}/);
   for (const [variable, dependency] of [
     ["NODE", "web-node-complete"],
     ["BROWSER", "web-browser"],
@@ -485,7 +485,7 @@ test("full Node and complementary browser shards cannot be cancelled behind a gr
     ["verify-application-node-shards.py capture", "echo omitted"],
     ['--github-output "$GITHUB_OUTPUT"', "--omitted-output"],
     ["steps.coverage.outputs.report_2", "steps.coverage.outputs.report_1"],
-    ["needs: [web-node-complete, web-browser]", "needs: [web-node-complete]"],
+    ["needs: [impact, web-node-complete, web-browser]", "needs: [impact, web-node-complete]"],
     ['test "$BROWSER_RESULT" = success', "true"],
     ["/2 --forbid-only", "/3 --forbid-only"],
     ["/2 --forbid-only", "/2 --forbid-only --grep focused"],
@@ -495,7 +495,8 @@ test("full Node and complementary browser shards cannot be cancelled behind a gr
     );
   const complete = jobSource(workflow, "web-node-complete");
   for (const changed of [
-    complete.replace("needs: [web-node]", "needs: [web-browser]"),
+    complete.replace("needs: [impact, web-node]", "needs: [impact, web-browser]"),
+    complete.replace("always() && needs.impact.outputs.application == 'true'", "needs.impact.outputs.application == 'true'"),
     complete.replace('test "$NODE_RESULT" = success', "true"),
     complete.replace("verify-application-node-shards.py verify", "echo omitted"),
     complete.replace("--report-prefix WEB_NODE", "--report-prefix MACOS_NODE"),
@@ -534,7 +535,9 @@ function macBrowserFiles(
 function verifyNativeBrowser(source, files = macBrowserFiles()) {
   const desktop = jobSource(source, "desktop");
   assert.match(desktop, /runs-on: macos-/);
-  assert.doesNotMatch(desktop, /^    (?:if:|continue-on-error:)/m);
+  const impact = "    if: ${{ needs.impact.outputs.application == 'true' }}\n";
+  assert.ok(desktop.includes(impact), "native acceptance uses the validated application impact receipt");
+  assert.doesNotMatch(desktop.replace(impact, ""), /^    (?:if:|continue-on-error:)/m);
   const commands = desktop.split("\n      - ").flatMap((step) => {
     const lines = step.replace(/\\\r?\n\s*/g, " ");
     return [
@@ -612,6 +615,9 @@ test("every declared macOS-only browser file has a mandatory unfiltered CI owner
 test("native browser omission, optional execution and name filters cannot pass coverage", () => {
   const desktop = jobSource(workflow, "desktop");
   for (const changed of [
+    desktop.replace("needs.impact.outputs.application == 'true'", "false"),
+    desktop.replace("needs.impact.outputs.application == 'true'", "github.event_name == 'push'"),
+    desktop.replace("needs.impact.outputs.application == 'true'", "needs.impact.outputs.runtime == 'true'"),
     desktop.replace(" tests/sidebar-resize.spec.ts", ""),
     desktop.replace(/runs-on: macos-[^\n]+/, "runs-on: ubuntu-latest"),
     desktop.replace(

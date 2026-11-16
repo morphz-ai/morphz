@@ -118,7 +118,9 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
   function verifyExplicitNativeOwner(owner, candidate) {
     const entry = jobSource(owner, "native-regressions");
     assert.match(entry, /uses: \.\/\.github\/workflows\/application-native-regressions\.yml/);
-    assert.doesNotMatch(entry, /^    if:|continue-on-error|github\.event_name|github\.ref/m);
+    const impact = "    if: ${{ needs.impact.outputs.application == 'true' }}\n";
+    assert.ok(entry.includes(impact), "native owner uses the validated application impact receipt");
+    assert.doesNotMatch(entry.replace(impact, ""), /^    if:|continue-on-error|github\.event_name|github\.ref/m);
     assert.match(candidate, /^  workflow_call:/m);
     for (const name of ["remaining-browser-regressions", "macos-reader-regressions",
       "linux-native-regressions", "macos-compose-regressions", "macos-intel-publication-regressions", "macos-mounted-resource-passes"]) {
@@ -128,6 +130,10 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
     }
   }
   verifyExplicitNativeOwner(ci, native);
+  for (const expression of ["false", "github.event_name == 'push'", "needs.impact.outputs.runtime == 'true'"])
+    assert.throws(() => verifyExplicitNativeOwner(ci.replace(
+      "if: ${{ needs.impact.outputs.application == 'true' }}\n    uses: ./.github/workflows/application-native-regressions.yml",
+      `if: \${{ ${expression} }}\n    uses: ./.github/workflows/application-native-regressions.yml`), native));
   assert.throws(() => verifyExplicitNativeOwner(ci.replace(
     "  native-regressions:\n", "  native-regressions:\n    if: github.ref == 'refs/heads/main'\n"), native));
   assert.throws(() => verifyExplicitNativeOwner(ci, native.replace(
@@ -163,8 +169,8 @@ test("complete macOS inventory leaves bounded room for native validation and cle
     const complete = jobSource(source, "macos");
     assert.match(desktop, /name: Embedded Desktop native \(macOS\)/);
     assert.match(complete, /name: Embedded Desktop \(macOS\)/);
-    assert.match(complete, /needs: \[macos-node, desktop\]/);
-    assert.match(complete, /if: \$\{\{ always\(\) \}\}/);
+    assert.match(complete, /needs: \[impact, macos-node, desktop\]/);
+    assert.match(complete, /if: \$\{\{ always\(\) && needs\.impact\.outputs\.application == 'true' \}\}/);
     assert.match(complete, /test "\$NODE_RESULT" = success/);
     assert.match(complete, /test "\$NATIVE_RESULT" = success/);
     assert.match(complete, /verify-application-node-shards\.py verify --total 4 --commit "\$GITHUB_SHA"/);
@@ -212,7 +218,8 @@ test("complete macOS inventory leaves bounded room for native validation and cle
   ]) assert.throws(() => verifyBudget(workflow.replace(node, changed)));
   const complete = jobSource(workflow, "macos");
   for (const changed of [
-    complete.replace("needs: [macos-node, desktop]", "needs: [desktop]"),
+    complete.replace("needs: [impact, macos-node, desktop]", "needs: [impact, desktop]"),
+    complete.replace("always() && needs.impact.outputs.application == 'true'", "needs.impact.outputs.application == 'true'"),
     complete.replace('test "$NODE_RESULT" = success', "true"),
     complete.replace('test "$NATIVE_RESULT" = success', "true"),
     complete.replace("verify-application-node-shards.py verify", "echo omitted"),

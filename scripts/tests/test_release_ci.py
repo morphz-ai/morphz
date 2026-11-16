@@ -37,6 +37,24 @@ def pages(items):
 
 
 class ReleaseCiTests(unittest.TestCase):
+    def test_manual_full_validation_on_the_exact_branch_is_release_evidence(self):
+        current = run(event="workflow_dispatch")
+        self.assertEqual(CI.select_run([{"workflow_runs": [current]}], REPOSITORY, COMMIT, BRANCH), current)
+        for workflow in CI.REQUIRED_WORKFLOWS:
+            CI.verify_jobs(pages(jobs(workflow, current)), current, workflow)
+
+    def test_scoped_green_and_older_full_green_cannot_authorize_a_release(self):
+        current = run(11)
+        selected = CI.select_run([{"workflow_runs": [run(10), current]}], REPOSITORY, COMMIT, BRANCH)
+        self.assertEqual(selected["id"], 11)
+        for workflow, job_name in [("ci.yml", "Test"), ("application.yml", "Application storage (PostgreSQL)")]:
+            inventory = jobs(workflow, current)
+            next(job for job in inventory if job["name"] == job_name)["conclusion"] = "skipped"
+            with self.assertRaises(CI.AdmissionError):
+                CI.verify_jobs(pages(inventory), selected, workflow)
+        latest = run(12, event="workflow_dispatch")
+        self.assertEqual(CI.select_run([{"workflow_runs": [run(10), current, latest]}], REPOSITORY, COMMIT, BRANCH), latest)
+
     def test_local_runtime_path_dependency_locks_match_the_candidate_version(self):
         expected = tomllib.loads((ROOT / "morphz/Cargo.toml").read_text())["package"]["version"]
         locks = subprocess.run(["git", "ls-files", "--", "*Cargo.lock"], cwd=ROOT,
@@ -186,7 +204,7 @@ class ReleaseCiTests(unittest.TestCase):
         self.assertEqual([item["workflow"] for item in receipts], list(CI.REQUIRED_WORKFLOWS))
         self.assertEqual(len(calls), 6)
         self.assertIn("/runs/10/attempts/2/jobs?per_page=100", calls[1])
-        self.assertIn(f"head_sha={COMMIT}&event=push&per_page=100", calls[0])
+        self.assertIn(f"head_sha={COMMIT}&per_page=100", calls[0])
 
     def test_every_complete_node_shard_native_acceptance_and_their_fan_in_are_required(self):
         required = {"Complete Linux Node inventory (1/2)", "Complete Linux Node inventory (2/2)",
@@ -212,7 +230,7 @@ class ReleaseCiTests(unittest.TestCase):
             workflow = "ci.yml" if "/runs/10/" in endpoint else "application.yml"
             return pages(jobs(workflow, run(10 if workflow == "ci.yml" else 20, head_branch="main")))
         self.assertEqual(len(CI.verify(REPOSITORY, COMMIT, "main", fetch)), 2)
-        with self.assertRaisesRegex(CI.AdmissionError, "No push CI run"):
+        with self.assertRaisesRegex(CI.AdmissionError, "No branch CI run"):
             CI.verify(REPOSITORY, COMMIT, "main", lambda _: [{"workflow_runs": [run()]}])
 
     def test_concurrent_rerun_invalidates_previous_green_evidence(self):

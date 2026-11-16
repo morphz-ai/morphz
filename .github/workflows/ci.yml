@@ -21,7 +21,11 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  impact:
+    uses: ./.github/workflows/ci-impact.yml
+
   conversation-profile:
+    needs: impact
     # New branch-only workflows cannot be dispatched by filename until they
     # exist on the default branch. An explicit option on this existing entry
     # calls the same-ref diagnostic workflow; all ordinary CI jobs still run.
@@ -29,18 +33,28 @@ jobs:
     uses: ./.github/workflows/conversation-performance-diagnostics.yml
 
   application-source-resources:
+    needs: impact
+    if: ${{ needs.impact.outputs.application == 'true' }}
     uses: ./.github/workflows/application-source-resources.yml
 
   session-io:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     uses: ./.github/workflows/session-io.yml
 
   native-regressions:
+    needs: impact
+    if: ${{ needs.impact.outputs.application == 'true' }}
     uses: ./.github/workflows/application-native-regressions.yml
 
   linux-sandbox-service:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     uses: ./.github/workflows/linux-sandbox-service.yml
 
   check:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: Check & Lint
     runs-on: ubuntu-latest
     steps:
@@ -109,6 +123,8 @@ jobs:
           done
 
   test:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: Test
     runs-on: ubuntu-24.04
     services:
@@ -223,6 +239,8 @@ jobs:
         run: sudo journalctl -u morphz-sandbox.service --no-pager
 
   postgres-conformance:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: PostgreSQL Runtime Store
     runs-on: ubuntu-latest
     services:
@@ -263,6 +281,8 @@ jobs:
         run: python3 scripts/test_runtime_postgres_lib.py --integration
 
   native-sandbox-macos:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: Native Sandbox (macOS)
     # The long arm64 job also failed allocation before executing any step
     # (40342793588 / 121641670890). Run every native Rust case on the same
@@ -332,6 +352,8 @@ jobs:
           retention-days: 7
 
   native-sandbox-linux:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: Native Sandbox (Linux)
     runs-on: ubuntu-24.04
     env:
@@ -372,6 +394,8 @@ jobs:
           /usr/local/libexec/morphz-runtime-ci/lib terminal::tests::terminal_interrupt_keeps_shell_and_resize_is_real --exact --nocapture --test-threads=1
 
   native-sandbox-windows:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: Native Sandbox (Windows)
     runs-on: windows-latest
     steps:
@@ -529,6 +553,8 @@ jobs:
           if-no-files-found: error
 
   build:
+    needs: impact
+    if: ${{ needs.impact.outputs.runtime == 'true' }}
     name: Release Build
     runs-on: ubuntu-latest
     steps:
@@ -562,6 +588,8 @@ jobs:
           if-no-files-found: ignore
 
   dashboard:
+    needs: impact
+    if: ${{ needs.impact.outputs.dashboard == 'true' }}
     name: Dashboard
     runs-on: ubuntu-latest
     env:
@@ -603,6 +631,8 @@ jobs:
           fi
 
   website:
+    needs: impact
+    if: ${{ needs.impact.outputs.website == 'true' }}
     name: Technical Website
     runs-on: ubuntu-latest
     env:
@@ -632,3 +662,33 @@ jobs:
             echo "::error::Generated website documentation, blog or standards are stale. Regenerate and commit them."
             exit 1
           fi
+
+  affected:
+    name: CI affected checks
+    needs: [impact, conversation-profile, application-source-resources, session-io, native-regressions, linux-sandbox-service, check, test, postgres-conformance, native-sandbox-macos, native-sandbox-linux, native-sandbox-windows, build, dashboard, website]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every selected check and account for every skipped check
+        env:
+          IMPACT_PLAN: ${{ needs.impact.outputs.plan }}
+          CI_RESULT_IMPACT: ${{ needs.impact.result }}
+          CI_RESULT_CONVERSATION_PROFILE: ${{ needs.conversation-profile.result }}
+          CI_RESULT_APPLICATION_SOURCE_RESOURCES: ${{ needs.application-source-resources.result }}
+          CI_RESULT_SESSION_IO: ${{ needs.session-io.result }}
+          CI_RESULT_NATIVE_REGRESSIONS: ${{ needs.native-regressions.result }}
+          CI_RESULT_LINUX_SANDBOX_SERVICE: ${{ needs.linux-sandbox-service.result }}
+          CI_RESULT_CHECK: ${{ needs.check.result }}
+          CI_RESULT_TEST: ${{ needs.test.result }}
+          CI_RESULT_POSTGRES_CONFORMANCE: ${{ needs.postgres-conformance.result }}
+          CI_RESULT_NATIVE_SANDBOX_MACOS: ${{ needs.native-sandbox-macos.result }}
+          CI_RESULT_NATIVE_SANDBOX_LINUX: ${{ needs.native-sandbox-linux.result }}
+          CI_RESULT_NATIVE_SANDBOX_WINDOWS: ${{ needs.native-sandbox-windows.result }}
+          CI_RESULT_BUILD: ${{ needs.build.result }}
+          CI_RESULT_DASHBOARD: ${{ needs.dashboard.result }}
+          CI_RESULT_WEBSITE: ${{ needs.website.result }}
+        run: python3 -B scripts/ci-impact.py verify --workflow ci

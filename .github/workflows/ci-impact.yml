@@ -1,0 +1,51 @@
+name: CI change impact
+
+on:
+  workflow_call:
+    outputs:
+      runtime:
+        value: ${{ jobs.plan.outputs.runtime }}
+      application:
+        value: ${{ jobs.plan.outputs.application }}
+      storage:
+        value: ${{ jobs.plan.outputs.storage }}
+      contracts:
+        value: ${{ jobs.plan.outputs.contracts }}
+      dashboard:
+        value: ${{ jobs.plan.outputs.dashboard }}
+      website:
+        value: ${{ jobs.plan.outputs.website }}
+      full:
+        value: ${{ jobs.plan.outputs.full }}
+      plan:
+        value: ${{ jobs.plan.outputs.plan }}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Classify changes and verify CI admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.impact.outputs.runtime }}
+      application: ${{ steps.impact.outputs.application }}
+      storage: ${{ steps.impact.outputs.storage }}
+      contracts: ${{ steps.impact.outputs.contracts }}
+      dashboard: ${{ steps.impact.outputs.dashboard }}
+      website: ${{ steps.impact.outputs.website }}
+      full: ${{ steps.impact.outputs.full }}
+      plan: ${{ steps.impact.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify impact selection, complete receipts and release refusal boundaries
+        run: |
+          python3 -B -m unittest discover -s scripts/tests -p test_ci_impact.py -v
+          python3 -B -m unittest discover -s scripts/tests -p test_release_ci.py -v
+      - name: Classify the complete push or pull-request change range
+        id: impact
+        run: python3 -B scripts/ci-impact.py plan

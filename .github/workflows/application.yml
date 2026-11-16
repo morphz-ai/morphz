@@ -11,7 +11,12 @@ permissions:
   contents: read
 
 jobs:
+  impact:
+    uses: ./.github/workflows/ci-impact.yml
+
   web-node:
+    needs: impact
+    if: ${{ needs.impact.outputs.application == 'true' }}
     name: Complete Linux Node inventory (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     outputs:
@@ -84,8 +89,8 @@ jobs:
   web-node-complete:
     # Preserve the required identity and reject incomplete or overlapping shards.
     name: Shared application full Node inventory
-    needs: [web-node]
-    if: ${{ always() }}
+    needs: [impact, web-node]
+    if: ${{ always() && needs.impact.outputs.application == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -103,6 +108,8 @@ jobs:
         run: python3 scripts/verify-application-node-shards.py verify --report-prefix WEB_NODE --total 2 --commit "$GITHUB_SHA"
 
   web-browser:
+    needs: impact
+    if: ${{ needs.impact.outputs.application == 'true' }}
     name: Complete Web browser inventory (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -156,8 +163,8 @@ jobs:
     # Preserve the existing required-check identity. Every Node case and both
     # browser partitions must succeed; a cancelled/skipped dependency is red.
     name: Shared application and Web
-    needs: [web-node-complete, web-browser]
-    if: ${{ always() }}
+    needs: [impact, web-node-complete, web-browser]
+    if: ${{ always() && needs.impact.outputs.application == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -170,6 +177,8 @@ jobs:
           test "$BROWSER_RESULT" = success
 
   storage-postgres:
+    needs: impact
+    if: ${{ needs.impact.outputs.storage == 'true' }}
     name: Application storage (PostgreSQL)
     # PostgreSQL 16 packages are part of this tested LTS image. The moving
     # ubuntu-latest alias now selects 26.04, which no longer supplies them.
@@ -242,6 +251,8 @@ jobs:
           xvfb-run -a npm test -- --test-concurrency=1
 
   macos-node:
+    needs: impact
+    if: ${{ needs.impact.outputs.application == 'true' }}
     name: Complete macOS Node inventory (${{ matrix.shard }}/4)
     runs-on: macos-26-intel
     outputs:
@@ -298,6 +309,8 @@ jobs:
             --github-output "$GITHUB_OUTPUT"
 
   desktop:
+    needs: impact
+    if: ${{ needs.impact.outputs.application == 'true' }}
     name: Embedded Desktop native (macOS)
     # The arm64 hosted fleet cancelled the complete inventory before acquiring
     # a runner (40339218428 / 121628987967). Keep the same macOS 26 release on
@@ -377,8 +390,8 @@ jobs:
   macos:
     # Preserve the existing required-check identity for the complete acceptance.
     name: Embedded Desktop (macOS)
-    needs: [macos-node, desktop]
-    if: ${{ always() }}
+    needs: [impact, macos-node, desktop]
+    if: ${{ always() && needs.impact.outputs.application == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -401,6 +414,8 @@ jobs:
         run: python3 scripts/verify-application-node-shards.py verify --total 4 --commit "$GITHUB_SHA"
 
   cognitive-runtime-contract:
+    needs: impact
+    if: ${{ needs.impact.outputs.contracts == 'true' }}
     name: Cognitive application and actual Runtime contracts
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -456,6 +471,8 @@ jobs:
           retention-days: 7
 
   runtime-contract:
+    needs: impact
+    if: ${{ needs.impact.outputs.contracts == 'true' }}
     name: Application and Runtime contract
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -529,3 +546,29 @@ jobs:
             ${{ runner.temp }}/morphz-runtime-contract-evidence/runtime.log
           if-no-files-found: warn
           retention-days: 7
+
+  affected:
+    name: Application affected checks
+    needs: [impact, web-node, web-node-complete, web-browser, web, storage-postgres, macos-node, desktop, macos, cognitive-runtime-contract, runtime-contract]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require every selected check and account for every skipped check
+        env:
+          IMPACT_PLAN: ${{ needs.impact.outputs.plan }}
+          CI_RESULT_IMPACT: ${{ needs.impact.result }}
+          CI_RESULT_WEB_NODE: ${{ needs.web-node.result }}
+          CI_RESULT_WEB_NODE_COMPLETE: ${{ needs.web-node-complete.result }}
+          CI_RESULT_WEB_BROWSER: ${{ needs.web-browser.result }}
+          CI_RESULT_WEB: ${{ needs.web.result }}
+          CI_RESULT_STORAGE_POSTGRES: ${{ needs.storage-postgres.result }}
+          CI_RESULT_MACOS_NODE: ${{ needs.macos-node.result }}
+          CI_RESULT_DESKTOP: ${{ needs.desktop.result }}
+          CI_RESULT_MACOS: ${{ needs.macos.result }}
+          CI_RESULT_COGNITIVE_RUNTIME_CONTRACT: ${{ needs.cognitive-runtime-contract.result }}
+          CI_RESULT_RUNTIME_CONTRACT: ${{ needs.runtime-contract.result }}
+        run: python3 -B scripts/ci-impact.py verify --workflow application

@@ -68,6 +68,46 @@ one pull request. No application or mobile release is implied by a Runtime relea
 See [the integration record](application/docs/25-repository-integration.md) for history,
 compatibility, and original-profile acceptance requirements.
 
+## CI change impact and complete release validation
+
+The CI and Application entry workflows always create a change-impact plan and an
+`affected checks` receipt. Selection uses the complete push range or the PR merge-base
+range, including removed paths and both sides of renames. The plan is bound to the
+checked-out commit. A selected job must succeed; failure, cancellation, a missing result
+or an unexpected skip fails the receipt. Workflows do not use top-level path filters
+that can leave required checks pending.
+
+- Changes confined to `application/apps/web/` retain the complete shared Web/Desktop
+  Node inventories, browser inventories, native Desktop acceptance, source contracts
+  and repeated native/timing regressions. They omit the unchanged full Rust Runtime,
+  sandbox, Runtime release-build, independent Dashboard/site and cloud-storage jobs.
+  Actual Runtime browser prerequisites remain enabled where the UI tests use them.
+- `application/tests/` changes additionally retain the real Runtime/Host contract and
+  PostgreSQL/S3 application inventories. They do not alter Runtime implementation.
+- Website-only changes run website checks, except installer paths, which require full CI.
+  Application Markdown documentation alone needs only the always-running admission checks.
+- Runtime, SDKs, shared contracts, Host adapters, native Desktop privileges, application dependencies,
+  build scripts, CI policy/workflows and every unclassified path require full joint CI.
+  Missing/unreadable history and classification-budget overflow also select full CI.
+- Release branches, PRs into release branches and explicit manual workflow runs always
+  select full joint CI. Test commands, capability requirements, assertion budgets and
+  repetition counts are unchanged by selection.
+
+A scoped green run cannot authorize a release. `verify-release-ci.py` still requires
+every full Runtime and application job, both impact plans and both receipt gates on
+the exact candidate commit and latest attempt from the canonical branch. If its latest
+push was scoped, explicitly run both full workflows before publishing the tag:
+
+```bash
+gh workflow run ci.yml --ref main
+gh workflow run application.yml --ref main
+```
+
+For an RC use its corresponding `release/X.Y.Z` branch. Keep the candidate commit fixed
+while these checks run; the release gate refuses another SHA, a PR run, an older green
+attempt, missing full jobs or any required skip. A newer failed or pending run cannot
+borrow an earlier full green result.
+
 ## PostgreSQL Runtime test coverage
 
 Runtime's PostgreSQL library contracts are explicitly ignored in default local

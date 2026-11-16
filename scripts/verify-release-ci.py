@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Require completed full CI for this repository, commit, branch and attempt.
 
-Read-only GitHub API access through the authenticated gh CLI. Tag jobs must not
-borrow old green checks, a PR merge commit, another branch, or an earlier attempt.
+Read-only GitHub API access through the authenticated gh CLI. Full validation can
+come from a branch push or an explicit manual run. Scoped green CI is never
+release evidence. Tag jobs must not borrow old checks, a PR merge commit,
+another branch, or an earlier attempt.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ REQUIRED_WORKFLOWS = ("ci.yml", "application.yml")
 OPTIONAL_SKIPPED_JOBS = frozenset({"conversation-profile"})
 REQUIRED_JOBS = {
     "ci.yml": frozenset({
+        "Classify changes and verify CI admission", "CI affected checks",
         "Check & Lint", "Test", "PostgreSQL Runtime Store",
         "Native Sandbox (macOS)", "Native Sandbox (Linux)", "Native Sandbox (Windows)",
         "Release Build", "Dashboard", "Technical Website",
@@ -32,6 +35,7 @@ REQUIRED_JOBS = {
         "Typed compiler and actual AppArmor literal paths",
     }),
     "application.yml": frozenset({
+        "Classify changes and verify CI admission", "Application affected checks",
         "Shared application full Node inventory",
         "Complete Linux Node inventory (1/2)", "Complete Linux Node inventory (2/2)",
         "Complete Web browser inventory (1/2)", "Complete Web browser inventory (2/2)",
@@ -65,10 +69,10 @@ def select_run(pages: list[dict], repository: str, commit: str, branch: str) -> 
     matching = [run for run in runs
                 if run.get("head_sha") == commit
                 and run.get("head_branch") == branch
-                and run.get("event") == "push"
+                and run.get("event") in ("push", "workflow_dispatch")
                 and run.get("repository", {}).get("full_name") == repository]
     if not matching:
-        raise AdmissionError("No push CI run matches this repository, commit and release branch")
+        raise AdmissionError("No branch CI run matches this repository, commit and release branch")
     latest = max(matching, key=lambda run: (int(run["id"]), int(run.get("run_attempt", 0))))
     if latest.get("status") != "completed" or latest.get("conclusion") != "success":
         raise AdmissionError(f"Latest matching CI run {latest['id']} has not succeeded")
@@ -114,7 +118,7 @@ def verify(repository: str, commit: str, branch: str, fetch=github_pages) -> lis
         raise AdmissionError("Release CI must come from main or the corresponding release branch")
     receipts = []
     for workflow in REQUIRED_WORKFLOWS:
-        endpoint = f"repos/{repository}/actions/workflows/{workflow}/runs?head_sha={commit}&event=push&per_page=100"
+        endpoint = f"repos/{repository}/actions/workflows/{workflow}/runs?head_sha={commit}&per_page=100"
         run = select_run(fetch(endpoint), repository, commit, branch)
         jobs_endpoint = (f"repos/{repository}/actions/runs/{run['id']}/attempts/"
                          f"{run['run_attempt']}/jobs?per_page=100")
