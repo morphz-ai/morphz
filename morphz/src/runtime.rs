@@ -2242,6 +2242,11 @@ impl MorphzRuntime {
             .bus
             .session_io_discussion_activity(session, discussion, principal)
     }
+    pub(crate) fn subscribe_session_io_discussion_activity(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.inner.bus.subscribe_session_io_discussion_activity()
+    }
     pub fn session_io_snapshot_roots(&self, session: &str) -> Vec<String> {
         self.inner.bus.session_io_snapshot_roots(session)
     }

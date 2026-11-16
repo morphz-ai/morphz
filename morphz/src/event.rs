@@ -396,6 +396,13 @@ impl InMemoryEventBus {
             .map(|streams| streams.discussion_activity(session, discussion, principal))
             .unwrap_or_default()
     }
+    pub(crate) fn subscribe_session_io_discussion_activity(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.session_io_streams
+            .as_ref()
+            .map(|streams| streams.subscribe_discussion_activity())
+    }
     pub fn session_io_snapshot_roots(&self, session: &str) -> Vec<String> {
         self.session_io_streams
             .as_ref()

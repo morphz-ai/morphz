@@ -225,6 +225,21 @@ jobs:
         env:
           MORPHZ_TEST_RUNTIME_LIB: /usr/local/libexec/morphz-runtime-ci/lib
         run: python3 scripts/test_runtime_postgres_lib.py
+      - name: Require five complete discussion stream and notification ordering passes
+        if: ${{ !cancelled() }}
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: |
+          set -euo pipefail
+          for round in 1 2 3 4 5; do
+            printf 'Complete discussion stream and ordering pass %s/5\n' "$round"
+            stream_log="$RUNNER_TEMP/discussion-stream-$round.log"
+            ordering_log="$RUNNER_TEMP/discussion-ordering-$round.log"
+            cargo test --locked -p morphz --test comment_discussions_runtime -- --test-threads=1 --nocapture | tee "$stream_log"
+            python3 -c 'from pathlib import Path; import sys; sys.exit(0 if any(line.startswith("test result: ok. 2 passed; 0 failed;") for line in Path(sys.argv[1]).read_text().splitlines()) else "The complete discussion transport fixture did not run successfully")' "$stream_log"
+            cargo test --locked -p morphz --lib web::tests::discussion_activity_survives_durable_mirror_winning_before_local_projection -- --exact --test-threads=1 --nocapture | tee "$ordering_log"
+            python3 -c 'from pathlib import Path; import sys; sys.exit(0 if any(line.startswith("test result: ok. 1 passed; 0 failed;") for line in Path(sys.argv[1]).read_text().splitlines()) else "The deterministic discussion ordering fixture did not run successfully")' "$ordering_log"
+          done
       - name: Require five complete PostgreSQL statement-budget passes
         if: ${{ !cancelled() }}
         env:

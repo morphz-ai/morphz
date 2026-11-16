@@ -455,6 +455,10 @@ pub(super) async fn stream(
         Err(error) => return io_error(error),
     };
     let mut live = state.broadcast_tx.subscribe();
+    // Subscribe before the initial snapshot. Durable and process-local Event
+    // mirrors race on the same Event ID; the durable copy intentionally lacks
+    // process-local projection flags. Neither delivery order may lose activity.
+    let mut activity_changes = state.runtime.subscribe_session_io_discussion_activity();
     if let Err(error) = state
         .sdk
         .authorize_session(&principal.principal_id, &session)
@@ -497,6 +501,34 @@ pub(super) async fn stream(
             }
             let incoming = tokio::select! {
                 _ = sender.closed() => return,
+                changed = async {
+                    match activity_changes.as_mut() {
+                        Some(changes) => changes.changed().await,
+                        None => std::future::pending().await,
+                    }
+                }, if activity.is_some() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    let next = read_scope.activity(&state.runtime);
+                    if next != activity {
+                        if read_scope.authorized(&state).await.is_err() {
+                            return;
+                        }
+                        let frame = json!({"type":"discussion.activity","discussionActivity":next});
+                        if sender
+                            .send(Ok(SseEvent::default()
+                                .event("discussion.activity")
+                                .data(frame.to_string())))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                        activity = next;
+                    }
+                    continue;
+                }
                 _ = interval.tick() => None,
                 event = live.recv() => match event {Ok(event) => Some(event), Err(_) => return},
             };
@@ -517,31 +549,6 @@ pub(super) async fn stream(
             } else {
                 false
             };
-            if relevant
-                && activity.is_some()
-                && incoming.as_ref().is_some_and(|event| {
-                    event.payload.get("session_io_discussion_activity_changed")
-                        == Some(&json!(true))
-                })
-            {
-                let next = read_scope.activity(&state.runtime);
-                if next != activity {
-                    if read_scope.authorized(&state).await.is_err() {
-                        return;
-                    }
-                    let frame = json!({"type":"discussion.activity","discussionActivity":next});
-                    if sender
-                        .send(Ok(SseEvent::default()
-                            .event("discussion.activity")
-                            .data(frame.to_string())))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                    activity = next;
-                }
-            }
             let snapshot_needed = first || incoming.is_none();
             let durable = first
                 || incoming.as_ref().is_some_and(|event| {

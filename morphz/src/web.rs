@@ -11907,6 +11907,126 @@ mod tests {
         (tmp, state, runtime)
     }
 
+    #[tokio::test]
+    async fn discussion_activity_survives_durable_mirror_winning_before_local_projection() {
+        use crate::memory::EventStore;
+        let database = TempSqliteDb::new().unwrap();
+        // No Server mirror or model workers: both delivery orders are controlled.
+        let (state, runtime) = test_state_at_with_workers(database.path(), false).await;
+        runtime
+            .ensure_agent(crate::memory::NewAgent {
+                id: "agent-test".into(),
+                title: "TEST mirror ordering".into(),
+                root_context_id: "context-test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(crate::memory::NewCognitiveContext {
+                id: "context-test".into(),
+                agent_id: "agent-test".into(),
+                title: "TEST mirror ordering".into(),
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "discussion-mirror-race".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "TEST discussion mirror ordering".into(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let input = serde_json::json!({
+            "io_version":"1", "client_message_id":"mirror-discussion",
+            "message":{"format":{"id":"morphz.chat","version":"1"},
+                "content":{"encoding":"utf8","value":"TEST discussion"}},
+            "activation":{"dispatch_mode":"parallel"},
+            "discussion":{"id":"mirror-discussion","publish_to_session":false,
+                "source":{"key":"test:mirror","title":"TEST source","text":"selected text", "locator":{"kind":"test"}}}
+        });
+        let input = crate::session_io::Request::parse(
+            input.to_string().as_bytes(),
+            &crate::session_io::Limits::default(),
+        )
+        .unwrap();
+        let receipt = session
+            .send_io_as_principal(input, &runtime.identity().principal_id)
+            .await
+            .unwrap();
+        let response = session_io_http::stream(
+            State(state.clone()),
+            Path(session.id().into()),
+            HeaderMap::new(),
+            Query(
+                serde_json::from_value(json!({
+                    "scope":"discussion", "discussion_id":"mirror-discussion"
+                }))
+                .unwrap(),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        async fn until(
+            body: &mut (impl futures_util::Stream<Item = Result<axum::body::Bytes, axum::Error>>
+                      + Unpin),
+            needle: &str,
+        ) -> String {
+            let mut received = String::new();
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !received.contains(needle) {
+                    let bytes = body.next().await.expect("SSE closed").unwrap();
+                    received.push_str(&String::from_utf8_lossy(&bytes));
+                    assert!(received.len() <= 64 * 1024, "bounded fixture SSE body");
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("SSE missing {needle}: {received}"));
+            received
+        }
+        assert!(until(&mut body, "stream.opened")
+            .await
+            .contains("\"phase\":\"waiting\""));
+        let event = |id: &str, topic: &str| {
+            Event::new(
+                id.into(),
+                "TEST".into(),
+                "runtime_control".into(),
+                topic.into(),
+                serde_json::from_value(
+                    json!({"context_id":"context-test", "session_id":session.id(),
+                "root_turn_id":receipt.id, "state":"reasoning", "terminal":false}),
+                )
+                .unwrap(),
+            )
+        };
+        let phase = event("mirror-reasoning", "runtime/model_attempt_state");
+        let marker = event("mirror-read-barrier", "runtime/execution_probe");
+        let store = SqliteStore::new(database.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store.append(phase.clone()).await.unwrap();
+        store.append(marker.clone()).await.unwrap();
+        // The real durable copies have no process-local activity-change bit.
+        // A later durable marker proves the stream consumed this path first.
+        assert!(!phase
+            .payload
+            .contains_key("session_io_discussion_activity_changed"));
+        state.broadcast_tx.send(phase.clone()).unwrap();
+        state.broadcast_tx.send(marker).unwrap();
+        until(&mut body, "mirror-read-barrier").await;
+        // The already-committed immutable Event is now observed locally, but
+        // the mirror's Event-ID deduplication suppresses its second broadcast.
+        runtime.publish(phase).await.unwrap();
+        let changed = until(&mut body, "\"phase\":\"reasoning\"").await;
+        assert!(changed.contains("discussion.activity"));
+        assert!(changed.contains("\"inputId\":\"mirror-discussion\""));
+    }
+
     #[test]
     fn terminal_changes_only_frames_expose_scope_metadata_without_screen_bytes() {
         let event=Event::new("terminal-hint".into(),"runtime/terminal".into(),"runtime/terminal_changed".into(),"runtime/terminal_changed".into(),json!({"session_id":"session","context_id":"context","terminal_id":"terminal","principal_id":"human","scope_ref":"scope","kind":"output","text":"X".repeat(100000),"screen":{"text":"untrusted bytes"}}).as_object().unwrap().clone());

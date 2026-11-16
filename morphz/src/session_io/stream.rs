@@ -7,14 +7,76 @@ use std::sync::Mutex;
 const MAX_DRAFTS: usize = 64;
 const MAX_DRAFT_BYTES: usize = 256 * 1024;
 
-#[derive(Default)]
 pub struct Streams {
     state: Mutex<State>,
+    discussion_activity_changed: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for Streams {
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            discussion_activity_changed: tokio::sync::watch::channel(0).0,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn activity_wakeups_coalesce_retain_busy_changes_and_ignore_duplicate_phases() {
+        let streams = Streams::default();
+        let mut changed = streams.subscribe_discussion_activity();
+        assert!(!changed.has_changed().unwrap());
+        let mut input = Event::new(
+            "root".into(),
+            "TEST".into(),
+            crate::event::TYPE_USER_MESSAGE.into(),
+            "chat/user_message".into(),
+            serde_json::from_value(json!({"session_id":"session", "root_turn_id":"root",
+                "client_message_id":"discussion", "principal_id":"human",
+                "discussion":{"id":"discussion"}}))
+            .unwrap(),
+        );
+        streams.observe(&mut input);
+        // The subscriber is deliberately busy until several actual changes
+        // have committed to the bounded in-memory projection.
+        for phase in ["streaming", "reasoning"] {
+            let mut event = input.clone();
+            event.topic = "runtime/model_attempt_state".into();
+            event.payload.insert("state".into(), json!(phase));
+            streams.observe(&mut event);
+        }
+        assert!(changed.has_changed().unwrap());
+        changed.changed().await.unwrap();
+        assert!(!changed.has_changed().unwrap());
+        let responses = streams.discussion_activity("session", "discussion", Some("human"));
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].phase, "reasoning");
+        assert!(streams
+            .discussion_activity("session", "discussion", Some("other"))
+            .is_empty());
+        let mut duplicate = input.clone();
+        duplicate.topic = "runtime/model_attempt_state".into();
+        duplicate.payload.insert("state".into(), json!("reasoning"));
+        streams.observe(&mut duplicate);
+        assert!(!changed.has_changed().unwrap());
+        duplicate
+            .payload
+            .insert("state".into(), json!("generating_tool_call"));
+        streams.observe(&mut duplicate);
+        assert!(
+            changed.has_changed().unwrap(),
+            "a late change remains pending"
+        );
+        changed.changed().await.unwrap();
+        assert_eq!(
+            streams.discussion_activity("session", "discussion", Some("human"))[0].phase,
+            "tool_call"
+        );
+    }
+
     fn event(root: &str, attempt: &str, kind: &str, text: &str) -> Event {
         Event::new("draft".into(), "model".into(), "agent_call".into(), "runtime/model_stream".into(),
             serde_json::from_value(json!({"session_id":"s","root_turn_id":root,"model_attempt_id":attempt,"stream":{"kind":kind,"text":text}})).unwrap())
@@ -210,6 +272,11 @@ impl Streams {
             event
                 .payload
                 .insert("session_io_discussion_activity_changed".into(), json!(true));
+            // This is a post-commit projection wakeup, independent of which
+            // Web Event mirror wins Event-ID deduplication. Watch retains a
+            // change received while a transport consumer is busy.
+            self.discussion_activity_changed
+                .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
         }
         let Some(root) = event
             .payload
@@ -359,6 +426,9 @@ impl Streams {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .discussion_activity
             .snapshot(session, discussion, principal)
+    }
+    pub(crate) fn subscribe_discussion_activity(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.discussion_activity_changed.subscribe()
     }
     pub fn snapshot_roots(&self, session: &str) -> Vec<String> {
         let state = self

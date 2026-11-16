@@ -362,16 +362,17 @@ async fn discussion_http_history_live_stream_and_reconnect_keep_bodies_in_their_
         .unwrap();
     assert_eq!(missing.status(), 404);
     async fn until(response: &mut reqwest::Response, needle: &str) -> String {
+        let mut body = String::new();
         tokio::time::timeout(Duration::from_secs(10), async {
-            let mut body = String::new();
             while !body.contains(needle) {
                 let bytes = response.chunk().await.unwrap().expect("stream ended early");
                 body.push_str(&String::from_utf8_lossy(&bytes));
+                assert!(body.len() <= 64 * 1024, "bounded fixture SSE body");
             }
-            body
         })
         .await
-        .expect("scoped SSE did not deliver expected data")
+        .unwrap_or_else(|_| panic!("scoped SSE missing {needle}; received: {body}"));
+        body
     }
     let mut stream = client
         .get(format!(
