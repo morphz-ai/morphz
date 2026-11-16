@@ -68,6 +68,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Dependency download socket idle timeout, never a test/assertion deadline.
+  PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+
 jobs:
   remaining-browser-regressions:
     name: Actual Runtime browser prerequisites and remaining interactions

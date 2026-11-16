@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Only dependency acquisition: keep all browser/assertion deadlines intact.
+  PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "120000"
+
 jobs:
   impact:
     uses: ./.github/workflows/ci-impact.yml
